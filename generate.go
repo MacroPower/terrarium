@@ -7,6 +7,7 @@ import (
 
 	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/envoy"
 )
 
 // CertsDir is the directory where MITM leaf certificates are stored.
@@ -59,7 +60,7 @@ func Generate(ctx context.Context, configPath string) (*config.Config, error) {
 	}
 
 	caBundlePath := findCABundle()
-	envoyConf, err := GenerateEnvoyConfig(cfg, certsDir, caBundlePath)
+	envoyConf, err := envoy.GenerateConfig(cfg, certsDir, caBundlePath)
 	if err != nil {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
 	}
@@ -77,7 +78,12 @@ func Generate(ctx context.Context, configPath string) (*config.Config, error) {
 // for callers outside terrarium package that cannot construct
 // unexported [ResolvedRule] values directly.
 func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) (string, error) {
-	return GenerateEnvoyConfig(cfg, certsDir, caBundlePath)
+	out, err := envoy.GenerateConfig(cfg, certsDir, caBundlePath)
+	if err != nil {
+		return "", fmt.Errorf("generating envoy config: %w", err)
+	}
+
+	return out, nil
 }
 
 // findCABundle returns the path to the system CA certificate bundle.

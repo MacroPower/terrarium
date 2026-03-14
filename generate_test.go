@@ -109,3 +109,7 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 		assert.Equal(t, envoyResults[0], envoyResults[i], "envoy config differs on iteration %d", i)
 	}
 }
+
+func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
+	return &rules
+}

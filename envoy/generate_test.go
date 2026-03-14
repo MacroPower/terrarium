@@ -1,4 +1,4 @@
-package terrarium_test
+package envoy_test
 
 import (
 	"testing"
@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.jacobcolvin.com/terrarium"
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/envoy"
 )
 
 func TestBuildAccessLog(t *testing.T) {
@@ -26,7 +26,7 @@ func TestBuildAccessLog(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			logs := terrarium.BuildAccessLog(tt.logging)
+			logs := envoy.BuildAccessLog(tt.logging)
 			if tt.wantLen == 0 {
 				assert.Nil(t, logs)
 				return
@@ -38,7 +38,7 @@ func TestBuildAccessLog(t *testing.T) {
 	}
 }
 
-func TestGenerateEnvoyConfig(t *testing.T) {
+func TestGenerateConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
@@ -905,7 +905,7 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			conf, err := terrarium.GenerateEnvoyConfig(tt.cfg, tt.certsDir, "")
+			conf, err := envoy.GenerateConfig(tt.cfg, tt.certsDir, "")
 			require.NoError(t, err)
 
 			for _, s := range tt.want {
