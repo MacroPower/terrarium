@@ -1,0 +1,17 @@
+{
+  "name": "tests",
+  "engineVersion": "v0.20.1",
+  "sdk": {
+    "source": "go"
+  },
+  "dependencies": [
+    {
+      "name": "terrarium",
+      "source": ".."
+    },
+    {
+      "name": "go",
+      "source": "../../go"
+    }
+  ]
+}

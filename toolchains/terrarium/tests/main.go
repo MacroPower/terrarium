@@ -1,0 +1,528 @@
+// Integration tests for the [Terrarium] module. Individual tests are annotated
+// with +check so `dagger check -m toolchains/terrarium/tests` runs them all concurrently.
+package main
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"dagger/tests/internal/dagger"
+
+	"golang.org/x/sync/errgroup"
+)
+
+const (
+	cosignVersion = "v3.0.4" // renovate: datasource=github-releases depName=sigstore/cosign
+)
+
+// Tests provides integration tests for the [Terrarium] module. Create instances
+// with [New].
+type Tests struct{}
+
+// All runs all tests in parallel.
+func (m *Tests) All(ctx context.Context) error {
+	g, ctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error { return m.TestBuildDist(ctx) })
+	g.Go(func() error { return m.TestBuildImageMetadata(ctx) })
+	g.Go(func() error { return m.TestLintReleaserClean(ctx) })
+	g.Go(func() error { return m.TestLintDeadcodeClean(ctx) })
+	g.Go(func() error { return m.TestBinary(ctx) })
+	g.Go(func() error { return m.TestVersionTags(ctx) })
+	g.Go(func() error { return m.TestFormatDigestChecksums(ctx) })
+	g.Go(func() error { return m.TestDeduplicateDigests(ctx) })
+	g.Go(func() error { return m.TestRegistryHost(ctx) })
+	g.Go(func() error { return m.TestFormatIdempotent(ctx) })
+
+	return g.Wait()
+}
+
+// TestBuildDist verifies that [Terrarium.Build] returns a dist directory containing
+// expected entries (checksums and at least one platform archive).
+//
+// +check
+func (m *Tests) TestBuildDist(ctx context.Context) error {
+	entries, err := dag.Terrarium().Build().Entries(ctx)
+	if err != nil {
+		return fmt.Errorf("list dist entries: %w", err)
+	}
+
+	hasChecksums := false
+	hasArchive := false
+	for _, entry := range entries {
+		if strings.Contains(entry, "checksums") {
+			hasChecksums = true
+		}
+		if strings.Contains(entry, "linux_amd64") || strings.Contains(entry, "linux_arm64") {
+			hasArchive = true
+		}
+	}
+
+	if !hasChecksums {
+		return fmt.Errorf("dist missing checksums file (entries: %v)", entries)
+	}
+	if !hasArchive {
+		return fmt.Errorf("dist missing platform archive (entries: %v)", entries)
+	}
+	return nil
+}
+
+// TestBuildImageMetadata verifies that [Terrarium.BuildImages] produces containers
+// with expected OCI labels and entrypoint.
+//
+// +check
+func (m *Tests) TestBuildImageMetadata(ctx context.Context) error {
+	dist := dag.Terrarium().Build()
+	variants, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
+		Version: "v0.0.0-test",
+		Dist:    dist,
+	})
+	if err != nil {
+		return fmt.Errorf("build images: %w", err)
+	}
+	if len(variants) != 2 {
+		return fmt.Errorf("expected 2 image variants (linux/amd64, linux/arm64), got %d", len(variants))
+	}
+
+	for i, ctr := range variants {
+		// Verify OCI version label.
+		version, err := ctr.Label(ctx, "org.opencontainers.image.version")
+		if err != nil {
+			return fmt.Errorf("variant %d: version label: %w", i, err)
+		}
+		if version != "v0.0.0-test" {
+			return fmt.Errorf("variant %d: version label = %q, want %q", i, version, "v0.0.0-test")
+		}
+
+		// Verify OCI title label.
+		title, err := ctr.Label(ctx, "org.opencontainers.image.title")
+		if err != nil {
+			return fmt.Errorf("variant %d: title label: %w", i, err)
+		}
+		if title != "terrarium" {
+			return fmt.Errorf("variant %d: title label = %q, want %q", i, title, "terrarium")
+		}
+
+		// Verify OCI created label is present and non-empty.
+		created, err := ctr.Label(ctx, "org.opencontainers.image.created")
+		if err != nil {
+			return fmt.Errorf("variant %d: created label: %w", i, err)
+		}
+		if created == "" {
+			return fmt.Errorf("variant %d: created label is empty", i)
+		}
+
+		// Verify entrypoint.
+		ep, err := ctr.Entrypoint(ctx)
+		if err != nil {
+			return fmt.Errorf("variant %d: entrypoint: %w", i, err)
+		}
+		if len(ep) != 1 || ep[0] != "terrarium" {
+			return fmt.Errorf("variant %d: entrypoint = %v, want [terrarium]", i, ep)
+		}
+	}
+
+	return nil
+}
+
+// TestPublishImages verifies that [Terrarium.PublishImages] builds, publishes,
+// signs, and produces verifiable cosign signatures. Uses ttl.sh as an
+// anonymous temporary registry (images expire after the tag duration).
+//
+// Not annotated with +check because it depends on external network access
+// to ttl.sh and takes ~5 minutes. Run manually:
+//
+//	dagger call -m toolchains/terrarium/tests test-publish-images
+func (m *Tests) TestPublishImages(ctx context.Context) error {
+	// Generate an ephemeral cosign key pair for signing and verification.
+	cosignCtr := dag.Container().
+		From("gcr.io/projectsigstore/cosign:"+cosignVersion).
+		WithEnvVariable("COSIGN_PASSWORD", "test-password").
+		WithExec([]string{"cosign", "generate-key-pair"})
+	privKeyContent, err := cosignCtr.File("cosign.key").Contents(ctx)
+	if err != nil {
+		return fmt.Errorf("generate cosign key pair: %w", err)
+	}
+	pubKey := cosignCtr.File("cosign.pub")
+	cosignKey := dag.SetSecret("test-cosign-key", privKeyContent)
+	cosignPassword := dag.SetSecret("test-cosign-password", "test-password")
+
+	// Use a unique registry path on ttl.sh to avoid collisions between runs.
+	registry := fmt.Sprintf("ttl.sh/terrarium-ci-%d", time.Now().UnixNano())
+	ci := dag.Terrarium(dagger.TerrariumOpts{Registry: registry})
+
+	// Publish 2 tags to exercise deduplication (both tags share one manifest digest).
+	dist := ci.Build()
+	result, err := ci.PublishImages(ctx, []string{"1h", "2h"}, dagger.TerrariumPublishImagesOpts{
+		Dist:           dist,
+		CosignKey:      cosignKey,
+		CosignPassword: cosignPassword,
+	})
+	if err != nil {
+		return fmt.Errorf("publish: %w", err)
+	}
+
+	// Verify the result contains sha256 digest references.
+	if !strings.Contains(result, "sha256:") {
+		return fmt.Errorf("expected sha256 digest in result, got: %s", result)
+	}
+
+	// Verify 2 tags were published.
+	if !strings.Contains(result, "published 2 tags") {
+		return fmt.Errorf("expected 'published 2 tags' in result, got: %s", result)
+	}
+
+	// Verify deduplication: both tags share one manifest, so 1 unique digest.
+	if !strings.Contains(result, "1 unique digests") {
+		return fmt.Errorf("expected '1 unique digests' in result, got: %s", result)
+	}
+
+	// Extract a digest reference for signature verification.
+	// Result format: "published 2 tags (1 unique digests)\nregistry:tag@sha256:hex\n..."
+	lines := strings.Split(strings.TrimSpace(result), "\n")
+	if len(lines) < 2 {
+		return fmt.Errorf("expected at least 2 lines in result, got %d: %s", len(lines), result)
+	}
+	digestRef := lines[1]
+	if !strings.Contains(digestRef, "@sha256:") {
+		return fmt.Errorf("expected digest reference in line 1, got: %s", digestRef)
+	}
+
+	// Verify the cosign signature using the ephemeral public key.
+	// --insecure-ignore-tlog=true skips Rekor transparency log verification
+	// to avoid flakiness; core cryptographic signature verification still runs.
+	_, err = dag.Container().
+		From("gcr.io/projectsigstore/cosign:"+cosignVersion).
+		WithMountedFile("/cosign.pub", pubKey).
+		WithExec([]string{
+			"cosign", "verify",
+			"--key", "/cosign.pub",
+			"--insecure-ignore-tlog=true",
+			digestRef,
+		}).
+		Sync(ctx)
+	if err != nil {
+		return fmt.Errorf("verify cosign signature: %w", err)
+	}
+
+	return nil
+}
+
+// TestLintReleaserClean verifies that the GoReleaser configuration passes
+// validation. This exercises the [Terrarium.LintReleaser] check, which requires
+// the terrarium git remote for homebrew/nix repository resolution.
+//
+// +check
+func (m *Tests) TestLintReleaserClean(ctx context.Context) error {
+	return dag.Terrarium().LintReleaser(ctx)
+}
+
+// TestLintDeadcodeClean verifies that the codebase has no unreachable
+// functions. This exercises [Terrarium.LintDeadcode].
+func (m *Tests) TestLintDeadcodeClean(ctx context.Context) error {
+	return dag.Terrarium().LintDeadcode(ctx)
+}
+
+// TestBinary verifies that [Terrarium.Binary] compiles the terrarium binary.
+//
+// +check
+func (m *Tests) TestBinary(ctx context.Context) error {
+	binary := dag.Terrarium().Binary(dagger.TerrariumBinaryOpts{})
+	size, err := binary.Size(ctx)
+	if err != nil {
+		return fmt.Errorf("binary: %w", err)
+	}
+	if size == 0 {
+		return fmt.Errorf("binary has zero size")
+	}
+	return nil
+}
+
+// TestFormatIdempotent verifies that running the formatter on already-formatted
+// source produces an empty changeset. This exercises the full
+// [Terrarium.Format] pipeline (golangci-lint --fix + prettier --write) and
+// confirms the source is clean.
+//
+// +check
+func (m *Tests) TestFormatIdempotent(ctx context.Context) error {
+	changeset := dag.Terrarium().Format()
+
+	empty, err := changeset.IsEmpty(ctx)
+	if err != nil {
+		return fmt.Errorf("check changeset: %w", err)
+	}
+	if !empty {
+		modified, _ := changeset.ModifiedPaths(ctx)
+		added, _ := changeset.AddedPaths(ctx)
+		removed, _ := changeset.RemovedPaths(ctx)
+		return fmt.Errorf("expected empty changeset on clean source, modified=%v added=%v removed=%v",
+			modified, added, removed)
+	}
+	return nil
+}
+
+// TestVersionTags verifies that [Terrarium.VersionTags] returns the expected
+// set of image tags for various version strings.
+//
+// +check
+func (m *Tests) TestVersionTags(ctx context.Context) error {
+	cases := map[string]struct {
+		tag  string
+		want []string
+	}{
+		"semver": {
+			tag:  "v1.2.3",
+			want: []string{"latest", "v1.2.3", "v1", "v1.2"},
+		},
+		"pre-release": {
+			tag:  "v0.5.1-rc.1",
+			want: []string{"v0.5.1-rc.1"},
+		},
+		"two-component": {
+			tag:  "v2.0",
+			want: []string{"latest", "v2.0", "v2", "v2.0"},
+		},
+		"single-component": {
+			tag:  "v1",
+			want: []string{"latest", "v1", "v1"},
+		},
+		"four-component": {
+			tag:  "v1.2.3.4",
+			want: []string{"latest", "v1.2.3.4", "v1", "v1.2"},
+		},
+		"empty-string": {
+			tag:  "",
+			want: []string{"latest", "", "v"},
+		},
+		"no-v-prefix": {
+			tag:  "1.2.3",
+			want: []string{"latest", "1.2.3", "v1", "v1.2"},
+		},
+		"hyphen-in-first-component": {
+			tag:  "v0-beta.1",
+			want: []string{"v0-beta.1"},
+		},
+	}
+
+	for name, tc := range cases {
+		got, err := dag.Terrarium().VersionTags(ctx, tc.tag)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if len(got) != len(tc.want) {
+			return fmt.Errorf("%s: got %v, want %v", name, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				return fmt.Errorf("%s: index %d: got %q, want %q", name, i, got[i], tc.want[i])
+			}
+		}
+	}
+
+	return nil
+}
+
+// TestFormatDigestChecksums verifies that [Terrarium.FormatDigestChecksums]
+// converts publish output to the checksums format, deduplicating by digest.
+//
+// +check
+func (m *Tests) TestFormatDigestChecksums(ctx context.Context) error {
+	refs := []string{
+		"ghcr.io/test:v1@sha256:abc123",
+		"ghcr.io/test:v2@sha256:abc123", // duplicate digest
+		"ghcr.io/test:latest@sha256:def456",
+	}
+
+	result, err := dag.Terrarium().FormatDigestChecksums(ctx, refs)
+	if err != nil {
+		return fmt.Errorf("format: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(result), "\n")
+	if len(lines) != 2 {
+		return fmt.Errorf("expected 2 lines (deduplicated), got %d: %q", len(lines), result)
+	}
+
+	if lines[0] != "abc123  ghcr.io/test:v1" {
+		return fmt.Errorf("line 0 = %q, want %q", lines[0], "abc123  ghcr.io/test:v1")
+	}
+	if lines[1] != "def456  ghcr.io/test:latest" {
+		return fmt.Errorf("line 1 = %q, want %q", lines[1], "def456  ghcr.io/test:latest")
+	}
+
+	return nil
+}
+
+// TestDeduplicateDigests verifies that [Terrarium.DeduplicateDigests] keeps
+// only the first occurrence of each sha256 digest.
+//
+// +check
+func (m *Tests) TestDeduplicateDigests(ctx context.Context) error {
+	refs := []string{
+		"ghcr.io/test:v1@sha256:abc123",
+		"ghcr.io/test:latest@sha256:abc123",
+		"ghcr.io/test:v1.0@sha256:def456",
+	}
+
+	result, err := dag.Terrarium().DeduplicateDigests(ctx, refs)
+	if err != nil {
+		return fmt.Errorf("deduplicate: %w", err)
+	}
+
+	if len(result) != 2 {
+		return fmt.Errorf("expected 2 unique refs, got %d: %v", len(result), result)
+	}
+	if result[0] != "ghcr.io/test:v1@sha256:abc123" {
+		return fmt.Errorf("ref 0 = %q, want %q", result[0], "ghcr.io/test:v1@sha256:abc123")
+	}
+	if result[1] != "ghcr.io/test:v1.0@sha256:def456" {
+		return fmt.Errorf("ref 1 = %q, want %q", result[1], "ghcr.io/test:v1.0@sha256:def456")
+	}
+
+	return nil
+}
+
+// TestRegistryHost verifies that [Terrarium.RegistryHost] extracts the host
+// (with optional port) from various registry address formats.
+//
+// +check
+func (m *Tests) TestRegistryHost(ctx context.Context) error {
+	cases := map[string]struct {
+		registry string
+		want     string
+	}{
+		"standard-registry": {
+			registry: "ghcr.io/macropower/terrarium",
+			want:     "ghcr.io",
+		},
+		"with-port": {
+			registry: "localhost:5000/myimage",
+			want:     "localhost:5000",
+		},
+		"host-only": {
+			registry: "docker.io",
+			want:     "docker.io",
+		},
+		"nested-path": {
+			registry: "registry.example.com/org/team/image",
+			want:     "registry.example.com",
+		},
+		"empty-string": {
+			registry: "",
+			want:     "",
+		},
+	}
+
+	for name, tc := range cases {
+		got, err := dag.Terrarium().RegistryHost(ctx, tc.registry)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if got != tc.want {
+			return fmt.Errorf("%s: got %q, want %q", name, got, tc.want)
+		}
+	}
+
+	return nil
+}
+
+// TestBenchmarkReturnsResults verifies that [Terrarium.Benchmark] returns
+// non-empty results with expected stage names and positive durations.
+//
+// Not annotated with +check because benchmarks run the full pipeline
+// with cache-busting, which would duplicate all CI work in the
+// integration test suite. Run manually:
+//
+//	dagger call -m toolchains/terrarium/tests test-benchmark-returns-results
+func (m *Tests) TestBenchmarkReturnsResults(ctx context.Context) error {
+	results, err := dag.Terrarium().Benchmark(ctx)
+	if err != nil {
+		return fmt.Errorf("run benchmark: %w", err)
+	}
+	if len(results) == 0 {
+		return fmt.Errorf("benchmark returned no results")
+	}
+
+	expectedStages := map[string]bool{
+		"env":           false,
+		"lint":          false,
+		"test":          false,
+		"lint-prettier": false,
+		"lint-actions":  false,
+		"lint-releaser": false,
+		"build":         false,
+	}
+
+	for _, r := range results {
+		name, err := r.Name(ctx)
+		if err != nil {
+			return fmt.Errorf("read result name: %w", err)
+		}
+		if _, ok := expectedStages[name]; ok {
+			expectedStages[name] = true
+		}
+
+		dur, err := r.DurationSecs(ctx)
+		if err != nil {
+			return fmt.Errorf("read duration for %s: %w", name, err)
+		}
+		if dur < 0 {
+			return fmt.Errorf("stage %s has negative duration: %f", name, dur)
+		}
+
+		ok, err := r.Ok(ctx)
+		if err != nil {
+			return fmt.Errorf("read ok for %s: %w", name, err)
+		}
+		if !ok {
+			errMsg, _ := r.Error(ctx)
+			return fmt.Errorf("stage %s failed: %s", name, errMsg)
+		}
+	}
+
+	for stage, found := range expectedStages {
+		if !found {
+			return fmt.Errorf("expected stage %q not found in results", stage)
+		}
+	}
+
+	return nil
+}
+
+// TestBenchmarkSummaryFormat verifies that [Terrarium.BenchmarkSummary] returns
+// a non-empty string containing the expected table header and stage names.
+//
+// Not annotated with +check because benchmarks run the full pipeline
+// with cache-busting (see [Tests.TestBenchmarkReturnsResults]). Run manually:
+//
+//	dagger call -m toolchains/terrarium/tests test-benchmark-summary-format
+func (m *Tests) TestBenchmarkSummaryFormat(ctx context.Context) error {
+	summary, err := dag.Terrarium().BenchmarkSummary(ctx)
+	if err != nil {
+		return fmt.Errorf("run benchmark summary: %w", err)
+	}
+	if len(summary) == 0 {
+		return fmt.Errorf("benchmark summary is empty")
+	}
+
+	// Verify the table header is present.
+	if !strings.Contains(summary, "STAGE") || !strings.Contains(summary, "DURATION") {
+		return fmt.Errorf("benchmark summary missing table header: %s", summary)
+	}
+
+	// Verify key stages appear in the output.
+	for _, stage := range []string{"env", "lint", "test", "build"} {
+		if !strings.Contains(summary, stage) {
+			return fmt.Errorf("benchmark summary missing stage %q: %s", stage, summary)
+		}
+	}
+
+	// Verify the total row is present.
+	if !strings.Contains(summary, "TOTAL") {
+		return fmt.Errorf("benchmark summary missing TOTAL row: %s", summary)
+	}
+
+	return nil
+}

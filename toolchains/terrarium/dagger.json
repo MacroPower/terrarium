@@ -1,0 +1,14 @@
+{
+  "name": "terrarium",
+  "engineVersion": "v0.20.1",
+  "sdk": {
+    "source": "go"
+  },
+  "include": ["../../go.mod", "../../go.sum"],
+  "dependencies": [
+    {
+      "name": "go",
+      "source": "../go"
+    }
+  ]
+}

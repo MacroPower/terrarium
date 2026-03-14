@@ -9,6 +9,10 @@
     {
       "name": "security",
       "source": "toolchains/security"
+    },
+    {
+      "name": "terrarium-ci",
+      "source": "toolchains/terrarium"
     }
   ]
 }
