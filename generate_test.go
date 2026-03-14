@@ -96,22 +96,15 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 	const iterations = 10
 
 	envoyResults := make([]string, iterations)
-	ipv4Results := make([]string, iterations)
-	ipv6Results := make([]string, iterations)
 
 	for i := range iterations {
 		envoy, err := terrarium.GenerateEnvoyFromConfig(cfg, "", "")
 		require.NoError(t, err)
 
-		ipv4, ipv6 := terrarium.GenerateIptablesRules(cfg)
 		envoyResults[i] = envoy
-		ipv4Results[i] = ipv4
-		ipv6Results[i] = ipv6
 	}
 
 	for i := 1; i < iterations; i++ {
 		assert.Equal(t, envoyResults[0], envoyResults[i], "envoy config differs on iteration %d", i)
-		assert.Equal(t, ipv4Results[0], ipv4Results[i], "ipv4 rules differ on iteration %d", i)
-		assert.Equal(t, ipv6Results[0], ipv6Results[i], "ipv6 rules differ on iteration %d", i)
 	}
 }

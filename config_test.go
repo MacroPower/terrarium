@@ -1171,7 +1171,9 @@ func TestValidate(t *testing.T) {
 					ToPorts: []terrarium.PortRule{{
 						Ports: []terrarium.Port{{Port: "443"}},
 						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
-							{HeaderMatches: []terrarium.HeaderMatch{{Name: "X-Token", Mismatch: terrarium.MismatchLOG}}},
+							{HeaderMatches: []terrarium.HeaderMatch{
+								{Name: "X-Token", Mismatch: terrarium.MismatchLOG},
+							}},
 						}},
 					}},
 				}),
@@ -2391,7 +2393,9 @@ func TestResolveOpenPortRules(t *testing.T) {
 		},
 		"TCP open port with endPort": {
 			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+					{Port: "8000", EndPort: 9000, Protocol: "TCP"},
+				}}},
 			})},
 			want: []terrarium.ResolvedOpenPort{
 				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
@@ -2399,7 +2403,9 @@ func TestResolveOpenPortRules(t *testing.T) {
 		},
 		"UDP open port with endPort": {
 			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "5000", EndPort: 6000, Protocol: "UDP"}}}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+					{Port: "5000", EndPort: 6000, Protocol: "UDP"},
+				}}},
 			})},
 			want: []terrarium.ResolvedOpenPort{
 				{Port: 5000, EndPort: 6000, Protocol: "udp"},
@@ -2416,7 +2422,9 @@ func TestResolveOpenPortRules(t *testing.T) {
 		},
 		"endPort equal to port": {
 			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 8000, Protocol: "TCP"}}}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+					{Port: "8000", EndPort: 8000, Protocol: "TCP"},
+				}}},
 			})},
 			want: []terrarium.ResolvedOpenPort{
 				{Port: 8000, EndPort: 8000, Protocol: "tcp"},
@@ -2911,7 +2919,9 @@ func TestResolveCIDRRules(t *testing.T) {
 			cfg: &terrarium.Config{
 				Egress: egressRules(terrarium.EgressRule{
 					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []terrarium.PortRule{{Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}}}},
+					ToPorts: []terrarium.PortRule{{Rules: &terrarium.L7Rules{
+						HTTP: []terrarium.HTTPRule{{Path: "/v1/"}},
+					}}},
 				}),
 			},
 			wantIPv4: []terrarium.ResolvedCIDR{

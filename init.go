@@ -1,7 +1,6 @@
 package terrarium
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/google/nftables"
 )
 
 // envoyDrainTimeout is the maximum time to wait for Envoy to exit
@@ -34,10 +35,6 @@ var (
 	// ErrNoCommand is returned when Init is called without a command to exec.
 	ErrNoCommand = errors.New("no command specified")
 
-	// ErrIptablesNotLoaded is returned when iptables REDIRECT rules are
-	// not present after restore.
-	ErrIptablesNotLoaded = errors.New("iptables REDIRECT rules not loaded")
-
 	// ErrIPv6Unsecured is returned when IPv6 rules failed to load but IPv6
 	// is still enabled on the host.
 	ErrIPv6Unsecured = errors.New("IPv6 rules not loaded and IPv6 still enabled")
@@ -49,9 +46,8 @@ var (
 
 // ParseUpstreamDNS extracts the first nameserver from resolv.conf content.
 func ParseUpstreamDNS(resolvConf string) string {
-	scanner := bufio.NewScanner(strings.NewReader(resolvConf))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for line := range strings.SplitSeq(resolvConf, "\n") {
+		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "nameserver") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
@@ -84,11 +80,11 @@ func CreateEnvoyUser() error {
 }
 
 // Init performs the full terrarium initialization sequence: generates
-// configs if needed, loads iptables rules, starts the DNS proxy and
-// Envoy, then drops privileges and runs the given command as a supervised
-// child process. The context is threaded to all subprocesses, allowing
-// cancellation to propagate. Returns an [*ExitError] carrying the
-// child's exit code on normal termination.
+// configs if needed, applies nftables firewall rules, starts the DNS
+// proxy and Envoy, then drops privileges and runs the given command
+// as a supervised child process. The context is threaded to all
+// subprocesses, allowing cancellation to propagate. Returns an
+// [*ExitError] carrying the child's exit code on normal termination.
 func Init(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return ErrNoCommand
@@ -155,90 +151,57 @@ func Init(ctx context.Context, args []string) error {
 
 	needsEnvoy := len(cfg.ResolvePorts()) > 0 || len(cfg.TCPForwards) > 0
 
-	// Create per-rule ipsets before iptables-restore, since iptables
-	// rules reference ipset names in -m set --match-set directives.
-	var createdIPSets []string
-
-	for _, frp := range cfg.ResolveFQDNNonTCPPorts() {
-		for _, ipv6 := range []bool{false, true} {
-			name := FQDNIPSetName(frp.RuleIndex, ipv6)
-			family := "inet"
-
-			if ipv6 {
-				family = "inet6"
-			}
-
-			args := []string{"ipset", "create", name, "hash:ip", "family", family, "timeout", "0"}
-
-			//nolint:gosec // G204: args are constructed from validated config indices.
-			err := exec.CommandContext(ctx, args[0], args[1:]...).Run()
-			if err != nil {
-				return fmt.Errorf("creating ipset %s: %w", name, err)
-			}
-
-			createdIPSets = append(createdIPSets, name)
-		}
+	// Apply nftables firewall rules atomically via netlink.
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	// Destroy ipsets on error return so a restart does not fail on
-	// pre-existing sets (ISSUE-67).
-	var ipsetCleanedUp bool
+	slog.InfoContext(ctx, "applying nftables firewall rules")
+
+	err = ApplyFirewallRules(ctx, conn, cfg)
+	if err != nil {
+		return fmt.Errorf("applying firewall rules: %w", err)
+	}
+
+	// Clean up firewall on error return so a restart in the same
+	// network namespace starts with clean state.
+	var firewallCleanedUp bool
 
 	defer func() {
-		if ipsetCleanedUp {
+		if firewallCleanedUp {
 			return
 		}
 
-		for _, name := range createdIPSets {
-			//nolint:gosec // G204: name is from validated FQDNIPSetName output.
-			destroyErr := exec.CommandContext(ctx, "ipset", "destroy", name).Run()
-			if destroyErr != nil {
-				slog.DebugContext(ctx, "destroying ipset on init failure",
-					slog.String("name", name),
-					slog.Any("err", destroyErr),
-				)
-			}
+		cleanupErr := CleanupFirewall(ctx, conn)
+		if cleanupErr != nil {
+			slog.DebugContext(ctx, "cleaning up firewall on init failure", slog.Any("err", cleanupErr))
 		}
 	}()
 
-	// Load iptables redirect rules and validate.
-	err = runCmd(ctx, "iptables-restore", "/etc/iptables-terrarium.rules")
-	if err != nil {
-		return fmt.Errorf("loading iptables rules: %w", err)
-	}
-
-	if needsEnvoy {
-		out, err := exec.CommandContext(ctx, "iptables-save").CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("verifying iptables rules: %w", err)
-		}
-
-		if !strings.Contains(string(out), "REDIRECT") {
-			return ErrIptablesNotLoaded
-		}
-	}
-
-	// Load IPv6 rules; disable IPv6 if kernel lacks ip6tables support.
-	ipv6Disabled := false
-
-	err = runCmd(ctx, "ip6tables-restore", "/etc/ip6tables-terrarium.rules")
-	if err != nil {
-		slog.WarnContext(ctx, "ip6tables unavailable, disabling IPv6")
+	// Check IPv6 state. With nftables inet tables, IPv6 rules are
+	// applied regardless of IPv6 stack availability (they simply
+	// never match if IPv6 is disabled). Keep defense-in-depth:
+	// disable IPv6 via sysctl if it appears unsupported.
+	ipv6Disabled := verifyIPv6State(ctx)
+	if ipv6Disabled {
+		slog.WarnContext(ctx, "IPv6 not available, disabling")
 		disableIPv6(ctx)
-
-		ipv6Disabled = true
 	}
 
-	// Verify IPv6 state unconditionally -- even without Envoy, IPv6
-	// traffic could bypass iptables rules.
-	err = verifyIPv6State(ctx)
+	// Create a separate nftables connection for the DNS proxy to
+	// avoid batching conflicts with rule setup.
+	dnsConn, err := nftables.New()
 	if err != nil {
-		return err
+		return fmt.Errorf("creating DNS proxy nftables connection: %w", err)
 	}
 
-	// Start DNS proxy. Handles domain filtering internally (replacing
-	// dnsmasq + RefuseDNS).
-	dnsProxy, err := StartDNSProxy(ctx, cfg, net.JoinHostPort(upstream, "53"), "127.0.0.1:53", ipv6Disabled)
+	// Start DNS proxy with nftables set update function.
+	dnsProxy, err := StartDNSProxy(ctx, cfg, net.JoinHostPort(upstream, "53"), "127.0.0.1:53", ipv6Disabled,
+		WithFQDNSetFunc(func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error {
+			return UpdateFQDNSet(dnsConn, setName, ips, ttl)
+		}),
+	)
 	if err != nil {
 		return fmt.Errorf("starting DNS proxy: %w", err)
 	}
@@ -334,7 +297,7 @@ func Init(ctx context.Context, args []string) error {
 
 	// Init setup succeeded; disable error-path cleanup defers.
 	// From this point, cleanup is handled by the shutdown path below.
-	ipsetCleanedUp = true
+	firewallCleanedUp = true
 	dnsProxyCleanedUp = true
 
 	// Prepare privilege drop.
@@ -410,7 +373,7 @@ func Init(ctx context.Context, args []string) error {
 		waitErr = <-waitCh
 	}
 
-	Shutdown(ctx, envoyCmd, dnsProxy, createdIPSets)
+	Shutdown(ctx, envoyCmd, dnsProxy, conn)
 
 	// Reap any remaining zombie children (PID 1 responsibility).
 	for {
@@ -436,10 +399,10 @@ func Init(ctx context.Context, args []string) error {
 }
 
 // Shutdown performs the full cleanup sequence in the correct order:
-// Envoy first (with drain wait), then DNS proxy, then iptables/ipsets.
+// Envoy first (with drain wait), then DNS proxy, then nftables.
 // Stopping Envoy before DNS ensures in-flight requests can still
 // resolve during Envoy's drain period (ISSUE-52).
-func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *DNSProxy, ipsets []string) {
+func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *DNSProxy, conn nftablesConn) {
 	// Stop Envoy first so DNS remains available during drain (ISSUE-52).
 	if envoyCmd != nil && envoyCmd.Process != nil {
 		err := envoyCmd.Process.Signal(syscall.SIGTERM)
@@ -474,37 +437,12 @@ func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *DNSProxy, ipset
 		}
 	}
 
-	// Flush iptables rules and destroy ipsets so a restart in the same
-	// network namespace does not fail on pre-existing resources (ISSUE-53).
-	cleanupIPTables(ctx)
-
-	for _, name := range ipsets {
-		//nolint:gosec // G204: name is from validated FQDNIPSetName output.
-		destroyErr := exec.CommandContext(ctx, "ipset", "destroy", name).Run()
-		if destroyErr != nil {
-			slog.DebugContext(ctx, "destroying ipset on shutdown",
-				slog.String("name", name),
-				slog.Any("err", destroyErr),
-			)
-		}
-	}
-}
-
-// cleanupIPTables flushes terrarium iptables chains so that a
-// restart in the same network namespace starts with clean state.
-func cleanupIPTables(ctx context.Context) {
-	for _, cmd := range []string{"iptables", "ip6tables"} {
-		for _, table := range []string{"nat", "filter"} {
-			//nolint:gosec // G204: cmd and table are from hardcoded lists.
-			out, err := exec.CommandContext(ctx, cmd, "-t", table, "-F").CombinedOutput()
-			if err != nil {
-				slog.DebugContext(ctx, "flushing iptables on shutdown",
-					slog.String("cmd", cmd),
-					slog.String("table", table),
-					slog.String("output", string(out)),
-					slog.Any("err", err),
-				)
-			}
+	// Delete the nftables table so a restart in the same network
+	// namespace does not fail on pre-existing resources (ISSUE-53).
+	if conn != nil {
+		err := CleanupFirewall(ctx, conn)
+		if err != nil {
+			slog.DebugContext(ctx, "cleaning up firewall on shutdown", slog.Any("err", err))
 		}
 	}
 }
@@ -552,31 +490,19 @@ func disableIPv6(ctx context.Context) {
 	}
 }
 
-// verifyIPv6State checks that IPv6 REDIRECT rules are loaded, or that
-// IPv6 has been disabled system-wide. Returns [ErrIPv6Unsecured] when
-// neither condition is met.
-func verifyIPv6State(ctx context.Context) error {
-	ip6Out, err := exec.CommandContext(ctx, "ip6tables-save").CombinedOutput()
-	if err != nil {
-		slog.DebugContext(ctx, "checking ip6tables rules", slog.Any("err", err))
-	}
-
-	if strings.Contains(string(ip6Out), "REDIRECT") || strings.Contains(string(ip6Out), "DROP") {
-		return nil
-	}
-
+// verifyIPv6State checks whether IPv6 is available. Returns true when
+// IPv6 appears disabled (sysctl flag set to 1 or unreadable).
+func verifyIPv6State(ctx context.Context) bool {
 	disabled, err := os.ReadFile(
 		"/proc/sys/net/ipv6/conf/all/disable_ipv6",
 	)
 	if err != nil {
 		slog.DebugContext(ctx, "reading IPv6 disable flag", slog.Any("err", err))
+
+		return true
 	}
 
-	if strings.TrimSpace(string(disabled)) != "1" {
-		return ErrIPv6Unsecured
-	}
-
-	return nil
+	return strings.TrimSpace(string(disabled)) == "1"
 }
 
 // firstListenerPort returns the first Envoy listener port to wait on.
@@ -624,33 +550,6 @@ func waitForListener(ctx context.Context, addr string, timeout time.Duration) er
 
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-// runCmd runs a command with stdin from a file (for iptables-restore).
-func runCmd(ctx context.Context, name, inputFile string) error {
-	f, err := os.Open(inputFile)
-	if err != nil {
-		return fmt.Errorf("opening %s: %w", inputFile, err)
-	}
-
-	defer func() {
-		err := f.Close()
-		if err != nil {
-			slog.DebugContext(ctx, "closing input file", slog.String("path", inputFile), slog.Any("err", err))
-		}
-	}()
-
-	cmd := exec.CommandContext(ctx, name)
-	cmd.Stdin = f
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	err = cmd.Run()
-	if err != nil {
-		return fmt.Errorf("running %s: %w", name, err)
-	}
-
-	return nil
 }
 
 // installCAToBundle appends a CA certificate to the system CA bundle and

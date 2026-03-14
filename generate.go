@@ -3,11 +3,7 @@ package terrarium
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
-	"os/exec"
-	"slices"
-	"strings"
 )
 
 // CertsDir is the directory where MITM leaf certificates are stored.
@@ -18,8 +14,9 @@ const CADir = "/etc/terrarium/ca"
 
 // Generate reads terrarium YAML config at configPath, resolves domains
 // and ports, generates MITM certs for path-restricted rules, and writes
-// iptables and Envoy config files to /etc. The parsed [*Config] is
-// returned so callers can reuse it without re-parsing.
+// the Envoy config file to /etc. Firewall rules are applied directly
+// via nftables netlink in [Init], not written to files. The parsed
+// [*Config] is returned so callers can reuse it without re-parsing.
 func Generate(ctx context.Context, configPath string) (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -64,29 +61,9 @@ func Generate(ctx context.Context, configPath string) (*Config, error) {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
 	}
 
-	ipv4Rules, ipv6Rules := GenerateIptablesRules(cfg)
-
-	err = validateIptablesRules(ctx, "iptables-restore", ipv4Rules)
+	err = os.WriteFile("/etc/envoy-terrarium.yaml", []byte(envoyConf), 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("validating IPv4 rules: %w", err)
-	}
-
-	err = validateIptablesRules(ctx, "ip6tables-restore", ipv6Rules)
-	if err != nil {
-		return nil, fmt.Errorf("validating IPv6 rules: %w", err)
-	}
-
-	files := map[string]string{
-		"/etc/envoy-terrarium.yaml":      envoyConf,
-		"/etc/iptables-terrarium.rules":  ipv4Rules,
-		"/etc/ip6tables-terrarium.rules": ipv6Rules,
-	}
-
-	for _, path := range slices.Sorted(maps.Keys(files)) {
-		err := os.WriteFile(path, []byte(files[path]), 0o644)
-		if err != nil {
-			return nil, fmt.Errorf("writing %s: %w", path, err)
-		}
+		return nil, fmt.Errorf("writing envoy config: %w", err)
 	}
 
 	return cfg, nil
@@ -98,22 +75,6 @@ func Generate(ctx context.Context, configPath string) (*Config, error) {
 // unexported [ResolvedRule] values directly.
 func GenerateEnvoyFromConfig(cfg *Config, certsDir, caBundlePath string) (string, error) {
 	return GenerateEnvoyConfig(cfg, certsDir, caBundlePath)
-}
-
-// validateIptablesRules runs iptables-restore --test to validate rule
-// syntax without applying. If validation fails, the error includes the
-// invalid rules for debugging.
-func validateIptablesRules(ctx context.Context, restoreCmd, rules string) error {
-	//nolint:gosec // G204: restoreCmd is a hardcoded binary name from Generate.
-	cmd := exec.CommandContext(ctx, restoreCmd, "--test")
-	cmd.Stdin = strings.NewReader(rules)
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s --test: %w\noutput: %s\nrules:\n%s", restoreCmd, err, out, rules)
-	}
-
-	return nil
 }
 
 // findCABundle returns the path to the system CA certificate bundle.

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os/exec"
 	"slices"
 	"sort"
 	"strings"
@@ -198,7 +197,7 @@ func collectTCPForwardHosts(cfg *Config, result []DNSDomain, seen map[string]boo
 type DNSProxy struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
-	ipsetFunc     func(ctx context.Context, commands string) error
+	fqdnSetFunc   func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error
 	udp4          *dns.Server
 	udp6          *dns.Server
 	tcp4          *dns.Server
@@ -210,6 +209,7 @@ type DNSProxy struct {
 	clientTimeout time.Duration
 	mode          dnsMode
 	logging       bool
+	ipv6Disabled  bool
 }
 
 // DNSProxyOption configures optional behavior of a [DNSProxy].
@@ -217,7 +217,7 @@ type DNSProxy struct {
 // The following options are available:
 //
 //   - [WithClientTimeout]
-//   - [WithIPSetFunc]
+//   - [WithFQDNSetFunc]
 type DNSProxyOption func(*DNSProxy)
 
 // WithClientTimeout overrides the default 10-second upstream DNS
@@ -228,12 +228,14 @@ func WithClientTimeout(d time.Duration) DNSProxyOption {
 	}
 }
 
-// WithIPSetFunc replaces the default ipset restore command with fn.
-// Intended for testing ipset population without requiring root
-// privileges or the ipset binary. A [DNSProxyOption].
-func WithIPSetFunc(fn func(ctx context.Context, commands string) error) DNSProxyOption {
+// WithFQDNSetFunc replaces the default nftables set update with fn.
+// Intended for testing set population without requiring root
+// privileges or netlink access. A [DNSProxyOption].
+func WithFQDNSetFunc(
+	fn func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error,
+) DNSProxyOption {
 	return func(p *DNSProxy) {
-		p.ipsetFunc = fn
+		p.fqdnSetFunc = fn
 	}
 }
 
@@ -283,7 +285,7 @@ func StartDNSProxy(
 		}
 	}
 
-	// Compile FQDN patterns for ipset population (non-TCP ports only).
+	// Compile FQDN patterns for set population (non-TCP ports only).
 	if cfg != nil && cfg.HasFQDNNonTCPPorts() {
 		p.patterns = cfg.CompileFQDNPatterns()
 	}
@@ -291,6 +293,8 @@ func StartDNSProxy(
 	if cfg != nil {
 		p.logging = cfg.Logging
 	}
+
+	p.ipv6Disabled = ipv6Disabled
 
 	for _, opt := range opts {
 		opt(p)
@@ -438,13 +442,13 @@ func (p *DNSProxy) Shutdown() error {
 // handleUDPQuery handles UDP DNS queries with mode-aware filtering
 // and ipset population for matching responses.
 func (p *DNSProxy) handleUDPQuery(w dns.ResponseWriter, r *dns.Msg) {
-	p.handleQuery(w, r, "udp")
+	p.handleQuery(w, r, protoUDP)
 }
 
 // handleTCPQuery handles TCP DNS queries with mode-aware filtering
 // and ipset population for matching responses.
 func (p *DNSProxy) handleTCPQuery(w dns.ResponseWriter, r *dns.Msg) {
-	p.handleQuery(w, r, "tcp")
+	p.handleQuery(w, r, protoTCP)
 }
 
 // handleQuery is the unified query handler for both UDP and TCP.
@@ -532,12 +536,12 @@ func (p *DNSProxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 		return
 	}
 
-	// Populate ipsets for both UDP and TCP responses. TCP DNS
+	// Populate FQDN sets for both UDP and TCP responses. TCP DNS
 	// responses (e.g., from truncated UDP retries) contain IPs that
 	// must be added to the firewall allow list.
 	if resp.Rcode == dns.RcodeSuccess {
 		if indices := matchingFQDNRuleIndices(p.patterns, qname); len(indices) > 0 {
-			p.populateIPSets(qname, resp, indices)
+			p.populateFQDNSets(qname, resp, indices)
 		}
 	}
 
@@ -551,7 +555,7 @@ func (p *DNSProxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 	// Compress oversized UDP responses to avoid unnecessary TCP
 	// retries. Matches Cilium's shouldCompressResponse logic:
 	// inspect EDNS0 UDPSize() (or 512 bytes when absent).
-	if proto == "udp" {
+	if proto == protoUDP {
 		edns := r.IsEdns0()
 		respLen := resp.Len()
 
@@ -595,13 +599,12 @@ func matchingFQDNRuleIndices(patterns []FQDNPattern, qname string) []int {
 	return indices
 }
 
-// populateIPSets extracts A and AAAA records from the DNS response
-// and batch-adds them to the per-rule ipsets for each matching rule
-// index using ipset restore. The TTL is the minimum across all
-// records in the response (including CNAME chain), matching Cilium's
-// ExtractMsgDetails behavior. TTLs are clamped to a minimum of
-// [minIPSetTTL].
-func (p *DNSProxy) populateIPSets(qname string, resp *dns.Msg, ruleIndices []int) {
+// populateFQDNSets extracts A and AAAA records from the DNS response
+// and adds them to the per-rule nftables sets for each matching rule
+// index. The TTL is the minimum across all records in the response
+// (including CNAME chain), matching Cilium's ExtractMsgDetails
+// behavior. TTLs are clamped to a minimum of [minIPSetTTL].
+func (p *DNSProxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []int) {
 	// Compute minimum TTL across all answer records (A, AAAA,
 	// CNAME) to match Cilium's lowest-TTL-in-chain behavior.
 	minTTL := -1
@@ -617,7 +620,7 @@ func (p *DNSProxy) populateIPSets(qname string, resp *dns.Msg, ruleIndices []int
 		return
 	}
 
-	ttl := max(minTTL, minIPSetTTL)
+	ttl := time.Duration(max(minTTL, minIPSetTTL)) * time.Second
 
 	// Extract and log CNAME targets for observability.
 	for _, rr := range resp.Answer {
@@ -630,33 +633,45 @@ func (p *DNSProxy) populateIPSets(qname string, resp *dns.Msg, ruleIndices []int
 		}
 	}
 
-	var commands strings.Builder
+	// Collect A and AAAA records separately.
+	var v4IPs, v6IPs []net.IP
 
 	for _, rr := range resp.Answer {
 		switch a := rr.(type) {
 		case *dns.A:
-			for _, idx := range ruleIndices {
-				fmt.Fprintf(&commands, "add %s %s timeout %d\n", FQDNIPSetName(idx, false), a.A.String(), ttl)
-			}
-
+			v4IPs = append(v4IPs, a.A)
 		case *dns.AAAA:
-			for _, idx := range ruleIndices {
-				fmt.Fprintf(&commands, "add %s %s timeout %d\n", FQDNIPSetName(idx, true), a.AAAA.String(), ttl)
-			}
+			v6IPs = append(v6IPs, a.AAAA)
 		}
 	}
 
-	if commands.Len() == 0 {
+	if len(v4IPs) == 0 && len(v6IPs) == 0 {
 		return
 	}
 
-	cmds := commands.String()
+	// Update each matching rule's sets.
+	for _, idx := range ruleIndices {
+		if len(v4IPs) > 0 {
+			setName := FQDNSetName(idx, false)
+			p.updateFQDNSet(qname, setName, v4IPs, ttl)
+		}
 
-	if p.ipsetFunc != nil {
-		err := p.ipsetFunc(p.ctx, cmds)
+		if len(v6IPs) > 0 && !p.ipv6Disabled {
+			setName := FQDNSetName(idx, true)
+			p.updateFQDNSet(qname, setName, v6IPs, ttl)
+		}
+	}
+}
+
+// updateFQDNSet adds IPs to a single nftables set, using the
+// injected fqdnSetFunc or the default UpdateFQDNSet implementation.
+func (p *DNSProxy) updateFQDNSet(qname, setName string, ips []net.IP, ttl time.Duration) {
+	if p.fqdnSetFunc != nil {
+		err := p.fqdnSetFunc(p.ctx, setName, ips, ttl)
 		if err != nil {
-			slog.Debug("ipset update",
+			slog.Debug("fqdn set update",
 				slog.String("qname", qname),
+				slog.String("set", setName),
 				slog.Any("err", err),
 			)
 		}
@@ -664,18 +679,7 @@ func (p *DNSProxy) populateIPSets(qname string, resp *dns.Msg, ruleIndices []int
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-
-	//nolint:gosec // G204: command is a constant.
-	cmd := exec.CommandContext(ctx, "ipset", "restore", "-exist")
-	cmd.Stdin = strings.NewReader(cmds)
-
-	err := cmd.Run()
-	if err != nil {
-		slog.Debug("ipset restore",
-			slog.String("qname", qname),
-			slog.Any("err", err),
-		)
-	}
+	slog.Warn("fqdn set update called without fqdnSetFunc configured",
+		slog.String("set", setName),
+	)
 }

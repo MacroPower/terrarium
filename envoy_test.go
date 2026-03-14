@@ -90,7 +90,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			cfg: &terrarium.Config{
 				Egress: egressRules(terrarium.EgressRule{
 					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}, {MatchName: "golang.org"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}, {Port: "443"}, {Port: "8080"}}}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+						{Port: "80"}, {Port: "443"}, {Port: "8080"},
+					}}},
 				}),
 				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
 			},
@@ -316,7 +318,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			cfg: &terrarium.Config{Egress: egressRules(
 				terrarium.EgressRule{
 					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "always.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}, {Port: "8080"}}}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+						{Port: "443"}, {Port: "80"}, {Port: "8080"},
+					}}},
 				},
 				terrarium.EgressRule{
 					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "only8080.com"}},
@@ -364,7 +368,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/", Method: "GET"}}},
 					}},
 				},
-				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}}},
+				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+					{Port: "443"}, {Port: "80"},
+				}}}},
 			)},
 			certsDir: "/etc/terrarium/certs",
 			want: []string{

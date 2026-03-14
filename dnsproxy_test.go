@@ -733,11 +733,11 @@ func TestDNSProxyTCPPopulatesIPSet(t *testing.T) {
 	}
 
 	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		terrarium.WithIPSetFunc(func(_ context.Context, commands string) error {
+		terrarium.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
 
-			recorded = append(recorded, commands)
+			recorded = append(recorded, fmt.Sprintf("%s %v %v", setName, ips, ttl))
 
 			return nil
 		}),
@@ -746,7 +746,7 @@ func TestDNSProxyTCPPopulatesIPSet(t *testing.T) {
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
-	// TCP query should populate ipset.
+	// TCP query should populate FQDN set.
 	client := &dns.Client{Net: "tcp"}
 	msg := new(dns.Msg)
 	msg.SetQuestion("tcp-ipset.example.com.", dns.TypeA)
@@ -761,7 +761,8 @@ func TestDNSProxyTCPPopulatesIPSet(t *testing.T) {
 	defer mu.Unlock()
 
 	require.Len(t, recorded, 1)
-	assert.Contains(t, recorded[0], "add sandbox_fqdn4_0 10.20.30.40 timeout ")
+	assert.Contains(t, recorded[0], "sandbox_fqdn4_0")
+	assert.Contains(t, recorded[0], "10.20.30.40")
 }
 
 func TestDNSProxyTruncatedUDPThenTCPRetry(t *testing.T) {
@@ -863,11 +864,11 @@ func TestDNSProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 	}
 
 	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
-		terrarium.WithIPSetFunc(func(_ context.Context, commands string) error {
+		terrarium.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
 
-			recorded = append(recorded, commands)
+			recorded = append(recorded, fmt.Sprintf("%s %v %v", setName, ips, ttl))
 
 			return nil
 		}),
@@ -887,7 +888,7 @@ func TestDNSProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 	assert.True(t, resp.Truncated)
 
 	mu.Lock()
-	assert.Empty(t, recorded, "truncated UDP response should not populate ipset")
+	assert.Empty(t, recorded, "truncated UDP response should not populate set")
 	mu.Unlock()
 
 	// Step 2: TCP retry gets full response with A records.
@@ -902,9 +903,10 @@ func TestDNSProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	require.Len(t, recorded, 1, "TCP retry should populate ipset")
-	assert.Contains(t, recorded[0], "add sandbox_fqdn4_0 1.1.1.1 timeout ")
-	assert.Contains(t, recorded[0], "add sandbox_fqdn4_0 2.2.2.2 timeout ")
+	require.Len(t, recorded, 1, "TCP retry should populate set")
+	assert.Contains(t, recorded[0], "sandbox_fqdn4_0")
+	assert.Contains(t, recorded[0], "1.1.1.1")
+	assert.Contains(t, recorded[0], "2.2.2.2")
 }
 
 // startOversizedMockDNS starts a mock DNS server that returns many A
@@ -1171,14 +1173,11 @@ func startCNAMEMockDNS(t *testing.T, cnameTTL, aTTL uint32) string {
 func TestDNSProxyCNAMEMinTTL(t *testing.T) {
 	t.Parallel()
 
-	// CNAME TTL=30, A TTL=300 -- ipset should use TTL=60
+	// CNAME TTL=30, A TTL=300 -- set should use TTL=60
 	// (30 is below minIPSetTTL=60).
 	upstream := startCNAMEMockDNS(t, 30, 300)
 
-	var (
-		mu       sync.Mutex
-		recorded []string
-	)
+	var mu sync.Mutex
 
 	cfg := &terrarium.Config{
 		Egress: egressRules(terrarium.EgressRule{
@@ -1187,12 +1186,19 @@ func TestDNSProxyCNAMEMinTTL(t *testing.T) {
 		}),
 	}
 
+	type setCall struct {
+		ips []net.IP
+		ttl time.Duration
+	}
+
+	var calls []setCall
+
 	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		terrarium.WithIPSetFunc(func(_ context.Context, commands string) error {
+		terrarium.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
 
-			recorded = append(recorded, commands)
+			calls = append(calls, setCall{ips: ips, ttl: ttl})
 
 			return nil
 		}),
@@ -1213,24 +1219,21 @@ func TestDNSProxyCNAMEMinTTL(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	require.Len(t, recorded, 1)
+	require.Len(t, calls, 1)
 
 	// The minimum TTL across CNAME(30) and A(300) is 30, clamped
 	// to minIPSetTTL=60.
-	assert.Contains(t, recorded[0], "timeout 60")
-	assert.Contains(t, recorded[0], "10.99.0.1")
+	assert.Equal(t, 60*time.Second, calls[0].ttl)
+	assert.Contains(t, fmt.Sprint(calls[0].ips), "10.99.0.1")
 }
 
 func TestDNSProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 	t.Parallel()
 
-	// CNAME TTL=300, A TTL=120 -- ipset should use TTL=120.
+	// CNAME TTL=300, A TTL=120 -- set should use TTL=120.
 	upstream := startCNAMEMockDNS(t, 300, 120)
 
-	var (
-		mu       sync.Mutex
-		recorded []string
-	)
+	var mu sync.Mutex
 
 	cfg := &terrarium.Config{
 		Egress: egressRules(terrarium.EgressRule{
@@ -1239,12 +1242,19 @@ func TestDNSProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 		}),
 	}
 
+	type setCall struct {
+		ips []net.IP
+		ttl time.Duration
+	}
+
+	var calls []setCall
+
 	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		terrarium.WithIPSetFunc(func(_ context.Context, commands string) error {
+		terrarium.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
 
-			recorded = append(recorded, commands)
+			calls = append(calls, setCall{ips: ips, ttl: ttl})
 
 			return nil
 		}),
@@ -1265,11 +1275,11 @@ func TestDNSProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	require.Len(t, recorded, 1)
+	require.Len(t, calls, 1)
 
 	// Minimum TTL is A(120), above minIPSetTTL so used directly.
-	assert.Contains(t, recorded[0], "timeout 120")
-	assert.Contains(t, recorded[0], "10.99.0.1")
+	assert.Equal(t, 120*time.Second, calls[0].ttl)
+	assert.Contains(t, fmt.Sprint(calls[0].ips), "10.99.0.1")
 }
 
 func TestDNSProxyUpstreamTimeoutSilentDrop(t *testing.T) {

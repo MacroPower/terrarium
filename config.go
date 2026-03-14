@@ -409,10 +409,10 @@ const (
 	maxRegexLen = 1000
 )
 
-// FQDNIPSetName returns the ipset name for a FQDN rule index and
-// address family. Names follow sandbox_fqdn{4,6}_R where R is the
-// 0-indexed position among FQDN-bearing rules with non-TCP ports.
-func FQDNIPSetName(ruleIdx int, ipv6 bool) string {
+// FQDNSetName returns the nftables set name for a FQDN rule index
+// and address family. Names follow sandbox_fqdn{4,6}_R where R is
+// the 0-indexed position among FQDN-bearing rules with non-TCP ports.
+func FQDNSetName(ruleIdx int, ipv6 bool) string {
 	if ipv6 {
 		return fmt.Sprintf("sandbox_fqdn6_%d", ruleIdx)
 	}
@@ -2428,8 +2428,8 @@ func resolvePortsFromRule(rule EgressRule) []ResolvedPortProto {
 			n := int(resolved)
 			proto := normalizeProtocol(p.Protocol)
 			// Expand ANY protocol into separate tcp and udp entries
-			// so formatPortProto always has a concrete protocol
-			// for port-scoped rules. SCTP requires explicit opt-in.
+			// so port matching always has a concrete protocol.
+			// SCTP requires explicit opt-in.
 			protos := []string{proto}
 			if proto == protoAny {
 				protos = []string{protoTCP, protoUDP}
