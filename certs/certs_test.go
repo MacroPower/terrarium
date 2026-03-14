@@ -1,4 +1,4 @@
-package terrarium_test
+package certs_test
 
 import (
 	"crypto/x509"
@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.jacobcolvin.com/terrarium"
+	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 )
 
@@ -18,7 +18,7 @@ func TestGenerateCA(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	certPath, keyPath, err := terrarium.GenerateCA(dir)
+	certPath, keyPath, err := certs.GenerateCA(dir)
 	require.NoError(t, err)
 
 	assert.Equal(t, filepath.Join(dir, "ca.pem"), certPath)
@@ -50,7 +50,7 @@ func TestGenerateLeafCert(t *testing.T) {
 	t.Parallel()
 
 	caDir := t.TempDir()
-	_, _, err := terrarium.GenerateCA(caDir)
+	_, _, err := certs.GenerateCA(caDir)
 	require.NoError(t, err)
 
 	certsDir := t.TempDir()
@@ -74,7 +74,7 @@ func TestGenerateLeafCert(t *testing.T) {
 			t.Parallel()
 
 			localCertsDir := t.TempDir()
-			err := terrarium.GenerateLeafCert(caDir, localCertsDir, tt.domain)
+			err := certs.GenerateLeaf(caDir, localCertsDir, tt.domain)
 			require.NoError(t, err)
 
 			certPEM, err := os.ReadFile(filepath.Join(localCertsDir, tt.domain, "cert.pem"))
@@ -130,7 +130,7 @@ func TestGenerateCerts(t *testing.T) {
 		{Domain: "internal.example.com", HTTPRules: []config.ResolvedHTTPRule{{Path: "/api/"}, {Path: "/health"}}},
 	}
 
-	err := terrarium.GenerateCerts(rules, caDir, certsDir)
+	err := certs.Generate(rules, caDir, certsDir)
 	require.NoError(t, err)
 
 	// CA should exist.

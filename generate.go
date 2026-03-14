@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 )
 
@@ -49,7 +50,7 @@ func Generate(ctx context.Context, configPath string) (*config.Config, error) {
 
 	certsDir := ""
 	if len(mitmRules) > 0 {
-		err := GenerateCerts(mitmRules, CADir, CertsDir)
+		err := certs.Generate(mitmRules, CADir, CertsDir)
 		if err != nil {
 			return nil, fmt.Errorf("generating certs: %w", err)
 		}

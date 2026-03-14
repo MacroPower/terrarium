@@ -1,4 +1,4 @@
-package terrarium
+package certs
 
 import (
 	"crypto/ecdsa"
@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.jacobcolvin.com/terrarium/config"
@@ -77,9 +78,9 @@ func GenerateCA(dir string) (string, string, error) {
 	return certPath, keyPath, nil
 }
 
-// GenerateLeafCert creates a leaf certificate for domain signed by the CA
+// GenerateLeaf creates a leaf certificate for domain signed by the CA
 // in caDir, writing cert.pem and key.pem to certsDir/<domain>/.
-func GenerateLeafCert(caDir, certsDir, domain string) error {
+func GenerateLeaf(caDir, certsDir, domain string) error {
 	caCertPEM, err := os.ReadFile(filepath.Join(caDir, "ca.pem"))
 	if err != nil {
 		return fmt.Errorf("reading CA cert: %w", err)
@@ -156,10 +157,10 @@ func GenerateLeafCert(caDir, certsDir, domain string) error {
 	return nil
 }
 
-// GenerateCerts generates a CA and leaf certificates for all restricted
+// Generate generates a CA and leaf certificates for all restricted
 // rules (those with path or method constraints). Unrestricted domains
 // are skipped.
-func GenerateCerts(rules []config.ResolvedRule, caDir, certsDir string) error {
+func Generate(rules []config.ResolvedRule, caDir, certsDir string) error {
 	_, _, err := GenerateCA(caDir)
 	if err != nil {
 		return fmt.Errorf("generating CA: %w", err)
@@ -175,13 +176,24 @@ func GenerateCerts(rules []config.ResolvedRule, caDir, certsDir string) error {
 		// wildcard SAN form (RFC 6125); there is no "**." SAN.
 		domain := wildcardServerName(r.Domain)
 
-		err := GenerateLeafCert(caDir, certsDir, domain)
+		err := GenerateLeaf(caDir, certsDir, domain)
 		if err != nil {
 			return fmt.Errorf("generating cert for %s: %w", r.Domain, err)
 		}
 	}
 
 	return nil
+}
+
+// wildcardServerName converts a "**." domain prefix to the TLS-standard
+// "*." form. TLS certificates use "*.example.com" (RFC 6125); there is
+// no "**." SAN.
+func wildcardServerName(domain string) string {
+	if strings.HasPrefix(domain, "**.") {
+		return "*." + domain[3:]
+	}
+
+	return domain
 }
 
 // writePEM writes a PEM-encoded block to path with mode 0o644.
