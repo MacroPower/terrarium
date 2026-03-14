@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.jacobcolvin.com/dotfiles/toolchains/dev/sandbox"
+	"go.jacobcolvin.com/terrarium"
 )
 
 // egressRules is a test helper that returns a pointer to a slice of sandbox.EgressRule.

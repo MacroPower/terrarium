@@ -1,4 +1,4 @@
-module go.jacobcolvin.com/dotfiles/toolchains/dev/sandbox
+module go.jacobcolvin.com/terrarium
 
 go 1.26.0
 

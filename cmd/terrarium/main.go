@@ -14,7 +14,7 @@ import (
 	"go.jacobcolvin.com/niceyaml/fangs"
 	"go.jacobcolvin.com/x/log"
 
-	"go.jacobcolvin.com/dotfiles/toolchains/dev/sandbox"
+	"go.jacobcolvin.com/terrarium"
 )
 
 func main() {

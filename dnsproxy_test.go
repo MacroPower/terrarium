@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.jacobcolvin.com/dotfiles/toolchains/dev/sandbox"
+	"go.jacobcolvin.com/terrarium"
 )
 
 func TestDNSDomainMatches(t *testing.T) {

@@ -22,7 +22,7 @@ const (
 	// defaultCacheNamespace is the default prefix for cache volume names.
 	// Override via the cacheNamespace constructor parameter when consuming
 	// this module from another project.
-	defaultCacheNamespace = "go.jacobcolvin.com/dotfiles/toolchains/dev/sandbox/toolchains/go"
+	defaultCacheNamespace = "go.jacobcolvin.com/terrarium/toolchains/go"
 )
 
 // Go provides reusable Go CI functions for testing, linting, and
