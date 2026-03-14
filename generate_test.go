@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium"
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 func TestGenerate(t *testing.T) {
@@ -50,7 +51,7 @@ func TestGenerate(t *testing.T) {
 
 				return path
 			},
-			err:     terrarium.ErrFQDNSelectorEmpty,
+			err:     config.ErrFQDNSelectorEmpty,
 			wantMsg: "parsing config",
 		},
 	}
@@ -90,7 +91,7 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 		"    toFQDNs:\n" +
 		"      - matchPattern: \"*.example.org\"\n")
 
-	cfg, err := terrarium.ParseConfig(t.Context(), yamlCfg)
+	cfg, err := config.ParseConfig(t.Context(), yamlCfg)
 	require.NoError(t, err)
 
 	const iterations = 10

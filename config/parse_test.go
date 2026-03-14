@@ -1,0 +1,342 @@
+package config_test
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.jacobcolvin.com/terrarium/config"
+)
+
+func TestParseConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml           string
+		wantRules      int
+		wantDomains    []string
+		notWantDomains []string
+		err            error
+	}{
+		"FQDN and CIDR rules": {
+			yaml: `
+egress:
+  - toCIDRSet:
+      - cidr: 0.0.0.0/0
+        except:
+          - 10.0.0.0/8
+  - toFQDNs:
+      - matchName: "github.com"
+      - matchPattern: "*.github.com"
+    toPorts:
+      - ports:
+          - port: "443"
+          - port: "80"
+  - toFQDNs:
+      - matchName: api.company.com
+      - matchPattern: "*.internal.company.com"
+    toPorts:
+      - ports:
+          - port: "443"
+          - port: "80"
+`,
+			wantRules:   3,
+			wantDomains: []string{"github.com", "*.github.com", "api.company.com", "*.internal.company.com"},
+		},
+		"single FQDN rule": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - matchName: custom.example.com
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			wantRules:   1,
+			wantDomains: []string{"custom.example.com"},
+		},
+		"FQDN with L7 path restrictions": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - matchName: api.example.com
+    toPorts:
+      - ports:
+          - port: "443"
+        rules:
+          http:
+            - path: /v1/completions
+            - path: /v1/models
+  - toFQDNs:
+      - matchName: cdn.example.com
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			wantRules:   2,
+			wantDomains: []string{"api.example.com", "cdn.example.com"},
+		},
+		"FQDN with L7 method restrictions": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - matchName: api.example.com
+    toPorts:
+      - ports:
+          - port: "443"
+        rules:
+          http:
+            - method: GET
+            - method: POST
+  - toFQDNs:
+      - matchName: cdn.example.com
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			wantRules:   2,
+			wantDomains: []string{"api.example.com", "cdn.example.com"},
+		},
+		"FQDN without toPorts rejected": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - matchName: example.com
+`,
+			err: config.ErrFQDNRequiresPorts,
+		},
+		"FQDN with wildcard port 0 rejected": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - matchName: example.com
+    toPorts:
+      - ports:
+          - port: "0"
+`,
+			err: config.ErrFQDNWildcardPort,
+		},
+		"FQDN selector empty": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - {}
+`,
+			err: config.ErrFQDNSelectorEmpty,
+		},
+		"empty egress rule is valid (deny-all)": {
+			yaml: `
+egress:
+  - {}
+`,
+			wantRules: 1,
+		},
+		"absent egress means unrestricted": {
+			yaml:      `logging: false`,
+			wantRules: 0,
+		},
+		"empty egress list parses as unrestricted": {
+			yaml:      `egress: []`,
+			wantRules: 0,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+				return
+			}
+
+			require.NoError(t, err)
+
+			if tt.wantRules > 0 {
+				assert.Len(t, cfg.EgressRules(), tt.wantRules)
+			}
+
+			domains := cfg.ResolveDomains()
+
+			for _, d := range tt.wantDomains {
+				assert.Contains(t, domains, d)
+			}
+
+			for _, d := range tt.notWantDomains {
+				assert.NotContains(t, domains, d)
+			}
+		})
+	}
+}
+
+func TestParseConfigEgressSemantics(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml             string
+		wantUnrestricted bool
+		wantBlocked      bool
+	}{
+		"absent egress": {
+			yaml:             `logging: false`,
+			wantUnrestricted: true,
+		},
+		"null egress": {
+			yaml:             `egress: null`,
+			wantUnrestricted: true,
+		},
+		"empty egress list is unrestricted": {
+			yaml:             `egress: []`,
+			wantUnrestricted: true,
+		},
+		"empty rule is deny-all": {
+			yaml: `
+egress:
+  - {}
+`,
+			wantBlocked: true,
+		},
+		"rules with selectors": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - matchName: example.com
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantUnrestricted, cfg.IsEgressUnrestricted())
+			assert.Equal(t, tt.wantBlocked, cfg.IsEgressBlocked())
+		})
+	}
+}
+
+func TestParseTCPForwards(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		want []config.TCPForward
+	}{
+		"single forward": {
+			yaml: `
+tcpForwards:
+  - port: 22
+    host: github.com
+`,
+			want: []config.TCPForward{{Port: 22, Host: "github.com"}},
+		},
+		"multiple forwards": {
+			yaml: `
+tcpForwards:
+  - port: 22
+    host: github.com
+  - port: 3306
+    host: db.internal.com
+`,
+			want: []config.TCPForward{
+				{Port: 22, Host: "github.com"},
+				{Port: 3306, Host: "db.internal.com"},
+			},
+		},
+		"no forwards": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - matchName: example.com
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.TCPForwards)
+		})
+	}
+}
+
+func TestDefaultConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultConfig()
+
+	rules := cfg.EgressRules()
+	// Single egress rule with FQDNs only (no CIDRs).
+	require.Len(t, rules, 1)
+	assert.Empty(t, rules[0].ToCIDRSet)
+	assert.NotEmpty(t, rules[0].ToFQDNs)
+
+	// Check some expected domains.
+	domains := cfg.ResolveDomains()
+
+	for _, want := range []string{"github.com", "golang.org", "anthropic.com"} {
+		assert.Contains(t, domains, want)
+	}
+
+	assert.Nil(t, cfg.TCPForwards)
+}
+
+func TestMarshalConfigRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg              *config.Config
+		wantUnrestricted bool
+		wantBlocked      bool
+	}{
+		"nil egress roundtrips as unrestricted": {
+			cfg:              &config.Config{},
+			wantUnrestricted: true,
+		},
+		"empty egress roundtrips as unrestricted": {
+			cfg:              &config.Config{Egress: egressRules()},
+			wantUnrestricted: true,
+		},
+		"empty rule roundtrips as blocked": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{}),
+			},
+			wantBlocked: true,
+		},
+		"rules roundtrip": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := config.MarshalConfig(tt.cfg)
+			require.NoError(t, err)
+
+			cfg2, err := config.ParseConfig(t.Context(), data)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantUnrestricted, cfg2.IsEgressUnrestricted())
+			assert.Equal(t, tt.wantBlocked, cfg2.IsEgressBlocked())
+		})
+	}
+}

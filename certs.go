@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 // GenerateCA creates an ECDSA P-256 CA certificate and key, writing them
@@ -157,7 +159,7 @@ func GenerateLeafCert(caDir, certsDir, domain string) error {
 // GenerateCerts generates a CA and leaf certificates for all restricted
 // rules (those with path or method constraints). Unrestricted domains
 // are skipped.
-func GenerateCerts(rules []ResolvedRule, caDir, certsDir string) error {
+func GenerateCerts(rules []config.ResolvedRule, caDir, certsDir string) error {
 	_, _, err := GenerateCA(caDir)
 	if err != nil {
 		return fmt.Errorf("generating CA: %w", err)

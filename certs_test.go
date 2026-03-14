@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium"
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 func TestGenerateCA(t *testing.T) {
@@ -123,10 +124,10 @@ func TestGenerateCerts(t *testing.T) {
 	caDir := t.TempDir()
 	certsDir := t.TempDir()
 
-	rules := []terrarium.ResolvedRule{
-		{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}}},
+	rules := []config.ResolvedRule{
+		{Domain: "api.example.com", HTTPRules: []config.ResolvedHTTPRule{{Path: "/v1/"}}},
 		{Domain: "cdn.example.com"},
-		{Domain: "internal.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/api/"}, {Path: "/health"}}},
+		{Domain: "internal.example.com", HTTPRules: []config.ResolvedHTTPRule{{Path: "/api/"}, {Path: "/health"}}},
 	}
 
 	err := terrarium.GenerateCerts(rules, caDir, certsDir)

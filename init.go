@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/google/nftables"
+
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 // envoyDrainTimeout is the maximum time to wait for Envoy to exit
@@ -105,7 +107,7 @@ func Init(ctx context.Context, args []string) error {
 
 	// Generate configs at runtime if not pre-baked. The parsed config
 	// is returned so we can reuse it below without re-parsing (ISSUE-71).
-	var cfg *Config
+	var cfg *config.Config
 
 	_, err = os.Stat("/etc/envoy-terrarium.yaml")
 	if os.IsNotExist(err) {
@@ -143,7 +145,7 @@ func Init(ctx context.Context, args []string) error {
 			return fmt.Errorf("reading terrarium config: %w", err)
 		}
 
-		cfg, err = ParseConfig(ctx, cfgData)
+		cfg, err = config.ParseConfig(ctx, cfgData)
 		if err != nil {
 			return fmt.Errorf("parsing terrarium config: %w", err)
 		}
@@ -508,18 +510,18 @@ func verifyIPv6State(ctx context.Context) bool {
 // firstListenerPort returns the first Envoy listener port to wait on.
 // Prefers 15443 when FQDN rules produce a port 443 listener, then
 // checks TCPForwards, then falls back to the first resolved port.
-func firstListenerPort(cfg *Config) int {
+func firstListenerPort(cfg *config.Config) int {
 	ports := cfg.ResolvePorts()
 	if slices.Contains(ports, 443) {
 		return 15443
 	}
 
 	if len(cfg.TCPForwards) > 0 {
-		return proxyPortBase + cfg.TCPForwards[0].Port
+		return config.ProxyPortBase + cfg.TCPForwards[0].Port
 	}
 
 	if len(ports) > 0 {
-		return proxyPortBase + ports[0]
+		return config.ProxyPortBase + ports[0]
 	}
 
 	return 15443

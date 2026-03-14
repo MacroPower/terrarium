@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium"
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 // ruleRecorder implements [terrarium.nftablesConn] for tests. It
@@ -167,7 +168,7 @@ func TestApplyFirewallRules_Unrestricted(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{} // nil Egress = unrestricted
+	cfg := &config.Config{} // nil Egress = unrestricted
 
 	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
@@ -204,7 +205,7 @@ func TestApplyFirewallRules_UnrestrictedWithLogging(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{Logging: true}
+	cfg := &config.Config{Logging: true}
 
 	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
@@ -222,8 +223,8 @@ func TestApplyFirewallRules_UnrestrictedWithTCPForwards(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
-		TCPForwards: []terrarium.TCPForward{{Host: "example.com", Port: 3000}},
+	cfg := &config.Config{
+		TCPForwards: []config.TCPForward{{Host: "example.com", Port: 3000}},
 	}
 
 	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
@@ -240,8 +241,8 @@ func TestApplyFirewallRules_Blocked(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
-		Egress: egressRules(terrarium.EgressRule{}),
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{}),
 	}
 
 	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
@@ -265,8 +266,8 @@ func TestApplyFirewallRules_BlockedWithLogging(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
-		Egress:  egressRules(terrarium.EgressRule{}),
+	cfg := &config.Config{
+		Egress:  egressRules(config.EgressRule{}),
 		Logging: true,
 	}
 
@@ -285,17 +286,17 @@ func TestApplyFirewallRules_RulesMode(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{
+			config.EgressRule{ToCIDRSet: []config.CIDRRule{
 				{CIDR: "0.0.0.0/0", Except: []string{
 					"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
 				}},
 				{CIDR: "::/0", Except: []string{"fc00::/7", "fe80::/10"}},
 			}},
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "80"}, {Port: "443"}, {Port: "8080"},
 				}}},
 			},
@@ -431,12 +432,12 @@ func TestApplyFirewallRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			},
 		),
 	}
@@ -469,11 +470,11 @@ func TestApplyFirewallRules_FQDNSets(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443", Protocol: "UDP"},
 				}}},
 			},
@@ -518,11 +519,11 @@ func TestApplyFirewallRules_FQDNZombieCTOrdering(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443", Protocol: "UDP"},
 				}}},
 			},
@@ -558,17 +559,17 @@ func TestApplyFirewallRules_UnrestrictedOpenPorts(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
 			// Port-only rule (no L3 selector) = unrestricted open port.
-			terrarium.EgressRule{
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443"},
 				}}},
 			},
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443"},
 				}}},
 			},
@@ -601,18 +602,18 @@ func TestApplyFirewallRules_OpenTCPSinglePortNATOptimization(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
 			// Open TCP port (no L3 selector).
-			terrarium.EgressRule{
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443", Protocol: "TCP"},
 				}}},
 			},
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443"},
 				}}},
 			},
@@ -647,14 +648,14 @@ func TestApplyFirewallRules_TCPForwards(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			},
 		),
-		TCPForwards: []terrarium.TCPForward{
+		TCPForwards: []config.TCPForward{
 			{Host: "db.example.com", Port: 5432},
 		},
 	}
@@ -688,7 +689,7 @@ func TestApplyFirewallRules_InputChain(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{}
+	cfg := &config.Config{}
 
 	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
@@ -711,17 +712,17 @@ func TestApplyFirewallRules_PerRuleFQDNSetIsolation(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "a.example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "a.example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "5000", Protocol: "UDP"},
 				}}},
 			},
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "b.example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "b.example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "6000", Protocol: "UDP"},
 				}}},
 			},
@@ -743,24 +744,24 @@ func TestApplyFirewallRules_OpenPortFilterRules(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
 			// UDP open port.
-			terrarium.EgressRule{
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "5000", Protocol: "UDP"},
 				}}},
 			},
 			// TCP port range.
-			terrarium.EgressRule{
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "8000", EndPort: 9000, Protocol: "TCP"},
 				}}},
 			},
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443", Protocol: "TCP"},
 				}}},
 			},
@@ -791,15 +792,15 @@ func TestApplyFirewallRules_MultipleRuleCIDRChains(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
-			terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			config.EgressRule{ToCIDRSet: []config.CIDRRule{
 				{CIDR: "172.16.0.0/12", Except: []string{"172.16.1.0/24"}},
 			}},
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			},
 		),
 	}
@@ -831,18 +832,18 @@ func TestApplyFirewallRules_CIDRWithPorts(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &terrarium.Config{
+	cfg := &config.Config{
 		Egress: egressRules(
-			terrarium.EgressRule{
+			config.EgressRule{
 				ToCIDR: []string{"10.0.0.0/8"},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+				ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443", Protocol: "TCP"},
 					{Port: "80", Protocol: "TCP"},
 				}}},
 			},
-			terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			},
 		),
 	}

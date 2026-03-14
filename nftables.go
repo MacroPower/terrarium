@@ -12,6 +12,8 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"golang.org/x/sys/unix"
+
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 const tableName = "terrarium"
@@ -39,7 +41,7 @@ type nftablesConn interface {
 // the full nftables ruleset (table, chains, sets, rules), and applies
 // atomically via Flush. A single inet-family table replaces all four
 // iptables tables (nat/filter x IPv4/IPv6).
-func ApplyFirewallRules(ctx context.Context, conn nftablesConn, cfg *Config) error {
+func ApplyFirewallRules(ctx context.Context, conn nftablesConn, cfg *config.Config) error {
 	// Clean slate: delete pre-existing table from a previous run
 	// so restarts in the same network namespace do not fail on
 	// duplicate resources (ISSUE-53, ISSUE-67).
@@ -266,7 +268,7 @@ func addOutputEstablishedAndICMP(conn nftablesConn, table *nftables.Table, chain
 
 // --- Unrestricted mode ---
 
-func addUnrestrictedRules(conn nftablesConn, table *nftables.Table, cfg *Config) {
+func addUnrestrictedRules(conn nftablesConn, table *nftables.Table, cfg *config.Config) {
 	addInputChain(conn, table)
 
 	policy := nftables.ChainPolicyDrop
@@ -300,7 +302,7 @@ func addUnrestrictedRules(conn nftablesConn, table *nftables.Table, cfg *Config)
 
 // --- Blocked mode ---
 
-func addBlockedRules(conn nftablesConn, table *nftables.Table, cfg *Config) {
+func addBlockedRules(conn nftablesConn, table *nftables.Table, cfg *config.Config) {
 	addInputChain(conn, table)
 
 	policy := nftables.ChainPolicyDrop
@@ -336,7 +338,7 @@ type setRef struct {
 	set4, set6 *nftables.Set
 }
 
-func addFilterRules(conn nftablesConn, table *nftables.Table, cfg *Config) error {
+func addFilterRules(conn nftablesConn, table *nftables.Table, cfg *config.Config) error {
 	addInputChain(conn, table)
 
 	resolvedPorts := cfg.ResolvePorts()
@@ -352,7 +354,7 @@ func addFilterRules(conn nftablesConn, table *nftables.Table, cfg *Config) error
 	for _, frp := range fqdnRulePorts {
 		s4 := &nftables.Set{
 			Table:      table,
-			Name:       FQDNSetName(frp.RuleIndex, false),
+			Name:       config.FQDNSetName(frp.RuleIndex, false),
 			KeyType:    nftables.TypeIPAddr,
 			HasTimeout: true,
 		}
@@ -363,7 +365,7 @@ func addFilterRules(conn nftablesConn, table *nftables.Table, cfg *Config) error
 
 		s6 := &nftables.Set{
 			Table:      table,
-			Name:       FQDNSetName(frp.RuleIndex, true),
+			Name:       config.FQDNSetName(frp.RuleIndex, true),
 			KeyType:    nftables.TypeIP6Addr,
 			HasTimeout: true,
 		}
@@ -482,7 +484,7 @@ func addFilterRules(conn nftablesConn, table *nftables.Table, cfg *Config) error
 // ACCEPT for CIDR hits (allow packet). This preserves Cilium's
 // OR semantics across egress rules. Using jump (not goto) ensures
 // return-to-caller works for OR evaluation.
-func addCIDRChains(conn nftablesConn, table *nftables.Table, parentChain *nftables.Chain, cidrs []ResolvedCIDR) {
+func addCIDRChains(conn nftablesConn, table *nftables.Table, parentChain *nftables.Chain, cidrs []config.ResolvedCIDR) {
 	groups := groupCIDRsByRule(cidrs)
 
 	for i, group := range groups {
@@ -568,7 +570,7 @@ func addCIDRChains(conn nftablesConn, table *nftables.Table, parentChain *nftabl
 // bypass Envoy. UDP/SCTP ports get direct ACCEPT; TCP port ranges
 // get direct ACCEPT (Envoy cannot create listeners for arbitrary
 // ranges); TCP single ports are handled by Envoy via NAT REDIRECT.
-func addOpenPortRule(conn nftablesConn, table *nftables.Table, chain *nftables.Chain, op ResolvedOpenPort) {
+func addOpenPortRule(conn nftablesConn, table *nftables.Table, chain *nftables.Chain, op config.ResolvedOpenPort) {
 	if op.Protocol == protoUDP || op.Protocol == protoSCTP {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
@@ -598,7 +600,13 @@ func addOpenPortRule(conn nftablesConn, table *nftables.Table, chain *nftables.C
 // per port per address family: ESTABLISHED first (zombie/CT semantics
 // -- conntrack keeps flows alive past set TTL expiry), then set
 // lookup (gates new flows requiring DNS resolution).
-func addFQDNPortRules(conn nftablesConn, table *nftables.Table, chain *nftables.Chain, frp FQDNRulePorts, ref setRef) {
+func addFQDNPortRules(
+	conn nftablesConn,
+	table *nftables.Table,
+	chain *nftables.Chain,
+	frp config.FQDNRulePorts,
+	ref setRef,
+) {
 	for _, fp := range frp.Ports {
 		proto := protoNum(fp.Protocol)
 
@@ -645,9 +653,9 @@ func addFQDNPortRules(conn nftablesConn, table *nftables.Table, chain *nftables.
 // addNATRules creates the NAT output chain with CIDR RETURN,
 // open port RETURN, Envoy REDIRECT, and TCPForward REDIRECT rules.
 func addNATRules(
-	conn nftablesConn, table *nftables.Table, cfg *Config,
-	resolvedPorts []int, cidr4, cidr6 []ResolvedCIDR,
-	openPortRules []ResolvedOpenPort,
+	conn nftablesConn, table *nftables.Table, cfg *config.Config,
+	resolvedPorts []int, cidr4, cidr6 []config.ResolvedCIDR,
+	openPortRules []config.ResolvedOpenPort,
 ) {
 	if len(resolvedPorts) == 0 && len(cfg.TCPForwards) == 0 {
 		return
@@ -696,7 +704,7 @@ func addNATRules(
 				matchUID(uidSandbox),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(p)),
-				redirectToPort(port16(proxyPortBase+p)),
+				redirectToPort(port16(config.ProxyPortBase+p)),
 			),
 		})
 	}
@@ -709,7 +717,7 @@ func addNATRules(
 				matchUID(uidSandbox),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(fwd.Port)),
-				redirectToPort(port16(proxyPortBase+fwd.Port)),
+				redirectToPort(port16(config.ProxyPortBase+fwd.Port)),
 			),
 		})
 	}
@@ -717,7 +725,7 @@ func addNATRules(
 
 // addTCPForwardNAT creates a NAT chain with only TCPForward
 // REDIRECT rules (unrestricted mode).
-func addTCPForwardNAT(conn nftablesConn, table *nftables.Table, cfg *Config) {
+func addTCPForwardNAT(conn nftablesConn, table *nftables.Table, cfg *config.Config) {
 	if len(cfg.TCPForwards) == 0 {
 		return
 	}
@@ -737,13 +745,13 @@ func addTCPForwardNAT(conn nftablesConn, table *nftables.Table, cfg *Config) {
 				matchUID(uidSandbox),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(fwd.Port)),
-				redirectToPort(port16(proxyPortBase+fwd.Port)),
+				redirectToPort(port16(config.ProxyPortBase+fwd.Port)),
 			),
 		})
 	}
 }
 
-func addCIDRNATReturn(conn nftablesConn, table *nftables.Table, chain *nftables.Chain, cidrs []ResolvedCIDR) {
+func addCIDRNATReturn(conn nftablesConn, table *nftables.Table, chain *nftables.Chain, cidrs []config.ResolvedCIDR) {
 	for _, rule := range cidrs {
 		_, cidrNet, err := net.ParseCIDR(rule.CIDR)
 		if err != nil {
@@ -777,13 +785,13 @@ func addCIDRNATReturn(conn nftablesConn, table *nftables.Table, chain *nftables.
 
 // groupCIDRsByRule groups resolved CIDRs by their RuleIndex,
 // preserving order of first appearance.
-func groupCIDRsByRule(cidrs []ResolvedCIDR) [][]ResolvedCIDR {
+func groupCIDRsByRule(cidrs []config.ResolvedCIDR) [][]config.ResolvedCIDR {
 	if len(cidrs) == 0 {
 		return nil
 	}
 
 	idxOrder := make([]int, 0)
-	groups := make(map[int][]ResolvedCIDR)
+	groups := make(map[int][]config.ResolvedCIDR)
 
 	for _, c := range cidrs {
 		if _, seen := groups[c.RuleIndex]; !seen {
@@ -793,7 +801,7 @@ func groupCIDRsByRule(cidrs []ResolvedCIDR) [][]ResolvedCIDR {
 		groups[c.RuleIndex] = append(groups[c.RuleIndex], c)
 	}
 
-	result := make([][]ResolvedCIDR, len(idxOrder))
+	result := make([][]config.ResolvedCIDR, len(idxOrder))
 	for i, idx := range idxOrder {
 		result[i] = groups[idx]
 	}
@@ -989,8 +997,9 @@ func matchDstCIDR(ipNet *net.IPNet) []expr.Any {
 	)
 }
 
-// matchPortProto matches a [ResolvedPortProto] (L4 protocol + port or range).
-func matchPortProto(pp ResolvedPortProto) []expr.Any {
+// matchPortProto matches a [config.ResolvedPortProto]
+// (L4 protocol + port or range).
+func matchPortProto(pp config.ResolvedPortProto) []expr.Any {
 	return flatExprs(
 		matchL4Proto(protoNum(pp.Protocol)),
 		matchDstPortOrRange(port16(pp.Port), port16(pp.EndPort)),

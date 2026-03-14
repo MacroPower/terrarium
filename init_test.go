@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium"
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 func TestParseUpstreamDNS(t *testing.T) {
@@ -55,10 +56,10 @@ func TestDNSProxyShutdownOnInitFailure(t *testing.T) {
 	// Start a mock upstream DNS server.
 	upstream := startMockDNS(t, "1.2.3.4")
 
-	cfg := &terrarium.Config{
-		Egress: egressRules(terrarium.EgressRule{
-			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
@@ -92,10 +93,10 @@ func TestShutdownOrder(t *testing.T) {
 	// Start a mock upstream DNS server and a DNS proxy.
 	upstream := startMockDNS(t, "1.2.3.4")
 
-	cfg := &terrarium.Config{
-		Egress: egressRules(terrarium.EgressRule{
-			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 

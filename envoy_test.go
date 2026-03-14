@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium"
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 func TestBuildAccessLog(t *testing.T) {
@@ -41,15 +42,15 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg      *terrarium.Config
+		cfg      *config.Config
 		certsDir string
 		want     []string
 		notWant  []string
 	}{
 		"basic TLS and HTTP": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}, {MatchName: "golang.org"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}, {MatchName: "golang.org"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			want: []string{
 				"tls_passthrough", "http_forward",
@@ -58,12 +59,12 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"with tcp forwards": {
-			cfg: &terrarium.Config{
-				Egress: egressRules(terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "golang.org"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "golang.org"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
-				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
+				TCPForwards: []config.TCPForward{{Port: 22, Host: "github.com"}},
 			},
 			want: []string{
 				"tls_passthrough", "http_forward",
@@ -71,12 +72,12 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"multiple tcp forwards": {
-			cfg: &terrarium.Config{
-				Egress: egressRules(terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
-				TCPForwards: []terrarium.TCPForward{
+				TCPForwards: []config.TCPForward{
 					{Port: 22, Host: "github.com"},
 					{Port: 3306, Host: "db.example.com"},
 				},
@@ -87,14 +88,14 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"extra ports with tcp forwards": {
-			cfg: &terrarium.Config{
-				Egress: egressRules(terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}, {MatchName: "golang.org"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}, {MatchName: "golang.org"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{
 						{Port: "80"}, {Port: "443"}, {Port: "8080"},
 					}}},
 				}),
-				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
+				TCPForwards: []config.TCPForward{{Port: 22, Host: "github.com"}},
 			},
 			want: []string{
 				"tls_passthrough", "http_forward",
@@ -102,37 +103,37 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"no tcp forwards no extra ports": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "golang.org"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "golang.org"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			notWant: []string{"tcp_forward", "STRICT_DNS"},
 		},
 		"logging enabled": {
-			cfg: &terrarium.Config{
-				Egress: egressRules(terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
 				Logging: true,
 			},
 			want: []string{"envoy.access_loggers.stderr"},
 		},
 		"path restricted domain gets direct response": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{
-						Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 							{Path: "/v1/completions"},
 							{Path: "/v1/models"},
 						}},
 					}},
 				},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "cdn.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "cdn.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -145,17 +146,17 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"MITM filter chain with certs": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{
-						Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 					}},
 				},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "cdn.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "cdn.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			certsDir: "/etc/terrarium/certs",
@@ -175,35 +176,35 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"no MITM without certsDir": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 				}},
 			})},
 			certsDir: "",
 			notWant:  []string{"DownstreamTlsContext", "mitm_api.example.com"},
 		},
 		"no MITM cluster without path rules": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			notWant: []string{"mitm_forward_proxy_cluster", "UpstreamTlsContext"},
 		},
 		"method-only restriction": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{
-						Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Method: "GET"}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
 					}},
 				},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "cdn.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "cdn.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -216,11 +217,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"paths and methods paired not cross-producted": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 						{Path: "/v1/", Method: "GET"},
 						{Path: "/v1/", Method: "POST"},
 					}},
@@ -240,11 +241,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"MITM triggered by methods-only rule": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Method: "GET"}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
 				}},
 			})},
 			certsDir: "/etc/terrarium/certs",
@@ -259,18 +260,18 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"no method restriction has no method header": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			notWant: []string{":method"},
 		},
 		"host-only restriction": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 						{Host: "api.example.com"},
 					}},
 				}},
@@ -285,11 +286,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			notWant: []string{":method"},
 		},
 		"host and method combined": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 						{Method: "GET", Host: "api.example.com"},
 					}},
 				}},
@@ -302,11 +303,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"no host restriction has no authority header": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 						{Method: "GET"},
 					}},
 				}},
@@ -315,16 +316,16 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			notWant: []string{":authority"},
 		},
 		"per-port domain scoping": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "always.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "always.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{
 						{Port: "443"}, {Port: "80"}, {Port: "8080"},
 					}}},
 				},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "only8080.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "only8080.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080"}}}},
 				},
 			)},
 			want: []string{
@@ -334,12 +335,12 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"open port gets catch-all TLS chain": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
-				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}}},
+				config.EgressRule{ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080"}}}}},
 			)},
 			want: []string{
 				"tls_passthrough_8080",
@@ -347,12 +348,12 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"open port 80 gets catch-all HTTP vhost": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
-				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}}},
+				config.EgressRule{ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}}},
 			)},
 			want: []string{
 				"name: open",
@@ -360,15 +361,15 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"open port overrides L7 restrictions": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{
-						Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/", Method: "GET"}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/", Method: "GET"}}},
 					}},
 				},
-				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
+				config.EgressRule{ToPorts: []config.PortRule{{Ports: []config.Port{
 					{Port: "443"}, {Port: "80"},
 				}}}},
 			)},
@@ -387,9 +388,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"bare wildcard TLS catch-all passthrough": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			})},
 			want: []string{
 				"tls_passthrough",
@@ -400,9 +401,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"bare wildcard HTTP catch-all vhost": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 			})},
 			want: []string{
 				"http_forward",
@@ -410,12 +411,12 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"bare wildcard HTTP no duplicate open vhost": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 				},
-				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}}},
+				config.EgressRule{ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}}},
 			)},
 			want: []string{
 				"http_forward",
@@ -427,28 +428,28 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 		},
 		// New mode tests.
 		"nil egress produces minimal config": {
-			cfg:     &terrarium.Config{},
+			cfg:     &config.Config{},
 			notWant: []string{"tls_passthrough", "http_forward", "dynamic_forward_proxy_cluster"},
 		},
 		"empty egress produces minimal config": {
-			cfg:     &terrarium.Config{Egress: egressRules()},
+			cfg:     &config.Config{Egress: egressRules()},
 			notWant: []string{"tls_passthrough", "http_forward", "dynamic_forward_proxy_cluster"},
 		},
 		"nil egress with tcp forwards": {
-			cfg: &terrarium.Config{
-				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
+			cfg: &config.Config{
+				TCPForwards: []config.TCPForward{{Port: 22, Host: "github.com"}},
 			},
 			want:    []string{"tcp_forward_22", "github.com", "STRICT_DNS"},
 			notWant: []string{"tls_passthrough", "http_forward", "dynamic_forward_proxy_cluster"},
 		},
 		"empty rule with FQDN+L7 generates FQDN listeners": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{
-						Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 					}},
 				},
 			)},
@@ -465,11 +466,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"empty HTTP produces passthrough not MITM": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{}},
 				}},
 			})},
 			certsDir: "/etc/terrarium/certs",
@@ -486,9 +487,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"wildcard gets RBAC filter": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			want: []string{
 				"envoy.filters.network.rbac",
@@ -497,9 +498,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"double-star wildcard gets multi-label RBAC regex": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**.example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "**.example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			want: []string{
 				"envoy.filters.network.rbac",
@@ -515,22 +516,22 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"exact domain no RBAC": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			want:    []string{"example.com"},
 			notWant: []string{"envoy.filters.network.rbac"},
 		},
 		"mixed wildcard and exact": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -541,12 +542,12 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"multiple wildcards": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{
 					{MatchPattern: "*.a.com"},
 					{MatchPattern: "*.b.com"},
 				},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			want: []string{
 				`^[-a-zA-Z0-9_]+\\.a\\.com$`,
@@ -555,9 +556,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"wildcard on extra port": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080"}}}},
 			})},
 			want: []string{
 				"tls_passthrough_8080",
@@ -566,11 +567,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"MITM on extra port": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "8080"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "8080"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 				}},
 			})},
 			certsDir: "/etc/terrarium/certs",
@@ -582,9 +583,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"wildcard HTTP gets RBAC filter on :authority": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			want: []string{
 				"envoy.filters.http.rbac",
@@ -596,21 +597,21 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"exact domain HTTP no RBAC": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 			})},
 			notWant: []string{"envoy.filters.http.rbac"},
 		},
 		"mixed wildcard and exact HTTP RBAC includes both": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 				},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -620,26 +621,26 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"open port 80 no HTTP RBAC despite wildcards": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 				},
-				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}}},
+				config.EgressRule{ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}}},
 			)},
 			notWant: []string{"envoy.filters.http.rbac"},
 		},
 		"bare wildcard HTTP no RBAC": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 			})},
 			notWant: []string{"envoy.filters.http.rbac"},
 		},
 		"double-star wildcard HTTP gets multi-label RBAC regex": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**.example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "**.example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 			})},
 			want: []string{
 				"envoy.filters.http.rbac",
@@ -648,12 +649,12 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"multiple wildcards HTTP RBAC": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{
 					{MatchPattern: "*.a.com"},
 					{MatchPattern: "*.b.com"},
 				},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 			})},
 			want: []string{
 				"envoy.filters.http.rbac",
@@ -662,9 +663,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"HTTP forward listener has path normalization": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
 			})},
 			want: []string{
 				"normalize_path: true",
@@ -673,11 +674,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"MITM listener has path normalization": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 				}},
 			})},
 			certsDir: "/etc/terrarium/certs",
@@ -689,11 +690,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"MITM-only config (no HTTP forward) has path normalization": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 				}},
 			})},
 			certsDir: "/etc/terrarium/certs",
@@ -708,9 +709,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"passthrough-only config has no normalization fields": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			})},
 			notWant: []string{
 				"normalize_path",
@@ -719,11 +720,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"headers presence check": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 						{Headers: []string{"X-Custom", "Authorization"}},
 					}},
 				}},
@@ -739,12 +740,12 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"headerMatches value check": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
-						{HeaderMatches: []terrarium.HeaderMatch{{Name: "X-Token", Value: "secret"}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+						{HeaderMatches: []config.HeaderMatch{{Name: "X-Token", Value: "secret"}}},
 					}},
 				}},
 			})},
@@ -759,11 +760,11 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			notWant: []string{"present_match"},
 		},
 		"headers combined with method and path": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []terrarium.PortRule{{
-					Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 						{Method: "GET", Path: "/v1/", Headers: []string{"X-Custom"}},
 					}},
 				}},
@@ -779,14 +780,14 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"separate FQDN and CIDR generates Envoy for FQDN only": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
-				terrarium.EgressRule{
+				config.EgressRule{
 					ToCIDR:  []string{"10.0.0.0/8"},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -799,17 +800,17 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"route actions have request timeout": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{
-						Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 					}},
 				},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "cdn.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "cdn.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -817,10 +818,10 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"HCMs have stream idle timeout": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -828,10 +829,10 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"HCMs set UseRemoteAddress and SkipXffAppend": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -840,10 +841,10 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"gRPC route match and timeout handling": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
 			want: []string{
@@ -852,9 +853,9 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"TLS listener has default filter chain for missing SNI": {
-			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
-				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			})},
 			want: []string{
 				"default_filter_chain:",
@@ -864,19 +865,19 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"TLS filter chains have transport_protocol tls": {
-			cfg: &terrarium.Config{Egress: egressRules(
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{
-						Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 					}},
 				},
-				terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "cdn.example.com"}},
-					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "cdn.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
-				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}}},
+				config.EgressRule{ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080"}}}}},
 			)},
 			certsDir: "/etc/terrarium/certs",
 			want: []string{
@@ -884,15 +885,15 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			},
 		},
 		"clusters have connect timeout": {
-			cfg: &terrarium.Config{
-				Egress: egressRules(terrarium.EgressRule{
-					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []terrarium.PortRule{{
-						Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}},
-						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Method: "GET", Path: "/v1/"}}},
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET", Path: "/v1/"}}},
 					}},
 				}),
-				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
+				TCPForwards: []config.TCPForward{{Port: 22, Host: "github.com"}},
 			},
 			want: []string{
 				"connect_timeout: 5s",
@@ -916,4 +917,8 @@ func TestGenerateEnvoyConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
+	return &rules
 }

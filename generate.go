@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 // CertsDir is the directory where MITM leaf certificates are stored.
@@ -17,13 +19,13 @@ const CADir = "/etc/terrarium/ca"
 // the Envoy config file to /etc. Firewall rules are applied directly
 // via nftables netlink in [Init], not written to files. The parsed
 // [*Config] is returned so callers can reuse it without re-parsing.
-func Generate(ctx context.Context, configPath string) (*Config, error) {
+func Generate(ctx context.Context, configPath string) (*config.Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 
-	cfg, err := ParseConfig(ctx, data)
+	cfg, err := config.ParseConfig(ctx, data)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
@@ -33,7 +35,7 @@ func Generate(ctx context.Context, configPath string) (*Config, error) {
 	tlsPorts = append(tlsPorts, cfg.ExtraPorts()...)
 	mitmSeen := make(map[string]bool)
 
-	var mitmRules []ResolvedRule
+	var mitmRules []config.ResolvedRule
 	for _, port := range tlsPorts {
 		portRules := cfg.ResolveRulesForPort(port)
 
@@ -73,7 +75,7 @@ func Generate(ctx context.Context, configPath string) (*Config, error) {
 // generates the Envoy bootstrap YAML. This is a convenience wrapper
 // for callers outside terrarium package that cannot construct
 // unexported [ResolvedRule] values directly.
-func GenerateEnvoyFromConfig(cfg *Config, certsDir, caBundlePath string) (string, error) {
+func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) (string, error) {
 	return GenerateEnvoyConfig(cfg, certsDir, caBundlePath)
 }
 

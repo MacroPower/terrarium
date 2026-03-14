@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 // dnsMode determines how the DNS proxy handles queries.
@@ -88,7 +90,7 @@ func (d DNSDomain) Matches(qname string) bool {
 // (preserving wildcard vs exact distinction for correct filtering)
 // and [TCPForward] hosts. The bare wildcard "*" pattern is included
 // as-is for the caller to handle.
-func CollectDNSDomains(cfg *Config) []DNSDomain {
+func CollectDNSDomains(cfg *config.Config) []DNSDomain {
 	seen := make(map[string]bool)
 
 	var result []DNSDomain
@@ -161,7 +163,7 @@ func upgradeDNSDomain(result []DNSDomain, d DNSDomain) {
 }
 
 // collectTCPForwardHosts adds TCPForward hosts to the domain list.
-func collectTCPForwardHosts(cfg *Config, result []DNSDomain, seen map[string]bool) []DNSDomain {
+func collectTCPForwardHosts(cfg *config.Config, result []DNSDomain, seen map[string]bool) []DNSDomain {
 	for _, host := range cfg.TCPForwardHosts() {
 		if seen[host] {
 			// TCPForward hosts need the bare domain to resolve.
@@ -189,6 +191,10 @@ func collectTCPForwardHosts(cfg *Config, result []DNSDomain, seen map[string]boo
 	return result
 }
 
+// minIPSetTTL is the minimum timeout (in seconds) for ipset entries
+// populated from DNS responses.
+const minIPSetTTL = 60
+
 // DNSProxy is a filtering DNS proxy that handles domain-level
 // filtering and ipset population. It forwards allowed queries to the
 // real upstream resolver and returns REFUSED for blocked domains,
@@ -205,7 +211,7 @@ type DNSProxy struct {
 	upstream      string
 	Addr          string
 	domains       []DNSDomain
-	patterns      []FQDNPattern
+	patterns      []config.FQDNPattern
 	clientTimeout time.Duration
 	mode          dnsMode
 	logging       bool
@@ -255,7 +261,7 @@ func WithFQDNSetFunc(
 // created. If ipv6Disabled is false and binding [::1] fails, startup
 // returns an error (IPv6 bypass risk).
 func StartDNSProxy(
-	ctx context.Context, cfg *Config, upstream, listenAddr string, ipv6Disabled bool,
+	ctx context.Context, cfg *config.Config, upstream, listenAddr string, ipv6Disabled bool,
 	opts ...DNSProxyOption,
 ) (*DNSProxy, error) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -584,7 +590,7 @@ func (p *DNSProxy) domainAllowed(qname string) bool {
 
 // matchingFQDNRuleIndices returns the deduplicated rule indices whose
 // compiled patterns match qname.
-func matchingFQDNRuleIndices(patterns []FQDNPattern, qname string) []int {
+func matchingFQDNRuleIndices(patterns []config.FQDNPattern, qname string) []int {
 	seen := make(map[int]bool)
 
 	var indices []int
@@ -652,12 +658,12 @@ func (p *DNSProxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []i
 	// Update each matching rule's sets.
 	for _, idx := range ruleIndices {
 		if len(v4IPs) > 0 {
-			setName := FQDNSetName(idx, false)
+			setName := config.FQDNSetName(idx, false)
 			p.updateFQDNSet(qname, setName, v4IPs, ttl)
 		}
 
 		if len(v6IPs) > 0 && !p.ipv6Disabled {
-			setName := FQDNSetName(idx, true)
+			setName := config.FQDNSetName(idx, true)
 			p.updateFQDNSet(qname, setName, v6IPs, ttl)
 		}
 	}

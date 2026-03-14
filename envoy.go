@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"go.jacobcolvin.com/niceyaml"
+
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 // Envoy bootstrap config types. These model the subset of the Envoy v3
@@ -590,12 +592,12 @@ func buildPassthroughFilterChain(
 	return fc
 }
 
-func buildMITMFilterChain(rule ResolvedRule, accessLog []envoyAccessLog, certsDir string) envoyFilterChain {
+func buildMITMFilterChain(rule config.ResolvedRule, accessLog []envoyAccessLog, certsDir string) envoyFilterChain {
 	sn := wildcardServerName(rule.Domain)
 	certPath := fmt.Sprintf("%s/%s/cert.pem", certsDir, sn)
 	keyPath := fmt.Sprintf("%s/%s/key.pem", certsDir, sn)
 
-	vhosts, _, _ := buildHTTPVirtualHosts([]ResolvedRule{rule}, "mitm_forward_proxy_cluster")
+	vhosts, _, _ := buildHTTPVirtualHosts([]config.ResolvedRule{rule}, "mitm_forward_proxy_cluster")
 
 	return envoyFilterChain{
 		FilterChainMatch: &envoyFilterChainMatch{TransportProtocol: "tls", ServerNames: []string{sn}},
@@ -655,14 +657,14 @@ func buildTLSListener(
 	name string,
 	listenPort, upstreamPort int,
 	statPrefix string,
-	rules []ResolvedRule,
+	rules []config.ResolvedRule,
 	open bool,
 	accessLog []envoyAccessLog,
 	certsDir string,
 ) envoyListener {
 	var (
 		passthroughDomains []string
-		mitmRules          []ResolvedRule
+		mitmRules          []config.ResolvedRule
 	)
 
 	for _, r := range rules {
@@ -798,9 +800,9 @@ func grpcRouteVariant(r envoyRoute) envoyRoute {
 	}
 }
 
-func buildHTTPVirtualHosts(rules []ResolvedRule, cluster string) ([]envoyVirtualHost, []string, []string) {
+func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]envoyVirtualHost, []string, []string) {
 	var (
-		restricted   []ResolvedRule
+		restricted   []config.ResolvedRule
 		unrestricted []string
 	)
 
@@ -919,7 +921,7 @@ func buildHTTPVirtualHosts(rules []ResolvedRule, cluster string) ([]envoyVirtual
 	return vhosts, wildcardDomains, exactDomains
 }
 
-func buildHTTPForwardListener(rules []ResolvedRule, open bool, accessLog []envoyAccessLog) envoyListener {
+func buildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog []envoyAccessLog) envoyListener {
 	vhosts, wildcardDomains, exactDomains := buildHTTPVirtualHosts(rules, "dynamic_forward_proxy_cluster")
 
 	// Envoy allows only one virtual host with Domains: ["*"] per route
@@ -1090,16 +1092,16 @@ func buildHostHeaderMatcher(host string) []envoyHeaderMatcher {
 // clearing their HTTPRules. This implements Cilium's OR semantics
 // between open port rules and FQDN+L7 rules on the same port: the
 // open port allows ALL traffic, overriding any L7 restrictions.
-func stripL7Restrictions(rules []ResolvedRule) []ResolvedRule {
-	result := make([]ResolvedRule, len(rules))
+func stripL7Restrictions(rules []config.ResolvedRule) []config.ResolvedRule {
+	result := make([]config.ResolvedRule, len(rules))
 	for i, r := range rules {
-		result[i] = ResolvedRule{Domain: r.Domain}
+		result[i] = config.ResolvedRule{Domain: r.Domain}
 	}
 
 	return result
 }
 
-func hasMITMRules(rules []ResolvedRule) bool {
+func hasMITMRules(rules []config.ResolvedRule) bool {
 	for _, r := range rules {
 		if r.IsRestricted() {
 			return true
@@ -1109,7 +1111,7 @@ func hasMITMRules(rules []ResolvedRule) bool {
 	return false
 }
 
-func buildClusters(rules []ResolvedRule, tcpForwards []TCPForward, caBundlePath string) []envoyCluster {
+func buildClusters(rules []config.ResolvedRule, tcpForwards []config.TCPForward, caBundlePath string) []envoyCluster {
 	// Static cluster with no endpoints used as the upstream for the
 	// default filter chain on TLS listeners. Connections routed here
 	// are immediately reset (no healthy upstream), which is the desired
@@ -1234,10 +1236,10 @@ func buildClusters(rules []ResolvedRule, tcpForwards []TCPForward, caBundlePath 
 // using per-port rule resolution. Port 443 traffic is matched by TLS
 // SNI, port 80 by HTTP Host header. Domains with path restrictions
 // are MITM'd via TLS termination using certs from certsDir. Each
-// [TCPForward] entry creates a plain TCP proxy listener with a
+// [config.TCPForward] entry creates a plain TCP proxy listener with a
 // STRICT_DNS cluster. Open ports (from toPorts-only rules) get
 // catch-all passthrough chains.
-func GenerateEnvoyConfig(cfg *Config, certsDir, caBundlePath string) (string, error) {
+func GenerateEnvoyConfig(cfg *config.Config, certsDir, caBundlePath string) (string, error) {
 	accessLog := BuildAccessLog(cfg.Logging)
 
 	resolvedPorts := cfg.ResolvePorts()
@@ -1291,7 +1293,7 @@ func GenerateEnvoyConfig(cfg *Config, certsDir, caBundlePath string) (string, er
 
 	for _, fwd := range cfg.TCPForwards {
 		name := fmt.Sprintf("tcp_forward_%d", fwd.Port)
-		listeners = append(listeners, buildTCPForwardListener(name, proxyPortBase+fwd.Port, name, accessLog))
+		listeners = append(listeners, buildTCPForwardListener(name, config.ProxyPortBase+fwd.Port, name, accessLog))
 	}
 
 	// Extra port listeners support both passthrough and MITM (when L7
@@ -1305,7 +1307,7 @@ func GenerateEnvoyConfig(cfg *Config, certsDir, caBundlePath string) (string, er
 
 		listeners = append(listeners, buildTLSListener(
 			fmt.Sprintf("tls_passthrough_%d", p),
-			proxyPortBase+p, p,
+			config.ProxyPortBase+p, p,
 			fmt.Sprintf("tls_passthrough_%d", p),
 			rulesP, openPortSet[p], accessLog, certsDir,
 		))
