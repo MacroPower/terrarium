@@ -5,6 +5,10 @@
     {
       "name": "go",
       "source": "toolchains/go"
+    },
+    {
+      "name": "security",
+      "source": "toolchains/security"
     }
   ]
 }
