@@ -1,0 +1,10 @@
+{
+  "name": "terrarium",
+  "engineVersion": "v0.20.1",
+  "toolchains": [
+    {
+      "name": "go",
+      "source": "toolchains/go"
+    }
+  ]
+}
