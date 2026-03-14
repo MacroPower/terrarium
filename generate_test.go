@@ -90,7 +90,7 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 		"    toFQDNs:\n" +
 		"      - matchPattern: \"*.example.org\"\n")
 
-	cfg, err := sandbox.ParseConfig(yamlCfg)
+	cfg, err := sandbox.ParseConfig(t.Context(), yamlCfg)
 	require.NoError(t, err)
 
 	const iterations = 10

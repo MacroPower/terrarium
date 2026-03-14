@@ -153,7 +153,7 @@ egress:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := sandbox.ParseConfig([]byte(tt.yaml))
+			cfg, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 				return
@@ -221,7 +221,7 @@ egress:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := sandbox.ParseConfig([]byte(tt.yaml))
+			cfg, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantUnrestricted, cfg.IsEgressUnrestricted())
 			assert.Equal(t, tt.wantBlocked, cfg.IsEgressBlocked())
@@ -295,7 +295,7 @@ egress:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := sandbox.ParseConfig([]byte(tt.yaml))
+			cfg, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.TCPForwards)
 		})
@@ -3551,7 +3551,7 @@ egressPolicy:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := sandbox.ParseConfig([]byte(tt.yaml))
+			cfg, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 				return
@@ -3573,7 +3573,7 @@ egressPolicy:
 	t.Run("error format", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := sandbox.ParseConfig([]byte(`
+		_, err := sandbox.ParseConfig(t.Context(), []byte(`
 egress:
   - toCIDR:
       - 10.0.0.0/8
@@ -3762,7 +3762,7 @@ egress:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := sandbox.ParseConfig([]byte(tt.yaml))
+			_, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 
@@ -3777,7 +3777,7 @@ egress:
 	t.Run("error format includes context", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := sandbox.ParseConfig([]byte(`
+		_, err := sandbox.ParseConfig(t.Context(), []byte(`
 egress:
   - toCIDR:
       - 10.0.0.0/8
@@ -3830,7 +3830,7 @@ func TestMarshalConfigRoundtrip(t *testing.T) {
 			data, err := sandbox.MarshalConfig(tt.cfg)
 			require.NoError(t, err)
 
-			cfg2, err := sandbox.ParseConfig(data)
+			cfg2, err := sandbox.ParseConfig(t.Context(), data)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantUnrestricted, cfg2.IsEgressUnrestricted())
 			assert.Equal(t, tt.wantBlocked, cfg2.IsEgressBlocked())

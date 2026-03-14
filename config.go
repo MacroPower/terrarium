@@ -5,6 +5,7 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -799,7 +800,7 @@ type ResolvedCIDR struct {
 
 // DefaultConfig returns a config decoded from the embedded defaults.yaml.
 func DefaultConfig() *SandboxConfig {
-	cfg, err := parseConfigRaw(defaultsYAML)
+	cfg, err := parseConfigRaw(context.Background(), defaultsYAML)
 	if err != nil {
 		panic(fmt.Sprintf("parsing embedded defaults.yaml: %v", err))
 	}
@@ -825,7 +826,7 @@ func MarshalDefaultConfig() ([]byte, error) {
 }
 
 // parseConfigRaw parses a YAML sandbox config without validation.
-func parseConfigRaw(data []byte) (*SandboxConfig, error) {
+func parseConfigRaw(ctx context.Context, data []byte) (*SandboxConfig, error) {
 	var cfg SandboxConfig
 
 	src := niceyaml.NewSourceFromBytes(data,
@@ -837,7 +838,7 @@ func parseConfigRaw(data []byte) (*SandboxConfig, error) {
 	}
 
 	for _, doc := range dec.Documents() {
-		err := doc.Decode(&cfg)
+		err := doc.DecodeContext(ctx, &cfg)
 		if err != nil {
 			return nil, fmt.Errorf("parsing config: %w", err)
 		}
@@ -847,8 +848,8 @@ func parseConfigRaw(data []byte) (*SandboxConfig, error) {
 }
 
 // ParseConfig parses and validates a YAML sandbox config.
-func ParseConfig(data []byte) (*SandboxConfig, error) {
-	cfg, err := parseConfigRaw(data)
+func ParseConfig(ctx context.Context, data []byte) (*SandboxConfig, error) {
+	cfg, err := parseConfigRaw(ctx, data)
 	if err != nil {
 		return nil, err
 	}

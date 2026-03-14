@@ -147,7 +147,7 @@ func Init(ctx context.Context, args []string) error {
 			return fmt.Errorf("reading sandbox config: %w", err)
 		}
 
-		cfg, err = ParseConfig(cfgData)
+		cfg, err = ParseConfig(ctx, cfgData)
 		if err != nil {
 			return fmt.Errorf("parsing sandbox config: %w", err)
 		}

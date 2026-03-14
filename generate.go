@@ -26,7 +26,7 @@ func Generate(ctx context.Context, configPath string) (*SandboxConfig, error) {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 
-	cfg, err := ParseConfig(data)
+	cfg, err := ParseConfig(ctx, data)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
