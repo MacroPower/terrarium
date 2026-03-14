@@ -1,4 +1,4 @@
-package sandbox
+package terrarium
 
 import (
 	"fmt"
@@ -59,12 +59,12 @@ func groupCIDRsByRule(cidrs []ResolvedCIDR) [][]ResolvedCIDR {
 //   - Blocked (Egress rules with empty selectors, e.g. egress: [{}]):
 //     NAT is empty; FILTER drops all user egress (no Envoy, no REDIRECT).
 //     Empty selectors whitelist nothing because there is no L3/L4/L7
-//     predicate to match against; see [SandboxConfig.IsEgressBlocked].
+//     predicate to match against; see [Config.IsEgressBlocked].
 //   - Rules (non-empty Egress with selectors): current behavior with
 //     REDIRECT to Envoy and per-rule CIDR allows.
 //
 // Returns both IPv4 and IPv6 rule sets.
-func GenerateIptablesRules(cfg *SandboxConfig) (string, string) {
+func GenerateIptablesRules(cfg *Config) (string, string) {
 	if cfg.IsEgressUnrestricted() {
 		return generateUnrestrictedIptables(cfg)
 	}
@@ -142,7 +142,7 @@ func writeBaseFilterRules(b *strings.Builder, loopbackCIDR string, ipv6 bool) {
 // generateUnrestrictedIptables produces rules that allow all egress.
 // NAT contains only TCPForward REDIRECTs; FILTER has standard base
 // rules plus ACCEPT (no DROP).
-func generateUnrestrictedIptables(cfg *SandboxConfig) (string, string) {
+func generateUnrestrictedIptables(cfg *Config) (string, string) {
 	writeNat := func(b *strings.Builder) {
 		b.WriteString("*nat\n")
 
@@ -181,7 +181,7 @@ func generateUnrestrictedIptables(cfg *SandboxConfig) (string, string) {
 
 // generateBlockedIptables produces rules that block all user egress.
 // NAT is empty; FILTER has base rules then DROP.
-func generateBlockedIptables(cfg *SandboxConfig) (string, string) {
+func generateBlockedIptables(cfg *Config) (string, string) {
 	writeNat := func(b *strings.Builder) {
 		b.WriteString("*nat\n")
 		b.WriteString("COMMIT\n")
@@ -210,7 +210,7 @@ func generateBlockedIptables(cfg *SandboxConfig) (string, string) {
 // generateRulesIptables is the standard rules-mode generation with
 // Envoy REDIRECT and per-rule CIDR allows. The final verdict is
 // always DROP (default-deny).
-func generateRulesIptables(cfg *SandboxConfig) (string, string) {
+func generateRulesIptables(cfg *Config) (string, string) {
 	resolvedPorts := cfg.ResolvePorts()
 	cidr4, cidr6 := cfg.ResolveCIDRRules()
 	openPortRules := cfg.ResolveOpenPortRules()

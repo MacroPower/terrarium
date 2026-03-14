@@ -1,4 +1,4 @@
-package sandbox
+package terrarium
 
 import (
 	"context"
@@ -11,16 +11,16 @@ import (
 )
 
 // CertsDir is the directory where MITM leaf certificates are stored.
-const CertsDir = "/etc/sandbox/certs"
+const CertsDir = "/etc/terrarium/certs"
 
-// CADir is the directory where the sandbox CA cert and key are stored.
-const CADir = "/etc/sandbox/ca"
+// CADir is the directory where terrarium CA cert and key are stored.
+const CADir = "/etc/terrarium/ca"
 
-// Generate reads the sandbox YAML config at configPath, resolves domains
+// Generate reads terrarium YAML config at configPath, resolves domains
 // and ports, generates MITM certs for path-restricted rules, and writes
-// iptables and Envoy config files to /etc. The parsed [*SandboxConfig] is
+// iptables and Envoy config files to /etc. The parsed [*Config] is
 // returned so callers can reuse it without re-parsing.
-func Generate(ctx context.Context, configPath string) (*SandboxConfig, error) {
+func Generate(ctx context.Context, configPath string) (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
@@ -77,9 +77,9 @@ func Generate(ctx context.Context, configPath string) (*SandboxConfig, error) {
 	}
 
 	files := map[string]string{
-		"/etc/envoy-sandbox.yaml":      envoyConf,
-		"/etc/iptables-sandbox.rules":  ipv4Rules,
-		"/etc/ip6tables-sandbox.rules": ipv6Rules,
+		"/etc/envoy-terrarium.yaml":      envoyConf,
+		"/etc/iptables-terrarium.rules":  ipv4Rules,
+		"/etc/ip6tables-terrarium.rules": ipv6Rules,
 	}
 
 	for _, path := range slices.Sorted(maps.Keys(files)) {
@@ -92,11 +92,11 @@ func Generate(ctx context.Context, configPath string) (*SandboxConfig, error) {
 	return cfg, nil
 }
 
-// GenerateEnvoyFromConfig resolves rules from a [SandboxConfig] and
+// GenerateEnvoyFromConfig resolves rules from a [Config] and
 // generates the Envoy bootstrap YAML. This is a convenience wrapper
-// for callers outside the sandbox package that cannot construct
+// for callers outside terrarium package that cannot construct
 // unexported [ResolvedRule] values directly.
-func GenerateEnvoyFromConfig(cfg *SandboxConfig, certsDir, caBundlePath string) (string, error) {
+func GenerateEnvoyFromConfig(cfg *Config, certsDir, caBundlePath string) (string, error) {
 	return GenerateEnvoyConfig(cfg, certsDir, caBundlePath)
 }
 

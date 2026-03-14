@@ -1,4 +1,4 @@
-package sandbox
+package terrarium
 
 import (
 	"bufio"
@@ -83,7 +83,7 @@ func CreateEnvoyUser() error {
 	return nil
 }
 
-// Init performs the full sandbox initialization sequence: generates
+// Init performs the full terrarium initialization sequence: generates
 // configs if needed, loads iptables rules, starts the DNS proxy and
 // Envoy, then drops privileges and runs the given command as a supervised
 // child process. The context is threaded to all subprocesses, allowing
@@ -109,9 +109,9 @@ func Init(ctx context.Context, args []string) error {
 
 	// Generate configs at runtime if not pre-baked. The parsed config
 	// is returned so we can reuse it below without re-parsing (ISSUE-71).
-	var cfg *SandboxConfig
+	var cfg *Config
 
-	_, err = os.Stat("/etc/envoy-sandbox.yaml")
+	_, err = os.Stat("/etc/envoy-terrarium.yaml")
 	if os.IsNotExist(err) {
 		slog.InfoContext(ctx, "generating firewall configs")
 
@@ -126,7 +126,7 @@ func Init(ctx context.Context, args []string) error {
 
 	_, err = os.Stat(caCertPath)
 	if err == nil {
-		slog.InfoContext(ctx, "installing sandbox CA into trust store")
+		slog.InfoContext(ctx, "installing terrarium CA into trust store")
 
 		err := installCA(ctx, caCertPath)
 		if err != nil {
@@ -144,12 +144,12 @@ func Init(ctx context.Context, args []string) error {
 	if cfg == nil {
 		cfgData, err := os.ReadFile(ConfigPath)
 		if err != nil {
-			return fmt.Errorf("reading sandbox config: %w", err)
+			return fmt.Errorf("reading terrarium config: %w", err)
 		}
 
 		cfg, err = ParseConfig(ctx, cfgData)
 		if err != nil {
-			return fmt.Errorf("parsing sandbox config: %w", err)
+			return fmt.Errorf("parsing terrarium config: %w", err)
 		}
 	}
 
@@ -202,7 +202,7 @@ func Init(ctx context.Context, args []string) error {
 	}()
 
 	// Load iptables redirect rules and validate.
-	err = runCmd(ctx, "iptables-restore", "/etc/iptables-sandbox.rules")
+	err = runCmd(ctx, "iptables-restore", "/etc/iptables-terrarium.rules")
 	if err != nil {
 		return fmt.Errorf("loading iptables rules: %w", err)
 	}
@@ -221,7 +221,7 @@ func Init(ctx context.Context, args []string) error {
 	// Load IPv6 rules; disable IPv6 if kernel lacks ip6tables support.
 	ipv6Disabled := false
 
-	err = runCmd(ctx, "ip6tables-restore", "/etc/ip6tables-sandbox.rules")
+	err = runCmd(ctx, "ip6tables-restore", "/etc/ip6tables-terrarium.rules")
 	if err != nil {
 		slog.WarnContext(ctx, "ip6tables unavailable, disabling IPv6")
 		disableIPv6(ctx)
@@ -309,7 +309,7 @@ func Init(ctx context.Context, args []string) error {
 	if needsEnvoy {
 		envoyCmd = exec.CommandContext(ctx, "setpriv",
 			"--reuid="+EnvoyUID, "--regid="+EnvoyUID, "--clear-groups", "--no-new-privs",
-			"--", "envoy", "-c", "/etc/envoy-sandbox.yaml", "--log-level", "warning")
+			"--", "envoy", "-c", "/etc/envoy-terrarium.yaml", "--log-level", "warning")
 		envoyCmd.Stdout = os.Stdout
 		envoyCmd.Stderr = os.Stderr
 
@@ -490,7 +490,7 @@ func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *DNSProxy, ipset
 	}
 }
 
-// cleanupIPTables flushes the sandbox iptables chains so that a
+// cleanupIPTables flushes terrarium iptables chains so that a
 // restart in the same network namespace starts with clean state.
 func cleanupIPTables(ctx context.Context) {
 	for _, cmd := range []string{"iptables", "ip6tables"} {
@@ -509,11 +509,11 @@ func cleanupIPTables(ctx context.Context) {
 	}
 }
 
-// installCA copies the sandbox CA certificate into the system trust
+// installCA copies terrarium CA certificate into the system trust
 // store and runs update-ca-certificates. Falls back to direct bundle
 // injection when update-ca-certificates is unavailable.
 func installCA(ctx context.Context, caCertPath string) error {
-	trustDest := "/usr/local/share/ca-certificates/sandbox-ca.crt"
+	trustDest := "/usr/local/share/ca-certificates/terrarium-ca.crt"
 
 	err := copyFile(caCertPath, trustDest)
 	if err != nil {
@@ -582,7 +582,7 @@ func verifyIPv6State(ctx context.Context) error {
 // firstListenerPort returns the first Envoy listener port to wait on.
 // Prefers 15443 when FQDN rules produce a port 443 listener, then
 // checks TCPForwards, then falls back to the first resolved port.
-func firstListenerPort(cfg *SandboxConfig) int {
+func firstListenerPort(cfg *Config) int {
 	ports := cfg.ResolvePorts()
 	if slices.Contains(ports, 443) {
 		return 15443

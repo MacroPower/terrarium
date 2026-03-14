@@ -1,4 +1,4 @@
-package sandbox_test
+package terrarium_test
 
 import (
 	"crypto/x509"
@@ -17,7 +17,7 @@ func TestGenerateCA(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	certPath, keyPath, err := sandbox.GenerateCA(dir)
+	certPath, keyPath, err := terrarium.GenerateCA(dir)
 	require.NoError(t, err)
 
 	assert.Equal(t, filepath.Join(dir, "ca.pem"), certPath)
@@ -49,7 +49,7 @@ func TestGenerateLeafCert(t *testing.T) {
 	t.Parallel()
 
 	caDir := t.TempDir()
-	_, _, err := sandbox.GenerateCA(caDir)
+	_, _, err := terrarium.GenerateCA(caDir)
 	require.NoError(t, err)
 
 	certsDir := t.TempDir()
@@ -73,7 +73,7 @@ func TestGenerateLeafCert(t *testing.T) {
 			t.Parallel()
 
 			localCertsDir := t.TempDir()
-			err := sandbox.GenerateLeafCert(caDir, localCertsDir, tt.domain)
+			err := terrarium.GenerateLeafCert(caDir, localCertsDir, tt.domain)
 			require.NoError(t, err)
 
 			certPEM, err := os.ReadFile(filepath.Join(localCertsDir, tt.domain, "cert.pem"))
@@ -123,13 +123,13 @@ func TestGenerateCerts(t *testing.T) {
 	caDir := t.TempDir()
 	certsDir := t.TempDir()
 
-	rules := []sandbox.ResolvedRule{
-		{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v1/"}}},
+	rules := []terrarium.ResolvedRule{
+		{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}}},
 		{Domain: "cdn.example.com"},
-		{Domain: "internal.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/api/"}, {Path: "/health"}}},
+		{Domain: "internal.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/api/"}, {Path: "/health"}}},
 	}
 
-	err := sandbox.GenerateCerts(rules, caDir, certsDir)
+	err := terrarium.GenerateCerts(rules, caDir, certsDir)
 	require.NoError(t, err)
 
 	// CA should exist.

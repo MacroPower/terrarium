@@ -1,4 +1,4 @@
-package sandbox
+package terrarium
 
 import (
 	"crypto/ecdsa"
@@ -32,7 +32,7 @@ func GenerateCA(dir string) (string, string, error) {
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			CommonName:   "Sandbox CA",
-			Organization: []string{"sandbox"},
+			Organization: []string{"terrarium"},
 		},
 		NotBefore:             time.Now().Add(-1 * time.Hour),
 		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),

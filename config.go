@@ -1,7 +1,7 @@
-// Package sandbox provides configuration types and generation functions
-// for the sandbox firewall. It reads a YAML config file and produces
+// Package terrarium provides configuration types and generation functions
+// for the terrarium firewall. It reads a YAML config file and produces
 // iptables rules, Envoy proxy config, and DNS proxy config.
-package sandbox
+package terrarium
 
 import (
 	"bytes"
@@ -68,7 +68,7 @@ var (
 	//
 	// Under Cilium's default configuration, ANY expands to TCP and UDP.
 	// SCTP requires explicit opt-in (Cilium Helm value sctp.enabled=true);
-	// the sandbox matches this default by expanding ANY to TCP+UDP only.
+	// terrarium matches this default by expanding ANY to TCP+UDP only.
 	ErrProtocolInvalid = errors.New("invalid protocol: must be TCP, UDP, SCTP, ANY, or empty")
 
 	// ErrEndPortInvalid is returned when a [Port] has an endPort that
@@ -103,9 +103,9 @@ var (
 	ErrHeaderMatchNameEmpty = errors.New("headerMatch name must not be empty")
 
 	// ErrHeaderMatchMismatchAction is returned when a [HeaderMatch]
-	// sets a Mismatch action. The sandbox cannot enforce request
+	// sets a Mismatch action. Terrarium cannot enforce request
 	// modification semantics (LOG, ADD, DELETE, REPLACE).
-	ErrHeaderMatchMismatchAction = errors.New("headerMatch mismatch actions are not supported by the sandbox")
+	ErrHeaderMatchMismatchAction = errors.New("headerMatch mismatch actions are not supported by terrarium")
 
 	// ErrPortExceedsProxyRange is returned when a port exceeds the
 	// maximum value that can be offset by [proxyPortBase] without
@@ -122,22 +122,22 @@ var (
 	ErrDuplicateTCPForwardPort = errors.New("duplicate tcp forward port")
 
 	// ErrFQDNRequiresPorts is returned when an [EgressRule] has toFQDNs
-	// but no toPorts with non-empty ports. The sandbox requires explicit
+	// but no toPorts with non-empty ports. Terrarium requires explicit
 	// ports because Envoy needs per-port listeners; Cilium itself does
 	// not require toPorts with toFQDNs.
 	ErrFQDNRequiresPorts = errors.New(
-		"toFQDNs rules require explicit toPorts with non-empty ports (sandbox constraint: Envoy needs per-port listeners)",
+		"toFQDNs rules require explicit toPorts with non-empty ports (terrarium constraint: Envoy needs per-port listeners)",
 	)
 
 	// ErrFQDNWildcardPort is returned when an [EgressRule] with toFQDNs
 	// contains a wildcard port (port 0). Port 0 with toFQDNs produces no
-	// enforcement in the sandbox because [ResolvePorts] and
+	// enforcement in terrarium because [ResolvePorts] and
 	// [ResolveFQDNNonTCPPorts] both skip port 0, creating no Envoy
 	// listener, ipset, or iptables rules. Cilium treats port 0 as a
-	// wildcard allowing all ports; the sandbox rejects it to prevent
+	// wildcard allowing all ports; terrarium rejects it to prevent
 	// silent no-enforcement.
 	ErrFQDNWildcardPort = errors.New(
-		"toFQDNs rules require explicit ports; wildcard port 0 is not supported (sandbox constraint: produces no enforcement)",
+		"toFQDNs rules require explicit ports; wildcard port 0 is not supported (terrarium constraint: produces no enforcement)",
 	)
 
 	// ErrExceptNotSubnet is returned when an except CIDR is not a subnet
@@ -149,7 +149,7 @@ var (
 	// IPv6 address (e.g. ::ffff:10.0.0.0/104). These addresses are
 	// ambiguous: [net.ParseCIDR] normalizes them to IPv4, but string-based
 	// family detection routes them to IPv6, causing silent misclassification.
-	// Cilium normalizes via Unmap() in the ipcache layer; the sandbox
+	// Cilium normalizes via Unmap() in the ipcache layer; terrarium
 	// rejects them outright to prevent silent failures.
 	ErrCIDRIPv4MappedIPv6 = errors.New(
 		"IPv4-mapped IPv6 CIDRs (::ffff:0.0.0.0/N) are not supported; use the IPv4 equivalent",
@@ -164,7 +164,7 @@ var (
 	)
 
 	// ErrL7RequiresFQDN is returned when L7 rules are specified on a rule
-	// without toFQDNs selectors. The sandbox cannot enforce L7 rules
+	// without toFQDNs selectors. Terrarium cannot enforce L7 rules
 	// without domain context for MITM; CIDR rules bypass Envoy.
 	ErrL7RequiresFQDN = errors.New("L7 rules require toFQDNs selectors")
 
@@ -173,7 +173,7 @@ var (
 	// streams; UDP, SCTP, and ANY are invalid with L7 HTTP rules.
 	// Empty protocol is allowed (implies TCP). Cilium's
 	// PortRule.sanitize() rejects empty too (it normalizes to ANY
-	// first), but the sandbox intentionally permits it to reduce
+	// first), but terrarium intentionally permits it to reduce
 	// boilerplate.
 	ErrL7RequiresTCP = errors.New("L7 HTTP rules can only apply to TCP")
 
@@ -256,7 +256,7 @@ var (
 	// ToCIDRSet and countNonGeneratedEndpoints for ToEndpoints, so that
 	// auto-generated entries (from ToServices/ToFQDNs expansion at
 	// runtime) do not count toward the mutual-exclusivity check. The
-	// sandbox has no equivalent of Generated entries since we never
+	// terrarium has no equivalent of Generated entries since we never
 	// perform ToServices expansion or runtime identity resolution, so
 	// this distinction is irrelevant here.
 	ErrCIDRAndCIDRSetMixed = errors.New(
@@ -268,15 +268,15 @@ var (
 	ErrTCPForwardPortConflict = errors.New("tcp forward port conflicts with resolved ports")
 
 	// ErrUnsupportedSelector is returned when an [EgressRule] contains a
-	// CiliumNetworkPolicy selector that the sandbox does not implement.
-	// The sandbox only supports toFQDNs, toPorts, toCIDR, and toCIDRSet.
+	// CiliumNetworkPolicy selector that terrarium does not implement.
+	// Terrarium only supports toFQDNs, toPorts, toCIDR, and toCIDRSet.
 	// Cilium selectors like toEndpoints, toEntities, toServices, toNodes,
 	// and toGroups require cluster identity infrastructure that does not
-	// exist in the sandbox.
+	// exist in terrarium.
 	ErrUnsupportedSelector = errors.New("unsupported egress selector")
 
 	// ErrUnsupportedFeature is returned when a type contains a
-	// Cilium feature field that the sandbox does not implement.
+	// Cilium feature field that terrarium does not implement.
 	// The field is parsed from YAML to produce a clear error instead
 	// of an opaque "unknown field" parse failure.
 	ErrUnsupportedFeature = errors.New("unsupported feature")
@@ -284,14 +284,14 @@ var (
 	// validProtocols lists the supported transport protocols. Cilium
 	// also supports ICMP, ICMPv6, VRRP, and IGMP, but these are
 	// IP-layer protocols without ports and cannot be expressed in the
-	// sandbox's port-based model.
+	// terrarium's port-based model.
 	validProtocols = map[string]bool{
 		"": true, "TCP": true, "UDP": true, "SCTP": true, "ANY": true,
 	}
 
 	// wellKnownPorts maps IANA service names to their standard port
 	// numbers. Cilium resolves named ports dynamically from Kubernetes
-	// pod specs (containerPort.name); the sandbox uses this static map
+	// pod specs (containerPort.name); terrarium uses this static map
 	// instead since there are no pods to query.
 	wellKnownPorts = map[string]uint16{
 		"domain":  53,
@@ -349,10 +349,10 @@ func isSvcName(s string) bool {
 // ResolvePort converts a port string to a number. It accepts numeric
 // strings ("443") and well-known IANA service names ("https"). Cilium
 // resolves named ports dynamically from Kubernetes pod specs; the
-// sandbox uses a static [wellKnownPorts] map instead. Returns an error
+// terrarium uses a static [wellKnownPorts] map instead. Returns an error
 // for unknown names, invalid syntax, or values outside 0-65535.
 //
-// Uses base 10 (not base 0) because the sandbox reads YAML config
+// Uses base 10 (not base 0) because terrarium reads YAML config
 // files, not Kubernetes API objects, so hex/octal/binary port literals
 // are not meaningful.
 func ResolvePort(s string) (uint16, error) {
@@ -373,10 +373,10 @@ func ResolvePort(s string) (uint16, error) {
 }
 
 const (
-	// UID is the numeric user ID for the sandboxed non-root user.
+	// UID is the numeric user ID for terrariumed non-root user.
 	UID = "1000"
 
-	// GID is the numeric group ID for the sandboxed non-root user.
+	// GID is the numeric group ID for terrariumed non-root user.
 	GID = "1000"
 
 	// EnvoyUID is the numeric user/group ID for the Envoy proxy process.
@@ -391,8 +391,8 @@ const (
 	// HMBin is the stable path to home-manager managed binaries.
 	HMBin = HomeDir + "/.local/state/home-manager/gcroots/current-home/home-path/bin"
 
-	// ConfigPath is the path to the sandbox YAML config file.
-	ConfigPath = "/etc/sandbox/config.yaml"
+	// ConfigPath is the path to terrarium YAML config file.
+	ConfigPath = "/etc/terrarium/config.yaml"
 
 	// minIPSetTTL is the minimum timeout (in seconds) for ipset entries
 	// populated from DNS responses. Cilium's --tofqdns-min-ttl defaults
@@ -435,7 +435,7 @@ func FQDNIPSetName(ruleIdx int, ipv6 bool) string {
 // In Cilium, the allow-all pattern is an EgressRule containing a
 // toEndpoints selector with an empty EndpointSelector (i.e.,
 // toEndpoints: [{}]), which acts as a wildcard matching all endpoints.
-// The sandbox does not implement toEndpoints; using it produces an
+// Terrarium does not implement toEndpoints; using it produces an
 // [ErrUnsupportedSelector] validation error. The distinction matters
 // for understanding why egress: [{}] means deny-all rather than
 // allow-all. See Cilium's EgressRule and EgressCommonRule structs in
@@ -467,39 +467,39 @@ type EgressRule struct {
 	// pkg/policy/api/egress.go for the canonical definitions.
 
 	// Authentication is a Cilium field for mutual authentication.
-	// The sandbox does not support authentication policy.
+	// Terrarium does not support authentication policy.
 	Authentication any `yaml:"authentication,omitempty"`
 	// ToEndpoints is a Cilium L3 selector matching endpoints by label.
-	// The sandbox has no endpoint identity system.
+	// Terrarium has no endpoint identity system.
 	ToEndpoints []any `yaml:"toEndpoints,omitempty"`
 	// ToEntities is a Cilium L3 selector matching special entities
-	// (world, cluster, host, etc). The sandbox has no entity resolution.
+	// (world, cluster, host, etc). Terrarium has no entity resolution.
 	ToEntities []any `yaml:"toEntities,omitempty"`
 	// ToServices is a Cilium L3 selector matching Kubernetes services.
-	// The sandbox has no service discovery.
+	// Terrarium has no service discovery.
 	ToServices []any `yaml:"toServices,omitempty"`
 	// ToNodes is a Cilium L3 selector matching nodes by label.
-	// The sandbox has no node identity system.
+	// Terrarium has no node identity system.
 	ToNodes []any `yaml:"toNodes,omitempty"`
 	// ToGroups is a Cilium L3 selector matching cloud provider groups.
-	// The sandbox has no cloud provider integration.
+	// Terrarium has no cloud provider integration.
 	ToGroups []any `yaml:"toGroups,omitempty"`
 	// ToRequires is a deprecated Cilium field. Rejected unconditionally.
 	ToRequires []any `yaml:"toRequires,omitempty"`
 	// ICMPs is a Cilium selector for ICMP type filtering.
-	// The sandbox does not support ICMP-level policy.
+	// Terrarium does not support ICMP-level policy.
 	ICMPs []any `yaml:"icmps,omitempty"`
 }
 
 // CIDRRule specifies an IP range to allow, with optional exceptions.
 type CIDRRule struct {
 	// CIDRGroupSelector is a Cilium field for label-based CIDR group
-	// selection. The sandbox has no CRD-based CIDR group resolution.
+	// selection. Terrarium has no CRD-based CIDR group resolution.
 	CIDRGroupSelector any `yaml:"cidrGroupSelector,omitempty"`
 	// CIDR is the IP range in CIDR notation (e.g. "10.0.0.0/8").
 	CIDR string `yaml:"cidr"`
 	// CIDRGroupRef is a Cilium field referencing a CiliumCIDRGroup.
-	// The sandbox has no CRD-based CIDR group resolution.
+	// Terrarium has no CRD-based CIDR group resolution.
 	CIDRGroupRef string `yaml:"cidrGroupRef,omitempty"`
 	// Except lists sub-ranges of CIDR to exclude.
 	Except []string `yaml:"except,omitempty"`
@@ -522,13 +522,13 @@ type PortRule struct {
 	// See Cilium's PortRule in pkg/policy/api/rule.go.
 
 	// TerminatingTLS is a Cilium field for TLS termination context.
-	// The sandbox does not support TLS policy contexts.
+	// Terrarium does not support TLS policy contexts.
 	TerminatingTLS any `yaml:"terminatingTLS,omitempty"`
 	// OriginatingTLS is a Cilium field for TLS origination context.
-	// The sandbox does not support TLS policy contexts.
+	// Terrarium does not support TLS policy contexts.
 	OriginatingTLS any `yaml:"originatingTLS,omitempty"`
 	// Listener is a Cilium field for Envoy listener references.
-	// The sandbox manages its own Envoy config and does not support
+	// Terrarium manages its own Envoy config and does not support
 	// user-specified listeners.
 	Listener any `yaml:"listener,omitempty"`
 	// Rules specifies optional L7 inspection rules.
@@ -536,7 +536,7 @@ type PortRule struct {
 	// Ports lists allowed destination ports.
 	Ports []Port `yaml:"ports,omitempty"`
 	// ServerNames is a Cilium field for SNI-based filtering on ports.
-	// The sandbox handles SNI via Envoy filter chains, not port rules.
+	// Terrarium handles SNI via Envoy filter chains, not port rules.
 	ServerNames []any `yaml:"serverNames,omitempty"`
 }
 
@@ -565,16 +565,16 @@ type L7Rules struct {
 	// in pkg/policy/api/l7.go.
 
 	// Kafka is a Cilium field for Kafka protocol rules (deprecated).
-	// The sandbox only supports HTTP L7 inspection.
+	// Terrarium only supports HTTP L7 inspection.
 	Kafka []any `yaml:"kafka,omitempty"`
 	// DNS is a Cilium field for DNS protocol rules.
-	// The sandbox handles DNS via its own DNS proxy, not L7 rules.
+	// Terrarium handles DNS via its own DNS proxy, not L7 rules.
 	DNS []any `yaml:"dns,omitempty"`
 	// L7Proto is a Cilium field specifying a custom L7 protocol parser.
-	// The sandbox does not support custom L7 protocol parsers.
+	// Terrarium does not support custom L7 protocol parsers.
 	L7Proto string `yaml:"l7proto,omitempty"`
 	// L7 is a Cilium field for generic key-value L7 rules.
-	// The sandbox does not support custom L7 protocol rules.
+	// Terrarium does not support custom L7 protocol rules.
 	L7 []any `yaml:"l7,omitempty"`
 }
 
@@ -605,12 +605,12 @@ type HTTPRule struct {
 // header must have the specified value or the request is denied.
 //
 // Cilium also supports a Mismatch field (LOG, ADD, DELETE, REPLACE)
-// for request modification instead of denial. The sandbox rejects
+// for request modification instead of denial. Terrarium rejects
 // configs that set Mismatch since it cannot enforce modification
 // semantics.
 type HeaderMatch struct {
 	// Mismatch defines the action when the header value does not
-	// match. The sandbox rejects any non-empty value.
+	// match. Terrarium rejects any non-empty value.
 	Mismatch MismatchAction `yaml:"mismatch,omitempty"`
 	// Name is the header field name to match.
 	Name string `yaml:"name"`
@@ -619,7 +619,7 @@ type HeaderMatch struct {
 }
 
 // MismatchAction defines what happens when a [HeaderMatch] value does
-// not match. The sandbox does not support mismatch actions and rejects
+// not match. Terrarium does not support mismatch actions and rejects
 // configs that set one.
 type MismatchAction string
 
@@ -645,7 +645,7 @@ type TCPForward struct {
 	Port int `yaml:"port"`
 }
 
-// SandboxConfig is the top-level YAML configuration for the sandbox firewall.
+// Config is the top-level YAML configuration for terrarium firewall.
 //
 // The Egress field uses CiliumNetworkPolicy semantics:
 //
@@ -668,7 +668,7 @@ type TCPForward struct {
 //     See [Ingress/Egress Default Deny].
 //
 // [Ingress/Egress Default Deny]: https://docs.cilium.io/en/stable/security/policy/language/#ingress-egress-default-deny
-type SandboxConfig struct {
+type Config struct {
 	// Egress lists egress rules with FQDN, port, and CIDR selectors.
 	// A nil pointer means the field was absent from YAML (unrestricted).
 	// An empty slice is equivalent to nil; Cilium infers default-deny
@@ -682,7 +682,7 @@ type SandboxConfig struct {
 }
 
 // EgressRules returns the egress rules slice, or nil when Egress is absent.
-func (c *SandboxConfig) EgressRules() []EgressRule {
+func (c *Config) EgressRules() []EgressRule {
 	if c.Egress == nil {
 		return nil
 	}
@@ -692,13 +692,13 @@ func (c *SandboxConfig) EgressRules() []EgressRule {
 
 // IsDefaultDenyEnabled reports whether default-deny is active for egress.
 // Returns true when egress rules are present (non-nil, non-empty list).
-func (c *SandboxConfig) IsDefaultDenyEnabled() bool {
+func (c *Config) IsDefaultDenyEnabled() bool {
 	return c.Egress != nil && len(c.EgressRules()) > 0
 }
 
 // IsEgressUnrestricted reports whether egress is unrestricted,
 // meaning no egress filtering should be applied.
-func (c *SandboxConfig) IsEgressUnrestricted() bool {
+func (c *Config) IsEgressUnrestricted() bool {
 	return c.Egress == nil || len(c.EgressRules()) == 0
 }
 
@@ -722,7 +722,7 @@ func (c *SandboxConfig) IsEgressUnrestricted() bool {
 // The empty EndpointSelector{} (matchLabels: {}) is the actual
 // wildcard -- it matches all endpoints. This lives in Cilium's
 // EgressCommonRule.ToEndpoints field (pkg/policy/api/egress.go),
-// which the sandbox does not implement. The validation logic in
+// which terrarium does not implement. The validation logic in
 // pkg/policy/api/rule_validation.go (sanitize methods) confirms
 // that an EgressRule with zero selectors is valid but matches no
 // traffic.
@@ -732,7 +732,7 @@ func (c *SandboxConfig) IsEgressUnrestricted() bool {
 // Cilium's deny-all.
 //
 // [Ingress/Egress Default Deny]: https://docs.cilium.io/en/stable/security/policy/language/#ingress-egress-default-deny
-func (c *SandboxConfig) IsEgressBlocked() bool {
+func (c *Config) IsEgressBlocked() bool {
 	if !c.IsDefaultDenyEnabled() {
 		return false
 	}
@@ -799,7 +799,7 @@ type ResolvedCIDR struct {
 }
 
 // DefaultConfig returns a config decoded from the embedded defaults.yaml.
-func DefaultConfig() *SandboxConfig {
+func DefaultConfig() *Config {
 	cfg, err := parseConfigRaw(context.Background(), defaultsYAML)
 	if err != nil {
 		panic(fmt.Sprintf("parsing embedded defaults.yaml: %v", err))
@@ -809,7 +809,7 @@ func DefaultConfig() *SandboxConfig {
 }
 
 // MarshalConfig returns the given config as YAML bytes.
-func MarshalConfig(cfg *SandboxConfig) ([]byte, error) {
+func MarshalConfig(cfg *Config) ([]byte, error) {
 	var buf bytes.Buffer
 
 	err := niceyaml.NewEncoder(&buf).Encode(cfg)
@@ -825,9 +825,9 @@ func MarshalDefaultConfig() ([]byte, error) {
 	return MarshalConfig(DefaultConfig())
 }
 
-// parseConfigRaw parses a YAML sandbox config without validation.
-func parseConfigRaw(ctx context.Context, data []byte) (*SandboxConfig, error) {
-	var cfg SandboxConfig
+// parseConfigRaw parses a YAML terrarium config without validation.
+func parseConfigRaw(ctx context.Context, data []byte) (*Config, error) {
+	var cfg Config
 
 	src := niceyaml.NewSourceFromBytes(data,
 		niceyaml.WithDecodeOptions(yaml.DisallowUnknownField()),
@@ -847,8 +847,8 @@ func parseConfigRaw(ctx context.Context, data []byte) (*SandboxConfig, error) {
 	return &cfg, nil
 }
 
-// ParseConfig parses and validates a YAML sandbox config.
-func ParseConfig(ctx context.Context, data []byte) (*SandboxConfig, error) {
+// ParseConfig parses and validates a YAML terrarium config.
+func ParseConfig(ctx context.Context, data []byte) (*Config, error) {
 	cfg, err := parseConfigRaw(ctx, data)
 	if err != nil {
 		return nil, err
@@ -865,7 +865,7 @@ func ParseConfig(ctx context.Context, data []byte) (*SandboxConfig, error) {
 // normalizeEgressRule mutates an egress rule in place to normalize
 // protocol case, FQDN case, and trailing dots. Must be called before
 // validation so that normalized values pass the validators.
-func normalizeEgressRule(c *SandboxConfig, i int) {
+func normalizeEgressRule(c *Config, i int) {
 	rule := &(*c.Egress)[i]
 
 	for j := range rule.ToPorts {
@@ -949,7 +949,7 @@ func cidrIsIPv6(s string) bool {
 }
 
 // Validate checks that the config is internally consistent.
-func (c *SandboxConfig) Validate() error {
+func (c *Config) Validate() error {
 	for i := range c.EgressRules() {
 		// Reject unsupported Cilium selectors before any other
 		// processing. This prevents silent data loss from fields
@@ -1067,7 +1067,7 @@ func (c *SandboxConfig) Validate() error {
 //   - "**.suffix" -- multi-label wildcard (arbitrary subdomain depth)
 //
 // validateUnsupportedSelectors checks whether any Cilium selectors that
-// the sandbox does not implement are present in the rule. Returns an
+// terrarium does not implement are present in the rule. Returns an
 // error for the first unsupported selector found, with the rule index
 // and field name for diagnostics.
 func validateUnsupportedSelectors(rule EgressRule, ruleIdx int) error {
@@ -1090,7 +1090,7 @@ func validateUnsupportedSelectors(rule EgressRule, ruleIdx int) error {
 	for _, f := range fields {
 		if f.set {
 			return fmt.Errorf(
-				"%w: rule %d has %s, which is not implemented by the sandbox",
+				"%w: rule %d has %s, which is not implemented by terrarium",
 				ErrUnsupportedSelector, ruleIdx, f.name,
 			)
 		}
@@ -1100,7 +1100,7 @@ func validateUnsupportedSelectors(rule EgressRule, ruleIdx int) error {
 }
 
 // validateUnsupportedPortRuleFeatures checks for Cilium-only fields on
-// a [PortRule] that the sandbox does not implement.
+// a [PortRule] that terrarium does not implement.
 func validateUnsupportedPortRuleFeatures(pr PortRule, ruleIdx int) error {
 	type field struct {
 		name string
@@ -1117,7 +1117,7 @@ func validateUnsupportedPortRuleFeatures(pr PortRule, ruleIdx int) error {
 	for _, f := range fields {
 		if f.set {
 			return fmt.Errorf(
-				"%w: rule %d toPorts has %s, which is not supported by the sandbox",
+				"%w: rule %d toPorts has %s, which is not supported by terrarium",
 				ErrUnsupportedFeature, ruleIdx, f.name,
 			)
 		}
@@ -1127,7 +1127,7 @@ func validateUnsupportedPortRuleFeatures(pr PortRule, ruleIdx int) error {
 }
 
 // validateUnsupportedL7Features checks for Cilium-only L7 protocol
-// fields on [L7Rules] that the sandbox does not implement.
+// fields on [L7Rules] that terrarium does not implement.
 func validateUnsupportedL7Features(rules *L7Rules, ruleIdx int) error {
 	if rules == nil {
 		return nil
@@ -1148,7 +1148,7 @@ func validateUnsupportedL7Features(rules *L7Rules, ruleIdx int) error {
 	for _, f := range fields {
 		if f.set {
 			return fmt.Errorf(
-				"%w: rule %d toPorts rules has %s, which is not supported by the sandbox",
+				"%w: rule %d toPorts rules has %s, which is not supported by terrarium",
 				ErrUnsupportedFeature, ruleIdx, f.name,
 			)
 		}
@@ -1158,18 +1158,18 @@ func validateUnsupportedL7Features(rules *L7Rules, ruleIdx int) error {
 }
 
 // validateUnsupportedCIDRRuleFeatures checks for Cilium-only fields on
-// a [CIDRRule] that the sandbox does not implement.
+// a [CIDRRule] that terrarium does not implement.
 func validateUnsupportedCIDRRuleFeatures(cr CIDRRule, ruleIdx int) error {
 	if cr.CIDRGroupRef != "" {
 		return fmt.Errorf(
-			"%w: rule %d toCIDRSet has cidrGroupRef, which is not supported by the sandbox",
+			"%w: rule %d toCIDRSet has cidrGroupRef, which is not supported by terrarium",
 			ErrUnsupportedFeature, ruleIdx,
 		)
 	}
 
 	if cr.CIDRGroupSelector != nil {
 		return fmt.Errorf(
-			"%w: rule %d toCIDRSet has cidrGroupSelector, which is not supported by the sandbox",
+			"%w: rule %d toCIDRSet has cidrGroupSelector, which is not supported by terrarium",
 			ErrUnsupportedFeature, ruleIdx,
 		)
 	}
@@ -1556,7 +1556,7 @@ func familyLabel(isV6 bool) string {
 
 // TCPForwardHosts returns a deduplicated, sorted list of hostnames from
 // the config's [TCPForward] entries.
-func (c *SandboxConfig) TCPForwardHosts() []string {
+func (c *Config) TCPForwardHosts() []string {
 	seen := make(map[string]bool)
 
 	var hosts []string
@@ -1586,7 +1586,7 @@ func (c *SandboxConfig) TCPForwardHosts() []string {
 // network filter (see [buildWildcardRBACFilter]) is prepended to
 // wildcard filter chains to enforce the correct depth (single-label
 // for *, multi-label for **), matching CiliumNetworkPolicy semantics.
-func (c *SandboxConfig) ResolveRulesForPort(port int) []ResolvedRule {
+func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 	type merged struct {
 		httpRules    []ResolvedHTTPRule
 		unrestricted bool
@@ -1801,10 +1801,10 @@ func portRuleHasTCPPort(pr PortRule, port int) bool {
 
 // ResolveRules converts egress rules into a flat, deduplicated, sorted
 // list of [ResolvedRule] across all resolved ports. Delegates to
-// [SandboxConfig.ResolveRulesForPort] for each port from
-// [SandboxConfig.ResolvePorts] and unions the results. When a domain
+// [Config.ResolveRulesForPort] for each port from
+// [Config.ResolvePorts] and unions the results. When a domain
 // appears unrestricted on any port, the global result is unrestricted.
-func (c *SandboxConfig) ResolveRules() []ResolvedRule {
+func (c *Config) ResolveRules() []ResolvedRule {
 	ports := c.ResolvePorts()
 
 	type merged struct {
@@ -1873,7 +1873,7 @@ func (c *SandboxConfig) ResolveRules() []ResolvedRule {
 
 // ResolveDomains resolves all egress rules into a flat, deduplicated,
 // sorted domain list.
-func (c *SandboxConfig) ResolveDomains() []string {
+func (c *Config) ResolveDomains() []string {
 	rules := c.ResolveRules()
 
 	domains := make([]string, len(rules))
@@ -1898,7 +1898,7 @@ func (c *SandboxConfig) ResolveDomains() []string {
 //
 // Non-TCP ports from FQDN rules are handled separately by
 // [ResolveFQDNNonTCPPorts] and enforced via ipset-backed iptables rules.
-func (c *SandboxConfig) ResolvePorts() []int {
+func (c *Config) ResolvePorts() []int {
 	if c.IsEgressUnrestricted() {
 		return nil
 	}
@@ -1966,7 +1966,7 @@ func (c *SandboxConfig) ResolvePorts() []int {
 
 // ExtraPorts returns resolved ports that are not in [DefaultPorts]
 // (80 and 443), since those have dedicated redirect rules.
-func (c *SandboxConfig) ExtraPorts() []int {
+func (c *Config) ExtraPorts() []int {
 	var extra []int
 	for _, p := range c.ResolvePorts() {
 		if p != 80 && p != 443 {
@@ -1988,11 +1988,11 @@ type ResolvedOpenPort struct {
 // (no toFQDNs, toCIDR, or toCIDRSet) contains a toPorts entry with
 // an empty Ports list. Under Cilium semantics, empty Ports means "all
 // ports"; combined with the implicit wildcard L3 (no L3 selector),
-// this allows all traffic. The sandbox represents this as an
+// this allows all traffic. Terrarium represents this as an
 // unrestricted ACCEPT for the user UID in iptables, which subsumes
 // CIDR except DROPs and CIDR ACCEPTs from other rules (Cilium OR
 // semantics across rules).
-func (c *SandboxConfig) HasUnrestrictedOpenPorts() bool {
+func (c *Config) HasUnrestrictedOpenPorts() bool {
 	eRules := c.EgressRules()
 	for ri := range eRules {
 		if len(eRules[ri].ToFQDNs) > 0 || len(eRules[ri].ToCIDR) > 0 || len(eRules[ri].ToCIDRSet) > 0 {
@@ -2020,7 +2020,7 @@ func (c *SandboxConfig) HasUnrestrictedOpenPorts() bool {
 // that have toPorts but neither toFQDNs nor toCIDRSet. These ports
 // allow all destinations (passthrough without domain filtering). ANY
 // protocol is expanded into separate tcp and udp entries.
-func (c *SandboxConfig) ResolveOpenPortRules() []ResolvedOpenPort {
+func (c *Config) ResolveOpenPortRules() []ResolvedOpenPort {
 	seen := make(map[string]bool)
 
 	var result []ResolvedOpenPort
@@ -2075,7 +2075,7 @@ func (c *SandboxConfig) ResolveOpenPortRules() []ResolvedOpenPort {
 // ResolveOpenPorts returns sorted, deduplicated port numbers from open
 // port rules. This is a convenience wrapper over [ResolveOpenPortRules]
 // used by Envoy listener creation where only port numbers matter.
-func (c *SandboxConfig) ResolveOpenPorts() []int {
+func (c *Config) ResolveOpenPorts() []int {
 	openRules := c.ResolveOpenPortRules()
 	seen := make(map[int]bool, len(openRules))
 
@@ -2122,7 +2122,7 @@ func ruleHasNonTCPPorts(rule EgressRule) bool {
 // udp entries (TCP is handled by [ResolvePorts] + Envoy; SCTP
 // requires explicit opt-in). Returns nil when egress is unrestricted,
 // blocked, or has no FQDN rules with non-TCP ports.
-func (c *SandboxConfig) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
+func (c *Config) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
 	if c.IsEgressUnrestricted() {
 		return nil
 	}
@@ -2204,7 +2204,7 @@ func (c *SandboxConfig) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
 
 // HasFQDNNonTCPPorts reports whether the config contains any FQDN
 // rules with non-TCP ports that need ipset-backed iptables rules.
-func (c *SandboxConfig) HasFQDNNonTCPPorts() bool {
+func (c *Config) HasFQDNNonTCPPorts() bool {
 	return len(c.ResolveFQDNNonTCPPorts()) > 0
 }
 
@@ -2230,7 +2230,7 @@ type FQDNPattern struct {
 // rules produces two entries with different RuleIndex values).
 // [TCPForward] hosts are excluded (they use Envoy, not ipset
 // filtering).
-func (c *SandboxConfig) CompileFQDNPatterns() []FQDNPattern {
+func (c *Config) CompileFQDNPatterns() []FQDNPattern {
 	var patterns []FQDNPattern
 
 	ruleIdx := 0
@@ -2334,7 +2334,7 @@ func containsMidPositionDoubleStar(pattern string) bool {
 // "udp", "SCTP" to "sctp", and empty or "ANY" to "ANY" (matching
 // Cilium's canonical [protoAny] representation). Under Cilium default
 // semantics, an omitted protocol means TCP and UDP. SCTP requires
-// explicit opt-in (Cilium Helm value sctp.enabled=true); the sandbox
+// explicit opt-in (Cilium Helm value sctp.enabled=true); terrarium
 // matches this default by expanding ANY to TCP+UDP only.
 func normalizeProtocol(proto string) string {
 	switch proto {
@@ -2357,7 +2357,7 @@ func normalizeProtocol(proto string) string {
 // rules are direct L3 allow selectors that bypass the Envoy proxy. If
 // the parent rule has toPorts, the CIDR is port-scoped (L3 AND L4);
 // otherwise the CIDR allows any port.
-func (c *SandboxConfig) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
+func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 	var ipv4, ipv6 []ResolvedCIDR
 
 	ruleIdx := 0

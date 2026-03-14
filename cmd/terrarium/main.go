@@ -1,4 +1,4 @@
-// Sandbox is the CLI entrypoint for sandbox container operations,
+// Terrarium is the CLI entrypoint for terrarium container operations,
 // including firewall config generation, user setup, and privilege-dropping
 // init.
 package main
@@ -21,8 +21,8 @@ func main() {
 	logCfg := log.NewConfig()
 
 	rootCmd := &cobra.Command{
-		Use:   "sandbox",
-		Short: "Sandbox container operations",
+		Use:   "terrarium",
+		Short: "Terrarium container operations",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			handler, err := logCfg.NewHandler(os.Stderr)
 			if err != nil {
@@ -50,7 +50,7 @@ func main() {
 			Short: "Generate iptables/envoy configs from YAML",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				_, err := sandbox.Generate(cmd.Context(), sandbox.ConfigPath)
+				_, err := terrarium.Generate(cmd.Context(), terrarium.ConfigPath)
 				return err
 			},
 		},
@@ -59,7 +59,7 @@ func main() {
 			Short: "Fish history symlinks, claude.json persistence, atuin config",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return sandbox.SetupDev()
+				return terrarium.SetupDev()
 			},
 		},
 		&cobra.Command{
@@ -67,7 +67,7 @@ func main() {
 			Short: "Create non-root user in /etc/passwd and /etc/group",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return sandbox.SetupUser()
+				return terrarium.SetupUser()
 			},
 		},
 		&cobra.Command{
@@ -75,7 +75,7 @@ func main() {
 			Short: "Load firewall, start services, drop privileges, exec cmd",
 			Args:  cobra.ArbitraryArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return sandbox.Init(cmd.Context(), args)
+				return terrarium.Init(cmd.Context(), args)
 			},
 		},
 	)
@@ -87,7 +87,7 @@ func main() {
 		fang.WithoutVersion(),
 	)
 	if err != nil {
-		var exitErr *sandbox.ExitError
+		var exitErr *terrarium.ExitError
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.Code)
 		}

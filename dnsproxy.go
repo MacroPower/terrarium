@@ -1,4 +1,4 @@
-package sandbox
+package terrarium
 
 import (
 	"context"
@@ -89,7 +89,7 @@ func (d DNSDomain) Matches(qname string) bool {
 // (preserving wildcard vs exact distinction for correct filtering)
 // and [TCPForward] hosts. The bare wildcard "*" pattern is included
 // as-is for the caller to handle.
-func CollectDNSDomains(cfg *SandboxConfig) []DNSDomain {
+func CollectDNSDomains(cfg *Config) []DNSDomain {
 	seen := make(map[string]bool)
 
 	var result []DNSDomain
@@ -162,7 +162,7 @@ func upgradeDNSDomain(result []DNSDomain, d DNSDomain) {
 }
 
 // collectTCPForwardHosts adds TCPForward hosts to the domain list.
-func collectTCPForwardHosts(cfg *SandboxConfig, result []DNSDomain, seen map[string]bool) []DNSDomain {
+func collectTCPForwardHosts(cfg *Config, result []DNSDomain, seen map[string]bool) []DNSDomain {
 	for _, host := range cfg.TCPForwardHosts() {
 		if seen[host] {
 			// TCPForward hosts need the bare domain to resolve.
@@ -253,7 +253,7 @@ func WithIPSetFunc(fn func(ctx context.Context, commands string) error) DNSProxy
 // created. If ipv6Disabled is false and binding [::1] fails, startup
 // returns an error (IPv6 bypass risk).
 func StartDNSProxy(
-	ctx context.Context, cfg *SandboxConfig, upstream, listenAddr string, ipv6Disabled bool,
+	ctx context.Context, cfg *Config, upstream, listenAddr string, ipv6Disabled bool,
 	opts ...DNSProxyOption,
 ) (*DNSProxy, error) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -413,7 +413,7 @@ func StartDNSProxy(
 }
 
 // Shutdown gracefully stops the proxy. In-flight queries are dropped
-// (acceptable for a short-lived sandbox).
+// (acceptable for a short-lived terrarium).
 func (p *DNSProxy) Shutdown() error {
 	p.cancel()
 

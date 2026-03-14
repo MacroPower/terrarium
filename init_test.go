@@ -1,4 +1,4 @@
-package sandbox_test
+package terrarium_test
 
 import (
 	"net"
@@ -44,7 +44,7 @@ func TestParseUpstreamDNS(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, sandbox.ParseUpstreamDNS(tt.resolvConf))
+			assert.Equal(t, tt.want, terrarium.ParseUpstreamDNS(tt.resolvConf))
 		})
 	}
 }
@@ -55,15 +55,15 @@ func TestDNSProxyShutdownOnInitFailure(t *testing.T) {
 	// Start a mock upstream DNS server.
 	upstream := startMockDNS(t, "1.2.3.4")
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
 	// Start the DNS proxy (simulates the Init step that succeeds).
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	// Verify the proxy is serving queries.
@@ -92,14 +92,14 @@ func TestShutdownOrder(t *testing.T) {
 	// Start a mock upstream DNS server and a DNS proxy.
 	upstream := startMockDNS(t, "1.2.3.4")
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	// Start a long-running subprocess to simulate Envoy.
@@ -119,7 +119,7 @@ func TestShutdownOrder(t *testing.T) {
 	// We verify this by checking that after Shutdown returns,
 	// the Envoy process has already exited (was waited on) and
 	// the DNS proxy port is released.
-	sandbox.Shutdown(t.Context(), envoyCmd, proxy, nil)
+	terrarium.Shutdown(t.Context(), envoyCmd, proxy, nil)
 
 	// Envoy process should have been terminated and waited on.
 	assert.NotNil(t, envoyCmd.ProcessState, "envoy process should have been waited on")

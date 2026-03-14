@@ -1,4 +1,4 @@
-package sandbox_test
+package terrarium_test
 
 import (
 	"fmt"
@@ -29,7 +29,7 @@ func TestSetupDev(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(atuinDir, "config.toml"),
 		[]byte("foo = true\nsystemd_socket = true\nbar = 1\n"), 0o644))
 
-	require.NoError(t, sandbox.SetupDevWithPaths(homeDir, historyDir, claudeStateDir))
+	require.NoError(t, terrarium.SetupDevWithPaths(homeDir, historyDir, claudeStateDir))
 
 	// Fish history symlink.
 	target, err := os.Readlink(filepath.Join(homeDir, ".local", "share", "fish", "fish_history"))
@@ -67,8 +67,8 @@ func TestSetupDevIdempotent(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".local", "share"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(`{}`), 0o644))
 
-	require.NoError(t, sandbox.SetupDevWithPaths(homeDir, historyDir, claudeStateDir))
-	require.NoError(t, sandbox.SetupDevWithPaths(homeDir, historyDir, claudeStateDir))
+	require.NoError(t, terrarium.SetupDevWithPaths(homeDir, historyDir, claudeStateDir))
+	require.NoError(t, terrarium.SetupDevWithPaths(homeDir, historyDir, claudeStateDir))
 }
 
 func TestSetupUserPasswdGroup(t *testing.T) {
@@ -87,7 +87,7 @@ func TestSetupUserPasswdGroup(t *testing.T) {
 	uid := fmt.Sprintf("%d", os.Getuid())
 	gid := fmt.Sprintf("%d", os.Getgid())
 
-	require.NoError(t, sandbox.SetupUserWithPaths(passwdPath, groupPath, "testuser", uid, gid, homeDir))
+	require.NoError(t, terrarium.SetupUserWithPaths(passwdPath, groupPath, "testuser", uid, gid, homeDir))
 
 	passwdData, err := os.ReadFile(passwdPath)
 	require.NoError(t, err)

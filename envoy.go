@@ -1,4 +1,4 @@
-package sandbox
+package terrarium
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 )
 
 // Envoy bootstrap config types. These model the subset of the Envoy v3
-// API used by the sandbox's transparent SNI-filtering proxy.
+// API used by terrarium's transparent SNI-filtering proxy.
 
 type envoyBootstrap struct {
 	OverloadManager envoyOverloadManager `yaml:"overload_manager"`
@@ -202,7 +202,7 @@ type envoyRoute struct {
 // ultimately call CompiledGoogleReMatcher::match(), which delegates to
 // RE2::FullMatch, so the behavioral outcome is identical.
 //
-// Audited and confirmed: the sandbox's route-level safe_regex and
+// Audited and confirmed: terrarium's route-level safe_regex and
 // Cilium's header-based L7 policy produce the same accept/reject
 // decisions for any given path regex.
 //
@@ -374,7 +374,7 @@ var sharedDNSCacheConfig = envoyDNSCacheConfig{
 //
 // Both forms use + (one-or-more) on the first label's character class,
 // not * (zero-or-more), because empty DNS labels are invalid in SNI
-// (RFC 6066 section 3). This is an intentional sandbox strictness:
+// (RFC 6066 section 3). This is an intentional terrarium strictness:
 // Cilium's single-label regex uses * (allowing empty labels like
 // ".example.com"), but since SNI values in practice never have empty
 // labels, the + quantifier is both correct and more precise.
@@ -493,7 +493,7 @@ func buildWildcardRBACFilter(wildcardDomains []string) envoyFilter {
 // Cilium enforces FQDN wildcard depth via its BPF identity system
 // (DNS proxy regex -> identity allocation -> BPF map lookup), not at
 // the Envoy layer. This RBAC approach is an architectural substitute
-// that achieves equivalent filtering semantics within the sandbox's
+// that achieves equivalent filtering semantics within terrarium's
 // Envoy-only architecture.
 //
 // Because the RBAC filter applies globally to the HCM (not per virtual
@@ -1237,7 +1237,7 @@ func buildClusters(rules []ResolvedRule, tcpForwards []TCPForward, caBundlePath 
 // [TCPForward] entry creates a plain TCP proxy listener with a
 // STRICT_DNS cluster. Open ports (from toPorts-only rules) get
 // catch-all passthrough chains.
-func GenerateEnvoyConfig(cfg *SandboxConfig, certsDir, caBundlePath string) (string, error) {
+func GenerateEnvoyConfig(cfg *Config, certsDir, caBundlePath string) (string, error) {
 	accessLog := BuildAccessLog(cfg.Logging)
 
 	resolvedPorts := cfg.ResolvePorts()

@@ -1,4 +1,4 @@
-package sandbox_test
+package terrarium_test
 
 import (
 	"os"
@@ -50,7 +50,7 @@ func TestGenerate(t *testing.T) {
 
 				return path
 			},
-			err:     sandbox.ErrFQDNSelectorEmpty,
+			err:     terrarium.ErrFQDNSelectorEmpty,
 			wantMsg: "parsing config",
 		},
 	}
@@ -61,7 +61,7 @@ func TestGenerate(t *testing.T) {
 
 			path := tt.setup(t)
 
-			cfg, err := sandbox.Generate(t.Context(), path)
+			cfg, err := terrarium.Generate(t.Context(), path)
 			require.Error(t, err)
 			require.Nil(t, cfg)
 			require.ErrorContains(t, err, tt.wantMsg)
@@ -90,7 +90,7 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 		"    toFQDNs:\n" +
 		"      - matchPattern: \"*.example.org\"\n")
 
-	cfg, err := sandbox.ParseConfig(t.Context(), yamlCfg)
+	cfg, err := terrarium.ParseConfig(t.Context(), yamlCfg)
 	require.NoError(t, err)
 
 	const iterations = 10
@@ -100,10 +100,10 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 	ipv6Results := make([]string, iterations)
 
 	for i := range iterations {
-		envoy, err := sandbox.GenerateEnvoyFromConfig(cfg, "", "")
+		envoy, err := terrarium.GenerateEnvoyFromConfig(cfg, "", "")
 		require.NoError(t, err)
 
-		ipv4, ipv6 := sandbox.GenerateIptablesRules(cfg)
+		ipv4, ipv6 := terrarium.GenerateIptablesRules(cfg)
 		envoyResults[i] = envoy
 		ipv4Results[i] = ipv4
 		ipv6Results[i] = ipv6

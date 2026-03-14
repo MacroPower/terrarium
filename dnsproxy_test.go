@@ -1,4 +1,4 @@
-package sandbox_test
+package terrarium_test
 
 import (
 	"context"
@@ -20,82 +20,82 @@ func TestDNSDomainMatches(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		domain sandbox.DNSDomain
+		domain terrarium.DNSDomain
 		qname  string
 		want   bool
 	}{
 		"non-wildcard exact match": {
-			domain: sandbox.DNSDomain{Name: "example.com"},
+			domain: terrarium.DNSDomain{Name: "example.com"},
 			qname:  "example.com.",
 			want:   true,
 		},
 		"non-wildcard subdomain": {
-			domain: sandbox.DNSDomain{Name: "example.com"},
+			domain: terrarium.DNSDomain{Name: "example.com"},
 			qname:  "sub.example.com.",
 			want:   false,
 		},
 		"non-wildcard deep subdomain": {
-			domain: sandbox.DNSDomain{Name: "example.com"},
+			domain: terrarium.DNSDomain{Name: "example.com"},
 			qname:  "a.b.c.example.com.",
 			want:   false,
 		},
 		"non-wildcard suffix trap": {
-			domain: sandbox.DNSDomain{Name: "example.com"},
+			domain: terrarium.DNSDomain{Name: "example.com"},
 			qname:  "notexample.com.",
 			want:   false,
 		},
 		"non-wildcard unrelated domain": {
-			domain: sandbox.DNSDomain{Name: "example.com"},
+			domain: terrarium.DNSDomain{Name: "example.com"},
 			qname:  "other.org.",
 			want:   false,
 		},
 		"wildcard subdomain match": {
-			domain: sandbox.DNSDomain{Name: "example.com", Wildcard: true},
+			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true},
 			qname:  "sub.example.com.",
 			want:   true,
 		},
 		"wildcard rejects deep subdomain": {
-			domain: sandbox.DNSDomain{Name: "example.com", Wildcard: true},
+			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true},
 			qname:  "a.b.example.com.",
 			want:   false,
 		},
 		"multi-level wildcard deep subdomain": {
-			domain: sandbox.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
+			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
 			qname:  "a.b.example.com.",
 			want:   true,
 		},
 		"multi-level wildcard single subdomain": {
-			domain: sandbox.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
+			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
 			qname:  "sub.example.com.",
 			want:   true,
 		},
 		"multi-level wildcard rejects bare parent": {
-			domain: sandbox.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
+			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
 			qname:  "example.com.",
 			want:   false,
 		},
 		"wildcard rejects bare parent": {
-			domain: sandbox.DNSDomain{Name: "example.com", Wildcard: true},
+			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true},
 			qname:  "example.com.",
 			want:   false,
 		},
 		"wildcard suffix trap": {
-			domain: sandbox.DNSDomain{Name: "example.com", Wildcard: true},
+			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true},
 			qname:  "notexample.com.",
 			want:   false,
 		},
 		"empty qname": {
-			domain: sandbox.DNSDomain{Name: "example.com"},
+			domain: terrarium.DNSDomain{Name: "example.com"},
 			qname:  "",
 			want:   false,
 		},
 		"root dot only": {
-			domain: sandbox.DNSDomain{Name: "example.com"},
+			domain: terrarium.DNSDomain{Name: "example.com"},
 			qname:  ".",
 			want:   false,
 		},
 		"case insensitive": {
-			domain: sandbox.DNSDomain{Name: "example.com"},
+			domain: terrarium.DNSDomain{Name: "example.com"},
 			qname:  "EXAMPLE.COM.",
 			want:   true,
 		},
@@ -114,124 +114,124 @@ func TestCollectDNSDomains(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg  sandbox.SandboxConfig
-		want []sandbox.DNSDomain
+		cfg  terrarium.Config
+		want []terrarium.DNSDomain
 	}{
 		"matchName produces non-wildcard": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "github.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			want: []sandbox.DNSDomain{{Name: "github.com"}},
+			want: []terrarium.DNSDomain{{Name: "github.com"}},
 		},
 		"matchPattern produces wildcard": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			want: []sandbox.DNSDomain{{Name: "example.com", Wildcard: true}},
+			want: []terrarium.DNSDomain{{Name: "example.com", Wildcard: true}},
 		},
 		"double-star produces multi-level wildcard": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "**.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			want: []sandbox.DNSDomain{{Name: "example.com", Wildcard: true, MultiLevel: true}},
+			want: []terrarium.DNSDomain{{Name: "example.com", Wildcard: true, MultiLevel: true}},
 		},
 		"multi-level upgrades single-level for same domain": {
-			cfg: sandbox.SandboxConfig{
+			cfg: terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "**.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
-			want: []sandbox.DNSDomain{{Name: "example.com", Wildcard: true, MultiLevel: true}},
+			want: []terrarium.DNSDomain{{Name: "example.com", Wildcard: true, MultiLevel: true}},
 		},
 		"bare wildcard passthrough": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			want: []sandbox.DNSDomain{{Name: "*"}},
+			want: []terrarium.DNSDomain{{Name: "*"}},
 		},
 		"matchName upgrades wildcard for same domain": {
-			cfg: sandbox.SandboxConfig{
+			cfg: terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
-			want: []sandbox.DNSDomain{{Name: "example.com"}},
+			want: []terrarium.DNSDomain{{Name: "example.com"}},
 		},
 		"TCPForward host upgrade": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
-				TCPForwards: []sandbox.TCPForward{{Port: 22, Host: "example.com"}},
+				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "example.com"}},
 			},
-			want: []sandbox.DNSDomain{{Name: "example.com"}},
+			want: []terrarium.DNSDomain{{Name: "example.com"}},
 		},
 		"TCPForward adds new host": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "github.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
-				TCPForwards: []sandbox.TCPForward{{Port: 22, Host: "git.example.com"}},
+				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "git.example.com"}},
 			},
-			want: []sandbox.DNSDomain{
+			want: []terrarium.DNSDomain{
 				{Name: "git.example.com"},
 				{Name: "github.com"},
 			},
 		},
 		"dedup same matchName": {
-			cfg: sandbox.SandboxConfig{
+			cfg: terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "80"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
 					},
 				),
 			},
-			want: []sandbox.DNSDomain{{Name: "example.com"}},
+			want: []terrarium.DNSDomain{{Name: "example.com"}},
 		},
 		"sorted output": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{
 						{MatchName: "z.example.com"},
 						{MatchName: "a.example.com"},
 					},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			want: []sandbox.DNSDomain{
+			want: []terrarium.DNSDomain{
 				{Name: "a.example.com"},
 				{Name: "z.example.com"},
 			},
@@ -242,7 +242,7 @@ func TestCollectDNSDomains(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got := sandbox.CollectDNSDomains(&tt.cfg)
+			got := terrarium.CollectDNSDomains(&tt.cfg)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -251,16 +251,16 @@ func TestCollectDNSDomains(t *testing.T) {
 func TestMatchFQDNPatterns(t *testing.T) {
 	t.Parallel()
 
-	cfg := sandbox.SandboxConfig{
+	cfg := terrarium.Config{
 		Egress: egressRules(
-			sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{
+			terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{
 					{MatchName: "exact.example.com"},
 					{MatchPattern: "*.wild.example.com"},
 					{MatchPattern: "**.deep.example.com"},
 					{MatchPattern: "*"},
 				},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 			},
 		),
 	}
@@ -331,13 +331,13 @@ func TestMatchFQDNPatterns(t *testing.T) {
 func TestMatchFQDNPatternsWithoutBareWildcard(t *testing.T) {
 	t.Parallel()
 
-	cfg := sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{
+	cfg := terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{
 				{MatchPattern: "*.example.com"},
 				{MatchPattern: "**.deep.other.com"},
 			},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 	patterns := cfg.CompileFQDNPatterns()
@@ -472,14 +472,14 @@ func TestStartDNSProxy(t *testing.T) {
 
 	upstream := startMockDNS(t, "1.2.3.4")
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "match.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "match.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -514,14 +514,14 @@ func TestDNSProxyTCPPassthrough(t *testing.T) {
 
 	upstream := startMockDNS(t, "5.6.7.8")
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "tcp.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "tcp.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -548,11 +548,11 @@ func TestDNSProxyBlockedMode(t *testing.T) {
 	upstream := startMockDNS(t, "1.2.3.4")
 
 	// Blocked config: egress: [{}] with default deny.
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{}),
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -574,14 +574,14 @@ func TestDNSProxyRestrictedMode(t *testing.T) {
 
 	upstream := startMockDNS(t, "10.0.0.1")
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "allowed.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "allowed.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -622,14 +622,14 @@ func TestDNSProxyRestrictedWildcard(t *testing.T) {
 
 	upstream := startMockDNS(t, "10.0.0.2")
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -669,14 +669,14 @@ func TestDNSProxyBareWildcard(t *testing.T) {
 
 	upstream := startMockDNS(t, "10.0.0.3")
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -699,7 +699,7 @@ func TestDNSProxyUnrestrictedMode(t *testing.T) {
 	upstream := startMockDNS(t, "10.0.0.4")
 
 	// nil config -> unrestricted.
-	proxy, err := sandbox.StartDNSProxy(t.Context(), nil, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), nil, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -725,15 +725,15 @@ func TestDNSProxyTCPPopulatesIPSet(t *testing.T) {
 		recorded []string
 	)
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "tcp-ipset.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "tcp-ipset.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		sandbox.WithIPSetFunc(func(_ context.Context, commands string) error {
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		terrarium.WithIPSetFunc(func(_ context.Context, commands string) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -855,15 +855,15 @@ func TestDNSProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 		recorded []string
 	)
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "truncated.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "truncated.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
-		sandbox.WithIPSetFunc(func(_ context.Context, commands string) error {
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
+		terrarium.WithIPSetFunc(func(_ context.Context, commands string) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -984,14 +984,14 @@ func TestDNSProxyUDPCompressionOversized(t *testing.T) {
 
 	upstream := startOversizedMockDNS(t)
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "compress.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "compress.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -1015,14 +1015,14 @@ func TestDNSProxyTCPNoCompression(t *testing.T) {
 
 	upstream := startOversizedMockDNS(t)
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "compress.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "compress.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -1047,15 +1047,15 @@ func TestDNSProxyTCPForwardHosts(t *testing.T) {
 	upstream := startMockDNS(t, "10.0.0.6")
 
 	// Restricted mode with a TCPForward host that should be resolvable.
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "github.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
-		TCPForwards: []sandbox.TCPForward{{Port: 22, Host: "git.example.com"}},
+		TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "git.example.com"}},
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -1180,15 +1180,15 @@ func TestDNSProxyCNAMEMinTTL(t *testing.T) {
 		recorded []string
 	)
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "cname.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "cname.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		sandbox.WithIPSetFunc(func(_ context.Context, commands string) error {
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		terrarium.WithIPSetFunc(func(_ context.Context, commands string) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -1232,15 +1232,15 @@ func TestDNSProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 		recorded []string
 	)
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "cname2.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "cname2.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		sandbox.WithIPSetFunc(func(_ context.Context, commands string) error {
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		terrarium.WithIPSetFunc(func(_ context.Context, commands string) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -1289,15 +1289,15 @@ func TestDNSProxyUpstreamTimeoutSilentDrop(t *testing.T) {
 
 	upstreamAddr := fmt.Sprintf("127.0.0.1:%d", udpAddr.Port)
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "timeout.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "timeout.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
-		sandbox.WithClientTimeout(100*time.Millisecond),
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
+		terrarium.WithClientTimeout(100*time.Millisecond),
 	)
 	require.NoError(t, err)
 
@@ -1332,15 +1332,15 @@ func TestDNSProxyUpstreamConnectionRefusedSERVFAIL(t *testing.T) {
 	addr := ln.Addr().String()
 	require.NoError(t, ln.Close()) // Close immediately so the port is not listening.
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "refused.example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "refused.example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
 	}
 
-	proxy, err := sandbox.StartDNSProxy(t.Context(), cfg, addr, "127.0.0.1:0", true,
-		sandbox.WithClientTimeout(2*time.Second),
+	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, addr, "127.0.0.1:0", true,
+		terrarium.WithClientTimeout(2*time.Second),
 	)
 	require.NoError(t, err)
 

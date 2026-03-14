@@ -1,4 +1,4 @@
-package sandbox_test
+package terrarium_test
 
 import (
 	"strings"
@@ -14,7 +14,7 @@ func TestGenerateIptablesRules(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg                *sandbox.SandboxConfig
+		cfg                *terrarium.Config
 		wantIPv4           []string
 		notWantIPv4        []string
 		wantIPv6           []string
@@ -22,17 +22,17 @@ func TestGenerateIptablesRules(t *testing.T) {
 		wantRedirectCount4 int
 	}{
 		"CIDR rules create user ACCEPT and NAT RETURN": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{
+					terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{
 						{CIDR: "0.0.0.0/0", Except: []string{
 							"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
 						}},
 						{CIDR: "::/0", Except: []string{"fc00::/7", "fe80::/10"}},
 					}},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 							{Port: "80"}, {Port: "443"}, {Port: "8080"},
 						}}},
 					},
@@ -70,10 +70,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"no CIDR rules means no IP-level rules": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
 			},
 			notWantIPv4: []string{
@@ -83,10 +83,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			notWantIPv6: []string{"fc00::/7", "fe80::/10"},
 		},
 		"no logging": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 				Logging: false,
 			},
@@ -94,19 +94,19 @@ func TestGenerateIptablesRules(t *testing.T) {
 			notWantIPv6: []string{"LOG"},
 		},
 		"single port": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv4:           []string{"--to-port 15443"},
 			wantRedirectCount4: 1,
 		},
 		"IPv6 rules": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{
 						{CIDR: "0.0.0.0/0"},
 						{CIDR: "::/0", Except: []string{"fc00::/7", "fe80::/10"}},
 					},
@@ -120,12 +120,12 @@ func TestGenerateIptablesRules(t *testing.T) {
 			notWantIPv6: []string{"127.0.0.0/8"},
 		},
 		"tcp forwards get redirect rules": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
-				TCPForwards: []sandbox.TCPForward{
+				TCPForwards: []terrarium.TCPForward{
 					{Port: 22, Host: "github.com"},
 					{Port: 3306, Host: "db.example.com"},
 				},
@@ -138,23 +138,23 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 4,
 		},
 		"tcp forwards in both ipv4 and ipv6": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
-				TCPForwards: []sandbox.TCPForward{{Port: 22, Host: "github.com"}},
+				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
 			},
 			wantIPv4: []string{"--dport 22 -j REDIRECT --to-port 15022"},
 			wantIPv6: []string{"--dport 22 -j REDIRECT --to-port 15022"},
 		},
 		"toCIDR produces same rules as toCIDRSet": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDR: []string{"8.8.8.0/24"}},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{ToCIDR: []string{"8.8.8.0/24"}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -165,10 +165,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"UDP CIDR rules use -p udp": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "53", Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "53", Protocol: "UDP"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -177,10 +177,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"ANY protocol CIDR expands to tcp and udp": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "53", Protocol: "ANY"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "53", Protocol: "ANY"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -192,10 +192,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			notWantIPv4: []string{"-m multiport", "-p sctp"},
 		},
 		"mixed TCP/UDP ports": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 						{Port: "443", Protocol: "TCP"},
 						{Port: "53", Protocol: "UDP"},
 					}}},
@@ -207,10 +207,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"port range CIDR uses --dport range syntax": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -222,10 +222,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			notWantIPv4: []string{"-p sctp"},
 		},
 		"port-scoped CIDR rules": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -239,13 +239,13 @@ func TestGenerateIptablesRules(t *testing.T) {
 			notWantIPv4: []string{"-p sctp"},
 		},
 		"port-scoped CIDR with except": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "0.0.0.0/0",
 						Except: []string{"10.0.0.0/8"},
 					}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -262,12 +262,12 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"CIDR RETURN comes before REDIRECT in NAT": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}}},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -276,10 +276,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"envoy can reach any IP": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -288,7 +288,7 @@ func TestGenerateIptablesRules(t *testing.T) {
 		},
 		// Three-mode tests.
 		"unrestricted: nil egress allows all": {
-			cfg: &sandbox.SandboxConfig{},
+			cfg: &terrarium.Config{},
 			wantIPv4: []string{
 				"-A OUTPUT -j ACCEPT",
 			},
@@ -298,8 +298,8 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"empty rule triggers deny-all": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{}),
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{}),
 			},
 			wantIPv4: []string{
 				"-A OUTPUT -j DROP",
@@ -310,14 +310,14 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"empty rule with FQDN+L7 has default-deny": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+					terrarium.EgressRule{},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 						}},
 					},
 				),
@@ -331,8 +331,8 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"unrestricted with tcp forwards": {
-			cfg: &sandbox.SandboxConfig{
-				TCPForwards: []sandbox.TCPForward{{Port: 22, Host: "github.com"}},
+			cfg: &terrarium.Config{
+				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
 			},
 			wantIPv4: []string{
 				"--dport 22 -j REDIRECT --to-port 15022",
@@ -346,14 +346,14 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 1,
 		},
 		"open UDP port gets ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "5353", Protocol: "UDP"}}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "5353", Protocol: "UDP"}}}},
 					},
 				),
 			},
@@ -362,13 +362,13 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"open ANY port gets redirect and UDP ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}}},
+					terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}}},
 				),
 			},
 			wantIPv4: []string{
@@ -380,14 +380,14 @@ func TestGenerateIptablesRules(t *testing.T) {
 			notWantIPv4: []string{"-p sctp"},
 		},
 		"open SCTP port gets ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "3868", Protocol: "SCTP"}}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "3868", Protocol: "SCTP"}}}},
 					},
 				),
 			},
@@ -396,7 +396,7 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"empty egress is unrestricted": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(),
 			},
 			wantIPv4: []string{
@@ -408,10 +408,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"FQDN UDP port gets ipset ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -427,10 +427,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"FQDN SCTP port gets ipset ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "3868", Protocol: "SCTP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "3868", Protocol: "SCTP"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -446,10 +446,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"FQDN ANY port gets redirect and ipset non-TCP ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -468,14 +468,14 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 1,
 		},
 		"FQDN non-TCP skipped when unrestricted open ports": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 					},
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{{}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{{}},
 					},
 				),
 			},
@@ -488,15 +488,15 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"separate FQDN and CIDR rules": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
+					terrarium.EgressRule{
 						ToCIDR:  []string{"10.0.0.0/8"},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -514,10 +514,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 1,
 		},
 		"cross-rule CIDR except does not block globally": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
-					sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{{
+					terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+					terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/8",
 						Except: []string{"10.1.0.0/16"},
 					}}},
@@ -533,10 +533,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"per-rule chains for CIDR except": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
-					sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{{
+					terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+					terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/8",
 						Except: []string{"10.1.0.0/16"},
 					}}},
@@ -556,10 +556,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"overlapping CIDR ranges across rules (ISSUE-44)": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
-					sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{{
+					terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+					terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.1.0.0/16",
 						Except: []string{"10.1.1.0/24"},
 					}}},
@@ -586,10 +586,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"no except still uses per-rule chains": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
-					sandbox.EgressRule{ToCIDR: []string{"192.168.0.0/16"}},
+					terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+					terrarium.EgressRule{ToCIDR: []string{"192.168.0.0/16"}},
 				),
 			},
 			wantIPv4: []string{
@@ -602,10 +602,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"toCIDR and toCIDRSet in same rule share chain": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR:    []string{"10.0.0.0/8"},
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "192.168.0.0/16", Except: []string{"192.168.1.0/24"}}},
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "192.168.0.0/16", Except: []string{"192.168.1.0/24"}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -621,18 +621,18 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"different port cross-rule CIDR except": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
+					terrarium.EgressRule{
 						ToCIDR:  []string{"10.0.0.0/8"},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{
+					terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{
 							CIDR:   "10.0.0.0/8",
 							Except: []string{"10.1.0.0/16"},
 						}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "80"}}}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}}}},
 					},
 				),
 			},
@@ -650,18 +650,18 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"port-scoped cross-rule CIDR except": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
+					terrarium.EgressRule{
 						ToCIDR:  []string{"10.0.0.0/8"},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{
+					terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{
 							CIDR:   "10.0.0.0/8",
 							Except: []string{"10.1.0.0/16"},
 						}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -674,16 +674,16 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"UDP open port range emits dport range": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{
-							{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "UDP"}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{
+							{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "UDP"}}},
 						},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -696,16 +696,16 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 1,
 		},
 		"TCP open port range bypasses Envoy with direct ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{
-							{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{
+							{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
 						},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -719,19 +719,19 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 1,
 		},
 		"mixed single and range open port": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080", Protocol: "TCP"}}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080", Protocol: "TCP"}}}},
 					},
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{
-							{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "UDP"}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{
+							{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "UDP"}}},
 						},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -744,16 +744,16 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 2,
 		},
 		"SCTP open port range emits dport range": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{
-							{Ports: []sandbox.Port{{Port: "5000", EndPort: 6000, Protocol: "SCTP"}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{
+							{Ports: []terrarium.Port{{Port: "5000", EndPort: 6000, Protocol: "SCTP"}}},
 						},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -762,16 +762,16 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"endPort equal to port emits dport N:N": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{
-							{Ports: []sandbox.Port{{Port: "8000", EndPort: 8000, Protocol: "TCP"}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{
+							{Ports: []terrarium.Port{{Port: "8000", EndPort: 8000, Protocol: "TCP"}}},
 						},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -787,10 +787,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 1,
 		},
 		"explicit SCTP CIDR still works": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "3868", Protocol: "SCTP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "3868", Protocol: "SCTP"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -803,10 +803,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"ESTABLISHED excludes sandboxed UID": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -824,10 +824,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"ICMP error types accepted for IPv4": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -841,10 +841,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"ICMPv6 error types accepted for IPv6": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv6: []string{
@@ -859,8 +859,8 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"blocked mode has ICMP error rules": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{}),
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{}),
 			},
 			wantIPv4: []string{
 				"-A OUTPUT -p icmp --icmp-type destination-unreachable -m state --state RELATED -j ACCEPT",
@@ -870,7 +870,7 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"unrestricted mode has ICMP error rules": {
-			cfg: &sandbox.SandboxConfig{},
+			cfg: &terrarium.Config{},
 			wantIPv4: []string{
 				"-A OUTPUT -p icmp --icmp-type destination-unreachable -m state --state RELATED -j ACCEPT",
 			},
@@ -879,10 +879,10 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"INPUT chain drops unsolicited inbound": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -897,15 +897,15 @@ func TestGenerateIptablesRules(t *testing.T) {
 			},
 		},
 		"FQDN REDIRECT coexists with open-port TCP range ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000"}}}},
 					},
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{
-							{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{
+							{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
 						},
 					},
 				),
@@ -920,17 +920,17 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 1,
 		},
 		"open port + FQDN overlap gets NAT RETURN before REDIRECT": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 						}},
 					},
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
@@ -946,15 +946,15 @@ func TestGenerateIptablesRules(t *testing.T) {
 			wantRedirectCount4: 1,
 		},
 		"two FQDN rules get separate ipsets": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "a.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "a.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "b.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080", Protocol: "UDP"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "b.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080", Protocol: "UDP"}}}},
 					},
 				),
 			},
@@ -973,7 +973,7 @@ func TestGenerateIptablesRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ipv4, ipv6 := sandbox.GenerateIptablesRules(tt.cfg)
+			ipv4, ipv6 := terrarium.GenerateIptablesRules(tt.cfg)
 
 			for _, s := range tt.wantIPv4 {
 				assert.Contains(t, ipv4, s)
@@ -1001,17 +1001,17 @@ func TestGenerateIptablesRules(t *testing.T) {
 func TestGenerateIptablesRulesNATOrder(t *testing.T) {
 	t.Parallel()
 
-	cfg := &sandbox.SandboxConfig{
+	cfg := &terrarium.Config{
 		Egress: egressRules(
-			sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}}},
-			sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}}},
+			terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			},
 		),
 	}
 
-	ipv4, _ := sandbox.GenerateIptablesRules(cfg)
+	ipv4, _ := terrarium.GenerateIptablesRules(cfg)
 
 	returnIdx := strings.Index(ipv4, "-d 8.8.8.0/24 -j RETURN")
 	redirectIdx := strings.Index(ipv4, "-j REDIRECT")
@@ -1022,22 +1022,22 @@ func TestGenerateIptablesRulesNATOrder(t *testing.T) {
 func TestGenerateIptablesRulesOpenFQDNOverlapNATOrder(t *testing.T) {
 	t.Parallel()
 
-	cfg := &sandbox.SandboxConfig{
+	cfg := &terrarium.Config{
 		Egress: egressRules(
-			sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{{
-					Ports: []sandbox.Port{{Port: "443"}},
-					Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{{
+					Ports: []terrarium.Port{{Port: "443"}},
+					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 				}},
 			},
-			sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			},
 		),
 	}
 
-	ipv4, _ := sandbox.GenerateIptablesRules(cfg)
+	ipv4, _ := terrarium.GenerateIptablesRules(cfg)
 
 	returnIdx := strings.Index(ipv4, "--dport 443 -j RETURN")
 	redirectIdx := strings.Index(ipv4, "--dport 443 -j REDIRECT")
@@ -1053,16 +1053,16 @@ func TestGenerateIptablesRulesOpenFQDNOverlapNATOrder(t *testing.T) {
 func TestGenerateIptablesRulesFilterOrder(t *testing.T) {
 	t.Parallel()
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToCIDRSet: []sandbox.CIDRRule{{
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToCIDRSet: []terrarium.CIDRRule{{
 				CIDR:   "0.0.0.0/0",
 				Except: []string{"10.0.0.0/8"},
 			}},
 		}),
 	}
 
-	ipv4, _ := sandbox.GenerateIptablesRules(cfg)
+	ipv4, _ := terrarium.GenerateIptablesRules(cfg)
 
 	// Within the per-rule chain, except RETURN comes before CIDR ACCEPT.
 	returnIdx := strings.Index(ipv4, "-d 10.0.0.0/8 -j RETURN")
@@ -1078,14 +1078,14 @@ func TestGenerateIptablesRulesFilterOrder(t *testing.T) {
 func TestGenerateIptablesRulesInputBeforeOutput(t *testing.T) {
 	t.Parallel()
 
-	cfg := &sandbox.SandboxConfig{
-		Egress: egressRules(sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-			ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+	cfg := &terrarium.Config{
+		Egress: egressRules(terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+			ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 		}),
 	}
 
-	ipv4, ipv6 := sandbox.GenerateIptablesRules(cfg)
+	ipv4, ipv6 := terrarium.GenerateIptablesRules(cfg)
 
 	for _, rules := range []string{ipv4, ipv6} {
 		// Search within the filter table only (NAT table also has
@@ -1109,17 +1109,17 @@ func TestGenerateIptablesRulesOverlappingCIDRChainOrder(t *testing.T) {
 	// Verify both chains use RETURN semantics so that traffic to
 	// 10.1.1.0/24 is accepted by rule 0's chain even though rule 1
 	// excludes it (OR across rules).
-	cfg := &sandbox.SandboxConfig{
+	cfg := &terrarium.Config{
 		Egress: egressRules(
-			sandbox.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
-			sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{{
+			terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{{
 				CIDR:   "10.1.0.0/16",
 				Except: []string{"10.1.1.0/24"},
 			}}},
 		),
 	}
 
-	ipv4, _ := sandbox.GenerateIptablesRules(cfg)
+	ipv4, _ := terrarium.GenerateIptablesRules(cfg)
 
 	// Rule 0's chain: broad /8 ACCEPT with no excepts.
 	rule0Accept := strings.Index(ipv4, "-A CIDR_4_0 -m owner --uid-owner 1000 -d 10.0.0.0/8 -j ACCEPT")
@@ -1156,14 +1156,14 @@ func TestGenerateIptablesRulesUnrestrictedOpenPorts(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg         *sandbox.SandboxConfig
+		cfg         *terrarium.Config
 		wantIPv4    []string
 		notWantIPv4 []string
 	}{
 		"unrestricted open ports": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{{}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{{}},
 				}),
 			},
 			wantIPv4: []string{
@@ -1174,14 +1174,14 @@ func TestGenerateIptablesRulesUnrestrictedOpenPorts(t *testing.T) {
 			},
 		},
 		"unrestricted open ports with FQDN": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{{}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{{}},
 					},
 				),
 			},
@@ -1193,16 +1193,16 @@ func TestGenerateIptablesRulesUnrestrictedOpenPorts(t *testing.T) {
 			},
 		},
 		"unrestricted open ports with CIDR except": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{
+					terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{
 							CIDR:   "0.0.0.0/0",
 							Except: []string{"10.0.0.0/8"},
 						}},
 					},
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{{}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{{}},
 					},
 				),
 			},
@@ -1220,10 +1220,10 @@ func TestGenerateIptablesRulesUnrestrictedOpenPorts(t *testing.T) {
 			},
 		},
 		"empty ports with CIDR": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{}},
 				}),
 			},
 			wantIPv4: []string{
@@ -1238,9 +1238,9 @@ func TestGenerateIptablesRulesUnrestrictedOpenPorts(t *testing.T) {
 			},
 		},
 		"port 0 open-port rule produces unrestricted ACCEPT": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -1251,10 +1251,10 @@ func TestGenerateIptablesRulesUnrestrictedOpenPorts(t *testing.T) {
 			},
 		},
 		"port 0 CIDR rule produces portless iptables rules": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "10.0.0.0/8"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "10.0.0.0/8"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				}),
 			},
 			wantIPv4: []string{
@@ -1271,7 +1271,7 @@ func TestGenerateIptablesRulesUnrestrictedOpenPorts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ipv4, _ := sandbox.GenerateIptablesRules(tt.cfg)
+			ipv4, _ := terrarium.GenerateIptablesRules(tt.cfg)
 
 			for _, s := range tt.wantIPv4 {
 				assert.Contains(t, ipv4, s)

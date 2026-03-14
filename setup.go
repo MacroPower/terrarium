@@ -1,4 +1,4 @@
-package sandbox
+package terrarium
 
 import (
 	"fmt"
@@ -92,7 +92,7 @@ func SetupDevWithPaths(homeDir, historyDir, claudeStateDir string) error {
 	return nil
 }
 
-// SetupUser creates the non-root sandbox user and group by appending
+// SetupUser creates the non-root terrarium user and group by appending
 // entries to /etc/passwd and /etc/group, then recursively chowns the
 // home directory. The nix image lacks useradd/adduser.
 func SetupUser() error {

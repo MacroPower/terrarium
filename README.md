@@ -1,6 +1,6 @@
 # Terrarium
 
-Terrarium is a secure sandbox that uses [Envoy](https://www.envoyproxy.io/) as an L7 egress gateway,
+Terrarium is a secure container environment that uses [Envoy](https://www.envoyproxy.io/) as an L7 egress gateway,
 configured via familiar [Cilium](https://cilium.io/) network policy semantics.
 
 It is particularly useful for running fully autonomous AI agents.

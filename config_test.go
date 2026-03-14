@@ -1,4 +1,4 @@
-package sandbox_test
+package terrarium_test
 
 import (
 	"sort"
@@ -11,8 +11,8 @@ import (
 	"go.jacobcolvin.com/terrarium"
 )
 
-// egressRules is a test helper that returns a pointer to a slice of sandbox.EgressRule.
-func egressRules(rules ...sandbox.EgressRule) *[]sandbox.EgressRule {
+// egressRules is a test helper that returns a pointer to a slice of terrarium.EgressRule.
+func egressRules(rules ...terrarium.EgressRule) *[]terrarium.EgressRule {
 	return &rules
 }
 
@@ -111,7 +111,7 @@ egress:
   - toFQDNs:
       - matchName: example.com
 `,
-			err: sandbox.ErrFQDNRequiresPorts,
+			err: terrarium.ErrFQDNRequiresPorts,
 		},
 		"FQDN with wildcard port 0 rejected": {
 			yaml: `
@@ -122,7 +122,7 @@ egress:
       - ports:
           - port: "0"
 `,
-			err: sandbox.ErrFQDNWildcardPort,
+			err: terrarium.ErrFQDNWildcardPort,
 		},
 		"FQDN selector empty": {
 			yaml: `
@@ -130,7 +130,7 @@ egress:
   - toFQDNs:
       - {}
 `,
-			err: sandbox.ErrFQDNSelectorEmpty,
+			err: terrarium.ErrFQDNSelectorEmpty,
 		},
 		"empty egress rule is valid (deny-all)": {
 			yaml: `
@@ -153,7 +153,7 @@ egress:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
+			cfg, err := terrarium.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 				return
@@ -221,7 +221,7 @@ egress:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
+			cfg, err := terrarium.ParseConfig(t.Context(), []byte(tt.yaml))
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantUnrestricted, cfg.IsEgressUnrestricted())
 			assert.Equal(t, tt.wantBlocked, cfg.IsEgressBlocked())
@@ -234,13 +234,13 @@ func TestEmptyRuleWithFQDNSemantics(t *testing.T) {
 
 	// Empty rule + FQDN rule under default-deny: the empty rule
 	// contributes nothing (no selectors), but the FQDN rule applies.
-	cfg := &sandbox.SandboxConfig{Egress: egressRules(
-		sandbox.EgressRule{},
-		sandbox.EgressRule{
-			ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-			ToPorts: []sandbox.PortRule{{
-				Ports: []sandbox.Port{{Port: "443"}},
-				Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+	cfg := &terrarium.Config{Egress: egressRules(
+		terrarium.EgressRule{},
+		terrarium.EgressRule{
+			ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+			ToPorts: []terrarium.PortRule{{
+				Ports: []terrarium.Port{{Port: "443"}},
+				Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 			}},
 		},
 	)}
@@ -256,7 +256,7 @@ func TestParseTCPForwards(t *testing.T) {
 
 	tests := map[string]struct {
 		yaml string
-		want []sandbox.TCPForward
+		want []terrarium.TCPForward
 	}{
 		"single forward": {
 			yaml: `
@@ -264,7 +264,7 @@ tcpForwards:
   - port: 22
     host: github.com
 `,
-			want: []sandbox.TCPForward{{Port: 22, Host: "github.com"}},
+			want: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
 		},
 		"multiple forwards": {
 			yaml: `
@@ -274,7 +274,7 @@ tcpForwards:
   - port: 3306
     host: db.internal.com
 `,
-			want: []sandbox.TCPForward{
+			want: []terrarium.TCPForward{
 				{Port: 22, Host: "github.com"},
 				{Port: 3306, Host: "db.internal.com"},
 			},
@@ -295,7 +295,7 @@ egress:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
+			cfg, err := terrarium.ParseConfig(t.Context(), []byte(tt.yaml))
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.TCPForwards)
 		})
@@ -306,33 +306,33 @@ func TestValidate(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg *sandbox.SandboxConfig
+		cfg *terrarium.Config
 		err error
 	}{
 		"valid with forwards": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
-				TCPForwards: []sandbox.TCPForward{{Port: 22, Host: "github.com"}},
+				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
 			},
 		},
 		"valid no forwards": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"valid FQDN with L7 paths": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "/v1/"},
 							{Path: "/v2/"},
 						}},
@@ -341,77 +341,77 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"FQDN selector empty": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{}},
 				}),
 			},
-			err: sandbox.ErrFQDNSelectorEmpty,
+			err: terrarium.ErrFQDNSelectorEmpty,
 		},
 		"FQDN without toPorts rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
 				}),
 			},
-			err: sandbox.ErrFQDNRequiresPorts,
+			err: terrarium.ErrFQDNRequiresPorts,
 		},
 		"FQDN with empty Ports list rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrFQDNRequiresPorts,
+			err: terrarium.ErrFQDNRequiresPorts,
 		},
 		"FQDN with wildcard port 0 rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "0"}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "0"}},
 					}},
 				}),
 			},
-			err: sandbox.ErrFQDNWildcardPort,
+			err: terrarium.ErrFQDNWildcardPort,
 		},
 		"empty egress rule is valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{}),
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{}),
 			},
 		},
 		"nil egress is valid": {
-			cfg: &sandbox.SandboxConfig{},
+			cfg: &terrarium.Config{},
 		},
 		"empty egress slice is valid": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(),
 			},
 		},
 		"invalid path regex": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "[unclosed"},
 						}},
 					}},
 				}),
 			},
-			err: sandbox.ErrPathInvalidRegex,
+			err: terrarium.ErrPathInvalidRegex,
 		},
 		"valid regex paths": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "/v1/.*"},
 							{Path: "/api/v[12]/.*"},
 						}},
@@ -420,71 +420,71 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"duplicate forward port": {
-			cfg: &sandbox.SandboxConfig{
-				TCPForwards: []sandbox.TCPForward{
+			cfg: &terrarium.Config{
+				TCPForwards: []terrarium.TCPForward{
 					{Port: 22, Host: "github.com"},
 					{Port: 22, Host: "gitlab.com"},
 				},
 			},
-			err: sandbox.ErrDuplicateTCPForwardPort,
+			err: terrarium.ErrDuplicateTCPForwardPort,
 		},
 		"forward port conflicts with resolved port": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 				}),
-				TCPForwards: []sandbox.TCPForward{{Port: 8080, Host: "example.com"}},
+				TCPForwards: []terrarium.TCPForward{{Port: 8080, Host: "example.com"}},
 			},
-			err: sandbox.ErrTCPForwardPortConflict,
+			err: terrarium.ErrTCPForwardPortConflict,
 		},
 		"invalid zero port": {
-			cfg: &sandbox.SandboxConfig{
-				TCPForwards: []sandbox.TCPForward{{Port: 0, Host: "example.com"}},
+			cfg: &terrarium.Config{
+				TCPForwards: []terrarium.TCPForward{{Port: 0, Host: "example.com"}},
 			},
-			err: sandbox.ErrInvalidTCPForward,
+			err: terrarium.ErrInvalidTCPForward,
 		},
 		"invalid negative port": {
-			cfg: &sandbox.SandboxConfig{
-				TCPForwards: []sandbox.TCPForward{{Port: -1, Host: "example.com"}},
+			cfg: &terrarium.Config{
+				TCPForwards: []terrarium.TCPForward{{Port: -1, Host: "example.com"}},
 			},
-			err: sandbox.ErrInvalidTCPForward,
+			err: terrarium.ErrInvalidTCPForward,
 		},
 		"invalid empty host": {
-			cfg: &sandbox.SandboxConfig{
-				TCPForwards: []sandbox.TCPForward{{Port: 22, Host: ""}},
+			cfg: &terrarium.Config{
+				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: ""}},
 			},
-			err: sandbox.ErrInvalidTCPForward,
+			err: terrarium.ErrInvalidTCPForward,
 		},
 		"tcp forwards with blocked egress": {
-			cfg: &sandbox.SandboxConfig{
-				Egress:      egressRules(sandbox.EgressRule{}),
-				TCPForwards: []sandbox.TCPForward{{Port: 22, Host: "github.com"}},
+			cfg: &terrarium.Config{
+				Egress:      egressRules(terrarium.EgressRule{}),
+				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "github.com"}},
 			},
-			err: sandbox.ErrTCPForwardRequiresEgress,
+			err: terrarium.ErrTCPForwardRequiresEgress,
 		},
 		"port exceeds proxy range": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "50536"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "50536"}}}},
 				}),
 			},
-			err: sandbox.ErrPortExceedsProxyRange,
+			err: terrarium.ErrPortExceedsProxyRange,
 		},
 		"tcp forward port exceeds proxy range": {
-			cfg: &sandbox.SandboxConfig{
-				TCPForwards: []sandbox.TCPForward{{Port: 50536, Host: "example.com"}},
+			cfg: &terrarium.Config{
+				TCPForwards: []terrarium.TCPForward{{Port: 50536, Host: "example.com"}},
 			},
-			err: sandbox.ErrPortExceedsProxyRange,
+			err: terrarium.ErrPortExceedsProxyRange,
 		},
 		"valid methods": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Method: "GET"},
 							{Method: "POST"},
 						}},
@@ -493,12 +493,12 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"lowercase method is valid regex": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Method: "get"},
 						}},
 					}},
@@ -506,12 +506,12 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"custom method is valid regex": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Method: "FOOBAR"},
 						}},
 					}},
@@ -519,12 +519,12 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"method regex pattern": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Method: "GET|POST"},
 						}},
 					}},
@@ -532,26 +532,26 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"invalid method regex": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Method: "[unclosed"},
 						}},
 					}},
 				}),
 			},
-			err: sandbox.ErrMethodInvalidRegex,
+			err: terrarium.ErrMethodInvalidRegex,
 		},
 		"invalid empty method string": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Method: ""},
 						}},
 					}},
@@ -560,240 +560,240 @@ func TestValidate(t *testing.T) {
 			// Empty method is allowed (means "all methods").
 		},
 		"FQDN with toCIDR rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					ToCIDR:  []string{"10.0.0.0/8"},
 				}),
 			},
-			err: sandbox.ErrFQDNWithCIDR,
+			err: terrarium.ErrFQDNWithCIDR,
 		},
 		"toCIDR with toCIDRSet rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR:    []string{"10.0.0.0/8"},
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
 				}),
 			},
-			err: sandbox.ErrCIDRAndCIDRSetMixed,
+			err: terrarium.ErrCIDRAndCIDRSetMixed,
 		},
 		"toCIDR and toCIDRSet in separate rules valid": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
-					sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}}},
+					terrarium.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+					terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}}},
 				),
 			},
 		},
 		"FQDN with toCIDR and L7 rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
 					ToCIDR:  []string{"10.0.0.0/8"},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrFQDNWithCIDR,
+			err: terrarium.ErrFQDNWithCIDR,
 		},
 		"FQDN with toCIDRSet rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs:   []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs:   []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrFQDNWithCIDR,
+			err: terrarium.ErrFQDNWithCIDR,
 		},
 		"FQDN selector both matchName and matchPattern": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com", MatchPattern: "*.example.com"}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com", MatchPattern: "*.example.com"}},
 				}),
 			},
-			err: sandbox.ErrFQDNSelectorAmbiguous,
+			err: terrarium.ErrFQDNSelectorAmbiguous,
 		},
 		"deep wildcard accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "**.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"triple star wildcard accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "***.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "***.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"bare double star accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "**"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"mid-pattern double star accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "test.**.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "test.**.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"bare wildcard accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"bare wildcard with specific ports": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
 			},
 		},
 		"partial wildcard mid-label rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "api.*-staging.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "api.*-staging.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNPatternPartialWildcard,
+			err: terrarium.ErrFQDNPatternPartialWildcard,
 		},
 		"partial wildcard suffix rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "example.com.*"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "example.com.*"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNPatternPartialWildcard,
+			err: terrarium.ErrFQDNPatternPartialWildcard,
 		},
 		"multiple wildcards rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.*.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.*.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNPatternPartialWildcard,
+			err: terrarium.ErrFQDNPatternPartialWildcard,
 		},
 		"valid leading wildcard prefix": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"valid toCIDR": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"10.0.0.0/8"},
 				}),
 			},
 		},
 		"bare IPv4 in toCIDR accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"10.0.0.1"},
 				}),
 			},
 		},
 		"bare IPv6 in toCIDR accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"fd00::1"},
 				}),
 			},
 		},
 		"bare IPv4-mapped IPv6 in toCIDR rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"::ffff:10.0.0.1"},
 				}),
 			},
-			err: sandbox.ErrCIDRIPv4MappedIPv6,
+			err: terrarium.ErrCIDRIPv4MappedIPv6,
 		},
 		"IPv4-mapped IPv6 CIDR in toCIDR rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"::ffff:10.0.0.0/104"},
 				}),
 			},
-			err: sandbox.ErrCIDRIPv4MappedIPv6,
+			err: terrarium.ErrCIDRIPv4MappedIPv6,
 		},
 		"IPv4-mapped IPv6 parent in toCIDRSet rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "::ffff:10.0.0.0/104"}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "::ffff:10.0.0.0/104"}},
 				}),
 			},
-			err: sandbox.ErrCIDRIPv4MappedIPv6,
+			err: terrarium.ErrCIDRIPv4MappedIPv6,
 		},
 		"IPv4-mapped IPv6 except entry rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "fd00::/8",
 						Except: []string{"::ffff:10.0.0.0/104"},
 					}},
 				}),
 			},
-			err: sandbox.ErrCIDRIPv4MappedIPv6,
+			err: terrarium.ErrCIDRIPv4MappedIPv6,
 		},
 		"cross-family except IPv4 parent IPv6 except rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/8",
 						Except: []string{"fd00::/16"},
 					}},
 				}),
 			},
-			err: sandbox.ErrExceptAddressFamilyMismatch,
+			err: terrarium.ErrExceptAddressFamilyMismatch,
 		},
 		"cross-family except IPv6 parent IPv4 except rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "fd00::/8",
 						Except: []string{"10.0.0.0/16"},
 					}},
 				}),
 			},
-			err: sandbox.ErrExceptAddressFamilyMismatch,
+			err: terrarium.ErrExceptAddressFamilyMismatch,
 		},
 		"invalid toCIDR": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"not-a-cidr"},
 				}),
 			},
-			err: sandbox.ErrCIDRInvalid,
+			err: terrarium.ErrCIDRInvalid,
 		},
 		"valid protocol TCP/UDP/ANY": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 						{Port: "80", Protocol: "TCP"},
 						{Port: "53", Protocol: "UDP"},
 						{Port: "443", Protocol: "ANY"},
@@ -802,67 +802,67 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"SCTP protocol": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "80", Protocol: "SCTP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80", Protocol: "SCTP"}}}},
 				}),
 			},
 		},
 		"invalid protocol": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "80", Protocol: "ICMP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80", Protocol: "ICMP"}}}},
 				}),
 			},
-			err: sandbox.ErrProtocolInvalid,
+			err: terrarium.ErrProtocolInvalid,
 		},
 		"valid endPort": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000}}}},
 				}),
 			},
 		},
 		"endPort less than port": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "9000", EndPort: 8000}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "9000", EndPort: 8000}}}},
 				}),
 			},
-			err: sandbox.ErrEndPortInvalid,
+			err: terrarium.ErrEndPortInvalid,
 		},
 		"endPort with toFQDNs valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000}}}},
 				}),
 			},
 		},
 		"invalid CIDR": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "not-a-cidr"}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "not-a-cidr"}},
 				}),
 			},
-			err: sandbox.ErrCIDRInvalid,
+			err: terrarium.ErrCIDRInvalid,
 		},
 		"invalid CIDR except": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0", Except: []string{"bad"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0", Except: []string{"bad"}}},
 				}),
 			},
-			err: sandbox.ErrCIDRInvalid,
+			err: terrarium.ErrCIDRInvalid,
 		},
 		"valid CIDR rule": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "0.0.0.0/0",
 						Except: []string{"10.0.0.0/8", "172.16.0.0/12"},
 					}},
@@ -870,38 +870,38 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"port empty string": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: ""}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: ""}}}},
 				}),
 			},
-			err: sandbox.ErrPortEmpty,
+			err: terrarium.ErrPortEmpty,
 		},
 		"port invalid string": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "abc"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "abc"}}}},
 				}),
 			},
-			err: sandbox.ErrPortInvalid,
+			err: terrarium.ErrPortInvalid,
 		},
 		"except not subnet of parent": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/8",
 						Except: []string{"192.168.0.0/16"},
 					}},
 				}),
 			},
-			err: sandbox.ErrExceptNotSubnet,
+			err: terrarium.ErrExceptNotSubnet,
 		},
 		"except subnet valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/8",
 						Except: []string{"10.1.0.0/16"},
 					}},
@@ -909,9 +909,9 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"except equal to parent valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/8",
 						Except: []string{"10.0.0.0/8"},
 					}},
@@ -919,108 +919,108 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"except broader than parent": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/16",
 						Except: []string{"10.0.0.0/8"},
 					}},
 				}),
 			},
-			err: sandbox.ErrExceptNotSubnet,
+			err: terrarium.ErrExceptNotSubnet,
 		},
 		"except different address family": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/8",
 						Except: []string{"fd00::/8"},
 					}},
 				}),
 			},
-			err: sandbox.ErrExceptAddressFamilyMismatch,
+			err: terrarium.ErrExceptAddressFamilyMismatch,
 		},
 		"L7 on toPorts-only rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrL7RequiresFQDN,
+			err: terrarium.ErrL7RequiresFQDN,
 		},
 		"empty HTTP on toPorts-only valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{}},
 					}},
 				}),
 			},
 		},
 		"toPorts-only without L7 valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 				}),
 			},
 		},
 		"empty ports on non-FQDN rule valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{{}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{{}},
 				}),
 			},
 		},
 		"empty ports with CIDR valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{}},
 				}),
 			},
 		},
 		"wildcard matchPattern with L7 rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrWildcardWithL7,
+			err: terrarium.ErrWildcardWithL7,
 		},
 		"wildcard matchPattern without L7 allowed": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"path regex too long rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: strings.Repeat("a", 1001)},
 						}},
 					}},
 				}),
 			},
-			err: sandbox.ErrPathInvalidRegex,
+			err: terrarium.ErrPathInvalidRegex,
 		},
 		"except CIDR with host bits uses network base": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{
 						CIDR:   "10.0.0.0/8",
 						Except: []string{"10.1.2.3/16"},
 					}},
@@ -1028,68 +1028,68 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"lowercase protocol tcp normalized": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "tcp"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "tcp"}}}},
 				}),
 			},
 		},
 		"mixed case protocol Tcp normalized": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "Tcp"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "Tcp"}}}},
 				}),
 			},
 		},
 		"matchName case normalized": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "GitHub.COM"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "GitHub.COM"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"matchName trailing dot stripped": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com."}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com."}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"matchPattern case normalized": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.Example.COM"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.Example.COM"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"matchPattern trailing dot stripped": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com."}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com."}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"matchName only dot rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "."}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "."}},
 				}),
 			},
-			err: sandbox.ErrFQDNSelectorEmpty,
+			err: terrarium.ErrFQDNSelectorEmpty,
 		},
 		"HTTP host field accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "/v1/", Host: "api\\.example\\.com"},
 						}},
 					}},
@@ -1097,26 +1097,26 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"host invalid regex rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Host: "["},
 						}},
 					}},
 				}),
 			},
-			err: sandbox.ErrHostInvalidRegex,
+			err: terrarium.ErrHostInvalidRegex,
 		},
 		"HTTP headers valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "/v1/", Headers: []string{"X-Custom"}},
 						}},
 					}},
@@ -1124,402 +1124,402 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		"HTTP headers empty name rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "/v1/", Headers: []string{""}},
 						}},
 					}},
 				}),
 			},
-			err: sandbox.ErrHTTPHeaderEmpty,
+			err: terrarium.ErrHTTPHeaderEmpty,
 		},
 		"headerMatches valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
-							{HeaderMatches: []sandbox.HeaderMatch{{Name: "X-Token", Value: "secret"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+							{HeaderMatches: []terrarium.HeaderMatch{{Name: "X-Token", Value: "secret"}}},
 						}},
 					}},
 				}),
 			},
 		},
 		"headerMatches empty name rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
-							{HeaderMatches: []sandbox.HeaderMatch{{Name: ""}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+							{HeaderMatches: []terrarium.HeaderMatch{{Name: ""}}},
 						}},
 					}},
 				}),
 			},
-			err: sandbox.ErrHeaderMatchNameEmpty,
+			err: terrarium.ErrHeaderMatchNameEmpty,
 		},
 		"headerMatches mismatch action rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
-							{HeaderMatches: []sandbox.HeaderMatch{{Name: "X-Token", Mismatch: sandbox.MismatchLOG}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
+							{HeaderMatches: []terrarium.HeaderMatch{{Name: "X-Token", Mismatch: terrarium.MismatchLOG}}},
 						}},
 					}},
 				}),
 			},
-			err: sandbox.ErrHeaderMatchMismatchAction,
+			err: terrarium.ErrHeaderMatchMismatchAction,
 		},
 		"L7 on port 8443 valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "8443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "8443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
 		},
 		"L7 on port 80 valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "80"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "80"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
 		},
 		"L7 with UDP protocol rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrL7RequiresTCP,
+			err: terrarium.ErrL7RequiresTCP,
 		},
 		"L7 with SCTP protocol rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "80", Protocol: "SCTP"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "80", Protocol: "SCTP"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrL7RequiresTCP,
+			err: terrarium.ErrL7RequiresTCP,
 		},
 		"L7 with ANY protocol rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443", Protocol: "ANY"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443", Protocol: "ANY"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrL7RequiresTCP,
+			err: terrarium.ErrL7RequiresTCP,
 		},
 		"L7 with explicit TCP protocol valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443", Protocol: "TCP"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443", Protocol: "TCP"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
 		},
 		"L7 with empty protocol valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
 		},
 		"L7 with mixed TCP and UDP ports rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{
 							{Port: "80", Protocol: "TCP"},
 							{Port: "443", Protocol: "UDP"},
 						},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrL7RequiresTCP,
+			err: terrarium.ErrL7RequiresTCP,
 		},
 		"L7 with lowercase udp normalized then rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443", Protocol: "udp"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443", Protocol: "udp"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrL7RequiresTCP,
+			err: terrarium.ErrL7RequiresTCP,
 		},
 		"empty HTTP rules with UDP protocol valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{}},
 					}},
 				}),
 			},
 		},
 		"matchName with spaces rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example .com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example .com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNNameInvalidChars,
+			err: terrarium.ErrFQDNNameInvalidChars,
 		},
 		"matchName with colon rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example:8080.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example:8080.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNNameInvalidChars,
+			err: terrarium.ErrFQDNNameInvalidChars,
 		},
 		"matchName with slash rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com/path"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com/path"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNNameInvalidChars,
+			err: terrarium.ErrFQDNNameInvalidChars,
 		},
 		"matchName with semicolon rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example;.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example;.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNNameInvalidChars,
+			err: terrarium.ErrFQDNNameInvalidChars,
 		},
 		"matchPattern with spaces rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example .com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example .com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNPatternInvalidChars,
+			err: terrarium.ErrFQDNPatternInvalidChars,
 		},
 		"matchPattern with semicolon rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example;.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example;.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNPatternInvalidChars,
+			err: terrarium.ErrFQDNPatternInvalidChars,
 		},
 		"matchPattern with colon rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example:8080.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example:8080.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNPatternInvalidChars,
+			err: terrarium.ErrFQDNPatternInvalidChars,
 		},
 		"matchPattern with slash rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com/path"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com/path"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNPatternInvalidChars,
+			err: terrarium.ErrFQDNPatternInvalidChars,
 		},
 		"matchName exceeding 255 chars rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: strings.Repeat("a", 256)}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: strings.Repeat("a", 256)}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNTooLong,
+			err: terrarium.ErrFQDNTooLong,
 		},
 		"matchPattern exceeding 255 chars rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*." + strings.Repeat("a", 254)}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*." + strings.Repeat("a", 254)}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNTooLong,
+			err: terrarium.ErrFQDNTooLong,
 		},
 		"matchName at exactly 255 chars valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: strings.Repeat("a", 255)}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: strings.Repeat("a", 255)}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"matchName with underscore valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "_dmarc.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "_dmarc.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"matchName with hyphen valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "my-service.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "my-service.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"punycode IDN matchName valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "xn--n3h.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "xn--n3h.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"raw unicode matchName rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "\u2603.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "\u2603.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNNameInvalidChars,
+			err: terrarium.ErrFQDNNameInvalidChars,
 		},
 		"port 0 without L7 accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				}),
 			},
 		},
 		"port 0 with FQDN rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				}),
 			},
-			err: sandbox.ErrFQDNWildcardPort,
+			err: terrarium.ErrFQDNWildcardPort,
 		},
 		"port 0 with FQDN and L7 rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "0"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "0"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
-			err: sandbox.ErrFQDNWildcardPort,
+			err: terrarium.ErrFQDNWildcardPort,
 		},
 		"empty ports with L7 rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{
-						{Ports: []sandbox.Port{{Port: "443"}}},
-						{Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{
+						{Ports: []terrarium.Port{{Port: "443"}}},
+						{Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}}},
 					},
 				}),
 			},
-			err: sandbox.ErrL7WithWildcardPort,
+			err: terrarium.ErrL7WithWildcardPort,
 		},
 		"port 0 with endPort silently ignored": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0", EndPort: 443}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0", EndPort: 443}}}},
 				}),
 			},
 		},
 		"port 0 with UDP accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0", Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0", Protocol: "UDP"}}}},
 				}),
 			},
 		},
 		"negative endPort rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", EndPort: -1}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", EndPort: -1}}}},
 				}),
 			},
-			err: sandbox.ErrEndPortNegative,
+			err: terrarium.ErrEndPortNegative,
 		},
 		"more than 40 ports rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(func() sandbox.EgressRule {
-					ports := make([]sandbox.Port, 41)
+			cfg: &terrarium.Config{
+				Egress: egressRules(func() terrarium.EgressRule {
+					ports := make([]terrarium.Port, 41)
 					for i := range ports {
-						ports[i] = sandbox.Port{Port: "443"}
+						ports[i] = terrarium.Port{Port: "443"}
 					}
 
-					return sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-						ToPorts:   []sandbox.PortRule{{Ports: ports}},
+					return terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+						ToPorts:   []terrarium.PortRule{{Ports: ports}},
 					}
 				}()),
 			},
-			err: sandbox.ErrPortsTooMany,
+			err: terrarium.ErrPortsTooMany,
 		},
 		"exactly 40 ports accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(func() sandbox.EgressRule {
-					ports := make([]sandbox.Port, 40)
+			cfg: &terrarium.Config{
+				Egress: egressRules(func() terrarium.EgressRule {
+					ports := make([]terrarium.Port, 40)
 					for i := range ports {
-						ports[i] = sandbox.Port{Port: "443"}
+						ports[i] = terrarium.Port{Port: "443"}
 					}
 
-					return sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-						ToPorts:   []sandbox.PortRule{{Ports: ports}},
+					return terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+						ToPorts:   []terrarium.PortRule{{Ports: ports}},
 					}
 				}()),
 			},
@@ -1545,11 +1545,11 @@ func TestTCPForwardHosts(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		forwards []sandbox.TCPForward
+		forwards []terrarium.TCPForward
 		want     []string
 	}{
 		"deduplicated and sorted": {
-			forwards: []sandbox.TCPForward{
+			forwards: []terrarium.TCPForward{
 				{Port: 22, Host: "github.com"},
 				{Port: 3306, Host: "db.example.com"},
 				{Port: 5432, Host: "github.com"},
@@ -1558,7 +1558,7 @@ func TestTCPForwardHosts(t *testing.T) {
 		},
 		"empty": {},
 		"single": {
-			forwards: []sandbox.TCPForward{{Port: 22, Host: "gitlab.com"}},
+			forwards: []terrarium.TCPForward{{Port: 22, Host: "gitlab.com"}},
 			want:     []string{"gitlab.com"},
 		},
 	}
@@ -1567,7 +1567,7 @@ func TestTCPForwardHosts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg := &sandbox.SandboxConfig{TCPForwards: tt.forwards}
+			cfg := &terrarium.Config{TCPForwards: tt.forwards}
 			assert.Equal(t, tt.want, cfg.TCPForwardHosts())
 		})
 	}
@@ -1576,7 +1576,7 @@ func TestTCPForwardHosts(t *testing.T) {
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
 
-	cfg := sandbox.DefaultConfig()
+	cfg := terrarium.DefaultConfig()
 
 	rules := cfg.EgressRules()
 	// Single egress rule with FQDNs only (no CIDRs).
@@ -1597,20 +1597,20 @@ func TestDefaultConfig(t *testing.T) {
 func TestResolveDomains(t *testing.T) {
 	t.Parallel()
 
-	cfg := &sandbox.SandboxConfig{
+	cfg := &terrarium.Config{
 		Egress: egressRules(
-			sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{
+			terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{
 					{MatchName: "github.com"},
 					{MatchName: "extra.com"},
 				},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			},
-			sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{
+			terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{
 					{MatchName: "github.com"},
 				},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			},
 		),
 	}
@@ -1633,261 +1633,261 @@ func TestResolveRules(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg      *sandbox.SandboxConfig
-		want     []sandbox.ResolvedRule
+		cfg      *terrarium.Config
+		want     []terrarium.ResolvedRule
 		wantNone bool
 	}{
 		"simple FQDN rule": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "registry.npmjs.org"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "registry.npmjs.org"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			want: []sandbox.ResolvedRule{{Domain: "registry.npmjs.org"}},
+			want: []terrarium.ResolvedRule{{Domain: "registry.npmjs.org"}},
 		},
 		"FQDN with L7 paths": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{
 						{MatchName: "api.example.com"},
 						{MatchName: "cdn.example.com"},
 					},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "/v1/"},
 							{Path: "/v2/"},
 						}},
 					}},
 				}),
 			},
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v1/"}, {Path: "/v2/"}}},
-				{Domain: "cdn.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v1/"}, {Path: "/v2/"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}, {Path: "/v2/"}}},
+				{Domain: "cdn.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}, {Path: "/v2/"}}},
 			},
 		},
 		"merge L7 across rules": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 						}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v2/"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v2/"}}},
 						}},
 					},
 				),
 			},
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v1/"}, {Path: "/v2/"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}, {Path: "/v2/"}}},
 			},
 		},
 		"plain L4 wins over L7 paths": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 						}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
-			want: []sandbox.ResolvedRule{
+			want: []terrarium.ResolvedRule{
 				{Domain: "api.example.com"},
 			},
 		},
 		"deduplicate paths": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "/v1/"},
 							{Path: "/v1/"},
 						}},
 					}},
 				}),
 			},
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v1/"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}}},
 			},
 		},
 		"methods merge across rules": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Method: "GET"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Method: "GET"}}},
 						}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Method: "POST"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Method: "POST"}}},
 						}},
 					},
 				),
 			},
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Method: "GET"}, {Method: "POST"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Method: "GET"}, {Method: "POST"}}},
 			},
 		},
 		"plain L4 wins over methods": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Method: "GET"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Method: "GET"}}},
 						}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
-			want: []sandbox.ResolvedRule{
+			want: []terrarium.ResolvedRule{
 				{Domain: "api.example.com"},
 			},
 		},
 		"dedup methods": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Method: "GET"},
 							{Method: "GET"},
 						}},
 					}},
 				}),
 			},
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Method: "GET"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Method: "GET"}}},
 			},
 		},
 		"paths and methods paired": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Path: "/v1/", Method: "GET"},
 							{Path: "/v1/", Method: "POST"},
 						}},
 					}},
 				}),
 			},
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{
 					{Method: "GET", Path: "/v1/"},
 					{Method: "POST", Path: "/v1/"},
 				}},
 			},
 		},
 		"HTTP rules are paired not cross-producted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 							{Method: "GET", Path: "/api"},
 							{Method: "POST", Path: "/submit"},
 						}},
 					}},
 				}),
 			},
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{
 					{Method: "GET", Path: "/api"},
 					{Method: "POST", Path: "/submit"},
 				}},
 			},
 		},
 		"CIDR-only rule skipped": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}}},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
-			want: []sandbox.ResolvedRule{{Domain: "example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "example.com"}},
 		},
 		"matchPattern used as domain": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
-			want: []sandbox.ResolvedRule{{Domain: "*.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "*.example.com"}},
 		},
 		"nil egress returns empty": {
-			cfg:      &sandbox.SandboxConfig{},
+			cfg:      &terrarium.Config{},
 			wantNone: true,
 		},
 		"empty egress returns empty": {
-			cfg:      &sandbox.SandboxConfig{Egress: egressRules()},
+			cfg:      &terrarium.Config{Egress: egressRules()},
 			wantNone: true,
 		},
 		"empty HTTP propagates as unrestricted through ResolveRules": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{}},
 					}},
 				}),
 			},
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"cross-domain L7 isolation": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{
-							Ports: []sandbox.Port{{Port: "443"}},
-							Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{
+							Ports: []terrarium.Port{{Port: "443"}},
+							Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{
 								{Method: "GET", Path: "/v1/"},
 							}},
 						}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "cdn.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "cdn.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{
 					{Method: "GET", Path: "/v1/"},
 				}},
 				{Domain: "cdn.example.com"},
@@ -1913,344 +1913,344 @@ func TestResolveRulesForPort(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg      *sandbox.SandboxConfig
+		cfg      *terrarium.Config
 		port     int
-		want     []sandbox.ResolvedRule
+		want     []terrarium.ResolvedRule
 		wantNone bool
 	}{
 		"domain scoped to port 443 only - matching": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "github.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "github.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "github.com"}},
 		},
 		"domain scoped to port 443 only - non-matching": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "github.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			})},
 			port:     80,
 			wantNone: true,
 		},
 		"domain with multiple ports matches each": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "github.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}, {Port: "80"}, {Port: "8080"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "github.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}, {Port: "8080"}}}},
 			})},
 			port: 8080,
-			want: []sandbox.ResolvedRule{{Domain: "github.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "github.com"}},
 		},
 		"per-port L7 scoping": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "8080"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v2/"}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "8080"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v2/"}}},
 					}},
 				},
 			)},
 			port: 443,
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v1/"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}}},
 			},
 		},
 		"per-port L7 scoping - other port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "8080"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v2/"}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "8080"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v2/"}}},
 					}},
 				},
 			)},
 			port: 8080,
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v2/"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v2/"}}},
 			},
 		},
 		"same domain same port merges L7": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v2/"}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v2/"}}},
 					}},
 				},
 			)},
 			port: 443,
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v1/"}, {Path: "/v2/"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}, {Path: "/v2/"}}},
 			},
 		},
 		"empty Ports list matches all ports": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{
-					{Ports: []sandbox.Port{{Port: "443"}}},
-					{Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{
+					{Ports: []terrarium.Port{{Port: "443"}}},
+					{Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}}},
 				},
 			})},
 			port: 9999,
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/v1/"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/v1/"}}},
 			},
 		},
 		"plain L4 nullifies sibling L7 on same port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{
-					{Ports: []sandbox.Port{{Port: "443"}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{
+					{Ports: []terrarium.Port{{Port: "443"}}},
 					{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Method: "GET"}}},
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Method: "GET"}}},
 					},
 				},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"ANY plain L4 nullifies TCP L7 on same port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{
-					{Ports: []sandbox.Port{{Port: "443"}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{
+					{Ports: []terrarium.Port{{Port: "443"}}},
 					{
-						Ports: []sandbox.Port{{Port: "443", Protocol: "TCP"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/api"}}},
+						Ports: []terrarium.Port{{Port: "443", Protocol: "TCP"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/api"}}},
 					},
 				},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"UDP plain L4 does not nullify TCP L7 on same port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{
-					{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{
+					{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}},
 					{
-						Ports: []sandbox.Port{{Port: "443", Protocol: "TCP"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/api"}}},
+						Ports: []terrarium.Port{{Port: "443", Protocol: "TCP"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/api"}}},
 					},
 				},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{
-				{Domain: "api.example.com", HTTPRules: []sandbox.ResolvedHTTPRule{{Path: "/api"}}},
+			want: []terrarium.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []terrarium.ResolvedHTTPRule{{Path: "/api"}}},
 			},
 		},
 		"TCP plain L4 still nullifies TCP L7 on same port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{
-					{Ports: []sandbox.Port{{Port: "443", Protocol: "TCP"}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{
+					{Ports: []terrarium.Port{{Port: "443", Protocol: "TCP"}}},
 					{
-						Ports: []sandbox.Port{{Port: "443", Protocol: "TCP"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/api"}}},
+						Ports: []terrarium.Port{{Port: "443", Protocol: "TCP"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/api"}}},
 					},
 				},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"toPorts-only rule excluded": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 			})},
 			port:     8080,
 			wantNone: true,
 		},
 		"mixed rules per port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "always.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "80"}, {Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "always.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "80"}, {Port: "443"}}}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "only443.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "only443.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				},
 			)},
 			port: 80,
-			want: []sandbox.ResolvedRule{{Domain: "always.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "always.com"}},
 		},
 		"empty HTTP list produces unrestricted rule": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{{
-					Ports: []sandbox.Port{{Port: "443"}},
-					Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{{
+					Ports: []terrarium.Port{{Port: "443"}},
+					Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{}},
 				}},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"empty HTTP merged with L7 rules is unrestricted": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{}},
 					}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				},
 			)},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"empty HTTP plus plain L4 is unrestricted": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "443"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "443"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{}},
 					}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				},
 			)},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"rules nil HTTP is plain L4": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{{
-					Ports: []sandbox.Port{{Port: "443"}},
-					Rules: &sandbox.L7Rules{},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{{
+					Ports: []terrarium.Port{{Port: "443"}},
+					Rules: &terrarium.L7Rules{},
 				}},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"separate FQDN and CIDR rules contribute domains": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				},
-				sandbox.EgressRule{
+				terrarium.EgressRule{
 					ToCIDR:  []string{"10.0.0.0/8"},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				},
 			)},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"endPort range matches port within range": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "400", EndPort: 500}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "400", EndPort: 500}}}},
 			})},
 			port: 450,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"endPort range does not match port outside range": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "400", EndPort: 500}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "400", EndPort: 500}}}},
 			})},
 			port:     501,
 			wantNone: true,
 		},
 		"endPort range matches start port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "400", EndPort: 500}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "400", EndPort: 500}}}},
 			})},
 			port: 400,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"endPort range matches end port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "400", EndPort: 500}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "400", EndPort: 500}}}},
 			})},
 			port: 500,
-			want: []sandbox.ResolvedRule{{Domain: "api.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "api.example.com"}},
 		},
 		"deep wildcard preserves double-star domain": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "**.example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**.example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "**.example.com"}},
+			want: []terrarium.ResolvedRule{{Domain: "**.example.com"}},
 		},
 		"bare double star resolves as single star": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "**"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			})},
 			port: 443,
-			want: []sandbox.ResolvedRule{{Domain: "*"}},
+			want: []terrarium.ResolvedRule{{Domain: "*"}},
 		},
 		"port 0 matches all target ports": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "wildcard.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "wildcard.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "specific.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "specific.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				},
 			)},
 			port: 443,
-			want: []sandbox.ResolvedRule{
+			want: []terrarium.ResolvedRule{
 				{Domain: "specific.example.com"},
 				{Domain: "wildcard.example.com"},
 			},
 		},
 		"port 0 matches non-standard ports": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "wildcard.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "wildcard.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "specific.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "specific.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 				},
 			)},
 			port: 8080,
-			want: []sandbox.ResolvedRule{
+			want: []terrarium.ResolvedRule{
 				{Domain: "specific.example.com"},
 				{Domain: "wildcard.example.com"},
 			},
@@ -2275,52 +2275,52 @@ func TestResolveOpenPorts(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg  *sandbox.SandboxConfig
+		cfg  *terrarium.Config
 		want []int
 	}{
 		"toPorts-only rule produces open ports": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 			})},
 			want: []int{8080},
 		},
 		"rule with toFQDNs not open": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 			})},
 		},
 		"rule with toCIDRSet not open": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-				ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+				ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 			})},
 		},
 		"rule with toCIDR not open": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
 				ToCIDR:  []string{"0.0.0.0/0"},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 			})},
 		},
 		"no toPorts-only rules": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			})},
 		},
 		"multiple open ports": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}, {Port: "9090"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}, {Port: "9090"}}}},
 			})},
 			want: []int{8080, 9090},
 		},
 		"mixed open and domain rules": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				},
-				sandbox.EgressRule{ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "3000"}}}}},
+				terrarium.EgressRule{ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "3000"}}}}},
 			)},
 			want: []int{3000},
 		},
@@ -2344,113 +2344,113 @@ func TestResolveOpenPortRules(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg  *sandbox.SandboxConfig
-		want []sandbox.ResolvedOpenPort
+		cfg  *terrarium.Config
+		want []terrarium.ResolvedOpenPort
 	}{
 		"TCP open port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080", Protocol: "TCP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080", Protocol: "TCP"}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{{Port: 8080, Protocol: "tcp"}},
+			want: []terrarium.ResolvedOpenPort{{Port: 8080, Protocol: "tcp"}},
 		},
 		"UDP open port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "5353", Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "5353", Protocol: "UDP"}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{{Port: 5353, Protocol: "udp"}},
+			want: []terrarium.ResolvedOpenPort{{Port: 5353, Protocol: "udp"}},
 		},
 		"SCTP open port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "3868", Protocol: "SCTP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "3868", Protocol: "SCTP"}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{{Port: 3868, Protocol: "sctp"}},
+			want: []terrarium.ResolvedOpenPort{{Port: 3868, Protocol: "sctp"}},
 		},
 		"ANY protocol open port expands": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080", Protocol: "ANY"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080", Protocol: "ANY"}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{
+			want: []terrarium.ResolvedOpenPort{
 				{Port: 8080, Protocol: "tcp"},
 				{Port: 8080, Protocol: "udp"},
 			},
 		},
 		"empty protocol open port expands": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{
+			want: []terrarium.ResolvedOpenPort{
 				{Port: 8080, Protocol: "tcp"},
 				{Port: 8080, Protocol: "udp"},
 			},
 		},
 		"rule with toFQDNs not open": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 			})},
 		},
 		"TCP open port with endPort": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{
+			want: []terrarium.ResolvedOpenPort{
 				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
 			},
 		},
 		"UDP open port with endPort": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "5000", EndPort: 6000, Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "5000", EndPort: 6000, Protocol: "UDP"}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{
+			want: []terrarium.ResolvedOpenPort{
 				{Port: 5000, EndPort: 6000, Protocol: "udp"},
 			},
 		},
 		"ANY protocol open port with endPort expands": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{
+			want: []terrarium.ResolvedOpenPort{
 				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
 				{Port: 8000, EndPort: 9000, Protocol: "udp"},
 			},
 		},
 		"endPort equal to port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000", EndPort: 8000, Protocol: "TCP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 8000, Protocol: "TCP"}}}},
 			})},
-			want: []sandbox.ResolvedOpenPort{
+			want: []terrarium.ResolvedOpenPort{
 				{Port: 8000, EndPort: 8000, Protocol: "tcp"},
 			},
 		},
 		"dedup across rules with same range": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{
-						{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{
+						{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
 					},
 				},
-				sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{
-						{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
+				terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{
+						{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
 					},
 				},
 			)},
-			want: []sandbox.ResolvedOpenPort{
+			want: []terrarium.ResolvedOpenPort{
 				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
 			},
 		},
 		"mixed single and range for same start port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000", Protocol: "TCP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", Protocol: "TCP"}}}},
 				},
-				sandbox.EgressRule{
-					ToPorts: []sandbox.PortRule{
-						{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
+				terrarium.EgressRule{
+					ToPorts: []terrarium.PortRule{
+						{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
 					},
 				},
 			)},
-			want: []sandbox.ResolvedOpenPort{
+			want: []terrarium.ResolvedOpenPort{
 				{Port: 8000, Protocol: "tcp"},
 				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
 			},
@@ -2475,31 +2475,31 @@ func TestHasUnrestrictedOpenPorts(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg  *sandbox.SandboxConfig
+		cfg  *terrarium.Config
 		want bool
 	}{
 		"empty Ports list is unrestricted": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{}},
 			})},
 			want: true,
 		},
 		"port 0 counts as unrestricted": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 			})},
 			want: true,
 		},
 		"specific port is not unrestricted": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			})},
 			want: false,
 		},
 		"FQDN rule with port 0 not unrestricted": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 			})},
 			want: false,
 		},
@@ -2518,65 +2518,65 @@ func TestResolveFQDNNonTCPPorts(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg  *sandbox.SandboxConfig
-		want []sandbox.FQDNRulePorts
+		cfg  *terrarium.Config
+		want []terrarium.FQDNRulePorts
 	}{
 		"FQDN UDP port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 			})},
-			want: []sandbox.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []sandbox.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
+			want: []terrarium.FQDNRulePorts{
+				{RuleIndex: 0, Ports: []terrarium.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
 			},
 		},
 		"FQDN SCTP port": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "3868", Protocol: "SCTP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "3868", Protocol: "SCTP"}}}},
 			})},
-			want: []sandbox.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []sandbox.ResolvedOpenPort{{Port: 3868, Protocol: "sctp"}}},
+			want: []terrarium.FQDNRulePorts{
+				{RuleIndex: 0, Ports: []terrarium.ResolvedOpenPort{{Port: 3868, Protocol: "sctp"}}},
 			},
 		},
 		"FQDN ANY port expands to udp": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 			})},
-			want: []sandbox.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []sandbox.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
+			want: []terrarium.FQDNRulePorts{
+				{RuleIndex: 0, Ports: []terrarium.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
 			},
 		},
 		"FQDN TCP-only returns nil": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "TCP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "TCP"}}}},
 			})},
 		},
 		"CIDR rule with UDP returns nil": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(sandbox.EgressRule{
-				ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-				ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "53", Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(terrarium.EgressRule{
+				ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+				ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "53", Protocol: "UDP"}}}},
 			})},
 		},
 		"unrestricted returns nil": {
-			cfg: &sandbox.SandboxConfig{},
+			cfg: &terrarium.Config{},
 		},
 		"two FQDN rules get separate indices": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules(
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "a.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{Egress: egressRules(
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "a.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				},
-				sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "b.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080", Protocol: "UDP"}}}},
+				terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "b.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080", Protocol: "UDP"}}}},
 				},
 			)},
-			want: []sandbox.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []sandbox.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
-				{RuleIndex: 1, Ports: []sandbox.ResolvedOpenPort{{Port: 8080, Protocol: "udp"}}},
+			want: []terrarium.FQDNRulePorts{
+				{RuleIndex: 0, Ports: []terrarium.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
+				{RuleIndex: 1, Ports: []terrarium.ResolvedOpenPort{{Port: 8080, Protocol: "udp"}}},
 			},
 		},
 	}
@@ -2599,20 +2599,20 @@ func TestIsDefaultDenyEnabled(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg  *sandbox.SandboxConfig
+		cfg  *terrarium.Config
 		want bool
 	}{
 		"nil egress": {
-			cfg: &sandbox.SandboxConfig{},
+			cfg: &terrarium.Config{},
 		},
 		"empty egress": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules()},
+			cfg: &terrarium.Config{Egress: egressRules()},
 		},
 		"rules present": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 			want: true,
@@ -2631,14 +2631,14 @@ func TestResolvePorts(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg  *sandbox.SandboxConfig
+		cfg  *terrarium.Config
 		want []int
 	}{
 		"explicit ports": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 						{Port: "80"},
 						{Port: "443"},
 						{Port: "8080"},
@@ -2648,82 +2648,82 @@ func TestResolvePorts(t *testing.T) {
 			want: []int{80, 443, 8080},
 		},
 		"FQDN with explicit ports": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
 			},
 			want: []int{80, 443},
 		},
 		"nil egress returns nil": {
-			cfg: &sandbox.SandboxConfig{},
+			cfg: &terrarium.Config{},
 		},
 		"empty egress returns nil": {
-			cfg: &sandbox.SandboxConfig{Egress: egressRules()},
+			cfg: &terrarium.Config{Egress: egressRules()},
 		},
 		"deduplication": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "a.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "a.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "b.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "b.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
 			want: []int{443},
 		},
 		"toCIDR-only rule excluded from ports": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
+					terrarium.EgressRule{
 						ToCIDR:  []string{"10.0.0.0/8"},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
 			want: []int{443},
 		},
 		"CIDR-only rule excluded from ports": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-						ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080"}}}},
+					terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+						ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
 			want: []int{443},
 		},
 		"empty rule returns nil ports": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{}),
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{}),
 			},
 		},
 		"CIDR-only rule returns nil": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
 				}),
 			},
 		},
 		"UDP-only port excluded": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 						{Port: "443", Protocol: "TCP"},
 						{Port: "5353", Protocol: "UDP"},
 					}}},
@@ -2732,10 +2732,10 @@ func TestResolvePorts(t *testing.T) {
 			want: []int{443},
 		},
 		"SCTP-only port excluded": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 						{Port: "443", Protocol: "TCP"},
 						{Port: "3868", Protocol: "SCTP"},
 					}}},
@@ -2744,10 +2744,10 @@ func TestResolvePorts(t *testing.T) {
 			want: []int{443},
 		},
 		"ANY protocol port included": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 						{Port: "8080", Protocol: "ANY"},
 					}}},
 				}),
@@ -2755,55 +2755,55 @@ func TestResolvePorts(t *testing.T) {
 			want: []int{8080},
 		},
 		"separate FQDN and CIDR rules contribute FQDN ports": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
+					terrarium.EgressRule{
 						ToCIDR:  []string{"10.0.0.0/8"},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
 			want: []int{443},
 		},
 		"open-port range excluded from Envoy listeners": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{
-							{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{
+							{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}}},
 						},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
 			want: []int{443},
 		},
 		"open-port single port included in Envoy listeners": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080", Protocol: "TCP"}}}},
+					terrarium.EgressRule{
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080", Protocol: "TCP"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
 			want: []int{443, 8080},
 		},
 		"port 0 does not appear in resolved ports": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				}),
 			},
 		},
@@ -2821,14 +2821,14 @@ func TestExtraPorts(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg  *sandbox.SandboxConfig
+		cfg  *terrarium.Config
 		want []int
 	}{
 		"extra ports present": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 						{Port: "80"}, {Port: "443"}, {Port: "8080"}, {Port: "9090"},
 					}}},
 				}),
@@ -2836,17 +2836,17 @@ func TestExtraPorts(t *testing.T) {
 			want: []int{8080, 9090},
 		},
 		"no extra ports": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{
 						{Port: "80"}, {Port: "443"},
 					}}},
 				}),
 			},
 		},
 		"nil egress": {
-			cfg: &sandbox.SandboxConfig{},
+			cfg: &terrarium.Config{},
 		},
 	}
 
@@ -2862,44 +2862,44 @@ func TestResolveCIDRRules(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg      *sandbox.SandboxConfig
+		cfg      *terrarium.Config
 		validate bool
-		wantIPv4 []sandbox.ResolvedCIDR
-		wantIPv6 []sandbox.ResolvedCIDR
+		wantIPv4 []terrarium.ResolvedCIDR
+		wantIPv6 []terrarium.ResolvedCIDR
 	}{
 		"mixed IPv4 and IPv6": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{
 						{CIDR: "0.0.0.0/0", Except: []string{"10.0.0.0/8", "172.16.0.0/12"}},
 						{CIDR: "::/0", Except: []string{"fc00::/7"}},
 					},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
+			wantIPv4: []terrarium.ResolvedCIDR{
 				{CIDR: "0.0.0.0/0", Except: []string{"10.0.0.0/8", "172.16.0.0/12"}},
 			},
-			wantIPv6: []sandbox.ResolvedCIDR{
+			wantIPv6: []terrarium.ResolvedCIDR{
 				{CIDR: "::/0", Except: []string{"fc00::/7"}},
 			},
 		},
 		"no CIDR rules": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
 		"port-scoped CIDR": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}, {Port: "80"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []sandbox.ResolvedPortProto{
+			wantIPv4: []terrarium.ResolvedCIDR{
+				{CIDR: "8.8.8.0/24", Ports: []terrarium.ResolvedPortProto{
 					{Port: 80, Protocol: "tcp"},
 					{Port: 80, Protocol: "udp"},
 					{Port: 443, Protocol: "tcp"},
@@ -2908,120 +2908,120 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 		},
 		"empty Ports list means any port": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
+			wantIPv4: []terrarium.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24"},
 			},
 		},
 		"no toPorts means any port": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
+			wantIPv4: []terrarium.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24"},
 			},
 		},
 		"multiple rules with different ports": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-						ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "53"}}}},
+					terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+						ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "53"}}}},
 					},
-					sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{CIDR: "1.1.1.0/24"}},
-						ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{CIDR: "1.1.1.0/24"}},
+						ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []sandbox.ResolvedPortProto{
+			wantIPv4: []terrarium.ResolvedCIDR{
+				{CIDR: "8.8.8.0/24", Ports: []terrarium.ResolvedPortProto{
 					{Port: 53, Protocol: "tcp"},
 					{Port: 53, Protocol: "udp"},
 				}, RuleIndex: 0},
-				{CIDR: "1.1.1.0/24", Ports: []sandbox.ResolvedPortProto{
+				{CIDR: "1.1.1.0/24", Ports: []terrarium.ResolvedPortProto{
 					{Port: 443, Protocol: "tcp"},
 					{Port: 443, Protocol: "udp"},
 				}, RuleIndex: 1},
 			},
 		},
 		"toCIDR without except": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"8.8.8.0/24"},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
+			wantIPv4: []terrarium.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24"},
 			},
 		},
 		"toCIDR and toCIDRSet in same rule share RuleIndex": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR:    []string{"10.0.0.0/8"},
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "192.168.0.0/16", Except: []string{"192.168.1.0/24"}}},
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "192.168.0.0/16", Except: []string{"192.168.1.0/24"}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
+			wantIPv4: []terrarium.ResolvedCIDR{
 				{CIDR: "10.0.0.0/8", RuleIndex: 0},
 				{CIDR: "192.168.0.0/16", Except: []string{"192.168.1.0/24"}, RuleIndex: 0},
 			},
 		},
 		"toCIDR and toCIDRSet in separate rules": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{ToCIDR: []string{"1.1.1.0/24"}},
-					sandbox.EgressRule{
-						ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24", Except: []string{"8.8.8.8/32"}}},
+					terrarium.EgressRule{ToCIDR: []string{"1.1.1.0/24"}},
+					terrarium.EgressRule{
+						ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24", Except: []string{"8.8.8.8/32"}}},
 					},
 				),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
+			wantIPv4: []terrarium.ResolvedCIDR{
 				{CIDR: "1.1.1.0/24", RuleIndex: 0},
 				{CIDR: "8.8.8.0/24", Except: []string{"8.8.8.8/32"}, RuleIndex: 1},
 			},
 		},
 		"UDP port-scoped CIDR": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "53", Protocol: "UDP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "53", Protocol: "UDP"}}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []sandbox.ResolvedPortProto{{Port: 53, Protocol: "udp"}}},
+			wantIPv4: []terrarium.ResolvedCIDR{
+				{CIDR: "8.8.8.0/24", Ports: []terrarium.ResolvedPortProto{{Port: 53, Protocol: "udp"}}},
 			},
 		},
 		"ANY protocol CIDR": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "53", Protocol: "ANY"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "53", Protocol: "ANY"}}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []sandbox.ResolvedPortProto{
+			wantIPv4: []terrarium.ResolvedCIDR{
+				{CIDR: "8.8.8.0/24", Ports: []terrarium.ResolvedPortProto{
 					{Port: 53, Protocol: "tcp"},
 					{Port: 53, Protocol: "udp"},
 				}},
 			},
 		},
 		"port range propagated": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8000", EndPort: 9000}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8000", EndPort: 9000}}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []sandbox.ResolvedPortProto{
+			wantIPv4: []terrarium.ResolvedCIDR{
+				{CIDR: "8.8.8.0/24", Ports: []terrarium.ResolvedPortProto{
 					{Port: 8000, EndPort: 9000, Protocol: "tcp"},
 					{Port: 8000, EndPort: 9000, Protocol: "udp"},
 				}},
@@ -3031,82 +3031,82 @@ func TestResolveCIDRRules(t *testing.T) {
 		// (ErrCIDRIPv4MappedIPv6), so they never reach ResolveCIDRRules.
 		// See TestValidate for the rejection tests.
 		"separate FQDN and CIDR rules contribute CIDRs": {
-			cfg: &sandbox.SandboxConfig{
+			cfg: &terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
-					sandbox.EgressRule{
+					terrarium.EgressRule{
 						ToCIDR:  []string{"10.0.0.0/8"},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 					},
 				),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
-				{CIDR: "10.0.0.0/8", Ports: []sandbox.ResolvedPortProto{
+			wantIPv4: []terrarium.ResolvedCIDR{
+				{CIDR: "10.0.0.0/8", Ports: []terrarium.ResolvedPortProto{
 					{Port: 443, Protocol: "tcp"},
 					{Port: 443, Protocol: "udp"},
 				}, RuleIndex: 0},
 			},
 		},
 		"port 0 CIDR rule has no port restriction": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "10.0.0.0/8"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "10.0.0.0/8"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
+			wantIPv4: []terrarium.ResolvedCIDR{
 				{CIDR: "10.0.0.0/8"},
 			},
 		},
 		"ANY omits SCTP": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "53"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "53"}}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []sandbox.ResolvedPortProto{
+			wantIPv4: []terrarium.ResolvedCIDR{
+				{CIDR: "8.8.8.0/24", Ports: []terrarium.ResolvedPortProto{
 					{Port: 53, Protocol: "tcp"},
 					{Port: 53, Protocol: "udp"},
 				}},
 			},
 		},
 		"explicit SCTP preserved": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "3868", Protocol: "SCTP"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "8.8.8.0/24"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "3868", Protocol: "SCTP"}}}},
 				}),
 			},
-			wantIPv4: []sandbox.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []sandbox.ResolvedPortProto{
+			wantIPv4: []terrarium.ResolvedCIDR{
+				{CIDR: "8.8.8.0/24", Ports: []terrarium.ResolvedPortProto{
 					{Port: 3868, Protocol: "sctp"},
 				}},
 			},
 		},
 		"bare IPv4 toCIDR normalizes to /32": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"8.8.8.8"},
 				}),
 			},
 			validate: true,
-			wantIPv4: []sandbox.ResolvedCIDR{
+			wantIPv4: []terrarium.ResolvedCIDR{
 				{CIDR: "8.8.8.8/32"},
 			},
 		},
 		"bare IPv6 toCIDR normalizes to /128": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
 					ToCIDR: []string{"fd00::1"},
 				}),
 			},
 			validate: true,
-			wantIPv6: []sandbox.ResolvedCIDR{
+			wantIPv6: []terrarium.ResolvedCIDR{
 				{CIDR: "fd00::1/128"},
 			},
 		},
@@ -3166,7 +3166,7 @@ func TestResolvePort(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := sandbox.ResolvePort(tt.input)
+			got, err := terrarium.ResolvePort(tt.input)
 			if tt.err {
 				require.Error(t, err)
 			} else {
@@ -3181,157 +3181,157 @@ func TestNamedPortValidation(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg *sandbox.SandboxConfig
+		cfg *terrarium.Config
 		err error
 	}{
 		"named port https accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "https"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "https"}}}},
 				}),
 			},
 		},
 		"named port http accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "http"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "http"}}}},
 				}),
 			},
 		},
 		"named port dns accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "dns"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "dns"}}}},
 				}),
 			},
 		},
 		"named port domain accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "domain"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "domain"}}}},
 				}),
 			},
 		},
 		"unknown named port rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "redis"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "redis"}}}},
 				}),
 			},
-			err: sandbox.ErrPortInvalid,
+			err: terrarium.ErrPortInvalid,
 		},
 		"invalid syntax rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "abc!!"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "abc!!"}}}},
 				}),
 			},
-			err: sandbox.ErrPortInvalid,
+			err: terrarium.ErrPortInvalid,
 		},
 		"negative port rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "-1"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "-1"}}}},
 				}),
 			},
-			err: sandbox.ErrPortInvalid,
+			err: terrarium.ErrPortInvalid,
 		},
 		"endPort with named port silently ignored": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "https", EndPort: 500}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "https", EndPort: 500}}}},
 				}),
 			},
 		},
 		"L7 on named port http accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "http"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "http"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
 		},
 		"L7 on named port https accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "https"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "https"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
 		},
 		"L7 on named port dns valid": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "dns.example.com"}},
-					ToPorts: []sandbox.PortRule{{
-						Ports: []sandbox.Port{{Port: "dns"}},
-						Rules: &sandbox.L7Rules{HTTP: []sandbox.HTTPRule{{Path: "/v1/"}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []terrarium.PortRule{{
+						Ports: []terrarium.Port{{Port: "dns"}},
+						Rules: &terrarium.L7Rules{HTTP: []terrarium.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
 		},
 		"uppercase named port normalized": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "HTTPS"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "HTTPS"}}}},
 				}),
 			},
 		},
 		"port 65536 rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "65536"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "65536"}}}},
 				}),
 			},
-			err: sandbox.ErrPortInvalid,
+			err: terrarium.ErrPortInvalid,
 		},
 		"port 70000 rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "70000"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "70000"}}}},
 				}),
 			},
-			err: sandbox.ErrPortInvalid,
+			err: terrarium.ErrPortInvalid,
 		},
 		"port 65535 accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "65535"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "65535"}}}},
 				}),
 			},
 		},
 		"endPort 70000 rejected": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", EndPort: 70000}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", EndPort: 70000}}}},
 				}),
 			},
-			err: sandbox.ErrEndPortInvalid,
+			err: terrarium.ErrEndPortInvalid,
 		},
 		"port 0 accepted": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToCIDRSet: []sandbox.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "0"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToCIDRSet: []terrarium.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "0"}}}},
 				}),
 			},
 		},
@@ -3357,10 +3357,10 @@ func TestNamedPortResolution(t *testing.T) {
 	t.Run("ResolvePorts with named port", func(t *testing.T) {
 		t.Parallel()
 
-		cfg := &sandbox.SandboxConfig{
-			Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "https"}}}},
+		cfg := &terrarium.Config{
+			Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "https"}}}},
 			}),
 		}
 		require.NoError(t, cfg.Validate())
@@ -3370,9 +3370,9 @@ func TestNamedPortResolution(t *testing.T) {
 	t.Run("ResolveOpenPorts with named port", func(t *testing.T) {
 		t.Parallel()
 
-		cfg := &sandbox.SandboxConfig{
-			Egress: egressRules(sandbox.EgressRule{
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "http"}}}},
+		cfg := &terrarium.Config{
+			Egress: egressRules(terrarium.EgressRule{
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "http"}}}},
 			}),
 		}
 		require.NoError(t, cfg.Validate())
@@ -3382,10 +3382,10 @@ func TestNamedPortResolution(t *testing.T) {
 	t.Run("ResolveRulesForPort with named port", func(t *testing.T) {
 		t.Parallel()
 
-		cfg := &sandbox.SandboxConfig{
-			Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "https"}}}},
+		cfg := &terrarium.Config{
+			Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "https"}}}},
 			}),
 		}
 		require.NoError(t, cfg.Validate())
@@ -3398,10 +3398,10 @@ func TestNamedPortResolution(t *testing.T) {
 	t.Run("case insensitivity in resolution", func(t *testing.T) {
 		t.Parallel()
 
-		cfg := &sandbox.SandboxConfig{
-			Egress: egressRules(sandbox.EgressRule{
-				ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "HTTPS"}}}},
+		cfg := &terrarium.Config{
+			Egress: egressRules(terrarium.EgressRule{
+				ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "HTTPS"}}}},
 			}),
 		}
 		require.NoError(t, cfg.Validate())
@@ -3427,7 +3427,7 @@ egress:
       - ports:
           - port: "443"
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"toEntities world rejected": {
 			yaml: `
@@ -3435,7 +3435,7 @@ egress:
   - toEntities:
       - world
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"toServices rejected": {
 			yaml: `
@@ -3445,7 +3445,7 @@ egress:
           serviceName: my-svc
           namespace: default
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"toNodes rejected": {
 			yaml: `
@@ -3454,7 +3454,7 @@ egress:
       - matchLabels:
           node-role: worker
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"toGroups rejected": {
 			yaml: `
@@ -3464,7 +3464,7 @@ egress:
           securityGroupsIds:
             - sg-123
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"toRequires rejected": {
 			yaml: `
@@ -3472,7 +3472,7 @@ egress:
   - toRequires:
       - something
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"icmps rejected": {
 			yaml: `
@@ -3481,7 +3481,7 @@ egress:
       - fields:
           - type: 8
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"authentication rejected": {
 			yaml: `
@@ -3489,7 +3489,7 @@ egress:
   - authentication:
       mode: required
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"empty toEntities not rejected": {
 			yaml: `
@@ -3525,7 +3525,7 @@ egress:
   - toEntities:
       - world
 `,
-			err: sandbox.ErrUnsupportedSelector,
+			err: terrarium.ErrUnsupportedSelector,
 		},
 		"unknown field rejected at parse time": {
 			yaml: `
@@ -3551,7 +3551,7 @@ egressPolicy:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
+			cfg, err := terrarium.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 				return
@@ -3573,14 +3573,14 @@ egressPolicy:
 	t.Run("error format", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := sandbox.ParseConfig(t.Context(), []byte(`
+		_, err := terrarium.ParseConfig(t.Context(), []byte(`
 egress:
   - toCIDR:
       - 10.0.0.0/8
   - toEntities:
       - world
 `))
-		require.ErrorIs(t, err, sandbox.ErrUnsupportedSelector)
+		require.ErrorIs(t, err, terrarium.ErrUnsupportedSelector)
 		assert.ErrorContains(t, err, "rule 1 has toEntities")
 	})
 }
@@ -3604,7 +3604,7 @@ egress:
           secret:
             name: my-secret
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"originatingTLS rejected": {
 			yaml: `
@@ -3618,7 +3618,7 @@ egress:
           secret:
             name: my-secret
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"serverNames rejected": {
 			yaml: `
@@ -3631,7 +3631,7 @@ egress:
         serverNames:
           - example.com
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"listener rejected": {
 			yaml: `
@@ -3645,7 +3645,7 @@ egress:
           envoyConfig:
             name: my-listener
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"cidrGroupRef rejected": {
 			yaml: `
@@ -3654,7 +3654,7 @@ egress:
       - cidr: 10.0.0.0/8
         cidrGroupRef: my-cidr-group
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"cidrGroupSelector rejected": {
 			yaml: `
@@ -3665,7 +3665,7 @@ egress:
           matchLabels:
             env: prod
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"kafka L7 rejected": {
 			yaml: `
@@ -3679,7 +3679,7 @@ egress:
           kafka:
             - topic: my-topic
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"dns L7 rejected": {
 			yaml: `
@@ -3693,7 +3693,7 @@ egress:
           dns:
             - matchPattern: "*.example.com"
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"l7proto rejected": {
 			yaml: `
@@ -3706,7 +3706,7 @@ egress:
         rules:
           l7proto: envoy.filters.network.my_filter
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"l7 generic rejected": {
 			yaml: `
@@ -3720,7 +3720,7 @@ egress:
           l7:
             - action: allow
 `,
-			err: sandbox.ErrUnsupportedFeature,
+			err: terrarium.ErrUnsupportedFeature,
 		},
 		"empty serverNames not rejected": {
 			yaml: `
@@ -3762,7 +3762,7 @@ egress:
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := sandbox.ParseConfig(t.Context(), []byte(tt.yaml))
+			_, err := terrarium.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 
@@ -3777,7 +3777,7 @@ egress:
 	t.Run("error format includes context", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := sandbox.ParseConfig(t.Context(), []byte(`
+		_, err := terrarium.ParseConfig(t.Context(), []byte(`
 egress:
   - toCIDR:
       - 10.0.0.0/8
@@ -3785,7 +3785,7 @@ egress:
       - cidr: 10.0.0.0/8
         cidrGroupRef: my-group
 `))
-		require.ErrorIs(t, err, sandbox.ErrUnsupportedFeature)
+		require.ErrorIs(t, err, terrarium.ErrUnsupportedFeature)
 		require.ErrorContains(t, err, "rule 1")
 		require.ErrorContains(t, err, "cidrGroupRef")
 	})
@@ -3795,29 +3795,29 @@ func TestMarshalConfigRoundtrip(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg              *sandbox.SandboxConfig
+		cfg              *terrarium.Config
 		wantUnrestricted bool
 		wantBlocked      bool
 	}{
 		"nil egress roundtrips as unrestricted": {
-			cfg:              &sandbox.SandboxConfig{},
+			cfg:              &terrarium.Config{},
 			wantUnrestricted: true,
 		},
 		"empty egress roundtrips as unrestricted": {
-			cfg:              &sandbox.SandboxConfig{Egress: egressRules()},
+			cfg:              &terrarium.Config{Egress: egressRules()},
 			wantUnrestricted: true,
 		},
 		"empty rule roundtrips as blocked": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{}),
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{}),
 			},
 			wantBlocked: true,
 		},
 		"rules roundtrip": {
-			cfg: &sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443"}}}},
+			cfg: &terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443"}}}},
 				}),
 			},
 		},
@@ -3827,10 +3827,10 @@ func TestMarshalConfigRoundtrip(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			data, err := sandbox.MarshalConfig(tt.cfg)
+			data, err := terrarium.MarshalConfig(tt.cfg)
 			require.NoError(t, err)
 
-			cfg2, err := sandbox.ParseConfig(t.Context(), data)
+			cfg2, err := terrarium.ParseConfig(t.Context(), data)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantUnrestricted, cfg2.IsEgressUnrestricted())
 			assert.Equal(t, tt.wantBlocked, cfg2.IsEgressBlocked())
@@ -3842,17 +3842,17 @@ func TestCompileFQDNPatterns(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg         sandbox.SandboxConfig
+		cfg         terrarium.Config
 		want        []string
 		wantIndices []int
 		match       map[string]bool
 		noMatch     map[string]bool
 	}{
 		"matchName exact": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			want:        []string{"api.example.com"},
@@ -3861,10 +3861,10 @@ func TestCompileFQDNPatterns(t *testing.T) {
 			noMatch:     map[string]bool{"evil.api.example.com.": true, "example.com.": true},
 		},
 		"single-star wildcard": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			want:        []string{"*.example.com"},
@@ -3873,10 +3873,10 @@ func TestCompileFQDNPatterns(t *testing.T) {
 			noMatch:     map[string]bool{"a.b.example.com.": true, "example.com.": true},
 		},
 		"double-star wildcard": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "**.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "**.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			want:        []string{"**.example.com"},
@@ -3885,10 +3885,10 @@ func TestCompileFQDNPatterns(t *testing.T) {
 			noMatch:     map[string]bool{"example.com.": true},
 		},
 		"bare wildcard": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "*"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "*"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			want:        []string{"*"},
@@ -3897,10 +3897,10 @@ func TestCompileFQDNPatterns(t *testing.T) {
 			noMatch:     map[string]bool{"": true},
 		},
 		"triple-star bare wildcard": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "***"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "***"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			want:        []string{"***"},
@@ -3908,10 +3908,10 @@ func TestCompileFQDNPatterns(t *testing.T) {
 			match:       map[string]bool{"anything.com.": true, ".": true},
 		},
 		"triple-star suffix wildcard": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "***.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "***.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			want:        []string{"***.example.com"},
@@ -3920,10 +3920,10 @@ func TestCompileFQDNPatterns(t *testing.T) {
 			noMatch:     map[string]bool{"example.com.": true},
 		},
 		"mid-position double-star falls back to single-label": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchPattern: "test.**.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchPattern: "test.**.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			want:        []string{"test.**.example.com"},
@@ -3932,26 +3932,26 @@ func TestCompileFQDNPatterns(t *testing.T) {
 			noMatch:     map[string]bool{"test.a.b.example.com.": true},
 		},
 		"excludes TCPForward hosts": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
-				TCPForwards: []sandbox.TCPForward{{Port: 22, Host: "git.example.com"}},
+				TCPForwards: []terrarium.TCPForward{{Port: 22, Host: "git.example.com"}},
 			},
 			want:        []string{"api.example.com"},
 			wantIndices: []int{0},
 		},
 		"same pattern in two rules produces two entries": {
-			cfg: sandbox.SandboxConfig{
+			cfg: terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "api.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "8080", Protocol: "UDP"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "8080", Protocol: "UDP"}}}},
 					},
 				),
 			},
@@ -3959,28 +3959,28 @@ func TestCompileFQDNPatterns(t *testing.T) {
 			wantIndices: []int{0, 1},
 		},
 		"deduplicates within same rule": {
-			cfg: sandbox.SandboxConfig{
-				Egress: egressRules(sandbox.EgressRule{
-					ToFQDNs: []sandbox.FQDNSelector{
+			cfg: terrarium.Config{
+				Egress: egressRules(terrarium.EgressRule{
+					ToFQDNs: []terrarium.FQDNSelector{
 						{MatchName: "api.example.com"},
 						{MatchName: "api.example.com"},
 					},
-					ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "UDP"}}}},
+					ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "UDP"}}}},
 				}),
 			},
 			want:        []string{"api.example.com"},
 			wantIndices: []int{0},
 		},
 		"skips TCP-only FQDN rules": {
-			cfg: sandbox.SandboxConfig{
+			cfg: terrarium.Config{
 				Egress: egressRules(
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "tcp-only.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "443", Protocol: "TCP"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "tcp-only.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "443", Protocol: "TCP"}}}},
 					},
-					sandbox.EgressRule{
-						ToFQDNs: []sandbox.FQDNSelector{{MatchName: "udp.example.com"}},
-						ToPorts: []sandbox.PortRule{{Ports: []sandbox.Port{{Port: "5353", Protocol: "UDP"}}}},
+					terrarium.EgressRule{
+						ToFQDNs: []terrarium.FQDNSelector{{MatchName: "udp.example.com"}},
+						ToPorts: []terrarium.PortRule{{Ports: []terrarium.Port{{Port: "5353", Protocol: "UDP"}}}},
 					},
 				),
 			},
