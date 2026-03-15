@@ -120,12 +120,36 @@ assert_allowed() {
 assert_denied() {
     url="$1"
     desc="${2:-$url denied}"
-    if curl -sf -k --max-time 10 "$url" >/dev/null 2>&1; then
-        echo "FAIL: $desc (expected DENIED, got ALLOWED -- SECURITY VIOLATION)"
+    status=$(curl -s -k --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)
+    exit_code=$?
+    if [ "$exit_code" -eq 0 ] && [ "$status" != "000" ]; then
+        echo "FAIL: $desc (expected DENIED, got HTTP $status -- SECURITY VIOLATION)"
         FAIL=$((FAIL + 1))
-    else
-        echo "PASS: $desc"
+    elif [ "$exit_code" -eq 6 ]; then
+        echo "FAIL: $desc (DNS resolution failed -- expected network-level denial, not DNS error)"
+        FAIL=$((FAIL + 1))
+    elif [ "$exit_code" -eq 35 ] || [ "$exit_code" -eq 60 ]; then
+        echo "FAIL: $desc (TLS error exit $exit_code -- expected network-level denial, not TLS error)"
+        FAIL=$((FAIL + 1))
+    elif [ "$exit_code" -eq 7 ] || [ "$exit_code" -eq 28 ] || [ "$status" = "000" ]; then
+        echo "PASS: $desc (curl exit $exit_code)"
         PASS=$((PASS + 1))
+    else
+        echo "FAIL: $desc (unexpected curl exit $exit_code, HTTP $status)"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_network_denied() {
+    url="$1"
+    desc="${2:-$url network denied}"
+    status=$(curl -s -k --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || true
+    if [ "$status" = "000" ]; then
+        echo "PASS: $desc (HTTP 000)"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: $desc (expected HTTP 000, got HTTP $status)"
+        FAIL=$((FAIL + 1))
     fi
 }
 
@@ -161,11 +185,8 @@ assert_l7_denied() {
     if [ "$status" = "403" ]; then
         echo "PASS: $desc (HTTP 403)"
         PASS=$((PASS + 1))
-    elif [ "$status" = "000" ]; then
-        echo "PASS: $desc (connection refused)"
-        PASS=$((PASS + 1))
     else
-        echo "FAIL: $desc (expected HTTP 403, got HTTP $status -- SECURITY VIOLATION)"
+        echo "FAIL: $desc (expected HTTP 403, got HTTP $status)"
         FAIL=$((FAIL + 1))
     fi
 }

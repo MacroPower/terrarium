@@ -85,10 +85,10 @@ func (m *Tests) TestEgressDenyAll(ctx context.Context) error {
 	// deny-all has no ports, so no Envoy is started. Use the no-envoy
 	// assertion script variant with denial checks.
 	script := assertionScriptNoEnvoy(`
-assert_denied "http://target-allow:80/" "deny-all: HTTP to target-allow"
-assert_denied "https://target-allow:443/" "deny-all: HTTPS to target-allow"
-assert_denied "http://target-deny:80/" "deny-all: HTTP to target-deny"
-assert_denied "https://target-deny:443/" "deny-all: HTTPS to target-deny"
+assert_network_denied "http://target-allow:80/" "deny-all: HTTP to target-allow"
+assert_network_denied "https://target-allow:443/" "deny-all: HTTPS to target-allow"
+assert_network_denied "http://target-deny:80/" "deny-all: HTTP to target-deny"
+assert_network_denied "https://target-deny:443/" "deny-all: HTTPS to target-deny"
 `)
 
 	return runVariants(ctx, "deny-all", config, script, bindings)
@@ -117,8 +117,8 @@ func (m *Tests) TestEgressFqdnExact(ctx context.Context) error {
 	script := assertionScript(`
 assert_allowed "http://target-allow:80/" "fqdn-exact: HTTP to target-allow"
 assert_allowed "https://target-allow:443/" "fqdn-exact: HTTPS to target-allow"
-assert_denied "http://target-deny:80/" "fqdn-exact: HTTP to target-deny"
-assert_denied "https://target-deny:443/" "fqdn-exact: HTTPS to target-deny"
+assert_network_denied "http://target-deny:80/" "fqdn-exact: HTTP to target-deny"
+assert_network_denied "https://target-deny:443/" "fqdn-exact: HTTPS to target-deny"
 `)
 
 	return runVariants(ctx, "fqdn-exact", config, script, bindings)
@@ -144,7 +144,7 @@ func (m *Tests) TestEgressFqdnWildcard(ctx context.Context) error {
 
 	script := assertionScript(`
 assert_allowed "https://allowed.target-zone:443/" "fqdn-wildcard: HTTPS to allowed.target-zone"
-assert_denied "https://denied.other-zone:443/" "fqdn-wildcard: HTTPS to denied.other-zone"
+assert_network_denied "https://denied.other-zone:443/" "fqdn-wildcard: HTTPS to denied.other-zone"
 assert_denied "http://allowed.target-zone:80/" "fqdn-wildcard: HTTP port 80 not allowed"
 `)
 
@@ -199,7 +199,7 @@ func (m *Tests) TestEgressCidrAllow(ctx context.Context) error {
 	script := assertionScriptNoEnvoy(`
 assert_allowed "http://target-allow:80/" "cidr-allow: HTTP to target-allow"
 assert_allowed "http://target-deny:80/" "cidr-allow: HTTP to target-deny"
-assert_denied "https://target-allow:443/" "cidr-allow: HTTPS port 443 denied"
+assert_network_denied "https://target-allow:443/" "cidr-allow: HTTPS port 443 denied"
 `)
 
 	return runVariants(ctx, "cidr-allow", config, script, bindings)
@@ -298,7 +298,7 @@ assert_allowed "http://target-allow:80/" "multiple-rules: HTTP to target-allow (
 assert_denied "https://target-allow:443/" "multiple-rules: HTTPS to target-allow (rule 1 port 80 only)"
 assert_allowed "https://target-l7:443/" "multiple-rules: HTTPS to target-l7 (rule 2)"
 assert_denied "http://target-l7:80/" "multiple-rules: HTTP to target-l7 (rule 2 port 443 only)"
-assert_denied "http://target-deny:80/" "multiple-rules: HTTP to target-deny (no rule)"
+assert_network_denied "http://target-deny:80/" "multiple-rules: HTTP to target-deny (no rule)"
 `)
 
 	return runVariants(ctx, "multiple-rules", config, script, bindings)
@@ -364,8 +364,8 @@ func (m *Tests) TestEgressCidrExcept(ctx context.Context) error {
 	// CIDR rules bypass Envoy; nftables rules enforce port + except.
 	script := assertionScriptNoEnvoy(`
 assert_allowed "http://target-allow:80/" "cidr-except: HTTP to target-allow (not in except)"
-assert_denied "http://target-deny:80/" "cidr-except: HTTP to target-deny (carved out by except)"
-assert_denied "https://target-allow:443/" "cidr-except: HTTPS port 443 not in toPorts"
+assert_network_denied "http://target-deny:80/" "cidr-except: HTTP to target-deny (carved out by except)"
+assert_network_denied "https://target-allow:443/" "cidr-except: HTTPS port 443 not in toPorts"
 `)
 
 	return runVariants(ctx, "cidr-except", config, script, bindings)
@@ -396,7 +396,7 @@ tcpForwards:
 
 	script := assertionScript(`
 assert_allowed "https://target-allow:443/" "tcp-forward: HTTPS to target-allow via FQDN rule"
-assert_denied "https://target-deny:443/" "tcp-forward: HTTPS to target-deny denied"
+assert_network_denied "https://target-deny:443/" "tcp-forward: HTTPS to target-deny denied"
 
 # Verify TCP forward reaches upstream via localhost proxy port.
 response=$(echo "" | curl -s telnet://127.0.0.1:15022 --max-time 5 2>/dev/null) || true
