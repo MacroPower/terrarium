@@ -90,8 +90,8 @@ func terrariumContainer(
 	// Use the first platform container (linux/amd64).
 	ctr := &containers[0]
 
-	// Mount the config at the default XDG path.
-	ctr = ctr.WithNewFile("/root/.config/terrarium/config.yaml", configContent)
+	// Mount the config at an explicit path decoupled from XDG resolution.
+	ctr = ctr.WithNewFile("/etc/terrarium/config.yaml", configContent)
 
 	// Apply service bindings.
 	for _, b := range bindings {
@@ -217,7 +217,7 @@ PASS=0
 FAIL=0
 ` + assertionPreamble + `
 # Start terrarium init in background
-terrarium init -- sleep infinity &
+terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
 TERRARIUM_PID=$!
 
 # Wait for Envoy readiness by polling listener ports with curl.
@@ -260,7 +260,7 @@ FAIL=0
 ` + assertionPreamble + `
 # Start terrarium init in background.
 # No FQDN ports = no Envoy, so init finishes quickly.
-terrarium init -- sleep infinity &
+terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
 TERRARIUM_PID=$!
 
 # Wait for init to apply nftables rules (no Envoy to wait for).
