@@ -27,3 +27,4 @@ dist/
 # Temp files
 .tmp/
 .task/
+.chief/
