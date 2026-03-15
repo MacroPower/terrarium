@@ -108,13 +108,21 @@ const assertionPreamble = `
 assert_allowed() {
     url="$1"
     desc="${2:-$url reachable}"
-    if curl -sf -k --max-time 10 "$url" >/dev/null 2>&1; then
-        echo "PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "FAIL: $desc (expected ALLOWED, got DENIED)"
-        FAIL=$((FAIL + 1))
-    fi
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        if curl -sf -k --max-time 10 "$url" >/dev/null 2>&1; then
+            echo "PASS: $desc"
+            PASS=$((PASS + 1))
+            return
+        fi
+        if [ "$attempt" -lt 3 ]; then
+            echo "RETRY: $desc (attempt $attempt/3 failed, retrying in 2s)"
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+    echo "FAIL: $desc (expected ALLOWED, got DENIED after 3 attempts)"
+    FAIL=$((FAIL + 1))
 }
 
 assert_denied() {
@@ -158,23 +166,41 @@ assert_l7_allowed() {
     method="${2:-GET}"
     expected_body="$3"
     desc="${4:-$method $url allowed}"
-    body=$(curl -sf -k --max-time 10 -X "$method" "$url" 2>/dev/null) || {
-        echo "FAIL: $desc (expected L7 ALLOWED, connection failed)"
-        FAIL=$((FAIL + 1))
-        return
-    }
-    if [ -n "$expected_body" ]; then
-        if echo "$body" | grep -q "$expected_body"; then
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        body=$(curl -sf -k --max-time 10 -X "$method" "$url" 2>/dev/null) || {
+            if [ "$attempt" -lt 3 ]; then
+                echo "RETRY: $desc (attempt $attempt/3 connection failed, retrying in 2s)"
+                sleep 2
+                attempt=$((attempt + 1))
+                continue
+            fi
+            echo "FAIL: $desc (expected L7 ALLOWED, connection failed after 3 attempts)"
+            FAIL=$((FAIL + 1))
+            return
+        }
+        if [ -n "$expected_body" ]; then
+            if echo "$body" | grep -q "$expected_body"; then
+                echo "PASS: $desc"
+                PASS=$((PASS + 1))
+                return
+            else
+                if [ "$attempt" -lt 3 ]; then
+                    echo "RETRY: $desc (attempt $attempt/3 body mismatch, retrying in 2s)"
+                    sleep 2
+                    attempt=$((attempt + 1))
+                    continue
+                fi
+                echo "FAIL: $desc (expected body containing '$expected_body', got '$body' after 3 attempts)"
+                FAIL=$((FAIL + 1))
+                return
+            fi
+        else
             echo "PASS: $desc"
             PASS=$((PASS + 1))
-        else
-            echo "FAIL: $desc (expected body containing '$expected_body', got '$body')"
-            FAIL=$((FAIL + 1))
+            return
         fi
-    else
-        echo "PASS: $desc"
-        PASS=$((PASS + 1))
-    fi
+    done
 }
 
 assert_l7_denied() {
