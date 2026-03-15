@@ -148,6 +148,38 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	normalizeEnvoySettings(c)
+
+	err := c.validateEnvoySettings()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateEnvoySettings checks that envoy settings contain valid values.
+func (c *Config) validateEnvoySettings() error {
+	if c.Envoy == nil {
+		return nil
+	}
+
+	if c.Envoy.LogLevel != "" && !validEnvoyLogLevels[c.Envoy.LogLevel] {
+		return fmt.Errorf("%w: %q", ErrInvalidEnvoyLogLevel, c.Envoy.LogLevel)
+	}
+
+	if c.Envoy.DrainTimeout.Duration < 0 {
+		return fmt.Errorf("%w: %v", ErrInvalidEnvoyDrainTimeout, c.Envoy.DrainTimeout)
+	}
+
+	if c.Envoy.StartupTimeout.Duration < 0 {
+		return fmt.Errorf("%w: %v", ErrInvalidEnvoyStartupTimeout, c.Envoy.StartupTimeout)
+	}
+
+	if c.Envoy.MaxDownstreamConnections < 0 {
+		return fmt.Errorf("%w: %d", ErrInvalidEnvoyMaxConnections, c.Envoy.MaxDownstreamConnections)
+	}
+
 	return nil
 }
 

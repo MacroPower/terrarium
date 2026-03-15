@@ -236,4 +236,22 @@ var (
 	// The field is parsed from YAML to produce a clear error instead
 	// of an opaque "unknown field" parse failure.
 	ErrUnsupportedFeature = errors.New("unsupported feature")
+
+	// ErrInvalidEnvoyLogLevel is returned when [EnvoySettings.LogLevel]
+	// is not one of the values accepted by Envoy's --log-level flag.
+	ErrInvalidEnvoyLogLevel = errors.New(
+		"envoy logLevel must be one of: trace, debug, info, warning, error, critical, off",
+	)
+
+	// ErrInvalidEnvoyDrainTimeout is returned when
+	// [EnvoySettings.DrainTimeout] is negative.
+	ErrInvalidEnvoyDrainTimeout = errors.New("envoy drainTimeout must not be negative")
+
+	// ErrInvalidEnvoyStartupTimeout is returned when
+	// [EnvoySettings.StartupTimeout] is negative.
+	ErrInvalidEnvoyStartupTimeout = errors.New("envoy startupTimeout must not be negative")
+
+	// ErrInvalidEnvoyMaxConnections is returned when
+	// [EnvoySettings.MaxDownstreamConnections] is negative.
+	ErrInvalidEnvoyMaxConnections = errors.New("envoy maxDownstreamConnections must not be negative")
 )

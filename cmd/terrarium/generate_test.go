@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,32 +16,42 @@ func TestGenerate(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		setup   func(t *testing.T) string
+		setup   func(t *testing.T) *config.User
 		err     error
 		wantMsg string
 	}{
 		"missing file": {
-			setup: func(t *testing.T) string {
+			setup: func(t *testing.T) *config.User {
 				t.Helper()
 
-				return "/nonexistent/path/config.yaml"
+				return &config.User{
+					ConfigPath:      "/nonexistent/path/config.yaml",
+					CertsDir:        t.TempDir(),
+					CADir:           t.TempDir(),
+					EnvoyConfigPath: filepath.Join(t.TempDir(), "envoy.yaml"),
+				}
 			},
 			wantMsg: "reading config",
 		},
 		"invalid YAML": {
-			setup: func(t *testing.T) string {
+			setup: func(t *testing.T) *config.User {
 				t.Helper()
 
 				dir := t.TempDir()
 				path := filepath.Join(dir, "config.yaml")
 				require.NoError(t, os.WriteFile(path, []byte(":\n  :\n  - [invalid"), 0o644))
 
-				return path
+				return &config.User{
+					ConfigPath:      path,
+					CertsDir:        t.TempDir(),
+					CADir:           t.TempDir(),
+					EnvoyConfigPath: filepath.Join(t.TempDir(), "envoy.yaml"),
+				}
 			},
 			wantMsg: "parsing config",
 		},
 		"empty FQDN selector": {
-			setup: func(t *testing.T) string {
+			setup: func(t *testing.T) *config.User {
 				t.Helper()
 
 				dir := t.TempDir()
@@ -48,7 +59,12 @@ func TestGenerate(t *testing.T) {
 				cfg := "egress:\n  - toFQDNs:\n      - {}\n"
 				require.NoError(t, os.WriteFile(path, []byte(cfg), 0o644))
 
-				return path
+				return &config.User{
+					ConfigPath:      path,
+					CertsDir:        t.TempDir(),
+					CADir:           t.TempDir(),
+					EnvoyConfigPath: filepath.Join(t.TempDir(), "envoy.yaml"),
+				}
 			},
 			err:     config.ErrFQDNSelectorEmpty,
 			wantMsg: "parsing config",
@@ -59,9 +75,9 @@ func TestGenerate(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			path := tt.setup(t)
+			usr := tt.setup(t)
 
-			cfg, err := Generate(t.Context(), path)
+			cfg, err := Generate(t.Context(), usr)
 			require.Error(t, err)
 			require.Nil(t, cfg)
 			require.ErrorContains(t, err, tt.wantMsg)
@@ -969,6 +985,32 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			},
 			want: []string{
 				"connect_timeout: 5s",
+			},
+		},
+		"custom max downstream connections": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+				Envoy: &config.EnvoySettings{MaxDownstreamConnections: 1024},
+			},
+			want: []string{
+				fmt.Sprintf("max_active_downstream_connections: %d", 1024),
+			},
+			notWant: []string{
+				fmt.Sprintf("max_active_downstream_connections: %d", config.DefaultEnvoyMaxDownstreamConnections),
+			},
+		},
+		"default max downstream connections": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+			want: []string{
+				fmt.Sprintf("max_active_downstream_connections: %d", config.DefaultEnvoyMaxDownstreamConnections),
 			},
 		},
 	}

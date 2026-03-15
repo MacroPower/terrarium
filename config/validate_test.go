@@ -3,6 +3,7 @@ package config_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1233,6 +1234,48 @@ func TestValidate(t *testing.T) {
 					}
 				}()),
 			},
+		},
+		"valid envoy settings": {
+			cfg: &config.Config{
+				Envoy: &config.EnvoySettings{
+					LogLevel:                 "debug",
+					DrainTimeout:             config.Duration{Duration: 10 * time.Second},
+					StartupTimeout:           config.Duration{Duration: 30 * time.Second},
+					MaxDownstreamConnections: 1024,
+				},
+			},
+		},
+		"nil envoy settings": {
+			cfg: &config.Config{},
+		},
+		"envoy log level normalized": {
+			cfg: &config.Config{
+				Envoy: &config.EnvoySettings{LogLevel: "WARNING"},
+			},
+		},
+		"invalid envoy log level": {
+			cfg: &config.Config{
+				Envoy: &config.EnvoySettings{LogLevel: "verbose"},
+			},
+			err: config.ErrInvalidEnvoyLogLevel,
+		},
+		"negative drain timeout": {
+			cfg: &config.Config{
+				Envoy: &config.EnvoySettings{DrainTimeout: config.Duration{Duration: -1 * time.Second}},
+			},
+			err: config.ErrInvalidEnvoyDrainTimeout,
+		},
+		"negative startup timeout": {
+			cfg: &config.Config{
+				Envoy: &config.EnvoySettings{StartupTimeout: config.Duration{Duration: -1 * time.Second}},
+			},
+			err: config.ErrInvalidEnvoyStartupTimeout,
+		},
+		"negative max connections": {
+			cfg: &config.Config{
+				Envoy: &config.EnvoySettings{MaxDownstreamConnections: -1},
+			},
+			err: config.ErrInvalidEnvoyMaxConnections,
 		},
 	}
 

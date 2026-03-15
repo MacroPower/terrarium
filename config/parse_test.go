@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -337,6 +338,62 @@ func TestMarshalConfigRoundtrip(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantUnrestricted, cfg2.IsEgressUnrestricted())
 			assert.Equal(t, tt.wantBlocked, cfg2.IsEgressBlocked())
+		})
+	}
+}
+
+func TestParseEnvoySettings(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		want config.EnvoySettings
+	}{
+		"all fields": {
+			yaml: `
+envoy:
+  logLevel: info
+  drainTimeout: "10s"
+  startupTimeout: "30s"
+  maxDownstreamConnections: 1024
+`,
+			want: config.EnvoySettings{
+				LogLevel:                 "info",
+				DrainTimeout:             config.Duration{Duration: 10 * time.Second},
+				StartupTimeout:           config.Duration{Duration: 30 * time.Second},
+				MaxDownstreamConnections: 1024,
+			},
+		},
+		"partial fields use defaults": {
+			yaml: `
+envoy:
+  logLevel: debug
+`,
+			want: config.EnvoySettings{
+				LogLevel:                 "debug",
+				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
+				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
+				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
+			},
+		},
+		"absent envoy uses all defaults": {
+			yaml: `logging: false`,
+			want: config.EnvoySettings{
+				LogLevel:                 config.DefaultEnvoyLogLevel,
+				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
+				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
+				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.EnvoyDefaults())
 		})
 	}
 }

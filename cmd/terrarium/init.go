@@ -22,10 +22,6 @@ import (
 	"go.jacobcolvin.com/terrarium/firewall"
 )
 
-// envoyDrainTimeout is the maximum time to wait for Envoy to exit
-// after receiving SIGTERM before proceeding with shutdown.
-const envoyDrainTimeout = 5 * time.Second
-
 // ExitError carries a process exit code through the error return path
 // so the CLI entrypoint can propagate it to [os.Exit].
 type ExitError struct{ Code int }
@@ -69,14 +65,9 @@ func ParseUpstreamDNS(resolvConf string) string {
 // as a supervised child process. The context is threaded to all
 // subprocesses, allowing cancellation to propagate. Returns an
 // [*ExitError] carrying the child's exit code on normal termination.
-func Init(ctx context.Context, usr config.User, args []string) error {
+func Init(ctx context.Context, usr *config.User, args []string) error {
 	if len(args) == 0 {
 		return ErrNoCommand
-	}
-
-	setenvErr := os.Setenv("PATH", usr.HMBin+":"+os.Getenv("PATH"))
-	if setenvErr != nil {
-		slog.DebugContext(ctx, "setting PATH", slog.Any("err", setenvErr))
 	}
 
 	// Capture upstream DNS before we replace resolv.conf.
@@ -91,18 +82,18 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 	// is returned so we can reuse it below without re-parsing (ISSUE-71).
 	var cfg *config.Config
 
-	_, err = os.Stat("/etc/envoy-terrarium.yaml")
+	_, err = os.Stat(usr.EnvoyConfigPath)
 	if os.IsNotExist(err) {
 		slog.InfoContext(ctx, "generating firewall configs")
 
-		cfg, err = Generate(ctx, usr.ConfigPath)
+		cfg, err = Generate(ctx, usr)
 		if err != nil {
 			return fmt.Errorf("generating configs: %w", err)
 		}
 	}
 
 	// Install CA cert into trust store if MITM certs were generated.
-	caCertPath := CADir + "/ca.pem"
+	caCertPath := usr.CADir + "/ca.pem"
 
 	_, err = os.Stat(caCertPath)
 	if err == nil {
@@ -127,6 +118,8 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 		}
 	}
 
+	envoySettings := cfg.EnvoyDefaults()
+
 	needsEnvoy := len(cfg.ResolvePorts()) > 0 || len(cfg.TCPForwards) > 0
 
 	// Apply nftables firewall rules atomically via netlink.
@@ -138,9 +131,9 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 	slog.InfoContext(ctx, "applying nftables firewall rules")
 
 	uids := firewall.UIDs{
-		//nolint:gosec // G115: UID values are small constants from CLI entrypoint.
+		//nolint:gosec // G115: UID values from CLI flags.
 		Sandbox: uint32(mustAtoi(usr.UID)),
-		//nolint:gosec // G115: UID values are small constants from CLI entrypoint.
+		//nolint:gosec // G115: UID values from CLI flags.
 		Envoy: uint32(mustAtoi(usr.EnvoyUID)),
 		Root:  0,
 	}
@@ -256,10 +249,10 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 	var envoyCmd *exec.Cmd
 
 	if needsEnvoy {
-		//nolint:gosec // G204: args from config.User populated with constants in CLI entrypoint.
+		//nolint:gosec // G204: args from config.User populated via CLI flags.
 		envoyCmd = exec.CommandContext(ctx, "setpriv",
 			"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups", "--no-new-privs",
-			"--", "envoy", "-c", "/etc/envoy-terrarium.yaml", "--log-level", "warning")
+			"--", "envoy", "-c", usr.EnvoyConfigPath, "--log-level", envoySettings.LogLevel)
 		envoyCmd.Stdout = os.Stdout
 		envoyCmd.Stderr = os.Stderr
 
@@ -271,7 +264,7 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 		// Wait on the first available listener port.
 		waitPort := firstListenerPort(cfg)
 
-		err = waitForListener(ctx, fmt.Sprintf("127.0.0.1:%d", waitPort), 10*time.Second)
+		err = waitForListener(ctx, fmt.Sprintf("127.0.0.1:%d", waitPort), envoySettings.StartupTimeout.Duration)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
 		}
@@ -304,7 +297,7 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 		"--reuid=" + usr.UID, "--regid=" + usr.GID, "--init-groups",
 		"--no-new-privs", "--inh-caps=-all", "--bounding-set=-all", "--",
 	}, args...)
-	//nolint:gosec // G204: args from constants and user input.
+	//nolint:gosec // G204: args from CLI flags and user input.
 	userCmd := exec.CommandContext(ctx, "setpriv", userArgs...)
 	userCmd.Stdin = os.Stdin
 	userCmd.Stdout = os.Stdout
@@ -350,7 +343,7 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 		waitErr = <-waitCh
 	}
 
-	shutdown(ctx, envoyCmd, dnsProxy, conn)
+	shutdown(ctx, envoyCmd, dnsProxy, conn, envoySettings.DrainTimeout.Duration)
 
 	// Reap any remaining zombie children (PID 1 responsibility).
 	for {
@@ -379,14 +372,17 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 // Envoy first (with drain wait), then DNS proxy, then nftables.
 // Stopping Envoy before DNS ensures in-flight requests can still
 // resolve during Envoy's drain period (ISSUE-52).
-func shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy, conn firewall.Conn) {
+func shutdown(
+	ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy,
+	conn firewall.Conn, drainTimeout time.Duration,
+) {
 	// Stop Envoy first so DNS remains available during drain (ISSUE-52).
 	if envoyCmd != nil && envoyCmd.Process != nil {
 		err := envoyCmd.Process.Signal(syscall.SIGTERM)
 		if err != nil {
 			slog.DebugContext(ctx, "stopping envoy", slog.Any("err", err))
 		} else {
-			// Wait up to 5 seconds for Envoy to exit gracefully (ISSUE-51).
+			// Wait for Envoy to exit gracefully (ISSUE-51).
 			envoyDone := make(chan struct{})
 
 			go func() {
@@ -400,7 +396,7 @@ func shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy,
 
 			select {
 			case <-envoyDone:
-			case <-time.After(envoyDrainTimeout):
+			case <-time.After(drainTimeout):
 				slog.WarnContext(ctx, "envoy did not exit within drain timeout, proceeding")
 			}
 		}

@@ -121,7 +121,7 @@ func TestShutdownOrder(t *testing.T) {
 	// We verify this by checking that after shutdown returns,
 	// the Envoy process has already exited (was waited on) and
 	// the DNS proxy port is released.
-	shutdown(t.Context(), envoyCmd, proxy, nil)
+	shutdown(t.Context(), envoyCmd, proxy, nil, config.DefaultEnvoyDrainTimeout)
 
 	// Envoy process should have been terminated and waited on.
 	assert.NotNil(t, envoyCmd.ProcessState, "envoy process should have been waited on")

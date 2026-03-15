@@ -13,19 +13,14 @@ import (
 	"go.jacobcolvin.com/terrarium/envoy"
 )
 
-// CertsDir is the directory where MITM leaf certificates are stored.
-const CertsDir = "/etc/terrarium/certs"
-
-// CADir is the directory where terrarium CA cert and key are stored.
-const CADir = "/etc/terrarium/ca"
-
-// Generate reads terrarium YAML config at configPath, resolves domains
-// and ports, generates MITM certs for path-restricted rules, and writes
-// the Envoy config file to /etc. Firewall rules are applied directly
-// via nftables netlink in [Init], not written to files. The parsed
-// [*Config] is returned so callers can reuse it without re-parsing.
-func Generate(ctx context.Context, configPath string) (*config.Config, error) {
-	data, err := os.ReadFile(configPath)
+// Generate reads terrarium YAML config from usr.ConfigPath, resolves
+// domains and ports, generates MITM certs for path-restricted rules,
+// and writes the Envoy config file to usr.EnvoyConfigPath. Firewall
+// rules are applied directly via nftables netlink in [Init], not
+// written to files. The parsed [*Config] is returned so callers can
+// reuse it without re-parsing.
+func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
+	data, err := os.ReadFile(usr.ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
@@ -54,12 +49,12 @@ func Generate(ctx context.Context, configPath string) (*config.Config, error) {
 
 	certsDir := ""
 	if len(mitmRules) > 0 {
-		err := certs.Generate(mitmRules, CADir, CertsDir)
+		err := certs.Generate(mitmRules, usr.CADir, usr.CertsDir)
 		if err != nil {
 			return nil, fmt.Errorf("generating certs: %w", err)
 		}
 
-		certsDir = CertsDir
+		certsDir = usr.CertsDir
 	}
 
 	caBundlePath := findCABundle()
@@ -68,7 +63,7 @@ func Generate(ctx context.Context, configPath string) (*config.Config, error) {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
 	}
 
-	err = os.WriteFile("/etc/envoy-terrarium.yaml", []byte(envoyConf), 0o644)
+	err = os.WriteFile(usr.EnvoyConfigPath, []byte(envoyConf), 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("writing envoy config: %w", err)
 	}
@@ -163,13 +158,15 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 	// Use global rules for cluster determination.
 	allRules := cfg.ResolveRules()
 
+	envoySettings := cfg.EnvoyDefaults()
+
 	bs := envoy.Bootstrap{
 		OverloadManager: envoy.OverloadManager{
 			ResourceMonitors: []envoy.NamedTyped{{
 				Name: "envoy.resource_monitors.global_downstream_max_connections",
 				TypedConfig: envoy.DownstreamConnectionsConfig{
 					AtType:                         "type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig",
-					MaxActiveDownstreamConnections: 65535,
+					MaxActiveDownstreamConnections: envoySettings.MaxDownstreamConnections,
 				},
 			}},
 		},

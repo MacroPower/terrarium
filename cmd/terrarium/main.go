@@ -17,27 +17,8 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 )
 
-const (
-	uid        = "1000"
-	gid        = "1000"
-	envoyUID   = "999"
-	username   = "dev"
-	homeDir    = "/home/dev"
-	hmBin      = homeDir + "/.local/state/home-manager/gcroots/current-home/home-path/bin"
-	configPath = "/etc/terrarium/config.yaml"
-)
-
-var usr = config.User{
-	UID:        uid,
-	GID:        gid,
-	EnvoyUID:   envoyUID,
-	Username:   username,
-	HomeDir:    homeDir,
-	HMBin:      hmBin,
-	ConfigPath: configPath,
-}
-
 func main() {
+	usr := config.NewUser()
 	logCfg := log.NewConfig()
 
 	rootCmd := &cobra.Command{
@@ -55,9 +36,17 @@ func main() {
 		},
 	}
 
+	usr.RegisterFlags(rootCmd.PersistentFlags())
 	logCfg.RegisterFlags(rootCmd.PersistentFlags())
 
-	err := logCfg.RegisterCompletions(rootCmd)
+	err := usr.RegisterCompletions(rootCmd)
+	if err != nil {
+		slog.Error("registering completions",
+			slog.Any("err", err),
+		)
+	}
+
+	err = logCfg.RegisterCompletions(rootCmd)
 	if err != nil {
 		slog.Error("registering completions",
 			slog.Any("err", err),
@@ -70,7 +59,7 @@ func main() {
 			Short: "Generate iptables/envoy configs from YAML",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				_, err := Generate(cmd.Context(), usr.ConfigPath)
+				_, err := Generate(cmd.Context(), usr)
 				return err
 			},
 		},

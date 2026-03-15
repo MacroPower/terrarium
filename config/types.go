@@ -4,7 +4,16 @@
 // generators.
 package config
 
-import "regexp"
+import (
+	"fmt"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+)
 
 // Config is the top-level YAML configuration for terrarium firewall.
 //
@@ -35,6 +44,10 @@ type Config struct {
 	// An empty slice is equivalent to nil; Cilium infers default-deny
 	// from rule presence, so an empty list never activates enforcement.
 	Egress *[]EgressRule `yaml:"egress,omitempty"`
+	// Envoy configures Envoy proxy runtime behavior (log level,
+	// timeouts, connection limits). A nil pointer means the field
+	// was absent from YAML; all defaults apply. See [EnvoySettings].
+	Envoy *EnvoySettings `yaml:"envoy,omitempty"`
 	// TCPForwards lists non-TLS TCP port-to-host mappings. Each entry
 	// creates a plain TCP proxy listener forwarding to the specified host.
 	TCPForwards []TCPForward `yaml:"tcpForwards,omitempty"`
@@ -399,17 +412,213 @@ type FQDNRulePorts struct {
 	RuleIndex int
 }
 
+// UserFlags holds the CLI flag names for each [User] field. Override
+// individual names before calling [User.RegisterFlags] to customize
+// the flag interface. Create instances with [NewUser].
+type UserFlags struct {
+	UID             string
+	GID             string
+	EnvoyUID        string
+	Username        string
+	HomeDir         string
+	ConfigPath      string
+	CertsDir        string
+	CADir           string
+	EnvoyConfigPath string
+}
+
 // User holds identity and path values for the sandboxed container user.
 // These values are passed from the CLI entrypoint so library packages
-// have no baked-in assumptions.
+// have no baked-in assumptions. Create instances with [NewUser].
 type User struct {
-	UID        string
-	GID        string
-	EnvoyUID   string
-	Username   string
-	HomeDir    string
-	HMBin      string
-	ConfigPath string
+	UID             string
+	GID             string
+	EnvoyUID        string
+	Username        string
+	HomeDir         string
+	ConfigPath      string
+	CertsDir        string
+	CADir           string
+	EnvoyConfigPath string
+	Flags           UserFlags
+}
+
+// NewUser creates a new [*User] with default flag names.
+func NewUser() *User {
+	return &User{
+		Flags: UserFlags{
+			UID:             "uid",
+			GID:             "gid",
+			EnvoyUID:        "envoy-uid",
+			Username:        "username",
+			HomeDir:         "home-dir",
+			ConfigPath:      "config",
+			CertsDir:        "certs-dir",
+			CADir:           "ca-dir",
+			EnvoyConfigPath: "envoy-config",
+		},
+	}
+}
+
+// RegisterFlags registers CLI flags for all [User] fields on the given
+// flag set. Default values follow XDG Base Directory conventions with
+// container-appropriate fallbacks.
+func (u *User) RegisterFlags(flags *pflag.FlagSet) {
+	flags.StringVar(&u.UID, u.Flags.UID, "1000", "sandbox user UID")
+	flags.StringVar(&u.GID, u.Flags.GID, "1000", "sandbox user GID")
+	flags.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "999", "Envoy process UID")
+	flags.StringVar(&u.Username, u.Flags.Username, "dev", "sandbox username")
+	flags.StringVar(&u.HomeDir, u.Flags.HomeDir,
+		userHomeDir(), "sandbox user home directory")
+	flags.StringVar(&u.ConfigPath, u.Flags.ConfigPath,
+		filepath.Join(userConfigDir(), "terrarium", "config.yaml"), "terrarium config file path")
+	flags.StringVar(&u.CertsDir, u.Flags.CertsDir,
+		filepath.Join(userDataDir(), "terrarium", "certs"), "MITM leaf certificate directory")
+	flags.StringVar(&u.CADir, u.Flags.CADir,
+		filepath.Join(userDataDir(), "terrarium", "ca"), "CA cert and key directory")
+	flags.StringVar(&u.EnvoyConfigPath, u.Flags.EnvoyConfigPath,
+		envoyConfigDefault(), "Envoy config output path")
+}
+
+// RegisterCompletions registers shell completions for [User] flags.
+// Currently a no-op since none of the user flags have enumerable values.
+func (u *User) RegisterCompletions(_ *cobra.Command) error {
+	return nil
+}
+
+// Envoy default constants.
+const (
+	// DefaultEnvoyLogLevel is the Envoy --log-level flag value used
+	// when [EnvoySettings.LogLevel] is empty.
+	DefaultEnvoyLogLevel = "warning"
+
+	// DefaultEnvoyDrainTimeout is the maximum time to wait for Envoy
+	// to exit after SIGTERM when [EnvoySettings.DrainTimeout] is zero.
+	DefaultEnvoyDrainTimeout = 5 * time.Second
+
+	// DefaultEnvoyStartupTimeout is the maximum time to wait for
+	// Envoy to begin accepting connections when
+	// [EnvoySettings.StartupTimeout] is zero.
+	DefaultEnvoyStartupTimeout = 10 * time.Second
+
+	// DefaultEnvoyMaxDownstreamConnections is the Envoy overload
+	// manager connection limit when
+	// [EnvoySettings.MaxDownstreamConnections] is zero.
+	DefaultEnvoyMaxDownstreamConnections = 65535
+)
+
+// validEnvoyLogLevels lists the log levels accepted by Envoy's
+// --log-level flag.
+var validEnvoyLogLevels = map[string]bool{
+	"trace": true, "debug": true, "info": true, "warning": true,
+	"error": true, "critical": true, "off": true,
+}
+
+// ValidEnvoyLogLevels returns the set of accepted Envoy log level
+// strings, suitable for help text and error messages.
+func ValidEnvoyLogLevels() []string {
+	return []string{"trace", "debug", "info", "warning", "error", "critical", "off"}
+}
+
+// EnvoySettings controls Envoy proxy runtime behavior. All fields are
+// optional; zero values mean "use default." Use [Config.EnvoyDefaults]
+// to obtain a fully populated copy with defaults applied.
+type EnvoySettings struct {
+	// LogLevel sets the Envoy --log-level flag. Valid values are
+	// trace, debug, info, warning, error, critical, off.
+	LogLevel string `yaml:"logLevel,omitempty"`
+	// DrainTimeout is the maximum duration to wait for Envoy to exit
+	// after SIGTERM before proceeding with shutdown.
+	DrainTimeout Duration `yaml:"drainTimeout,omitempty"`
+	// StartupTimeout is the maximum duration to wait for Envoy to
+	// begin accepting connections after launch.
+	StartupTimeout Duration `yaml:"startupTimeout,omitempty"`
+	// MaxDownstreamConnections limits the number of active downstream
+	// connections Envoy will accept. Zero means use the default (65535).
+	MaxDownstreamConnections int `yaml:"maxDownstreamConnections,omitempty"`
+}
+
+// EnvoyDefaults returns an [EnvoySettings] with defaults applied for
+// any fields not set in the YAML config. When [Config.Envoy] is nil,
+// all defaults apply.
+func (c *Config) EnvoyDefaults() EnvoySettings {
+	s := EnvoySettings{
+		LogLevel:                 DefaultEnvoyLogLevel,
+		DrainTimeout:             Duration{DefaultEnvoyDrainTimeout},
+		StartupTimeout:           Duration{DefaultEnvoyStartupTimeout},
+		MaxDownstreamConnections: DefaultEnvoyMaxDownstreamConnections,
+	}
+
+	if c.Envoy == nil {
+		return s
+	}
+
+	if c.Envoy.LogLevel != "" {
+		s.LogLevel = c.Envoy.LogLevel
+	}
+
+	if c.Envoy.DrainTimeout.Duration != 0 {
+		s.DrainTimeout = c.Envoy.DrainTimeout
+	}
+
+	if c.Envoy.StartupTimeout.Duration != 0 {
+		s.StartupTimeout = c.Envoy.StartupTimeout
+	}
+
+	if c.Envoy.MaxDownstreamConnections != 0 {
+		s.MaxDownstreamConnections = c.Envoy.MaxDownstreamConnections
+	}
+
+	return s
+}
+
+// Duration wraps [time.Duration] with YAML string unmarshaling.
+// Values are parsed with [time.ParseDuration] (e.g. "5s", "1m30s").
+type Duration struct {
+	time.Duration
+}
+
+// UnmarshalYAML implements the goccy/go-yaml InterfaceUnmarshaler
+// interface to parse duration strings.
+func (d *Duration) UnmarshalYAML(unmarshal func(any) error) error {
+	var s string
+
+	err := unmarshal(&s)
+	if err != nil {
+		return err
+	}
+
+	dur, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("parsing duration %q: %w", s, err)
+	}
+
+	d.Duration = dur
+
+	return nil
+}
+
+// MarshalYAML returns the duration as a Go duration string.
+// Returns an empty string for zero durations.
+func (d Duration) MarshalYAML() (any, error) {
+	if d.Duration == 0 {
+		return "", nil
+	}
+
+	return d.Duration.String(), nil
+}
+
+// String returns the duration as a Go duration string.
+func (d Duration) String() string {
+	return d.Duration.String()
+}
+
+// normalizeEnvoySettings lowercases the log level so users can write
+// "Warning" or "WARNING" and it works.
+func normalizeEnvoySettings(c *Config) {
+	if c.Envoy != nil && c.Envoy.LogLevel != "" {
+		c.Envoy.LogLevel = strings.ToLower(c.Envoy.LogLevel)
+	}
 }
 
 // FQDNPattern pairs an FQDN selector with its compiled regex for DNS
