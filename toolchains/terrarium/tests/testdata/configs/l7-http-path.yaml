@@ -1,0 +1,11 @@
+egress:
+  - toFQDNs:
+      - matchName: "target-l7"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+        rules:
+          http:
+            - method: "GET"
+              path: "/allowed/.*"

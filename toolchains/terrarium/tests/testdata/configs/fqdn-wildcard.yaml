@@ -1,0 +1,7 @@
+egress:
+  - toFQDNs:
+      - matchPattern: "*.target-zone"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP

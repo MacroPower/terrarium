@@ -1,0 +1,13 @@
+egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+  - toFQDNs:
+      - matchName: "target-l7"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP

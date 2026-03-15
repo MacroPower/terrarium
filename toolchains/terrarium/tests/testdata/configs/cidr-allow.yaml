@@ -1,0 +1,7 @@
+egress:
+  - toCIDR:
+      - "0.0.0.0/0"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
