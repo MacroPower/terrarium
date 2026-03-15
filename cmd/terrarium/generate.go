@@ -1,4 +1,4 @@
-package terrarium
+package main
 
 import (
 	"bytes"

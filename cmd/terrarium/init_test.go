@@ -1,4 +1,4 @@
-package terrarium_test
+package main
 
 import (
 	"net"
@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.jacobcolvin.com/terrarium"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/dnstest"
@@ -47,7 +46,7 @@ func TestParseUpstreamDNS(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, terrarium.ParseUpstreamDNS(tt.resolvConf))
+			assert.Equal(t, tt.want, ParseUpstreamDNS(tt.resolvConf))
 		})
 	}
 }
@@ -119,10 +118,10 @@ func TestShutdownOrder(t *testing.T) {
 	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
 
 	// DNS should still be resolvable while Envoy is draining.
-	// We verify this by checking that after Shutdown returns,
+	// We verify this by checking that after shutdown returns,
 	// the Envoy process has already exited (was waited on) and
 	// the DNS proxy port is released.
-	terrarium.Shutdown(t.Context(), envoyCmd, proxy, nil)
+	shutdown(t.Context(), envoyCmd, proxy, nil)
 
 	// Envoy process should have been terminated and waited on.
 	assert.NotNil(t, envoyCmd.ProcessState, "envoy process should have been waited on")

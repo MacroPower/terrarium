@@ -1,4 +1,4 @@
-package terrarium_test
+package main
 
 import (
 	"os"
@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.jacobcolvin.com/terrarium"
 	"go.jacobcolvin.com/terrarium/config"
 )
 
@@ -62,7 +61,7 @@ func TestGenerate(t *testing.T) {
 
 			path := tt.setup(t)
 
-			cfg, err := terrarium.Generate(t.Context(), path)
+			cfg, err := Generate(t.Context(), path)
 			require.Error(t, err)
 			require.Nil(t, cfg)
 			require.ErrorContains(t, err, tt.wantMsg)
@@ -99,7 +98,7 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 	envoyResults := make([]string, iterations)
 
 	for i := range iterations {
-		envoy, err := terrarium.GenerateEnvoyFromConfig(cfg, "", "")
+		envoy, err := GenerateEnvoyFromConfig(cfg, "", "")
 		require.NoError(t, err)
 
 		envoyResults[i] = envoy
@@ -978,7 +977,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			conf, err := terrarium.GenerateEnvoyFromConfig(tt.cfg, tt.certsDir, "")
+			conf, err := GenerateEnvoyFromConfig(tt.cfg, tt.certsDir, "")
 			require.NoError(t, err)
 
 			for _, s := range tt.want {

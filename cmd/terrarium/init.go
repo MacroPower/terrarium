@@ -1,4 +1,4 @@
-package terrarium
+package main
 
 import (
 	"context"
@@ -352,7 +352,7 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 		waitErr = <-waitCh
 	}
 
-	Shutdown(ctx, envoyCmd, dnsProxy, conn)
+	shutdown(ctx, envoyCmd, dnsProxy, conn)
 
 	// Reap any remaining zombie children (PID 1 responsibility).
 	for {
@@ -377,11 +377,11 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 	return &ExitError{Code: exitCode}
 }
 
-// Shutdown performs the full cleanup sequence in the correct order:
+// shutdown performs the full cleanup sequence in the correct order:
 // Envoy first (with drain wait), then DNS proxy, then nftables.
 // Stopping Envoy before DNS ensures in-flight requests can still
 // resolve during Envoy's drain period (ISSUE-52).
-func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy, conn firewall.Conn) {
+func shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy, conn firewall.Conn) {
 	// Stop Envoy first so DNS remains available during drain (ISSUE-52).
 	if envoyCmd != nil && envoyCmd.Process != nil {
 		err := envoyCmd.Process.Signal(syscall.SIGTERM)

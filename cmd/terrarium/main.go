@@ -14,7 +14,6 @@ import (
 	"go.jacobcolvin.com/niceyaml/fangs"
 	"go.jacobcolvin.com/x/log"
 
-	"go.jacobcolvin.com/terrarium"
 	"go.jacobcolvin.com/terrarium/config"
 )
 
@@ -71,7 +70,7 @@ func main() {
 			Short: "Generate iptables/envoy configs from YAML",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				_, err := terrarium.Generate(cmd.Context(), usr.ConfigPath)
+				_, err := Generate(cmd.Context(), usr.ConfigPath)
 				return err
 			},
 		},
@@ -80,7 +79,7 @@ func main() {
 			Short: "Load firewall, start services, drop privileges, exec cmd",
 			Args:  cobra.ArbitraryArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return terrarium.Init(cmd.Context(), usr, args)
+				return Init(cmd.Context(), usr, args)
 			},
 		},
 	)
@@ -92,7 +91,7 @@ func main() {
 		fang.WithoutVersion(),
 	)
 	if err != nil {
-		var exitErr *terrarium.ExitError
+		var exitErr *ExitError
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.Code)
 		}
