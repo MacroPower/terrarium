@@ -138,13 +138,11 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 	slog.InfoContext(ctx, "applying nftables firewall rules")
 
 	uids := firewall.UIDs{
-		Sandbox: uint32(
-			mustAtoi(usr.UID),
-		), //nolint:gosec // G115: UID values are small constants from CLI entrypoint.
-		Envoy: uint32(
-			mustAtoi(usr.EnvoyUID),
-		), //nolint:gosec // G115: UID values are small constants from CLI entrypoint.
-		Root: 0,
+		//nolint:gosec // G115: UID values are small constants from CLI entrypoint.
+		Sandbox: uint32(mustAtoi(usr.UID)),
+		//nolint:gosec // G115: UID values are small constants from CLI entrypoint.
+		Envoy: uint32(mustAtoi(usr.EnvoyUID)),
+		Root:  0,
 	}
 
 	err = firewall.ApplyRules(ctx, conn, cfg, uids)

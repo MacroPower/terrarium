@@ -163,6 +163,7 @@ func (m *Go) TestIntegration(
 // [Go.Test].
 func (m *Go) TestCoverage() *dagger.File {
 	return m.Env("").
+		WithEnvVariable("CGO_ENABLED", "1").
 		WithExec([]string{
 			"go", "test", "-race", "-coverprofile=/tmp/coverage.txt", "./...",
 		}).

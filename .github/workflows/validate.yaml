@@ -1,0 +1,55 @@
+name: validate
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run all checks (test + lint in parallel)
+        uses: ./.github/actions/dagger-call
+        with:
+          verb: check
+          function: test lint lint-prettier lint-actions lint-releaser
+
+      - name: Export coverage profile
+        uses: ./.github/actions/dagger-call
+        with:
+          function: go test-coverage --output=coverage.txt
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run terrarium integration tests
+        uses: ./.github/actions/dagger-call
+        with:
+          verb: check
+          module: toolchains/terrarium/tests

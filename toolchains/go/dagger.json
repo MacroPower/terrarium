@@ -4,8 +4,5 @@
   "sdk": {
     "source": "go"
   },
-  "include": [
-    "../../go.mod",
-    "../../go.sum"
-  ]
+  "include": ["../../go.mod", "../../go.sum"]
 }
