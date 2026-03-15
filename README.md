@@ -9,6 +9,56 @@ based on your risk tolerance, environment, and use cases.
 
 ## Examples
 
-- Allow GET requests to repos in your own GitHub organization, deny all other traffic.
-- Allow access to your package registry, deny access to public registries.
-- Allow access to the internet, deny access to your internal network, or vice versa.
+Allow GET requests to repos in your own GitHub organization, deny all other traffic:
+
+```yaml
+egress:
+  - toFQDNs:
+      - matchName: "github.com"
+      - matchPattern: "*.github.com"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+        rules:
+          http:
+            - method: "GET"
+              path: "/my-org/.*"
+```
+
+Allow access to your package registry, deny access to public registries:
+
+```yaml
+egress:
+  - toFQDNs:
+      - matchName: "registry.internal.com"
+      - matchPattern: "*.registry.internal.com"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+          - port: "80"
+            protocol: TCP
+```
+
+Allow access to the internet, deny access to your internal network:
+
+```yaml
+egress:
+  - toCIDRSet:
+      - cidr: "0.0.0.0/0"
+        except:
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "192.168.0.0/16"
+```
+
+Or vice versa -- allow internal, deny internet:
+
+```yaml
+egress:
+  - toCIDR:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+```
