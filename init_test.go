@@ -12,6 +12,7 @@ import (
 	"go.jacobcolvin.com/terrarium"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
+	"go.jacobcolvin.com/terrarium/dnstest"
 )
 
 func TestParseUpstreamDNS(t *testing.T) {
@@ -55,7 +56,7 @@ func TestDNSProxyShutdownOnInitFailure(t *testing.T) {
 	t.Parallel()
 
 	// Start a mock upstream DNS server.
-	upstream := startMockDNS(t, "1.2.3.4")
+	upstream := dnstest.StartServer(t, "1.2.3.4")
 
 	cfg := &config.Config{
 		Egress: egressRules(config.EgressRule{
@@ -92,7 +93,7 @@ func TestShutdownOrder(t *testing.T) {
 	t.Parallel()
 
 	// Start a mock upstream DNS server and a DNS proxy.
-	upstream := startMockDNS(t, "1.2.3.4")
+	upstream := dnstest.StartServer(t, "1.2.3.4")
 
 	cfg := &config.Config{
 		Egress: egressRules(config.EgressRule{

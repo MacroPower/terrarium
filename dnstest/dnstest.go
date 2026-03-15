@@ -1,4 +1,4 @@
-package terrarium_test
+package dnstest
 
 import (
 	"fmt"
@@ -11,9 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// startMockDNS starts a mock DNS server that responds to queries with
-// the given A record IP. Returns the server and its address.
-func startMockDNS(t *testing.T, ip string) string {
+// StartServer starts a mock DNS server that responds to all queries
+// with a single A record pointing to ip. It listens on both UDP and
+// TCP on the same random port and registers a cleanup to shut both
+// down. The returned string is the "host:port" address.
+func StartServer(t *testing.T, ip string) string {
 	t.Helper()
 
 	lc := net.ListenConfig{}

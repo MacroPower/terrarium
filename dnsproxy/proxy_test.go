@@ -15,89 +15,17 @@ import (
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
+	"go.jacobcolvin.com/terrarium/dnstest"
 )
 
 func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
 	return &rules
 }
 
-// startMockDNS starts a mock DNS server that responds to queries with
-// the given A record IP. Returns the server and its address.
-func startMockDNS(t *testing.T, ip string) string {
-	t.Helper()
-
-	lc := net.ListenConfig{}
-
-	pc, err := lc.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	udpAddr, ok := pc.LocalAddr().(*net.UDPAddr)
-	require.True(t, ok)
-
-	tcpLn, err := lc.Listen(t.Context(), "tcp", fmt.Sprintf("127.0.0.1:%d", udpAddr.Port))
-	require.NoError(t, err)
-
-	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
-		resp := new(dns.Msg)
-		resp.SetReply(r)
-
-		resp.Answer = append(resp.Answer, &dns.A{
-			Hdr: dns.RR_Header{
-				Name:   r.Question[0].Name,
-				Rrtype: dns.TypeA,
-				Class:  dns.ClassINET,
-				Ttl:    300,
-			},
-			A: net.ParseIP(ip),
-		})
-		assert.NoError(t, w.WriteMsg(resp))
-	})
-
-	udpSrv := &dns.Server{
-		PacketConn: pc,
-		Handler:    handler,
-	}
-
-	tcpSrv := &dns.Server{
-		Listener: tcpLn,
-		Handler:  handler,
-	}
-
-	udpReady := make(chan struct{})
-	tcpReady := make(chan struct{})
-
-	udpSrv.NotifyStartedFunc = func() { close(udpReady) }
-	tcpSrv.NotifyStartedFunc = func() { close(tcpReady) }
-
-	go func() {
-		err := udpSrv.ActivateAndServe()
-		if err != nil {
-			slog.Debug("mock dns udp server exited", slog.Any("err", err))
-		}
-	}()
-
-	go func() {
-		err := tcpSrv.ActivateAndServe()
-		if err != nil {
-			slog.Debug("mock dns tcp server exited", slog.Any("err", err))
-		}
-	}()
-
-	<-udpReady
-	<-tcpReady
-
-	t.Cleanup(func() {
-		assert.NoError(t, udpSrv.Shutdown())
-		assert.NoError(t, tcpSrv.Shutdown())
-	})
-
-	return fmt.Sprintf("127.0.0.1:%d", udpAddr.Port)
-}
-
 func TestStart(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "1.2.3.4")
+	upstream := dnstest.StartServer(t, "1.2.3.4")
 
 	cfg := &config.Config{
 		Egress: egressRules(config.EgressRule{
@@ -139,7 +67,7 @@ func TestStart(t *testing.T) {
 func TestProxyTCPPassthrough(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "5.6.7.8")
+	upstream := dnstest.StartServer(t, "5.6.7.8")
 
 	cfg := &config.Config{
 		Egress: egressRules(config.EgressRule{
@@ -172,7 +100,7 @@ func TestProxyTCPPassthrough(t *testing.T) {
 func TestProxyBlockedMode(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "1.2.3.4")
+	upstream := dnstest.StartServer(t, "1.2.3.4")
 
 	// Blocked config: egress: [{}] with default deny.
 	cfg := &config.Config{
@@ -199,7 +127,7 @@ func TestProxyBlockedMode(t *testing.T) {
 func TestProxyRestrictedMode(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "10.0.0.1")
+	upstream := dnstest.StartServer(t, "10.0.0.1")
 
 	cfg := &config.Config{
 		Egress: egressRules(config.EgressRule{
@@ -247,7 +175,7 @@ func TestProxyRestrictedMode(t *testing.T) {
 func TestProxyRestrictedWildcard(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "10.0.0.2")
+	upstream := dnstest.StartServer(t, "10.0.0.2")
 
 	cfg := &config.Config{
 		Egress: egressRules(config.EgressRule{
@@ -294,7 +222,7 @@ func TestProxyRestrictedWildcard(t *testing.T) {
 func TestProxyBareWildcard(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "10.0.0.3")
+	upstream := dnstest.StartServer(t, "10.0.0.3")
 
 	cfg := &config.Config{
 		Egress: egressRules(config.EgressRule{
@@ -323,7 +251,7 @@ func TestProxyBareWildcard(t *testing.T) {
 func TestProxyUnrestrictedMode(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "10.0.0.4")
+	upstream := dnstest.StartServer(t, "10.0.0.4")
 
 	// nil config -> unrestricted.
 	proxy, err := dnsproxy.Start(t.Context(), nil, upstream, "127.0.0.1:0", true)
@@ -345,7 +273,7 @@ func TestProxyUnrestrictedMode(t *testing.T) {
 func TestProxyTCPPopulatesIPSet(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "10.20.30.40")
+	upstream := dnstest.StartServer(t, "10.20.30.40")
 
 	var (
 		mu       sync.Mutex
@@ -673,7 +601,7 @@ func TestProxyTCPNoCompression(t *testing.T) {
 func TestProxyTCPForwardHosts(t *testing.T) {
 	t.Parallel()
 
-	upstream := startMockDNS(t, "10.0.0.6")
+	upstream := dnstest.StartServer(t, "10.0.0.6")
 
 	// Restricted mode with a TCPForward host that should be resolvable.
 	cfg := &config.Config{
