@@ -122,7 +122,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 
 	envoySettings := cfg.EnvoyDefaults()
 
-	needsEnvoy := len(cfg.ResolvePorts()) > 0 || len(cfg.TCPForwards) > 0
+	needsEnvoy := !cfg.IsEgressBlocked()
 
 	// Apply nftables firewall rules atomically via netlink.
 	conn, err := nftables.New()
@@ -468,11 +468,11 @@ func verifyIPv6State(ctx context.Context, sys *sysctl.Sysctl) bool {
 }
 
 // firstListenerPort returns the first Envoy listener port to wait on.
-// Prefers 15443 when FQDN rules produce a port 443 listener, then
-// checks TCPForwards, then falls back to the first resolved port.
+// In non-blocked modes, 15443 is always present (TLS passthrough).
+// Falls back to [config.CatchAllProxyPort] as a final safety net.
 func firstListenerPort(cfg *config.Config) int {
 	ports := cfg.ResolvePorts()
-	if slices.Contains(ports, 443) {
+	if slices.Contains(ports, 443) || cfg.IsEgressUnrestricted() {
 		return 15443
 	}
 
@@ -484,7 +484,7 @@ func firstListenerPort(cfg *config.Config) int {
 		return config.ProxyPortBase + ports[0]
 	}
 
-	return 15443
+	return config.CatchAllProxyPort
 }
 
 // waitForListener polls a TCP address until it accepts connections or

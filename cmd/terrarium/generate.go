@@ -97,37 +97,13 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 
 	var listeners []envoy.Listener
 
-	// Only build 443/80 listeners when ResolvePorts includes them.
-	if resolvedPortSet[443] {
-		rules443 := cfg.ResolveRulesForPort(443)
-
-		if openPortSet[443] {
-			rules443 = envoy.StripL7Restrictions(rules443)
-		}
-
-		listeners = append(
-			listeners,
-			envoy.BuildTLSListener(
-				"tls_passthrough",
-				15443,
-				443,
-				"tls_passthrough",
-				rules443,
-				openPortSet[443],
-				accessLog,
-				certsDir,
-			),
+	// In non-blocked modes, always build 443/80 listeners and the
+	// catch-all TCP listener for centralized access logging.
+	if !cfg.IsEgressBlocked() {
+		listeners = append(listeners,
+			buildTLSPassthroughListener(cfg, resolvedPortSet, openPortSet, accessLog, certsDir),
+			buildHTTPForwardListener(cfg, resolvedPortSet, openPortSet, accessLog),
 		)
-	}
-
-	if resolvedPortSet[80] {
-		rules80 := cfg.ResolveRulesForPort(80)
-
-		if openPortSet[80] {
-			rules80 = envoy.StripL7Restrictions(rules80)
-		}
-
-		listeners = append(listeners, envoy.BuildHTTPForwardListener(rules80, openPortSet[80], accessLog))
 	}
 
 	for _, fwd := range cfg.TCPForwards {
@@ -155,6 +131,11 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 		))
 	}
 
+	// Catch-all TCP listener for non-blocked modes.
+	if !cfg.IsEgressBlocked() {
+		listeners = append(listeners, envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, accessLog))
+	}
+
 	// Use global rules for cluster determination.
 	allRules := cfg.ResolveRules()
 
@@ -172,7 +153,7 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 		},
 		StaticResources: envoy.StaticResources{
 			Listeners: listeners,
-			Clusters:  envoy.BuildClusters(allRules, cfg.TCPForwards, caBundlePath),
+			Clusters:  envoy.BuildClusters(allRules, cfg.TCPForwards, len(listeners) > 0, caBundlePath),
 		},
 	}
 
@@ -184,4 +165,50 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 	}
 
 	return buf.String(), nil
+}
+
+// buildTLSPassthroughListener creates the port 443 TLS listener. When
+// FQDN rules resolve port 443, their rules drive the listener; otherwise
+// an open passthrough listener is created for unrestricted auditing.
+func buildTLSPassthroughListener(
+	cfg *config.Config,
+	resolvedPortSet, openPortSet map[int]bool,
+	accessLog []envoy.AccessLog,
+	certsDir string,
+) envoy.Listener {
+	rules := cfg.ResolveRulesForPort(443)
+	open := openPortSet[443]
+
+	if !resolvedPortSet[443] {
+		rules = nil
+		open = true
+	} else if open {
+		rules = envoy.StripL7Restrictions(rules)
+	}
+
+	return envoy.BuildTLSListener(
+		"tls_passthrough", 15443, 443, "tls_passthrough",
+		rules, open, accessLog, certsDir,
+	)
+}
+
+// buildHTTPForwardListener creates the port 80 HTTP listener. When
+// FQDN rules resolve port 80, their rules drive the listener; otherwise
+// an open HTTP forward listener is created for unrestricted auditing.
+func buildHTTPForwardListener(
+	cfg *config.Config,
+	resolvedPortSet, openPortSet map[int]bool,
+	accessLog []envoy.AccessLog,
+) envoy.Listener {
+	rules := cfg.ResolveRulesForPort(80)
+	open := openPortSet[80]
+
+	if !resolvedPortSet[80] {
+		rules = nil
+		open = true
+	} else if open {
+		rules = envoy.StripL7Restrictions(rules)
+	}
+
+	return envoy.BuildHTTPForwardListener(rules, open, accessLog)
 }

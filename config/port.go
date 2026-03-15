@@ -15,6 +15,11 @@ const ProxyPortBase = 15000
 // ProxyPortBase without overflowing uint16.
 const MaxProxyablePort = 65535 - ProxyPortBase
 
+// CatchAllProxyPort is the Envoy listener port that handles TCP
+// traffic not matched by any specialized per-port listener.
+// Follows the Istio convention for port 15001.
+const CatchAllProxyPort = 15001
+
 const (
 	protoTCP  = "tcp"
 	protoUDP  = "udp"

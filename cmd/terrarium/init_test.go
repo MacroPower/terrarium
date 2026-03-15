@@ -88,6 +88,48 @@ func TestDNSProxyShutdownOnInitFailure(t *testing.T) {
 	require.NoError(t, ln.Close())
 }
 
+func TestFirstListenerPort(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		want int
+	}{
+		"unrestricted": {
+			cfg:  &config.Config{},
+			want: 15443,
+		},
+		"filtered with port 443": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			})},
+			want: 15443,
+		},
+		"filtered with TCPForward only": {
+			cfg: &config.Config{
+				Egress:      egressRules(config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}}),
+				TCPForwards: []config.TCPForward{{Host: "db.example.com", Port: 5432}},
+			},
+			want: config.ProxyPortBase + 5432,
+		},
+		"CIDR-only falls back to CatchAllProxyPort": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}}),
+			},
+			want: config.CatchAllProxyPort,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, firstListenerPort(tt.cfg))
+		})
+	}
+}
+
 func TestShutdownOrder(t *testing.T) {
 	t.Parallel()
 

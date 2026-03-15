@@ -517,20 +517,29 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				"name: open",
 			},
 		},
-		"nil egress produces minimal config": {
-			cfg:     &config.Config{},
-			notWant: []string{"tls_passthrough", "http_forward", "dynamic_forward_proxy_cluster"},
+		"nil egress produces open listeners": {
+			cfg: &config.Config{},
+			want: []string{
+				"tls_passthrough", "http_forward", "catch_all_tcp",
+				"original_dst", "dynamic_forward_proxy_cluster",
+			},
 		},
-		"empty egress produces minimal config": {
-			cfg:     &config.Config{Egress: egressRules()},
-			notWant: []string{"tls_passthrough", "http_forward", "dynamic_forward_proxy_cluster"},
+		"empty egress produces open listeners": {
+			cfg: &config.Config{Egress: egressRules()},
+			want: []string{
+				"tls_passthrough", "http_forward", "catch_all_tcp",
+				"original_dst", "dynamic_forward_proxy_cluster",
+			},
 		},
 		"nil egress with tcp forwards": {
 			cfg: &config.Config{
 				TCPForwards: []config.TCPForward{{Port: 22, Host: "github.com"}},
 			},
-			want:    []string{"tcp_forward_22", "github.com", "STRICT_DNS"},
-			notWant: []string{"tls_passthrough", "http_forward", "dynamic_forward_proxy_cluster"},
+			want: []string{
+				"tcp_forward_22", "github.com", "STRICT_DNS",
+				"tls_passthrough", "http_forward", "catch_all_tcp",
+				"original_dst", "dynamic_forward_proxy_cluster",
+			},
 		},
 		"empty rule with FQDN+L7 generates FQDN listeners": {
 			cfg: &config.Config{Egress: egressRules(
@@ -777,7 +786,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				"path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT",
 			},
 		},
-		"MITM-only config (no HTTP forward) has path normalization": {
+		"MITM config with HTTP forward has path normalization": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
 				ToPorts: []config.PortRule{{
@@ -791,20 +800,18 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				"normalize_path: true",
 				"merge_slashes: true",
 				"path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT",
-			},
-			notWant: []string{
 				"http_forward",
 			},
 		},
-		"passthrough-only config has no normalization fields": {
+		"passthrough-only config still has HTTP forward": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			})},
-			notWant: []string{
-				"normalize_path",
-				"merge_slashes",
-				"UNESCAPE_AND_REDIRECT",
+			want: []string{
+				"tls_passthrough",
+				"http_forward",
+				"catch_all_tcp",
 			},
 		},
 		"headers presence check": {

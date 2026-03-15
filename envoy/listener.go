@@ -218,3 +218,33 @@ func BuildTCPForwardListener(
 		}},
 	}
 }
+
+// BuildCatchAllTCPListener creates a TCP proxy [Listener] that handles
+// traffic not matched by specialized per-port listeners. The listener
+// uses ORIGINAL_DST to recover the real destination from conntrack
+// after nftables REDIRECT.
+func BuildCatchAllTCPListener(listenPort int, accessLog []AccessLog) Listener {
+	return Listener{
+		Name: "catch_all_tcp",
+		Address: address{SocketAddress: socketAddress{
+			Address: "127.0.0.1", PortValue: listenPort,
+		}},
+		ListenerFilters: []NamedTyped{{
+			Name: "envoy.filters.listener.original_dst",
+			TypedConfig: typeOnly{
+				AtType: "type.googleapis.com/envoy.extensions.filters.listener.original_dst.v3.OriginalDst",
+			},
+		}},
+		FilterChains: []filterChain{{
+			Filters: []filter{{
+				Name: "envoy.filters.network.tcp_proxy",
+				TypedConfig: tcpProxyConfig{
+					AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+					StatPrefix: "catch_all_tcp",
+					Cluster:    "original_dst",
+					AccessLog:  accessLog,
+				},
+			}},
+		}},
+	}
+}

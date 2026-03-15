@@ -312,16 +312,13 @@ func addFQDNPortRules(
 }
 
 // addNATRules creates the NAT output chain with CIDR RETURN,
-// open port RETURN, Envoy REDIRECT, and TCPForward REDIRECT rules.
+// per-port REDIRECT, TCPForward REDIRECT, and catch-all TCP
+// REDIRECT rules.
 func addNATRules(
 	conn Conn, table *nftables.Table, cfg *config.Config,
 	resolvedPorts []int, cidr4, cidr6 []config.ResolvedCIDR,
-	openPortRules []config.ResolvedOpenPort, uids UIDs,
+	uids UIDs,
 ) {
-	if len(resolvedPorts) == 0 && len(cfg.TCPForwards) == 0 {
-		return
-	}
-
 	natChain := conn.AddChain(&nftables.Chain{
 		Name:     "nat_output",
 		Table:    table,
@@ -334,30 +331,7 @@ func addNATRules(
 	addCIDRNATReturn(conn, table, natChain, cidr4, uids)
 	addCIDRNATReturn(conn, table, natChain, cidr6, uids)
 
-	// 2. Open TCP single port RETURN (port subsumes FQDN L7
-	// restrictions via OR semantics). Must come before REDIRECT.
-	openTCPSinglePorts := make(map[int]bool)
-	for _, op := range openPortRules {
-		if op.Protocol == protoTCP && op.EndPort == 0 {
-			openTCPSinglePorts[op.Port] = true
-		}
-	}
-
-	for _, p := range resolvedPorts {
-		if openTCPSinglePorts[p] {
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: natChain,
-				Exprs: flatExprs(
-					matchUID(uids.Sandbox),
-					matchL4Proto(unix.IPPROTO_TCP),
-					matchDstPort(port16(p)),
-					verdictExprs(expr.VerdictReturn),
-				),
-			})
-		}
-	}
-
-	// 3. Envoy REDIRECT rules.
+	// 2. Per-port FQDN REDIRECT rules.
 	for _, p := range resolvedPorts {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
@@ -370,7 +344,7 @@ func addNATRules(
 		})
 	}
 
-	// 4. TCPForward REDIRECT rules.
+	// 3. TCPForward REDIRECT rules.
 	for _, fwd := range cfg.TCPForwards {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
@@ -382,15 +356,22 @@ func addNATRules(
 			),
 		})
 	}
+
+	// 4. Catch-all TCP REDIRECT -> ORIGINAL_DST listener.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: natChain,
+		Exprs: flatExprs(
+			matchUID(uids.Sandbox),
+			matchL4Proto(unix.IPPROTO_TCP),
+			redirectToPort(port16(config.CatchAllProxyPort)),
+		),
+	})
 }
 
-// addTCPForwardNAT creates a NAT chain with only TCPForward
-// REDIRECT rules (unrestricted mode).
-func addTCPForwardNAT(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
-	if len(cfg.TCPForwards) == 0 {
-		return
-	}
-
+// addUnrestrictedNAT creates a NAT chain for unrestricted mode that
+// redirects port 80, 443, TCPForward, and catch-all TCP traffic
+// through Envoy for centralized access logging.
+func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
 	natChain := conn.AddChain(&nftables.Chain{
 		Name:     "nat_output",
 		Table:    table,
@@ -399,6 +380,29 @@ func addTCPForwardNAT(conn Conn, table *nftables.Table, cfg *config.Config, uids
 		Priority: nftables.ChainPriorityNATDest,
 	})
 
+	// 1. Port 80 -> HTTP forward proxy.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: natChain,
+		Exprs: flatExprs(
+			matchUID(uids.Sandbox),
+			matchL4Proto(unix.IPPROTO_TCP),
+			matchDstPort(80),
+			redirectToPort(15080),
+		),
+	})
+
+	// 2. Port 443 -> TLS passthrough.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: natChain,
+		Exprs: flatExprs(
+			matchUID(uids.Sandbox),
+			matchL4Proto(unix.IPPROTO_TCP),
+			matchDstPort(443),
+			redirectToPort(15443),
+		),
+	})
+
+	// 3. TCPForward REDIRECTs.
 	for _, fwd := range cfg.TCPForwards {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
@@ -410,6 +414,16 @@ func addTCPForwardNAT(conn Conn, table *nftables.Table, cfg *config.Config, uids
 			),
 		})
 	}
+
+	// 4. Catch-all TCP -> ORIGINAL_DST listener.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: natChain,
+		Exprs: flatExprs(
+			matchUID(uids.Sandbox),
+			matchL4Proto(unix.IPPROTO_TCP),
+			redirectToPort(port16(config.CatchAllProxyPort)),
+		),
+	})
 }
 
 func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, cidrs []config.ResolvedCIDR, uids UIDs) {

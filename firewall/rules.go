@@ -140,8 +140,8 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 		Exprs: flatExprs(verdictExprs(expr.VerdictAccept)),
 	})
 
-	// NAT: TCPForward REDIRECTs only.
-	addTCPForwardNAT(conn, table, cfg, uids)
+	// NAT: 80, 443, TCPForwards, and catch-all TCP.
+	addUnrestrictedNAT(conn, table, cfg, uids)
 }
 
 func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
@@ -315,7 +315,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 	})
 
 	// NAT chain.
-	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, openPortRules, uids)
+	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, uids)
 
 	return nil
 }

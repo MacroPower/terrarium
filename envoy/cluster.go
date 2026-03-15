@@ -17,9 +17,15 @@ func hasMITMRules(rules []config.ResolvedRule) bool {
 }
 
 // BuildClusters creates the static cluster definitions for the Envoy
-// bootstrap config, including dynamic forward proxy, MITM, and TCP
-// forward clusters as needed.
-func BuildClusters(rules []config.ResolvedRule, tcpForwards []config.TCPForward, caBundlePath string) []cluster {
+// bootstrap config. When hasListeners is true, the original destination
+// and dynamic forward proxy clusters are included alongside MITM and
+// TCP forward clusters.
+func BuildClusters(
+	rules []config.ResolvedRule,
+	tcpForwards []config.TCPForward,
+	hasListeners bool,
+	caBundlePath string,
+) []cluster {
 	// Static cluster with no endpoints used as the upstream for the
 	// default filter chain on TLS listeners. Connections routed here
 	// are immediately reset (no healthy upstream), which is the desired
@@ -31,8 +37,21 @@ func BuildClusters(rules []config.ResolvedRule, tcpForwards []config.TCPForward,
 		LBPolicy:       "ROUND_ROBIN",
 	}}
 
-	// Only add the dynamic forward proxy cluster when there are FQDN rules.
-	if len(rules) > 0 {
+	// ORIGINAL_DST cluster for the catch-all TCP listener.
+	// Envoy retrieves the real destination from conntrack via
+	// SO_ORIGINAL_DST after nftables REDIRECT.
+	if hasListeners {
+		clusters = append(clusters, cluster{
+			Name:           "original_dst",
+			ConnectTimeout: "5s",
+			Type:           "ORIGINAL_DST",
+			LBPolicy:       "CLUSTER_PROVIDED",
+		})
+	}
+
+	// Add the dynamic forward proxy cluster when there are FQDN rules
+	// or listeners that reference it (open passthrough/HTTP listeners).
+	if len(rules) > 0 || hasListeners {
 		clusters = append(clusters, cluster{
 			Name:           "dynamic_forward_proxy_cluster",
 			ConnectTimeout: "5s",

@@ -99,10 +99,11 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 	assert.Equal(t, "terrarium", rec.tables[0].Name)
 	assert.Equal(t, nftables.TableFamilyINet, rec.tables[0].Family)
 
-	// Chains: input, output (no sandbox_output, no nat_output).
+	// Chains: input, output, nat_output (no sandbox_output).
 	names := rec.chainNames()
 	assert.Contains(t, names, "input")
 	assert.Contains(t, names, "output")
+	assert.Contains(t, names, "nat_output")
 	assert.NotContains(t, names, "sandbox_output")
 
 	// No FQDN sets.
@@ -120,6 +121,19 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 		v, _ := ruleVerdict(r)
 		assert.NotEqual(t, expr.VerdictDrop, v, "unrestricted mode should not DROP")
 	}
+
+	// NAT: port 80, port 443, catch-all TCP REDIRECTs.
+	natRules := rec.rulesForChain("nat_output")
+	require.NotEmpty(t, natRules)
+
+	var redirCount int
+	for _, r := range natRules {
+		if ruleHasRedir(r) {
+			redirCount++
+		}
+	}
+
+	assert.Equal(t, 3, redirCount, "should have REDIRECTs for port 80, 443, and catch-all")
 }
 
 func TestApplyRules_UnrestrictedWithLogging(t *testing.T) {
@@ -154,8 +168,15 @@ func TestApplyRules_UnrestrictedWithTCPForwards(t *testing.T) {
 	assert.Contains(t, rec.chainNames(), "nat_output")
 
 	natRules := rec.rulesForChain("nat_output")
-	require.Len(t, natRules, 1)
-	assert.True(t, ruleHasRedir(natRules[0]))
+	// port 80, port 443, TCPForward port 3000, catch-all TCP = 4 REDIRECTs.
+	var redirCount int
+	for _, r := range natRules {
+		if ruleHasRedir(r) {
+			redirCount++
+		}
+	}
+
+	assert.Equal(t, 4, redirCount, "should have REDIRECTs for port 80, 443, TCPForward, and catch-all")
 }
 
 func TestApplyRules_Blocked(t *testing.T) {
@@ -325,7 +346,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 3, redirCount, "should have REDIRECTs for ports 80, 443, 8080")
+	assert.Equal(t, 4, redirCount, "should have REDIRECTs for ports 80, 443, 8080, and catch-all")
 
 	// NAT: verify RETURN for CIDRs appears before REDIRECT.
 	firstNATReturn, firstNATRedir := -1, -1
@@ -531,7 +552,7 @@ func TestApplyRules_UnrestrictedOpenPorts(t *testing.T) {
 		"unrestricted open ports should have blanket UID 1000 ACCEPT")
 }
 
-func TestApplyRules_OpenTCPSinglePortNATOptimization(t *testing.T) {
+func TestApplyRules_OpenTCPSinglePortGoThroughEnvoy(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -556,25 +577,24 @@ func TestApplyRules_OpenTCPSinglePortNATOptimization(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
-	// NAT should have RETURN for port 443 before REDIRECT.
+	// NAT should have CIDR RETURN (for security), per-port REDIRECT,
+	// and catch-all REDIRECT. No open-port-specific RETURN rules.
 	natRules := rec.rulesForChain("nat_output")
 
-	returnIdx, redirIdx := -1, -1
-	for i, r := range natRules {
-		v, _ := ruleVerdict(r)
-		if v == expr.VerdictReturn && returnIdx == -1 {
-			returnIdx = i
-		}
-
-		if ruleHasRedir(r) && redirIdx == -1 {
-			redirIdx = i
+	// Count port-specific RETURN vs CIDR RETURN. Port-specific
+	// RETURN rules match a destination port; CIDR RETURN rules
+	// match a destination CIDR. With the new behavior, only CIDR
+	// RETURNs should exist.
+	var redirCount int
+	for _, r := range natRules {
+		if ruleHasRedir(r) {
+			redirCount++
 		}
 	}
 
-	require.NotEqual(t, -1, returnIdx, "should have NAT RETURN for open TCP port")
-	require.NotEqual(t, -1, redirIdx, "should have NAT REDIRECT")
-	assert.Less(t, returnIdx, redirIdx,
-		"open TCP port RETURN must precede REDIRECT")
+	// Per-port REDIRECT (443) + catch-all REDIRECT = 2.
+	assert.Equal(t, 2, redirCount,
+		"should have per-port REDIRECT and catch-all REDIRECT")
 }
 
 func TestApplyRules_TCPForwards(t *testing.T) {
@@ -759,6 +779,70 @@ func TestApplyRules_MultipleRuleCIDRChains(t *testing.T) {
 
 	assert.Contains(t, jumpChains, "cidr_0")
 	assert.Contains(t, jumpChains, "cidr_1")
+}
+
+func TestApplyRules_CIDROnlyFilteredMode(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			config.EgressRule{ToCIDRSet: []config.CIDRRule{
+				{CIDR: "172.16.0.0/12", Except: []string{"172.16.1.0/24"}},
+			}},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// NAT chain exists even with zero resolved ports.
+	assert.Contains(t, rec.chainNames(), "nat_output")
+
+	natRules := rec.rulesForChain("nat_output")
+	require.NotEmpty(t, natRules)
+
+	// CIDR RETURN rules appear before the catch-all REDIRECT.
+	var hasReturn, hasRedir bool
+
+	firstReturn, firstRedir := -1, -1
+	for i, r := range natRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictReturn {
+			hasReturn = true
+
+			if firstReturn == -1 {
+				firstReturn = i
+			}
+		}
+
+		if ruleHasRedir(r) {
+			hasRedir = true
+
+			if firstRedir == -1 {
+				firstRedir = i
+			}
+		}
+	}
+
+	assert.True(t, hasReturn, "should have CIDR NAT RETURN rules")
+	assert.True(t, hasRedir, "should have catch-all REDIRECT")
+
+	if firstReturn >= 0 && firstRedir >= 0 {
+		assert.Less(t, firstReturn, firstRedir,
+			"CIDR RETURN must precede catch-all REDIRECT")
+	}
+
+	// Exactly one REDIRECT (the catch-all; no per-port REDIRECTs).
+	var redirCount int
+	for _, r := range natRules {
+		if ruleHasRedir(r) {
+			redirCount++
+		}
+	}
+
+	assert.Equal(t, 1, redirCount, "should have only the catch-all REDIRECT")
 }
 
 func TestApplyRules_CIDRWithPorts(t *testing.T) {
