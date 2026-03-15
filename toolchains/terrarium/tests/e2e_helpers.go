@@ -43,6 +43,38 @@ func targetService(hostname, nginxConf string) serviceBinding {
 	return serviceBinding{alias: hostname, service: svc}
 }
 
+// targetServiceOnPort creates an nginx service container that serves static
+// content on a single custom port with a self-signed TLS cert. Used for
+// tests that need services on non-standard ports (e.g., port range tests).
+func targetServiceOnPort(hostname string, port int) serviceBinding {
+	nginxConf := fmt.Sprintf(`server {
+    listen %d ssl;
+    ssl_certificate /etc/nginx/cert.pem;
+    ssl_certificate_key /etc/nginx/key.pem;
+    location / {
+        return 200 "OK\n";
+        add_header Content-Type text/plain;
+    }
+}`, port)
+
+	svc := dag.Container().
+		From(nginxImage).
+		WithNewFile("/docker-entrypoint.d/99-self-signed-cert.sh",
+			"#!/bin/sh\n"+
+				"apk add --no-cache openssl >/dev/null 2>&1\n"+
+				"openssl req -x509 -newkey rsa:2048 -keyout /etc/nginx/key.pem "+
+				"-out /etc/nginx/cert.pem -days 1 -nodes "+
+				"-subj \"/CN="+hostname+"\" 2>/dev/null\n",
+			dagger.ContainerWithNewFileOpts{Permissions: 0o755},
+		).
+		WithNewFile("/etc/nginx/conf.d/default.conf", nginxConf).
+		WithExposedPort(port).
+		AsService().
+		WithHostname(hostname)
+
+	return serviceBinding{alias: hostname, service: svc}
+}
+
 // tcpEchoService creates a socat-based TCP echo service that responds with
 // "TCP_FORWARD_OK" on the specified port. Used for testing tcpForwards
 // without HTTP/TLS.
