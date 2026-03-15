@@ -76,22 +76,6 @@ func main() {
 			},
 		},
 		&cobra.Command{
-			Use:   "setup-dev",
-			Short: "Fish history symlinks, claude.json persistence, atuin config",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return terrarium.SetupDev(usr)
-			},
-		},
-		&cobra.Command{
-			Use:   "setup-user",
-			Short: "Create non-root user in /etc/passwd and /etc/group",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return terrarium.SetupUser(usr)
-			},
-		},
-		&cobra.Command{
 			Use:   "init [-- cmd...]",
 			Short: "Load firewall, start services, drop privileges, exec cmd",
 			Args:  cobra.ArbitraryArgs,

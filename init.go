@@ -63,26 +63,6 @@ func ParseUpstreamDNS(resolvConf string) string {
 	return ""
 }
 
-// CreateEnvoyUser appends envoy user/group entries to /etc/passwd and
-// /etc/group.
-func CreateEnvoyUser(envoyUID string) error {
-	passwdEntry := fmt.Sprintf("envoy:x:%s:%s::/tmp:/bin/false\n", envoyUID, envoyUID)
-
-	err := appendToFile("/etc/passwd", passwdEntry)
-	if err != nil {
-		return fmt.Errorf("adding envoy user: %w", err)
-	}
-
-	groupEntry := fmt.Sprintf("envoy:x:%s:\n", envoyUID)
-
-	err = appendToFile("/etc/group", groupEntry)
-	if err != nil {
-		return fmt.Errorf("adding envoy group: %w", err)
-	}
-
-	return nil
-}
-
 // Init performs the full terrarium initialization sequence: generates
 // configs if needed, applies nftables firewall rules, starts the DNS
 // proxy and Envoy, then drops privileges and runs the given command
@@ -132,12 +112,6 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 		if err != nil {
 			return err
 		}
-	}
-
-	// Create envoy user.
-	err = CreateEnvoyUser(usr.EnvoyUID)
-	if err != nil {
-		return fmt.Errorf("creating envoy user: %w", err)
 	}
 
 	// Parse config if Generate() was not called (pre-baked configs).
@@ -316,16 +290,6 @@ func Init(ctx context.Context, usr config.User, args []string) error {
 	dnsProxyCleanedUp = true
 
 	// Prepare privilege drop.
-	chownErr := os.Chown("/commandhistory", mustAtoi(usr.UID), mustAtoi(usr.GID))
-	if chownErr != nil {
-		slog.DebugContext(ctx, "chowning /commandhistory", slog.Any("err", chownErr))
-	}
-
-	chownErr = os.Chown("/claude-state", mustAtoi(usr.UID), mustAtoi(usr.GID))
-	if chownErr != nil {
-		slog.DebugContext(ctx, "chowning /claude-state", slog.Any("err", chownErr))
-	}
-
 	writeErr := os.WriteFile(
 		"/proc/sys/net/ipv4/ping_group_range",
 		[]byte("0 "+usr.UID),
@@ -686,6 +650,15 @@ func appendToBundle(bundle string, caData []byte) error {
 	}
 
 	return nil
+}
+
+func mustAtoi(s string) int {
+	n := 0
+	for _, c := range s {
+		n = n*10 + int(c-'0')
+	}
+
+	return n
 }
 
 // copyFile copies a file from src to dst, creating parent directories.
