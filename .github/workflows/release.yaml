@@ -29,6 +29,7 @@ jobs:
           owner: "${{ github.repository_owner }}"
           repositories: |
             terrarium
+            nur-packages
 
       - name: Checkout
         uses: actions/checkout@v6

@@ -54,3 +54,29 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
+nix:
+  - name: terrarium
+    repository:
+      owner: MacroPower
+      name: nur-packages
+    url_template: >-
+      https://github.com/macropower/terrarium/releases/download/{{ .Tag }}/
+      {{- .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end -}}
+      {{- if .Arm }}v{{ .Arm }}{{ end -}}
+      .tar.gz
+    commit_msg_template: "chore: pkg update for {{ .ProjectName }} {{ .Tag }}"
+    commit_author:
+      name: botty-mcbottington
+      email: 168950816+botty-mcbottington[bot]@users.noreply.github.com
+    homepage: "https://github.com/macropower/terrarium"
+    description: "Secure container environment using Envoy as an L7 egress gateway"
+    license: "asl20"
+    skip_upload: auto
+    dependencies:
+      - envoy-bin
+      - util-linux
