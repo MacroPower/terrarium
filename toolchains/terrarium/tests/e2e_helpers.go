@@ -249,6 +249,41 @@ assert_l7_denied() {
     fi
 }
 
+assert_passthrough() {
+    url="$1"
+    expected_body="$2"
+    desc="${3:-$url passthrough}"
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        body=$(curl -sf -k --max-time 10 "$url" 2>/dev/null) || {
+            if [ "$attempt" -lt 3 ]; then
+                echo "RETRY: $desc (attempt $attempt/3 connection failed, retrying in 2s)"
+                sleep 2
+                attempt=$((attempt + 1))
+                continue
+            fi
+            echo "FAIL: $desc (expected passthrough response, connection failed after 3 attempts)"
+            FAIL=$((FAIL + 1))
+            return
+        }
+        if echo "$body" | grep -q "$expected_body"; then
+            echo "PASS: $desc"
+            PASS=$((PASS + 1))
+            return
+        else
+            if [ "$attempt" -lt 3 ]; then
+                echo "RETRY: $desc (attempt $attempt/3 body mismatch, retrying in 2s)"
+                sleep 2
+                attempt=$((attempt + 1))
+                continue
+            fi
+            echo "FAIL: $desc (expected body containing '$expected_body', got '$body')"
+            FAIL=$((FAIL + 1))
+            return
+        fi
+    done
+}
+
 assert_tcp_forward() {
     addr="$1"
     expected="$2"
