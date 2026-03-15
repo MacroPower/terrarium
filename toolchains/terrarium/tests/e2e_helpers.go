@@ -200,7 +200,7 @@ assert_l7_allowed() {
     desc="${4:-$method $url allowed}"
     attempt=1
     while [ "$attempt" -le 3 ]; do
-        body=$(curl -sf -k --max-time 10 -X "$method" "$url" 2>/dev/null) || {
+        status=$(curl -s -k --max-time 10 -o /tmp/l7_body -w "%{http_code}" -X "$method" "$url" 2>/dev/null) || {
             if [ "$attempt" -lt 3 ]; then
                 echo "RETRY: $desc (attempt $attempt/3 connection failed, retrying in 2s)"
                 sleep 2
@@ -211,9 +211,25 @@ assert_l7_allowed() {
             FAIL=$((FAIL + 1))
             return
         }
+        # Verify HTTP status is 2xx.
+        case "$status" in
+            2[0-9][0-9]) ;;
+            *)
+                if [ "$attempt" -lt 3 ]; then
+                    echo "RETRY: $desc (attempt $attempt/3 got HTTP $status, retrying in 2s)"
+                    sleep 2
+                    attempt=$((attempt + 1))
+                    continue
+                fi
+                echo "FAIL: $desc (expected HTTP 2xx, got HTTP $status after 3 attempts)"
+                FAIL=$((FAIL + 1))
+                return
+                ;;
+        esac
         if [ -n "$expected_body" ]; then
+            body=$(cat /tmp/l7_body)
             if echo "$body" | grep -q "$expected_body"; then
-                echo "PASS: $desc"
+                echo "PASS: $desc (HTTP $status)"
                 PASS=$((PASS + 1))
                 return
             else
@@ -228,7 +244,7 @@ assert_l7_allowed() {
                 return
             fi
         else
-            echo "PASS: $desc"
+            echo "PASS: $desc (HTTP $status)"
             PASS=$((PASS + 1))
             return
         fi
