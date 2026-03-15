@@ -366,25 +366,37 @@ func TestApplyRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
-	sandboxRules := rec.rulesForChain("sandbox_output")
+	outputRules := rec.rulesForChain("output")
 
-	// Find Envoy ACCEPT (UID 999) and CIDR jump positions.
-	envoyIdx, cidrJumpIdx := -1, -1
-	for i, r := range sandboxRules {
+	// Envoy ACCEPT (UID 999) must be in the output chain, placed
+	// after the UID 1000 dispatch and before ESTABLISHED. Only UID
+	// 1000 enters sandbox_output, so the Envoy rule must live in
+	// the output chain for Envoy's outbound connections to pass.
+	sandboxJumpIdx, envoyIdx, estIdx := -1, -1, -1
+	for i, r := range outputRules {
 		vk, chain := ruleVerdict(r)
-		if vk == expr.VerdictJump && chain == "cidr_0" {
-			cidrJumpIdx = i
+		if vk == expr.VerdictJump && chain == "sandbox_output" {
+			sandboxJumpIdx = i
 		}
 
-		if vk == expr.VerdictAccept && ruleHasMetaKey(r, expr.MetaKeySKUID) {
-			// Check this is UID 999 (Envoy), not UID 1000.
+		if envoyIdx == -1 && vk == expr.VerdictAccept && ruleHasMetaKey(r, expr.MetaKeySKUID) {
 			envoyIdx = i
+		}
+
+		if ruleHasCtState(r) && vk == expr.VerdictAccept && !ruleHasMetaKey(r, expr.MetaKeySKUID) {
+			estIdx = i
 			break
 		}
 	}
 
-	assert.Greater(t, envoyIdx, cidrJumpIdx,
-		"Envoy ACCEPT must come after CIDR chain jumps")
+	require.NotEqual(t, -1, sandboxJumpIdx, "sandbox_output jump must exist")
+	require.NotEqual(t, -1, envoyIdx, "Envoy ACCEPT must exist in output chain")
+	require.NotEqual(t, -1, estIdx, "ESTABLISHED ACCEPT must exist")
+
+	assert.Greater(t, envoyIdx, sandboxJumpIdx,
+		"Envoy ACCEPT must come after UID 1000 dispatch")
+	assert.Less(t, envoyIdx, estIdx,
+		"Envoy ACCEPT must come before ESTABLISHED")
 }
 
 func TestApplyRules_FQDNSets(t *testing.T) {
@@ -703,10 +715,10 @@ func TestApplyRules_OpenPortFilterRules(t *testing.T) {
 		}
 	}
 
-	// Should have: Envoy ACCEPT (UID 999) + UDP open port ACCEPT
-	// + TCP range ACCEPT = 3. The FQDN rule is TCP-only so no
-	// set lookup rules are generated.
-	assert.Equal(t, 3, acceptCount)
+	// Should have: UDP open port ACCEPT + TCP range ACCEPT = 2.
+	// Envoy ACCEPT is in the output chain, not sandbox_output.
+	// The FQDN rule is TCP-only so no set lookup rules are generated.
+	assert.Equal(t, 2, acceptCount)
 }
 
 func TestApplyRules_MultipleRuleCIDRChains(t *testing.T) {

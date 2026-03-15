@@ -247,6 +247,18 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 		),
 	})
 
+	// Envoy ACCEPT: Envoy can reach any IP (domain allowlist
+	// in Envoy config provides security). Placed in the output
+	// chain (not sandbox_output) because only UID 1000 is
+	// dispatched to sandbox_output.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: outputChain,
+		Exprs: flatExprs(
+			matchUID(uids.Envoy),
+			verdictExprs(expr.VerdictAccept),
+		),
+	})
+
 	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
 	if cfg.Logging {
@@ -265,16 +277,6 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 	if !unrestricted {
 		addCIDRChains(conn, table, sandboxChain, allCIDRs, uids)
 	}
-
-	// Envoy ACCEPT: Envoy can reach any IP (domain allowlist
-	// in Envoy config provides security).
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: sandboxChain,
-		Exprs: flatExprs(
-			matchUID(uids.Envoy),
-			verdictExprs(expr.VerdictAccept),
-		),
-	})
 
 	if unrestricted {
 		// Unrestricted open ports: ACCEPT all user traffic.
