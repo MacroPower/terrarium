@@ -1,4 +1,4 @@
-package terrarium_test
+package dnsproxy_test
 
 import (
 	"context"
@@ -13,386 +13,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.jacobcolvin.com/terrarium"
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/dnsproxy"
 )
 
-func TestDNSDomainMatches(t *testing.T) {
-	t.Parallel()
-
-	tests := map[string]struct {
-		domain terrarium.DNSDomain
-		qname  string
-		want   bool
-	}{
-		"non-wildcard exact match": {
-			domain: terrarium.DNSDomain{Name: "example.com"},
-			qname:  "example.com.",
-			want:   true,
-		},
-		"non-wildcard subdomain": {
-			domain: terrarium.DNSDomain{Name: "example.com"},
-			qname:  "sub.example.com.",
-			want:   false,
-		},
-		"non-wildcard deep subdomain": {
-			domain: terrarium.DNSDomain{Name: "example.com"},
-			qname:  "a.b.c.example.com.",
-			want:   false,
-		},
-		"non-wildcard suffix trap": {
-			domain: terrarium.DNSDomain{Name: "example.com"},
-			qname:  "notexample.com.",
-			want:   false,
-		},
-		"non-wildcard unrelated domain": {
-			domain: terrarium.DNSDomain{Name: "example.com"},
-			qname:  "other.org.",
-			want:   false,
-		},
-		"wildcard subdomain match": {
-			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true},
-			qname:  "sub.example.com.",
-			want:   true,
-		},
-		"wildcard rejects deep subdomain": {
-			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true},
-			qname:  "a.b.example.com.",
-			want:   false,
-		},
-		"multi-level wildcard deep subdomain": {
-			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
-			qname:  "a.b.example.com.",
-			want:   true,
-		},
-		"multi-level wildcard single subdomain": {
-			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
-			qname:  "sub.example.com.",
-			want:   true,
-		},
-		"multi-level wildcard rejects bare parent": {
-			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true, MultiLevel: true},
-			qname:  "example.com.",
-			want:   false,
-		},
-		"wildcard rejects bare parent": {
-			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true},
-			qname:  "example.com.",
-			want:   false,
-		},
-		"wildcard suffix trap": {
-			domain: terrarium.DNSDomain{Name: "example.com", Wildcard: true},
-			qname:  "notexample.com.",
-			want:   false,
-		},
-		"empty qname": {
-			domain: terrarium.DNSDomain{Name: "example.com"},
-			qname:  "",
-			want:   false,
-		},
-		"root dot only": {
-			domain: terrarium.DNSDomain{Name: "example.com"},
-			qname:  ".",
-			want:   false,
-		},
-		"case insensitive": {
-			domain: terrarium.DNSDomain{Name: "example.com"},
-			qname:  "EXAMPLE.COM.",
-			want:   true,
-		},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, tt.want, tt.domain.Matches(tt.qname))
-		})
-	}
-}
-
-func TestCollectDNSDomains(t *testing.T) {
-	t.Parallel()
-
-	tests := map[string]struct {
-		cfg  config.Config
-		want []terrarium.DNSDomain
-	}{
-		"matchName produces non-wildcard": {
-			cfg: config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-				}),
-			},
-			want: []terrarium.DNSDomain{{Name: "github.com"}},
-		},
-		"matchPattern produces wildcard": {
-			cfg: config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-				}),
-			},
-			want: []terrarium.DNSDomain{{Name: "example.com", Wildcard: true}},
-		},
-		"double-star produces multi-level wildcard": {
-			cfg: config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchPattern: "**.example.com"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-				}),
-			},
-			want: []terrarium.DNSDomain{{Name: "example.com", Wildcard: true, MultiLevel: true}},
-		},
-		"multi-level upgrades single-level for same domain": {
-			cfg: config.Config{
-				Egress: egressRules(
-					config.EgressRule{
-						ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
-						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-					},
-					config.EgressRule{
-						ToFQDNs: []config.FQDNSelector{{MatchPattern: "**.example.com"}},
-						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-					},
-				),
-			},
-			want: []terrarium.DNSDomain{{Name: "example.com", Wildcard: true, MultiLevel: true}},
-		},
-		"bare wildcard passthrough": {
-			cfg: config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-				}),
-			},
-			want: []terrarium.DNSDomain{{Name: "*"}},
-		},
-		"matchName upgrades wildcard for same domain": {
-			cfg: config.Config{
-				Egress: egressRules(
-					config.EgressRule{
-						ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
-						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-					},
-					config.EgressRule{
-						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-					},
-				),
-			},
-			want: []terrarium.DNSDomain{{Name: "example.com"}},
-		},
-		"TCPForward host upgrade": {
-			cfg: config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-				}),
-				TCPForwards: []config.TCPForward{{Port: 22, Host: "example.com"}},
-			},
-			want: []terrarium.DNSDomain{{Name: "example.com"}},
-		},
-		"TCPForward adds new host": {
-			cfg: config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-				}),
-				TCPForwards: []config.TCPForward{{Port: 22, Host: "git.example.com"}},
-			},
-			want: []terrarium.DNSDomain{
-				{Name: "git.example.com"},
-				{Name: "github.com"},
-			},
-		},
-		"dedup same matchName": {
-			cfg: config.Config{
-				Egress: egressRules(
-					config.EgressRule{
-						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-					},
-					config.EgressRule{
-						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
-					},
-				),
-			},
-			want: []terrarium.DNSDomain{{Name: "example.com"}},
-		},
-		"sorted output": {
-			cfg: config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{
-						{MatchName: "z.example.com"},
-						{MatchName: "a.example.com"},
-					},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-				}),
-			},
-			want: []terrarium.DNSDomain{
-				{Name: "a.example.com"},
-				{Name: "z.example.com"},
-			},
-		},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			got := terrarium.CollectDNSDomains(&tt.cfg)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestMatchFQDNPatterns(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.Config{
-		Egress: egressRules(
-			config.EgressRule{
-				ToFQDNs: []config.FQDNSelector{
-					{MatchName: "exact.example.com"},
-					{MatchPattern: "*.wild.example.com"},
-					{MatchPattern: "**.deep.example.com"},
-					{MatchPattern: "*"},
-				},
-				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "UDP"}}}},
-			},
-		),
-	}
-	patterns := cfg.CompileFQDNPatterns()
-
-	tests := map[string]struct {
-		qname string
-		want  bool
-	}{
-		"exact match": {
-			qname: "exact.example.com.",
-			want:  true,
-		},
-		"exact no match wrong name": {
-			qname: "other.example.com.",
-			want:  true, // matches bare wildcard "*"
-		},
-		"single-star matches one label": {
-			qname: "sub.wild.example.com.",
-			want:  true,
-		},
-		"single-star rejects multi-label": {
-			qname: "a.b.wild.example.com.",
-			want:  true, // matches bare wildcard "*"
-		},
-		"double-star matches one label": {
-			qname: "sub.deep.example.com.",
-			want:  true,
-		},
-		"double-star matches multi-label": {
-			qname: "a.b.deep.example.com.",
-			want:  true,
-		},
-		"bare wildcard matches anything": {
-			qname: "anything.anywhere.com.",
-			want:  true,
-		},
-		"bare wildcard matches root": {
-			qname: ".",
-			want:  true,
-		},
-		"empty string no match": {
-			qname: "",
-			want:  false,
-		},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			matched := false
-			for _, p := range patterns {
-				if p.Regex.MatchString(tt.qname) {
-					matched = true
-
-					break
-				}
-			}
-
-			assert.Equal(t, tt.want, matched)
-		})
-	}
-}
-
-// TestMatchFQDNPatternsWithoutBareWildcard tests pattern matching
-// without a bare wildcard to verify single-star depth restriction.
-func TestMatchFQDNPatternsWithoutBareWildcard(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.Config{
-		Egress: egressRules(config.EgressRule{
-			ToFQDNs: []config.FQDNSelector{
-				{MatchPattern: "*.example.com"},
-				{MatchPattern: "**.deep.other.com"},
-			},
-			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "UDP"}}}},
-		}),
-	}
-	patterns := cfg.CompileFQDNPatterns()
-
-	tests := map[string]struct {
-		qname string
-		want  bool
-	}{
-		"single-star matches one label": {
-			qname: "sub.example.com.",
-			want:  true,
-		},
-		"single-star rejects multi-label": {
-			qname: "a.b.example.com.",
-			want:  false,
-		},
-		"single-star rejects bare parent": {
-			qname: "example.com.",
-			want:  false,
-		},
-		"double-star matches one label": {
-			qname: "sub.deep.other.com.",
-			want:  true,
-		},
-		"double-star matches multi-label": {
-			qname: "a.b.deep.other.com.",
-			want:  true,
-		},
-		"double-star rejects bare parent": {
-			qname: "deep.other.com.",
-			want:  false,
-		},
-		"unrelated domain": {
-			qname: "other.com.",
-			want:  false,
-		},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			matched := false
-			for _, p := range patterns {
-				if p.Regex.MatchString(tt.qname) {
-					matched = true
-
-					break
-				}
-			}
-
-			assert.Equal(t, tt.want, matched)
-		})
-	}
+func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
+	return &rules
 }
 
 // startMockDNS starts a mock DNS server that responds to queries with
@@ -468,7 +94,7 @@ func startMockDNS(t *testing.T, ip string) string {
 	return fmt.Sprintf("127.0.0.1:%d", udpAddr.Port)
 }
 
-func TestStartDNSProxy(t *testing.T) {
+func TestStart(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "1.2.3.4")
@@ -480,7 +106,7 @@ func TestStartDNSProxy(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -510,7 +136,7 @@ func TestStartDNSProxy(t *testing.T) {
 	assert.Equal(t, dns.RcodeRefused, resp2.Rcode)
 }
 
-func TestDNSProxyTCPPassthrough(t *testing.T) {
+func TestProxyTCPPassthrough(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "5.6.7.8")
@@ -522,7 +148,7 @@ func TestDNSProxyTCPPassthrough(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -543,7 +169,7 @@ func TestDNSProxyTCPPassthrough(t *testing.T) {
 	assert.Equal(t, "5.6.7.8", a.A.String())
 }
 
-func TestDNSProxyBlockedMode(t *testing.T) {
+func TestProxyBlockedMode(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "1.2.3.4")
@@ -553,7 +179,7 @@ func TestDNSProxyBlockedMode(t *testing.T) {
 		Egress: egressRules(config.EgressRule{}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -570,7 +196,7 @@ func TestDNSProxyBlockedMode(t *testing.T) {
 	assert.Empty(t, resp.Answer)
 }
 
-func TestDNSProxyRestrictedMode(t *testing.T) {
+func TestProxyRestrictedMode(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "10.0.0.1")
@@ -582,7 +208,7 @@ func TestDNSProxyRestrictedMode(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -618,7 +244,7 @@ func TestDNSProxyRestrictedMode(t *testing.T) {
 	assert.Equal(t, dns.RcodeRefused, resp3.Rcode)
 }
 
-func TestDNSProxyRestrictedWildcard(t *testing.T) {
+func TestProxyRestrictedWildcard(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "10.0.0.2")
@@ -630,7 +256,7 @@ func TestDNSProxyRestrictedWildcard(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -665,7 +291,7 @@ func TestDNSProxyRestrictedWildcard(t *testing.T) {
 	assert.Equal(t, dns.RcodeRefused, resp3.Rcode)
 }
 
-func TestDNSProxyBareWildcard(t *testing.T) {
+func TestProxyBareWildcard(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "10.0.0.3")
@@ -677,7 +303,7 @@ func TestDNSProxyBareWildcard(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -694,13 +320,13 @@ func TestDNSProxyBareWildcard(t *testing.T) {
 	require.Len(t, resp.Answer, 1)
 }
 
-func TestDNSProxyUnrestrictedMode(t *testing.T) {
+func TestProxyUnrestrictedMode(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "10.0.0.4")
 
 	// nil config -> unrestricted.
-	proxy, err := terrarium.StartDNSProxy(t.Context(), nil, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), nil, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -716,7 +342,7 @@ func TestDNSProxyUnrestrictedMode(t *testing.T) {
 	require.Len(t, resp.Answer, 1)
 }
 
-func TestDNSProxyTCPPopulatesIPSet(t *testing.T) {
+func TestProxyTCPPopulatesIPSet(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "10.20.30.40")
@@ -733,8 +359,8 @@ func TestDNSProxyTCPPopulatesIPSet(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		terrarium.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -766,7 +392,7 @@ func TestDNSProxyTCPPopulatesIPSet(t *testing.T) {
 	assert.Contains(t, recorded[0], "10.20.30.40")
 }
 
-func TestDNSProxyTruncatedUDPThenTCPRetry(t *testing.T) {
+func TestProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 	t.Parallel()
 
 	// Mock upstream that returns a truncated UDP response,
@@ -864,8 +490,8 @@ func TestDNSProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
-		terrarium.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
+		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -982,7 +608,7 @@ func startOversizedMockDNS(t *testing.T) string {
 	return fmt.Sprintf("127.0.0.1:%d", udpAddr.Port)
 }
 
-func TestDNSProxyUDPCompressionOversized(t *testing.T) {
+func TestProxyUDPCompressionOversized(t *testing.T) {
 	t.Parallel()
 
 	upstream := startOversizedMockDNS(t)
@@ -994,7 +620,7 @@ func TestDNSProxyUDPCompressionOversized(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -1013,7 +639,7 @@ func TestDNSProxyUDPCompressionOversized(t *testing.T) {
 	assert.Len(t, resp.Answer, 20, "all 20 A records should arrive via compressed UDP")
 }
 
-func TestDNSProxyTCPNoCompression(t *testing.T) {
+func TestProxyTCPNoCompression(t *testing.T) {
 	t.Parallel()
 
 	upstream := startOversizedMockDNS(t)
@@ -1025,7 +651,7 @@ func TestDNSProxyTCPNoCompression(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -1044,7 +670,7 @@ func TestDNSProxyTCPNoCompression(t *testing.T) {
 	assert.False(t, resp.Compress, "TCP response should not have Compress flag set")
 }
 
-func TestDNSProxyTCPForwardHosts(t *testing.T) {
+func TestProxyTCPForwardHosts(t *testing.T) {
 	t.Parallel()
 
 	upstream := startMockDNS(t, "10.0.0.6")
@@ -1058,7 +684,7 @@ func TestDNSProxyTCPForwardHosts(t *testing.T) {
 		TCPForwards: []config.TCPForward{{Port: 22, Host: "git.example.com"}},
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
@@ -1171,7 +797,7 @@ func startCNAMEMockDNS(t *testing.T, cnameTTL, aTTL uint32) string {
 	return fmt.Sprintf("127.0.0.1:%d", udpAddr.Port)
 }
 
-func TestDNSProxyCNAMEMinTTL(t *testing.T) {
+func TestProxyCNAMEMinTTL(t *testing.T) {
 	t.Parallel()
 
 	// CNAME TTL=30, A TTL=300 -- set should use TTL=60
@@ -1194,8 +820,8 @@ func TestDNSProxyCNAMEMinTTL(t *testing.T) {
 
 	var calls []setCall
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		terrarium.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -1228,7 +854,7 @@ func TestDNSProxyCNAMEMinTTL(t *testing.T) {
 	assert.Contains(t, fmt.Sprint(calls[0].ips), "10.99.0.1")
 }
 
-func TestDNSProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
+func TestProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 	t.Parallel()
 
 	// CNAME TTL=300, A TTL=120 -- set should use TTL=120.
@@ -1250,8 +876,8 @@ func TestDNSProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 
 	var calls []setCall
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true,
-		terrarium.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -1283,7 +909,7 @@ func TestDNSProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 	assert.Contains(t, fmt.Sprint(calls[0].ips), "10.99.0.1")
 }
 
-func TestDNSProxyUpstreamTimeoutSilentDrop(t *testing.T) {
+func TestProxyUpstreamTimeoutSilentDrop(t *testing.T) {
 	t.Parallel()
 
 	// Start a mock DNS server that never responds, causing upstream
@@ -1307,8 +933,8 @@ func TestDNSProxyUpstreamTimeoutSilentDrop(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
-		terrarium.WithClientTimeout(100*time.Millisecond),
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
+		dnsproxy.WithClientTimeout(100*time.Millisecond),
 	)
 	require.NoError(t, err)
 
@@ -1331,7 +957,7 @@ func TestDNSProxyUpstreamTimeoutSilentDrop(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-func TestDNSProxyUpstreamConnectionRefusedSERVFAIL(t *testing.T) {
+func TestProxyUpstreamConnectionRefusedSERVFAIL(t *testing.T) {
 	t.Parallel()
 
 	// Find a port that is not listening to trigger connection refused.
@@ -1350,8 +976,8 @@ func TestDNSProxyUpstreamConnectionRefusedSERVFAIL(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, addr, "127.0.0.1:0", true,
-		terrarium.WithClientTimeout(2*time.Second),
+	proxy, err := dnsproxy.Start(t.Context(), cfg, addr, "127.0.0.1:0", true,
+		dnsproxy.WithClientTimeout(2*time.Second),
 	)
 	require.NoError(t, err)
 

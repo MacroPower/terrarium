@@ -11,6 +11,7 @@ import (
 
 	"go.jacobcolvin.com/terrarium"
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/dnsproxy"
 )
 
 func TestParseUpstreamDNS(t *testing.T) {
@@ -64,7 +65,7 @@ func TestDNSProxyShutdownOnInitFailure(t *testing.T) {
 	}
 
 	// Start the DNS proxy (simulates the Init step that succeeds).
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	// Verify the proxy is serving queries.
@@ -100,7 +101,7 @@ func TestShutdownOrder(t *testing.T) {
 		}),
 	}
 
-	proxy, err := terrarium.StartDNSProxy(t.Context(), cfg, upstream, "127.0.0.1:0", true)
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
 	require.NoError(t, err)
 
 	// Start a long-running subprocess to simulate Envoy.

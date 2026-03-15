@@ -18,6 +18,7 @@ import (
 	"github.com/google/nftables"
 
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/dnsproxy"
 )
 
 // envoyDrainTimeout is the maximum time to wait for Envoy to exit
@@ -199,8 +200,8 @@ func Init(ctx context.Context, args []string) error {
 	}
 
 	// Start DNS proxy with nftables set update function.
-	dnsProxy, err := StartDNSProxy(ctx, cfg, net.JoinHostPort(upstream, "53"), "127.0.0.1:53", ipv6Disabled,
-		WithFQDNSetFunc(func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error {
+	dnsProxy, err := dnsproxy.Start(ctx, cfg, net.JoinHostPort(upstream, "53"), "127.0.0.1:53", ipv6Disabled,
+		dnsproxy.WithFQDNSetFunc(func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			return UpdateFQDNSet(dnsConn, setName, ips, ttl)
 		}),
 	)
@@ -404,7 +405,7 @@ func Init(ctx context.Context, args []string) error {
 // Envoy first (with drain wait), then DNS proxy, then nftables.
 // Stopping Envoy before DNS ensures in-flight requests can still
 // resolve during Envoy's drain period (ISSUE-52).
-func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *DNSProxy, conn nftablesConn) {
+func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy, conn nftablesConn) {
 	// Stop Envoy first so DNS remains available during drain (ISSUE-52).
 	if envoyCmd != nil && envoyCmd.Process != nil {
 		err := envoyCmd.Process.Signal(syscall.SIGTERM)

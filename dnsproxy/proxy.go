@@ -1,4 +1,4 @@
-package terrarium
+package dnsproxy
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,190 +16,38 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 )
 
-// dnsMode determines how the DNS proxy handles queries.
-type dnsMode int
-
 const (
-	// dnsModeForwardAll forwards all queries to the upstream resolver.
-	// Used for unrestricted and bare wildcard configs.
-	dnsModeForwardAll dnsMode = iota
-
-	// dnsModeRefuseAll returns REFUSED for all queries without
-	// contacting upstream. Used for blocked configs (egress: [{}]).
-	dnsModeRefuseAll
-
-	// dnsModeAllowlist forwards queries matching the allowed domain
-	// list and returns REFUSED for everything else.
-	dnsModeAllowlist
+	protoTCP = "tcp"
+	protoUDP = "udp"
 )
 
-// DNSDomain is an allowed domain entry for DNS filtering. Wildcard
-// entries (from matchPattern "*.example.com" or "**.example.com")
-// match subdomains only; exact entries match the domain itself and
-// all subdomains.
-type DNSDomain struct {
-	// Name is the domain without any wildcard prefix.
-	Name string
-	// Wildcard is true when the entry originated from a matchPattern
-	// with a leading wildcard prefix ("*." or "**."), restricting
-	// matches to subdomains only (excluding the bare parent domain).
-	Wildcard bool
-	// MultiLevel is true for "**." patterns, allowing matches at
-	// arbitrary subdomain depth. When false (single-star "*."
-	// pattern), only one label before the suffix is allowed. This
-	// mirrors Cilium's depth restriction for single-star wildcards.
-	MultiLevel bool
-}
+// mode determines how the DNS proxy handles queries.
+type mode int
 
-// Matches reports whether qname (in FQDN wire format with trailing
-// dot) matches this domain entry. Non-wildcard entries match the
-// domain and all subdomains (like dnsmasq /domain/). Wildcard entries
-// match subdomains only, not the bare parent (like dnsmasq /*.domain/).
-// The leading-dot check prevents false positives (notexample.com vs
-// example.com).
-func (d DNSDomain) Matches(qname string) bool {
-	q := strings.TrimSuffix(qname, ".")
-	if q == "" {
-		return false
-	}
+const (
+	// modeForwardAll forwards all queries to the upstream resolver.
+	// Used for unrestricted and bare wildcard configs.
+	modeForwardAll mode = iota
 
-	q = strings.ToLower(q)
+	// modeRefuseAll returns REFUSED for all queries without
+	// contacting upstream. Used for blocked configs (egress: [{}]).
+	modeRefuseAll
 
-	if d.Wildcard {
-		suffix := "." + d.Name
-		if !strings.HasSuffix(q, suffix) {
-			return false
-		}
-
-		if !d.MultiLevel {
-			// Single-star: exactly one label before the suffix.
-			prefix := q[:len(q)-len(suffix)]
-
-			return !strings.Contains(prefix, ".")
-		}
-
-		return true
-	}
-
-	return q == d.Name
-}
-
-// CollectDNSDomains returns a sorted, deduplicated list of domains
-// that should be forwarded in restricted mode. Includes FQDN domains
-// (preserving wildcard vs exact distinction for correct filtering)
-// and [TCPForward] hosts. The bare wildcard "*" pattern is included
-// as-is for the caller to handle.
-func CollectDNSDomains(cfg *config.Config) []DNSDomain {
-	seen := make(map[string]bool)
-
-	var result []DNSDomain
-
-	eRules := cfg.EgressRules()
-	for ri := range eRules {
-		for _, fqdn := range eRules[ri].ToFQDNs {
-			var d DNSDomain
-
-			if fqdn.MatchName != "" {
-				d = DNSDomain{Name: fqdn.MatchName}
-			} else {
-				// Detect multi-level ("**.") before stripping.
-				multiLevel := strings.HasPrefix(fqdn.MatchPattern, "**.")
-
-				// Strip all leading "*" characters then the
-				// following "." to extract the base domain.
-				stripped := strings.TrimLeft(fqdn.MatchPattern, "*")
-				stripped = strings.TrimPrefix(stripped, ".")
-				if stripped == "" {
-					// Bare wildcard "*", "**", etc.: pass
-					// through for catch-all handling.
-					if !seen["*"] {
-						seen["*"] = true
-
-						result = append(result, DNSDomain{Name: "*"})
-					}
-
-					continue
-				}
-
-				d = DNSDomain{Name: stripped, Wildcard: true, MultiLevel: multiLevel}
-			}
-
-			if seen[d.Name] {
-				upgradeDNSDomain(result, d)
-
-				continue
-			}
-
-			seen[d.Name] = true
-			result = append(result, d)
-		}
-	}
-
-	return collectTCPForwardHosts(cfg, result, seen)
-}
-
-// upgradeDNSDomain adjusts an existing entry in result when the same
-// domain is encountered again with different wildcard properties.
-func upgradeDNSDomain(result []DNSDomain, d DNSDomain) {
-	for i := range result {
-		if result[i].Name != d.Name {
-			continue
-		}
-
-		// Exact matchName upgrades a wildcard entry so the bare
-		// domain also resolves.
-		if !d.Wildcard && result[i].Wildcard {
-			result[i].Wildcard = false
-		}
-
-		// Multi-level wildcard upgrades single-level (superset).
-		if d.Wildcard && d.MultiLevel && !result[i].MultiLevel {
-			result[i].MultiLevel = true
-		}
-
-		return
-	}
-}
-
-// collectTCPForwardHosts adds TCPForward hosts to the domain list.
-func collectTCPForwardHosts(cfg *config.Config, result []DNSDomain, seen map[string]bool) []DNSDomain {
-	for _, host := range cfg.TCPForwardHosts() {
-		if seen[host] {
-			// TCPForward hosts need the bare domain to resolve.
-			// If a wildcard FQDN entry exists for the same
-			// domain, upgrade to non-wildcard so both the bare
-			// domain and subdomains resolve.
-			for i := range result {
-				if result[i].Name == host && result[i].Wildcard {
-					result[i].Wildcard = false
-					break
-				}
-			}
-
-			continue
-		}
-
-		seen[host] = true
-		result = append(result, DNSDomain{Name: host})
-	}
-
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
-	})
-
-	return result
-}
+	// modeAllowlist forwards queries matching the allowed domain
+	// list and returns REFUSED for everything else.
+	modeAllowlist
+)
 
 // minIPSetTTL is the minimum timeout (in seconds) for ipset entries
 // populated from DNS responses.
 const minIPSetTTL = 60
 
-// DNSProxy is a filtering DNS proxy that handles domain-level
+// Proxy is a filtering DNS proxy that handles domain-level
 // filtering and ipset population. It forwards allowed queries to the
 // real upstream resolver and returns REFUSED for blocked domains,
 // replacing the previous dnsmasq + RefuseDNS two-hop chain with a
 // single process.
-type DNSProxy struct {
+type Proxy struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	fqdnSetFunc   func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error
@@ -210,42 +57,42 @@ type DNSProxy struct {
 	tcp6          *dns.Server
 	upstream      string
 	Addr          string
-	domains       []DNSDomain
+	domains       []Domain
 	patterns      []config.FQDNPattern
 	clientTimeout time.Duration
-	mode          dnsMode
+	filterMode    mode
 	logging       bool
 	ipv6Disabled  bool
 }
 
-// DNSProxyOption configures optional behavior of a [DNSProxy].
+// Option configures optional behavior of a [Proxy].
 //
 // The following options are available:
 //
 //   - [WithClientTimeout]
 //   - [WithFQDNSetFunc]
-type DNSProxyOption func(*DNSProxy)
+type Option func(*Proxy)
 
 // WithClientTimeout overrides the default 10-second upstream DNS
-// client timeout. A [DNSProxyOption].
-func WithClientTimeout(d time.Duration) DNSProxyOption {
-	return func(p *DNSProxy) {
+// client timeout. An [Option].
+func WithClientTimeout(d time.Duration) Option {
+	return func(p *Proxy) {
 		p.clientTimeout = d
 	}
 }
 
 // WithFQDNSetFunc replaces the default nftables set update with fn.
 // Intended for testing set population without requiring root
-// privileges or netlink access. A [DNSProxyOption].
+// privileges or netlink access. An [Option].
 func WithFQDNSetFunc(
 	fn func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error,
-) DNSProxyOption {
-	return func(p *DNSProxy) {
+) Option {
+	return func(p *Proxy) {
 		p.fqdnSetFunc = fn
 	}
 }
 
-// StartDNSProxy starts the DNS proxy on listenAddr (and optionally
+// Start starts the DNS proxy on listenAddr (and optionally
 // [::1] at the same port when ipv6Disabled is false). The proxy
 // determines its filtering mode from cfg:
 //
@@ -260,13 +107,13 @@ func WithFQDNSetFunc(
 // IPv6 listener: if ipv6Disabled is true, only IPv4 listeners are
 // created. If ipv6Disabled is false and binding [::1] fails, startup
 // returns an error (IPv6 bypass risk).
-func StartDNSProxy(
+func Start(
 	ctx context.Context, cfg *config.Config, upstream, listenAddr string, ipv6Disabled bool,
-	opts ...DNSProxyOption,
-) (*DNSProxy, error) {
+	opts ...Option,
+) (*Proxy, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	p := &DNSProxy{
+	p := &Proxy{
 		upstream:      upstream,
 		cancel:        cancel,
 		ctx:           ctx,
@@ -276,17 +123,17 @@ func StartDNSProxy(
 	// Determine filtering mode.
 	switch {
 	case cfg == nil || cfg.IsEgressUnrestricted():
-		p.mode = dnsModeForwardAll
+		p.filterMode = modeForwardAll
 	case cfg.IsEgressBlocked():
-		p.mode = dnsModeRefuseAll
+		p.filterMode = modeRefuseAll
 	default:
-		domains := CollectDNSDomains(cfg)
-		if slices.ContainsFunc(domains, func(d DNSDomain) bool {
+		domains := CollectDomains(cfg)
+		if slices.ContainsFunc(domains, func(d Domain) bool {
 			return d.Name == "*"
 		}) {
-			p.mode = dnsModeForwardAll
+			p.filterMode = modeForwardAll
 		} else {
-			p.mode = dnsModeAllowlist
+			p.filterMode = modeAllowlist
 			p.domains = domains
 		}
 	}
@@ -424,7 +271,7 @@ func StartDNSProxy(
 
 // Shutdown gracefully stops the proxy. In-flight queries are dropped
 // (acceptable for a short-lived terrarium).
-func (p *DNSProxy) Shutdown() error {
+func (p *Proxy) Shutdown() error {
 	p.cancel()
 
 	var errs []error
@@ -447,13 +294,13 @@ func (p *DNSProxy) Shutdown() error {
 
 // handleUDPQuery handles UDP DNS queries with mode-aware filtering
 // and ipset population for matching responses.
-func (p *DNSProxy) handleUDPQuery(w dns.ResponseWriter, r *dns.Msg) {
+func (p *Proxy) handleUDPQuery(w dns.ResponseWriter, r *dns.Msg) {
 	p.handleQuery(w, r, protoUDP)
 }
 
 // handleTCPQuery handles TCP DNS queries with mode-aware filtering
 // and ipset population for matching responses.
-func (p *DNSProxy) handleTCPQuery(w dns.ResponseWriter, r *dns.Msg) {
+func (p *Proxy) handleTCPQuery(w dns.ResponseWriter, r *dns.Msg) {
 	p.handleQuery(w, r, protoTCP)
 }
 
@@ -461,7 +308,7 @@ func (p *DNSProxy) handleTCPQuery(w dns.ResponseWriter, r *dns.Msg) {
 // It applies mode-based filtering, forwards allowed queries to
 // upstream, populates ipsets for matching responses, and logs when
 // enabled.
-func (p *DNSProxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
+func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 	if len(r.Question) == 0 {
 		fail := new(dns.Msg)
 		fail.SetRcode(r, dns.RcodeServerFailure)
@@ -477,7 +324,7 @@ func (p *DNSProxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 	qname := strings.ToLower(r.Question[0].Name)
 
 	// Blocked mode: refuse everything without contacting upstream.
-	if p.mode == dnsModeRefuseAll {
+	if p.filterMode == modeRefuseAll {
 		resp := new(dns.Msg)
 		resp.SetRcode(r, dns.RcodeRefused)
 
@@ -496,7 +343,7 @@ func (p *DNSProxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 	}
 
 	// Allowlist mode: refuse queries that don't match any allowed domain.
-	if p.mode == dnsModeAllowlist && !p.domainAllowed(qname) {
+	if p.filterMode == modeAllowlist && !p.domainAllowed(qname) {
 		resp := new(dns.Msg)
 		resp.SetRcode(r, dns.RcodeRefused)
 
@@ -578,7 +425,7 @@ func (p *DNSProxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 
 // domainAllowed reports whether qname matches any domain in the
 // allowlist.
-func (p *DNSProxy) domainAllowed(qname string) bool {
+func (p *Proxy) domainAllowed(qname string) bool {
 	for _, d := range p.domains {
 		if d.Matches(qname) {
 			return true
@@ -610,7 +457,7 @@ func matchingFQDNRuleIndices(patterns []config.FQDNPattern, qname string) []int 
 // index. The TTL is the minimum across all records in the response
 // (including CNAME chain), matching Cilium's ExtractMsgDetails
 // behavior. TTLs are clamped to a minimum of [minIPSetTTL].
-func (p *DNSProxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []int) {
+func (p *Proxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []int) {
 	// Compute minimum TTL across all answer records (A, AAAA,
 	// CNAME) to match Cilium's lowest-TTL-in-chain behavior.
 	minTTL := -1
@@ -671,7 +518,7 @@ func (p *DNSProxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []i
 
 // updateFQDNSet adds IPs to a single nftables set, using the
 // injected fqdnSetFunc or the default UpdateFQDNSet implementation.
-func (p *DNSProxy) updateFQDNSet(qname, setName string, ips []net.IP, ttl time.Duration) {
+func (p *Proxy) updateFQDNSet(qname, setName string, ips []net.IP, ttl time.Duration) {
 	if p.fqdnSetFunc != nil {
 		err := p.fqdnSetFunc(p.ctx, setName, ips, ttl)
 		if err != nil {

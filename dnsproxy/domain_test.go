@@ -1,0 +1,388 @@
+package dnsproxy_test
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/dnsproxy"
+)
+
+func TestDomainMatches(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		domain dnsproxy.Domain
+		qname  string
+		want   bool
+	}{
+		"non-wildcard exact match": {
+			domain: dnsproxy.Domain{Name: "example.com"},
+			qname:  "example.com.",
+			want:   true,
+		},
+		"non-wildcard subdomain": {
+			domain: dnsproxy.Domain{Name: "example.com"},
+			qname:  "sub.example.com.",
+			want:   false,
+		},
+		"non-wildcard deep subdomain": {
+			domain: dnsproxy.Domain{Name: "example.com"},
+			qname:  "a.b.c.example.com.",
+			want:   false,
+		},
+		"non-wildcard suffix trap": {
+			domain: dnsproxy.Domain{Name: "example.com"},
+			qname:  "notexample.com.",
+			want:   false,
+		},
+		"non-wildcard unrelated domain": {
+			domain: dnsproxy.Domain{Name: "example.com"},
+			qname:  "other.org.",
+			want:   false,
+		},
+		"wildcard subdomain match": {
+			domain: dnsproxy.Domain{Name: "example.com", Wildcard: true},
+			qname:  "sub.example.com.",
+			want:   true,
+		},
+		"wildcard rejects deep subdomain": {
+			domain: dnsproxy.Domain{Name: "example.com", Wildcard: true},
+			qname:  "a.b.example.com.",
+			want:   false,
+		},
+		"multi-level wildcard deep subdomain": {
+			domain: dnsproxy.Domain{Name: "example.com", Wildcard: true, MultiLevel: true},
+			qname:  "a.b.example.com.",
+			want:   true,
+		},
+		"multi-level wildcard single subdomain": {
+			domain: dnsproxy.Domain{Name: "example.com", Wildcard: true, MultiLevel: true},
+			qname:  "sub.example.com.",
+			want:   true,
+		},
+		"multi-level wildcard rejects bare parent": {
+			domain: dnsproxy.Domain{Name: "example.com", Wildcard: true, MultiLevel: true},
+			qname:  "example.com.",
+			want:   false,
+		},
+		"wildcard rejects bare parent": {
+			domain: dnsproxy.Domain{Name: "example.com", Wildcard: true},
+			qname:  "example.com.",
+			want:   false,
+		},
+		"wildcard suffix trap": {
+			domain: dnsproxy.Domain{Name: "example.com", Wildcard: true},
+			qname:  "notexample.com.",
+			want:   false,
+		},
+		"empty qname": {
+			domain: dnsproxy.Domain{Name: "example.com"},
+			qname:  "",
+			want:   false,
+		},
+		"root dot only": {
+			domain: dnsproxy.Domain{Name: "example.com"},
+			qname:  ".",
+			want:   false,
+		},
+		"case insensitive": {
+			domain: dnsproxy.Domain{Name: "example.com"},
+			qname:  "EXAMPLE.COM.",
+			want:   true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.domain.Matches(tt.qname))
+		})
+	}
+}
+
+func TestCollectDomains(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg  config.Config
+		want []dnsproxy.Domain
+	}{
+		"matchName produces non-wildcard": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+			want: []dnsproxy.Domain{{Name: "github.com"}},
+		},
+		"matchPattern produces wildcard": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+			want: []dnsproxy.Domain{{Name: "example.com", Wildcard: true}},
+		},
+		"double-star produces multi-level wildcard": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "**.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+			want: []dnsproxy.Domain{{Name: "example.com", Wildcard: true, MultiLevel: true}},
+		},
+		"multi-level upgrades single-level for same domain": {
+			cfg: config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchPattern: "**.example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+					},
+				),
+			},
+			want: []dnsproxy.Domain{{Name: "example.com", Wildcard: true, MultiLevel: true}},
+		},
+		"bare wildcard passthrough": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+			want: []dnsproxy.Domain{{Name: "*"}},
+		},
+		"matchName upgrades wildcard for same domain": {
+			cfg: config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+					},
+				),
+			},
+			want: []dnsproxy.Domain{{Name: "example.com"}},
+		},
+		"TCPForward host upgrade": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+				TCPForwards: []config.TCPForward{{Port: 22, Host: "example.com"}},
+			},
+			want: []dnsproxy.Domain{{Name: "example.com"}},
+		},
+		"TCPForward adds new host": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+				TCPForwards: []config.TCPForward{{Port: 22, Host: "git.example.com"}},
+			},
+			want: []dnsproxy.Domain{
+				{Name: "git.example.com"},
+				{Name: "github.com"},
+			},
+		},
+		"dedup same matchName": {
+			cfg: config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "80"}}}},
+					},
+				),
+			},
+			want: []dnsproxy.Domain{{Name: "example.com"}},
+		},
+		"sorted output": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{
+						{MatchName: "z.example.com"},
+						{MatchName: "a.example.com"},
+					},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+			want: []dnsproxy.Domain{
+				{Name: "a.example.com"},
+				{Name: "z.example.com"},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := dnsproxy.CollectDomains(&tt.cfg)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestMatchFQDNPatterns(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{
+					{MatchName: "exact.example.com"},
+					{MatchPattern: "*.wild.example.com"},
+					{MatchPattern: "**.deep.example.com"},
+					{MatchPattern: "*"},
+				},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "UDP"}}}},
+			},
+		),
+	}
+	patterns := cfg.CompileFQDNPatterns()
+
+	tests := map[string]struct {
+		qname string
+		want  bool
+	}{
+		"exact match": {
+			qname: "exact.example.com.",
+			want:  true,
+		},
+		"exact no match wrong name": {
+			qname: "other.example.com.",
+			want:  true, // matches bare wildcard "*"
+		},
+		"single-star matches one label": {
+			qname: "sub.wild.example.com.",
+			want:  true,
+		},
+		"single-star rejects multi-label": {
+			qname: "a.b.wild.example.com.",
+			want:  true, // matches bare wildcard "*"
+		},
+		"double-star matches one label": {
+			qname: "sub.deep.example.com.",
+			want:  true,
+		},
+		"double-star matches multi-label": {
+			qname: "a.b.deep.example.com.",
+			want:  true,
+		},
+		"bare wildcard matches anything": {
+			qname: "anything.anywhere.com.",
+			want:  true,
+		},
+		"bare wildcard matches root": {
+			qname: ".",
+			want:  true,
+		},
+		"empty string no match": {
+			qname: "",
+			want:  false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			matched := false
+			for _, p := range patterns {
+				if p.Regex.MatchString(tt.qname) {
+					matched = true
+
+					break
+				}
+			}
+
+			assert.Equal(t, tt.want, matched)
+		})
+	}
+}
+
+// TestMatchFQDNPatternsWithoutBareWildcard tests pattern matching
+// without a bare wildcard to verify single-star depth restriction.
+func TestMatchFQDNPatternsWithoutBareWildcard(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{
+				{MatchPattern: "*.example.com"},
+				{MatchPattern: "**.deep.other.com"},
+			},
+			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "UDP"}}}},
+		}),
+	}
+	patterns := cfg.CompileFQDNPatterns()
+
+	tests := map[string]struct {
+		qname string
+		want  bool
+	}{
+		"single-star matches one label": {
+			qname: "sub.example.com.",
+			want:  true,
+		},
+		"single-star rejects multi-label": {
+			qname: "a.b.example.com.",
+			want:  false,
+		},
+		"single-star rejects bare parent": {
+			qname: "example.com.",
+			want:  false,
+		},
+		"double-star matches one label": {
+			qname: "sub.deep.other.com.",
+			want:  true,
+		},
+		"double-star matches multi-label": {
+			qname: "a.b.deep.other.com.",
+			want:  true,
+		},
+		"double-star rejects bare parent": {
+			qname: "deep.other.com.",
+			want:  false,
+		},
+		"unrelated domain": {
+			qname: "other.com.",
+			want:  false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			matched := false
+			for _, p := range patterns {
+				if p.Regex.MatchString(tt.qname) {
+					matched = true
+
+					break
+				}
+			}
+
+			assert.Equal(t, tt.want, matched)
+		})
+	}
+}
