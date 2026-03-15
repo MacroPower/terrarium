@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.jacobcolvin.com/niceyaml/fangs"
 	"go.jacobcolvin.com/x/log"
+	"go.jacobcolvin.com/x/version"
 
 	"go.jacobcolvin.com/terrarium/config"
 )
@@ -77,7 +78,7 @@ func main() {
 		fang.WithErrorHandler(fangs.ErrorHandler),
 		fang.WithoutCompletions(),
 		fang.WithoutManpage(),
-		fang.WithoutVersion(),
+		fang.WithVersion(version.GetVersion()),
 	)
 	if err != nil {
 		var exitErr *ExitError

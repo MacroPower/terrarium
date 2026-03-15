@@ -25,10 +25,10 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s -w
-      - -X github.com/MacroPower/terrarium/pkg/version.Version={{.Version}}
-      - -X github.com/MacroPower/terrarium/pkg/version.Branch={{.Branch}}
-      - -X github.com/MacroPower/terrarium/pkg/version.BuildUser={{.Env.USER}}@{{.Env.HOSTNAME}}
-      - -X github.com/MacroPower/terrarium/pkg/version.BuildDate={{.Date}}
+      - -X go.jacobcolvin.com/x/version.Version={{.Version}}
+      - -X go.jacobcolvin.com/x/version.Branch={{.Branch}}
+      - -X go.jacobcolvin.com/x/version.BuildUser={{.Env.USER}}@{{.Env.HOSTNAME}}
+      - -X go.jacobcolvin.com/x/version.BuildDate={{.Date}}
     flags:
       - -trimpath
     buildmode: pie
