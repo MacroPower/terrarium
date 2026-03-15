@@ -10,6 +10,36 @@ import (
 	"dagger/terrarium/internal/dagger"
 )
 
+// Variant identifies a container image variant. Each variant uses a different
+// base image and set of pre-installed dependencies. See [VariantScratch],
+// [VariantDebian], and [VariantAlpine] for the available variants.
+type Variant string
+
+const (
+	// VariantScratch builds an empty container with only the terrarium
+	// binary. This is the default variant and produces the smallest image.
+	VariantScratch Variant = "scratch"
+
+	// VariantDebian builds a debian:13-slim container with ca-certificates,
+	// util-linux (setpriv), and the Envoy proxy pre-installed.
+	VariantDebian Variant = "debian"
+
+	// VariantAlpine builds an alpine container with ca-certificates,
+	// util-linux (setpriv), and the Envoy proxy pre-installed.
+	VariantAlpine Variant = "alpine"
+)
+
+// allVariants lists every supported image variant in publishing order.
+var allVariants = []Variant{VariantScratch, VariantDebian, VariantAlpine}
+
+// variantSet groups multi-arch platform containers for a single image
+// variant. Used internally by [buildAllImages] to keep variant metadata
+// associated with its containers through the publish pipeline.
+type variantSet struct {
+	variant    Variant
+	containers []*dagger.Container
+}
+
 // Build runs GoReleaser in snapshot mode, producing binaries for all
 // platforms. Returns the dist/ directory. Source archives are skipped in
 // snapshot mode since they are only needed for releases.
@@ -28,7 +58,8 @@ func (m *Terrarium) Build(ctx context.Context) (*dagger.Directory, error) {
 }
 
 // BuildImages builds multi-arch runtime container images from a GoReleaser
-// dist directory. If no dist is provided, a snapshot build is run.
+// dist directory. If no dist is provided, a snapshot build is run. When
+// variant is empty, all variants are built and returned as a flat slice.
 func (m *Terrarium) BuildImages(
 	ctx context.Context,
 	// Version label for OCI metadata.
@@ -37,6 +68,10 @@ func (m *Terrarium) BuildImages(
 	// Pre-built GoReleaser dist directory. If not provided, runs a snapshot build.
 	// +optional
 	dist *dagger.Directory,
+	// Image variant to build. One of "scratch", "debian", "alpine".
+	// When empty, all variants are built.
+	// +optional
+	variant string,
 ) ([]*dagger.Container, error) {
 	if dist == nil {
 		var err error
@@ -45,16 +80,52 @@ func (m *Terrarium) BuildImages(
 			return nil, err
 		}
 	}
-	return runtimeImages(ctx, dist, version)
+
+	if variant != "" {
+		return runtimeImages(ctx, dist, version, Variant(variant))
+	}
+
+	sets, err := buildAllImages(ctx, dist, version)
+	if err != nil {
+		return nil, err
+	}
+
+	var all []*dagger.Container
+	for _, s := range sets {
+		all = append(all, s.containers...)
+	}
+	return all, nil
 }
 
-// runtimeImages builds a multi-arch set of runtime container images from a
-// pre-built GoReleaser dist/ directory. Each image is based on debian:13-slim
-// with OCI labels.
-func runtimeImages(_ context.Context, dist *dagger.Directory, version string) ([]*dagger.Container, error) {
-	platforms := []dagger.Platform{"linux/amd64", "linux/arm64"}
-	variants := make([]*dagger.Container, len(platforms))
+// buildAllImages builds multi-arch containers for every supported variant,
+// returning them grouped so callers can apply variant-specific tags.
+func buildAllImages(_ context.Context, dist *dagger.Directory, version string) ([]variantSet, error) {
+	sets := make([]variantSet, len(allVariants))
 	created := time.Now().UTC().Format(time.RFC3339)
+
+	for i, v := range allVariants {
+		ctrs, err := buildVariantImages(dist, version, v, created)
+		if err != nil {
+			return nil, fmt.Errorf("building %s images: %w", v, err)
+		}
+		sets[i] = variantSet{variant: v, containers: ctrs}
+	}
+
+	return sets, nil
+}
+
+// runtimeImages builds a multi-arch set of runtime container images for a
+// single variant from a pre-built GoReleaser dist/ directory.
+func runtimeImages(_ context.Context, dist *dagger.Directory, version string, variant Variant) ([]*dagger.Container, error) {
+	created := time.Now().UTC().Format(time.RFC3339)
+	return buildVariantImages(dist, version, variant, created)
+}
+
+// buildVariantImages constructs multi-arch containers for a single variant,
+// sharing the created timestamp across all platforms for consistency.
+func buildVariantImages(dist *dagger.Directory, version string, variant Variant, created string) ([]*dagger.Container, error) {
+	platforms := []dagger.Platform{"linux/amd64", "linux/arm64"}
+	containers := make([]*dagger.Container, len(platforms))
 
 	for i, platform := range platforms {
 		// Map platform to GoReleaser dist binary path.
@@ -63,37 +134,80 @@ func runtimeImages(_ context.Context, dist *dagger.Directory, version string) ([
 			dir = "terrarium_linux_arm64_v8.0"
 		}
 
-		variants[i] = runtimeBase(platform).
-			// OCI labels (container config) for metadata.
+		containers[i] = runtimeBase(platform, variant).
 			WithLabel("org.opencontainers.image.version", version).
 			WithLabel("org.opencontainers.image.created", created).
-			// OCI annotations (manifest-level) for registry discoverability.
 			WithAnnotation("org.opencontainers.image.version", version).
 			WithAnnotation("org.opencontainers.image.created", created).
 			WithFile("/usr/local/bin/terrarium", dist.File(dir+"/terrarium")).
 			WithEntrypoint([]string{"terrarium"})
 	}
 
-	return variants, nil
+	return containers, nil
 }
 
-// runtimeBase returns a debian:13-slim container for the given platform with
-// OCI labels and TLS certificates pre-configured.
-func runtimeBase(platform dagger.Platform) *dagger.Container {
+// runtimeBase returns a base container for the given platform and variant
+// with OCI labels pre-configured. Dispatches to variant-specific helpers
+// for base image and dependency installation.
+func runtimeBase(platform dagger.Platform, variant Variant) *dagger.Container {
+	var ctr *dagger.Container
+
+	switch variant {
+	case VariantDebian:
+		ctr = runtimeBaseDebian(platform)
+	case VariantAlpine:
+		ctr = runtimeBaseAlpine(platform)
+	default:
+		ctr = runtimeBaseScratch(platform)
+	}
+
+	return withOCILabels(ctr)
+}
+
+// runtimeBaseScratch returns an empty container for the given platform.
+// The resulting image contains only the terrarium binary added by the caller.
+func runtimeBaseScratch(platform dagger.Platform) *dagger.Container {
+	return dag.Container(dagger.ContainerOpts{Platform: platform})
+}
+
+// runtimeBaseDebian returns a debian:13-slim container with ca-certificates,
+// util-linux (setpriv), and the Envoy proxy binary pre-installed.
+func runtimeBaseDebian(platform dagger.Platform) *dagger.Container {
 	return dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("debian:13-slim").
-		// Static OCI labels (container config) for metadata.
+		WithExec([]string{"sh", "-c",
+			"apt-get update && apt-get install -y ca-certificates curl util-linux && rm -rf /var/lib/apt/lists/*"}).
+		WithFile("/usr/local/bin/envoy", envoyBinary(platform))
+}
+
+// runtimeBaseAlpine returns an alpine container with ca-certificates,
+// util-linux (setpriv), and the Envoy proxy binary pre-installed.
+func runtimeBaseAlpine(platform dagger.Platform) *dagger.Container {
+	return dag.Container(dagger.ContainerOpts{Platform: platform}).
+		From("alpine:3.22").
+		WithExec([]string{"apk", "add", "--no-cache", "ca-certificates", "curl", "util-linux"}).
+		WithFile("/usr/local/bin/envoy", envoyBinary(platform))
+}
+
+// envoyBinary extracts the Envoy proxy binary from the official multi-arch
+// container image for the given platform.
+func envoyBinary(platform dagger.Platform) *dagger.File {
+	return dag.Container(dagger.ContainerOpts{Platform: platform}).
+		From("envoyproxy/envoy:" + envoyVersion).
+		File("/usr/local/bin/envoy")
+}
+
+// withOCILabels applies the static OCI labels and annotations shared by all
+// image variants.
+func withOCILabels(ctr *dagger.Container) *dagger.Container {
+	return ctr.
 		WithLabel("org.opencontainers.image.title", "terrarium").
 		WithLabel("org.opencontainers.image.description", "Secure container environment with Envoy egress gateway").
 		WithLabel("org.opencontainers.image.source", "https://github.com/macropower/terrarium").
 		WithLabel("org.opencontainers.image.url", "https://github.com/macropower/terrarium").
 		WithLabel("org.opencontainers.image.licenses", "Apache-2.0").
-		// Static OCI annotations (manifest-level) for registry discoverability.
 		WithAnnotation("org.opencontainers.image.title", "terrarium").
-		WithAnnotation("org.opencontainers.image.source", "https://github.com/macropower/terrarium").
-		// Install ca-certificates for TLS trust.
-		WithExec([]string{"sh", "-c",
-			"apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*"})
+		WithAnnotation("org.opencontainers.image.source", "https://github.com/macropower/terrarium")
 }
 
 // verifyBinaryPlatform runs the `file` command on a built binary and asserts

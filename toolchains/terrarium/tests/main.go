@@ -27,6 +27,7 @@ func (m *Tests) All(ctx context.Context) error {
 
 	g.Go(func() error { return m.TestBuildDist(ctx) })
 	g.Go(func() error { return m.TestBuildImageMetadata(ctx) })
+	g.Go(func() error { return m.TestBuildVariantContents(ctx) })
 	g.Go(func() error { return m.TestLintReleaserClean(ctx) })
 	g.Go(func() error { return m.TestLintDeadcodeClean(ctx) })
 	g.Go(func() error { return m.TestBinary(ctx) })
@@ -69,58 +70,89 @@ func (m *Tests) TestBuildDist(ctx context.Context) error {
 	return nil
 }
 
-// TestBuildImageMetadata verifies that [Terrarium.BuildImages] produces containers
-// with expected OCI labels and entrypoint.
+// TestBuildImageMetadata verifies that [Terrarium.BuildImages] produces
+// containers with expected OCI labels and entrypoint for each variant.
 //
 // +check
 func (m *Tests) TestBuildImageMetadata(ctx context.Context) error {
 	dist := dag.Terrarium().Build()
-	variants, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
-		Version: "v0.0.0-test",
-		Dist:    dist,
-	})
-	if err != nil {
-		return fmt.Errorf("build images: %w", err)
+
+	for _, variant := range []string{"scratch", "debian", "alpine"} {
+		containers, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
+			Version: "v0.0.0-test",
+			Dist:    dist,
+			Variant: variant,
+		})
+		if err != nil {
+			return fmt.Errorf("%s: build images: %w", variant, err)
+		}
+		if len(containers) != 2 {
+			return fmt.Errorf("%s: expected 2 platform containers, got %d", variant, len(containers))
+		}
+
+		for i, ctr := range containers {
+			version, err := ctr.Label(ctx, "org.opencontainers.image.version")
+			if err != nil {
+				return fmt.Errorf("%s[%d]: version label: %w", variant, i, err)
+			}
+			if version != "v0.0.0-test" {
+				return fmt.Errorf("%s[%d]: version label = %q, want %q", variant, i, version, "v0.0.0-test")
+			}
+
+			title, err := ctr.Label(ctx, "org.opencontainers.image.title")
+			if err != nil {
+				return fmt.Errorf("%s[%d]: title label: %w", variant, i, err)
+			}
+			if title != "terrarium" {
+				return fmt.Errorf("%s[%d]: title label = %q, want %q", variant, i, title, "terrarium")
+			}
+
+			created, err := ctr.Label(ctx, "org.opencontainers.image.created")
+			if err != nil {
+				return fmt.Errorf("%s[%d]: created label: %w", variant, i, err)
+			}
+			if created == "" {
+				return fmt.Errorf("%s[%d]: created label is empty", variant, i)
+			}
+
+			ep, err := ctr.Entrypoint(ctx)
+			if err != nil {
+				return fmt.Errorf("%s[%d]: entrypoint: %w", variant, i, err)
+			}
+			if len(ep) != 1 || ep[0] != "terrarium" {
+				return fmt.Errorf("%s[%d]: entrypoint = %v, want [terrarium]", variant, i, ep)
+			}
+		}
 	}
-	if len(variants) != 2 {
-		return fmt.Errorf("expected 2 image variants (linux/amd64, linux/arm64), got %d", len(variants))
-	}
 
-	for i, ctr := range variants {
-		// Verify OCI version label.
-		version, err := ctr.Label(ctx, "org.opencontainers.image.version")
-		if err != nil {
-			return fmt.Errorf("variant %d: version label: %w", i, err)
-		}
-		if version != "v0.0.0-test" {
-			return fmt.Errorf("variant %d: version label = %q, want %q", i, version, "v0.0.0-test")
-		}
+	return nil
+}
 
-		// Verify OCI title label.
-		title, err := ctr.Label(ctx, "org.opencontainers.image.title")
-		if err != nil {
-			return fmt.Errorf("variant %d: title label: %w", i, err)
-		}
-		if title != "terrarium" {
-			return fmt.Errorf("variant %d: title label = %q, want %q", i, title, "terrarium")
-		}
+// TestBuildVariantContents verifies that debian and alpine images contain
+// envoy and setpriv, while scratch does not. Only tests the first platform
+// container (linux/amd64) since dependency installation is platform-independent.
+//
+// +check
+func (m *Tests) TestBuildVariantContents(ctx context.Context) error {
+	dist := dag.Terrarium().Build()
 
-		// Verify OCI created label is present and non-empty.
-		created, err := ctr.Label(ctx, "org.opencontainers.image.created")
+	// Verify debian and alpine have envoy and setpriv.
+	for _, variant := range []string{"debian", "alpine"} {
+		containers, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
+			Version: "v0.0.0-test",
+			Dist:    dist,
+			Variant: variant,
+		})
 		if err != nil {
-			return fmt.Errorf("variant %d: created label: %w", i, err)
-		}
-		if created == "" {
-			return fmt.Errorf("variant %d: created label is empty", i)
+			return fmt.Errorf("%s: build: %w", variant, err)
 		}
 
-		// Verify entrypoint.
-		ep, err := ctr.Entrypoint(ctx)
-		if err != nil {
-			return fmt.Errorf("variant %d: entrypoint: %w", i, err)
-		}
-		if len(ep) != 1 || ep[0] != "terrarium" {
-			return fmt.Errorf("variant %d: entrypoint = %v, want [terrarium]", i, ep)
+		ctr := containers[0]
+		for _, bin := range []string{"envoy", "setpriv"} {
+			_, err := ctr.WithExec([]string{"which", bin}).Sync(ctx)
+			if err != nil {
+				return fmt.Errorf("%s: expected %s to be installed: %w", variant, bin, err)
+			}
 		}
 	}
 
@@ -169,14 +201,15 @@ func (m *Tests) TestPublishImages(ctx context.Context) error {
 		return fmt.Errorf("expected sha256 digest in result, got: %s", result)
 	}
 
-	// Verify 2 tags were published.
-	if !strings.Contains(result, "published 2 tags") {
-		return fmt.Errorf("expected 'published 2 tags' in result, got: %s", result)
+	// Verify 6 tags were published (2 base tags x 3 variants).
+	if !strings.Contains(result, "published 6 tags") {
+		return fmt.Errorf("expected 'published 6 tags' in result, got: %s", result)
 	}
 
-	// Verify deduplication: both tags share one manifest, so 1 unique digest.
-	if !strings.Contains(result, "1 unique digests") {
-		return fmt.Errorf("expected '1 unique digests' in result, got: %s", result)
+	// Verify deduplication: 3 unique digests (one per variant, each with
+	// 2 tags sharing a manifest).
+	if !strings.Contains(result, "3 unique digests") {
+		return fmt.Errorf("expected '3 unique digests' in result, got: %s", result)
 	}
 
 	// Extract a digest reference for signature verification.

@@ -107,6 +107,30 @@ func (m *Terrarium) VersionTags(
 	return tags
 }
 
+// variantTags applies [variantTag] to each base tag, producing the
+// variant-specific tag list for publishing.
+func variantTags(baseTags []string, variant Variant) []string {
+	tags := make([]string, len(baseTags))
+	for i, t := range baseTags {
+		tags[i] = variantTag(t, variant)
+	}
+	return tags
+}
+
+// variantTag returns the tag with a variant suffix appended. The default
+// variant ([VariantScratch]) returns the tag unchanged. For other variants,
+// "latest" becomes the variant name (e.g. "debian") and versioned tags
+// gain a suffix (e.g. "v1.2.3-alpine").
+func variantTag(tag string, variant Variant) string {
+	if variant == VariantScratch {
+		return tag
+	}
+	if tag == "latest" {
+		return string(variant)
+	}
+	return tag + "-" + string(variant)
+}
+
 // FormatDigestChecksums converts publish output references to the
 // checksums format expected by actions/attest-build-provenance. Each reference
 // has the form "registry/image:tag@sha256:hex"; this function emits
@@ -162,16 +186,20 @@ func (m *Terrarium) RegistryHost(
 	return strings.SplitN(registry, "/", 2)[0]
 }
 
-// PublishImages builds multi-arch container images using Dagger's native
-// Container API and publishes them to the registry.
+// PublishImages builds multi-arch container images for all variants
+// (scratch, debian, alpine) and publishes them to the registry. Each
+// variant gets its own set of tags via [variantTag].
 //
-// Stable releases are published with multiple tags: :latest, :vX.Y.Z, :vX,
-// :vX.Y. Pre-release versions are published with only their exact tag.
+// Stable releases are published with multiple tags per variant. For
+// scratch (default): :latest, :vX.Y.Z, :vX, :vX.Y. For debian/alpine
+// the variant name is appended: :debian, :vX.Y.Z-debian, etc.
+// Pre-release versions are published with only their exact tag per variant.
 //
 // +cache="never"
 func (m *Terrarium) PublishImages(
 	ctx context.Context,
-	// Image tags to publish (e.g. ["latest", "v1.2.3", "v1", "v1.2"]).
+	// Base image tags to publish (e.g. ["latest", "v1.2.3", "v1", "v1.2"]).
+	// Variant suffixes are applied automatically.
 	tags []string,
 	// Registry username for authentication.
 	// +optional
@@ -198,18 +226,33 @@ func (m *Terrarium) PublishImages(
 		}
 	}
 
-	variants, err := m.BuildImages(ctx, version, dist)
-	if err != nil {
-		return "", err
+	if dist == nil {
+		var err error
+		dist, err = m.Build(ctx)
+		if err != nil {
+			return "", err
+		}
 	}
-	digests, err := m.publishImages(ctx, variants, tags, registryUsername, registryPassword, cosignKey, cosignPassword)
+
+	sets, err := buildAllImages(ctx, dist, version)
 	if err != nil {
 		return "", err
 	}
 
-	// Deduplicate digests for the summary (tags may share a manifest).
-	unique := m.DeduplicateDigests(digests)
-	return fmt.Sprintf("published %d tags (%d unique digests)\n%s", len(tags), len(unique), strings.Join(digests, "\n")), nil
+	var allDigests []string
+	var totalTags int
+	for _, s := range sets {
+		varTags := variantTags(tags, s.variant)
+		totalTags += len(varTags)
+		digests, err := m.publishImages(ctx, s.containers, varTags, registryUsername, registryPassword, cosignKey, cosignPassword)
+		if err != nil {
+			return "", fmt.Errorf("publish %s: %w", s.variant, err)
+		}
+		allDigests = append(allDigests, digests...)
+	}
+
+	unique := m.DeduplicateDigests(allDigests)
+	return fmt.Sprintf("published %d tags (%d unique digests)\n%s", totalTags, len(unique), strings.Join(allDigests, "\n")), nil
 }
 
 // Release runs GoReleaser for binaries/archives/signing, then builds and
@@ -260,32 +303,40 @@ func (m *Terrarium) Release(
 		WithExec([]string{"goreleaser", "release", "--clean", "--skip=" + skipFlags}).
 		Directory("/src/dist")
 
-	// Derive image tags from the version tag.
-	tags := m.VersionTags(tag)
+	// Derive base image tags from the version tag.
+	baseTags := m.VersionTags(tag)
 
-	// Publish multi-arch container images via Dagger-native API.
-	variants, err := runtimeImages(ctx, dist, tag)
+	// Build and publish all image variants via Dagger-native API.
+	sets, err := buildAllImages(ctx, dist, tag)
 	if err != nil {
 		return nil, fmt.Errorf("build runtime images: %w", err)
 	}
-	digests, err := m.publishImages(ctx, variants, tags, registryUsername, registryPassword, cosignKey, cosignPassword)
-	if err != nil {
-		return nil, fmt.Errorf("publish images: %w", err)
+
+	var allDigests []string
+	var totalTags int
+	for _, s := range sets {
+		varTags := variantTags(baseTags, s.variant)
+		totalTags += len(varTags)
+		digests, err := m.publishImages(ctx, s.containers, varTags, registryUsername, registryPassword, cosignKey, cosignPassword)
+		if err != nil {
+			return nil, fmt.Errorf("publish %s images: %w", s.variant, err)
+		}
+		allDigests = append(allDigests, digests...)
 	}
 
 	// Write digests in checksums format for attest-build-provenance.
-	if len(digests) > 0 {
-		checksums := m.FormatDigestChecksums(digests)
+	if len(allDigests) > 0 {
+		checksums := m.FormatDigestChecksums(allDigests)
 		dist = dist.WithNewFile("digests.txt", checksums)
 	}
 
-	unique := m.DeduplicateDigests(digests)
+	unique := m.DeduplicateDigests(allDigests)
 	return &ReleaseReport{
 		Dist:              dist,
 		Tag:               tag,
-		ImageDigests:      digests,
+		ImageDigests:      allDigests,
 		UniqueDigestCount: len(unique),
-		TagCount:          len(tags),
+		TagCount:          totalTags,
 	}, nil
 }
 

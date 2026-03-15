@@ -68,7 +68,7 @@ func (m *Terrarium) ReleaseDryRun(ctx context.Context) error {
 	// Container image build -- exercises runtime base image construction,
 	// binary packaging, and OCI metadata for all platforms.
 	g.Go(func() error {
-		containers, err := m.BuildImages(ctx, "dry-run", dist)
+		containers, err := m.BuildImages(ctx, "dry-run", dist, "")
 		if err != nil {
 			return err
 		}

@@ -20,6 +20,7 @@ const (
 	deadcodeVersion   = "v0.42.0"  // renovate: datasource=go depName=golang.org/x/tools
 	cosignVersion     = "v3.0.4"   // renovate: datasource=github-releases depName=sigstore/cosign
 	syftVersion       = "v1.41.1"  // renovate: datasource=github-releases depName=anchore/syft
+	envoyVersion      = "v1.33.2"  // renovate: datasource=github-releases depName=envoyproxy/envoy
 
 	terrariumCacheNamespace = "go.jacobcolvin.com/terrarium/toolchains/terrarium"
 
