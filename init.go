@@ -65,15 +65,15 @@ func ParseUpstreamDNS(resolvConf string) string {
 
 // CreateEnvoyUser appends envoy user/group entries to /etc/passwd and
 // /etc/group.
-func CreateEnvoyUser() error {
-	passwdEntry := fmt.Sprintf("envoy:x:%s:%s::/tmp:/bin/false\n", EnvoyUID, EnvoyUID)
+func CreateEnvoyUser(envoyUID string) error {
+	passwdEntry := fmt.Sprintf("envoy:x:%s:%s::/tmp:/bin/false\n", envoyUID, envoyUID)
 
 	err := appendToFile("/etc/passwd", passwdEntry)
 	if err != nil {
 		return fmt.Errorf("adding envoy user: %w", err)
 	}
 
-	groupEntry := fmt.Sprintf("envoy:x:%s:\n", EnvoyUID)
+	groupEntry := fmt.Sprintf("envoy:x:%s:\n", envoyUID)
 
 	err = appendToFile("/etc/group", groupEntry)
 	if err != nil {
@@ -89,12 +89,12 @@ func CreateEnvoyUser() error {
 // as a supervised child process. The context is threaded to all
 // subprocesses, allowing cancellation to propagate. Returns an
 // [*ExitError] carrying the child's exit code on normal termination.
-func Init(ctx context.Context, args []string) error {
+func Init(ctx context.Context, usr config.User, args []string) error {
 	if len(args) == 0 {
 		return ErrNoCommand
 	}
 
-	setenvErr := os.Setenv("PATH", HMBin+":"+os.Getenv("PATH"))
+	setenvErr := os.Setenv("PATH", usr.HMBin+":"+os.Getenv("PATH"))
 	if setenvErr != nil {
 		slog.DebugContext(ctx, "setting PATH", slog.Any("err", setenvErr))
 	}
@@ -115,7 +115,7 @@ func Init(ctx context.Context, args []string) error {
 	if os.IsNotExist(err) {
 		slog.InfoContext(ctx, "generating firewall configs")
 
-		cfg, err = Generate(ctx, ConfigPath)
+		cfg, err = Generate(ctx, usr.ConfigPath)
 		if err != nil {
 			return fmt.Errorf("generating configs: %w", err)
 		}
@@ -135,14 +135,14 @@ func Init(ctx context.Context, args []string) error {
 	}
 
 	// Create envoy user.
-	err = CreateEnvoyUser()
+	err = CreateEnvoyUser(usr.EnvoyUID)
 	if err != nil {
 		return fmt.Errorf("creating envoy user: %w", err)
 	}
 
 	// Parse config if Generate() was not called (pre-baked configs).
 	if cfg == nil {
-		cfgData, err := os.ReadFile(ConfigPath)
+		cfgData, err := os.ReadFile(usr.ConfigPath)
 		if err != nil {
 			return fmt.Errorf("reading terrarium config: %w", err)
 		}
@@ -163,7 +163,17 @@ func Init(ctx context.Context, args []string) error {
 
 	slog.InfoContext(ctx, "applying nftables firewall rules")
 
-	err = firewall.ApplyRules(ctx, conn, cfg)
+	uids := firewall.UIDs{
+		Sandbox: uint32(
+			mustAtoi(usr.UID),
+		), //nolint:gosec // G115: UID values are small constants from CLI entrypoint.
+		Envoy: uint32(
+			mustAtoi(usr.EnvoyUID),
+		), //nolint:gosec // G115: UID values are small constants from CLI entrypoint.
+		Root: 0,
+	}
+
+	err = firewall.ApplyRules(ctx, conn, cfg, uids)
 	if err != nil {
 		return fmt.Errorf("applying firewall rules: %w", err)
 	}
@@ -274,8 +284,9 @@ func Init(ctx context.Context, args []string) error {
 	var envoyCmd *exec.Cmd
 
 	if needsEnvoy {
+		//nolint:gosec // G204: args from config.User populated with constants in CLI entrypoint.
 		envoyCmd = exec.CommandContext(ctx, "setpriv",
-			"--reuid="+EnvoyUID, "--regid="+EnvoyUID, "--clear-groups", "--no-new-privs",
+			"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups", "--no-new-privs",
 			"--", "envoy", "-c", "/etc/envoy-terrarium.yaml", "--log-level", "warning")
 		envoyCmd.Stdout = os.Stdout
 		envoyCmd.Stderr = os.Stderr
@@ -305,19 +316,19 @@ func Init(ctx context.Context, args []string) error {
 	dnsProxyCleanedUp = true
 
 	// Prepare privilege drop.
-	chownErr := os.Chown("/commandhistory", mustAtoi(UID), mustAtoi(GID))
+	chownErr := os.Chown("/commandhistory", mustAtoi(usr.UID), mustAtoi(usr.GID))
 	if chownErr != nil {
 		slog.DebugContext(ctx, "chowning /commandhistory", slog.Any("err", chownErr))
 	}
 
-	chownErr = os.Chown("/claude-state", mustAtoi(UID), mustAtoi(GID))
+	chownErr = os.Chown("/claude-state", mustAtoi(usr.UID), mustAtoi(usr.GID))
 	if chownErr != nil {
 		slog.DebugContext(ctx, "chowning /claude-state", slog.Any("err", chownErr))
 	}
 
 	writeErr := os.WriteFile(
 		"/proc/sys/net/ipv4/ping_group_range",
-		[]byte("0 "+UID),
+		[]byte("0 "+usr.UID),
 		0o644,
 	)
 	if writeErr != nil {
@@ -328,7 +339,7 @@ func Init(ctx context.Context, args []string) error {
 	// privileges. It inherits PID 1's process group so terminal
 	// signals (SIGINT, SIGWINCH) reach it naturally.
 	userArgs := append([]string{
-		"--reuid=" + UID, "--regid=" + GID, "--init-groups",
+		"--reuid=" + usr.UID, "--regid=" + usr.GID, "--init-groups",
 		"--no-new-privs", "--inh-caps=-all", "--bounding-set=-all", "--",
 	}, args...)
 	//nolint:gosec // G204: args from constants and user input.

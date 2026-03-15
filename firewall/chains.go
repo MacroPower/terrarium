@@ -77,7 +77,7 @@ func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain)
 // addOutputEstablishedAndICMP adds the OUTPUT rules that appear after
 // the UID 1000 dispatch (or in its place for unrestricted/blocked
 // modes): CT state ESTABLISHED, per-type ICMP RELATED, and root DNS.
-func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftables.Chain) {
+func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftables.Chain, uids UIDs) {
 	// CT state established -> accept (covers root, Envoy, and
 	// ownerless kernel packets).
 	conn.AddRule(&nftables.Rule{
@@ -126,7 +126,7 @@ func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftabl
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uidRoot),
+				matchUID(uids.Root),
 				matchL4Proto(proto),
 				matchDstPort(53),
 				verdictExprs(expr.VerdictAccept),
@@ -141,7 +141,10 @@ func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftabl
 // ACCEPT for CIDR hits (allow packet). This preserves Cilium's
 // OR semantics across egress rules. Using jump (not goto) ensures
 // return-to-caller works for OR evaluation.
-func addCIDRChains(conn Conn, table *nftables.Table, parentChain *nftables.Chain, cidrs []config.ResolvedCIDR) {
+func addCIDRChains(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR, uids UIDs,
+) {
 	groups := groupCIDRsByRule(cidrs)
 
 	for i, group := range groups {
@@ -163,7 +166,7 @@ func addCIDRChains(conn Conn, table *nftables.Table, parentChain *nftables.Chain
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
-							matchUID(uidSandbox),
+							matchUID(uids.Sandbox),
 							matchDstCIDR(excNet),
 							verdictExprs(expr.VerdictReturn),
 						),
@@ -173,7 +176,7 @@ func addCIDRChains(conn Conn, table *nftables.Table, parentChain *nftables.Chain
 						conn.AddRule(&nftables.Rule{
 							Table: table, Chain: chain,
 							Exprs: flatExprs(
-								matchUID(uidSandbox),
+								matchUID(uids.Sandbox),
 								matchPortProto(pp),
 								matchDstCIDR(excNet),
 								verdictExprs(expr.VerdictReturn),
@@ -195,7 +198,7 @@ func addCIDRChains(conn Conn, table *nftables.Table, parentChain *nftables.Chain
 				conn.AddRule(&nftables.Rule{
 					Table: table, Chain: chain,
 					Exprs: flatExprs(
-						matchUID(uidSandbox),
+						matchUID(uids.Sandbox),
 						matchDstCIDR(cidrNet),
 						verdictExprs(expr.VerdictAccept),
 					),
@@ -205,7 +208,7 @@ func addCIDRChains(conn Conn, table *nftables.Table, parentChain *nftables.Chain
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
-							matchUID(uidSandbox),
+							matchUID(uids.Sandbox),
 							matchPortProto(pp),
 							matchDstCIDR(cidrNet),
 							verdictExprs(expr.VerdictAccept),
@@ -227,12 +230,12 @@ func addCIDRChains(conn Conn, table *nftables.Table, parentChain *nftables.Chain
 // bypass Envoy. UDP/SCTP ports get direct ACCEPT; TCP port ranges
 // get direct ACCEPT (Envoy cannot create listeners for arbitrary
 // ranges); TCP single ports are handled by Envoy via NAT REDIRECT.
-func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op config.ResolvedOpenPort) {
+func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op config.ResolvedOpenPort, uids UIDs) {
 	if op.Protocol == protoUDP || op.Protocol == protoSCTP {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				matchL4Proto(protoNum(op.Protocol)),
 				matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
 				verdictExprs(expr.VerdictAccept),
@@ -244,7 +247,7 @@ func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
 				verdictExprs(expr.VerdictAccept),
@@ -263,6 +266,7 @@ func addFQDNPortRules(
 	chain *nftables.Chain,
 	frp config.FQDNRulePorts,
 	ref setRef,
+	uids UIDs,
 ) {
 	for _, fp := range frp.Ports {
 		proto := protoNum(fp.Protocol)
@@ -271,7 +275,7 @@ func addFQDNPortRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				matchCtState(expr.CtStateBitESTABLISHED),
@@ -284,7 +288,7 @@ func addFQDNPortRules(
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNFProto(unix.NFPROTO_IPV4),
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				setLookupDst(ref.set4),
@@ -297,7 +301,7 @@ func addFQDNPortRules(
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNFProto(unix.NFPROTO_IPV6),
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				setLookupDst(ref.set6),
@@ -312,7 +316,7 @@ func addFQDNPortRules(
 func addNATRules(
 	conn Conn, table *nftables.Table, cfg *config.Config,
 	resolvedPorts []int, cidr4, cidr6 []config.ResolvedCIDR,
-	openPortRules []config.ResolvedOpenPort,
+	openPortRules []config.ResolvedOpenPort, uids UIDs,
 ) {
 	if len(resolvedPorts) == 0 && len(cfg.TCPForwards) == 0 {
 		return
@@ -327,8 +331,8 @@ func addNATRules(
 	})
 
 	// 1. CIDR RETURN rules (allowed CIDRs bypass Envoy).
-	addCIDRNATReturn(conn, table, natChain, cidr4)
-	addCIDRNATReturn(conn, table, natChain, cidr6)
+	addCIDRNATReturn(conn, table, natChain, cidr4, uids)
+	addCIDRNATReturn(conn, table, natChain, cidr6, uids)
 
 	// 2. Open TCP single port RETURN (port subsumes FQDN L7
 	// restrictions via OR semantics). Must come before REDIRECT.
@@ -344,7 +348,7 @@ func addNATRules(
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: natChain,
 				Exprs: flatExprs(
-					matchUID(uidSandbox),
+					matchUID(uids.Sandbox),
 					matchL4Proto(unix.IPPROTO_TCP),
 					matchDstPort(port16(p)),
 					verdictExprs(expr.VerdictReturn),
@@ -358,7 +362,7 @@ func addNATRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(p)),
 				redirectToPort(port16(config.ProxyPortBase+p)),
@@ -371,7 +375,7 @@ func addNATRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(fwd.Port)),
 				redirectToPort(port16(config.ProxyPortBase+fwd.Port)),
@@ -382,7 +386,7 @@ func addNATRules(
 
 // addTCPForwardNAT creates a NAT chain with only TCPForward
 // REDIRECT rules (unrestricted mode).
-func addTCPForwardNAT(conn Conn, table *nftables.Table, cfg *config.Config) {
+func addTCPForwardNAT(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
 	if len(cfg.TCPForwards) == 0 {
 		return
 	}
@@ -399,7 +403,7 @@ func addTCPForwardNAT(conn Conn, table *nftables.Table, cfg *config.Config) {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(fwd.Port)),
 				redirectToPort(port16(config.ProxyPortBase+fwd.Port)),
@@ -408,7 +412,7 @@ func addTCPForwardNAT(conn Conn, table *nftables.Table, cfg *config.Config) {
 	}
 }
 
-func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, cidrs []config.ResolvedCIDR) {
+func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, cidrs []config.ResolvedCIDR, uids UIDs) {
 	for _, rule := range cidrs {
 		_, cidrNet, err := net.ParseCIDR(rule.CIDR)
 		if err != nil {
@@ -419,7 +423,7 @@ func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, c
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: chain,
 				Exprs: flatExprs(
-					matchUID(uidSandbox),
+					matchUID(uids.Sandbox),
 					matchDstCIDR(cidrNet),
 					verdictExprs(expr.VerdictReturn),
 				),
@@ -429,7 +433,7 @@ func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, c
 				conn.AddRule(&nftables.Rule{
 					Table: table, Chain: chain,
 					Exprs: flatExprs(
-						matchUID(uidSandbox),
+						matchUID(uids.Sandbox),
 						matchPortProto(pp),
 						matchDstCIDR(cidrNet),
 						verdictExprs(expr.VerdictReturn),

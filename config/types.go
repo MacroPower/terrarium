@@ -399,6 +399,19 @@ type FQDNRulePorts struct {
 	RuleIndex int
 }
 
+// User holds identity and path values for the sandboxed container user.
+// These values are passed from the CLI entrypoint so library packages
+// have no baked-in assumptions.
+type User struct {
+	UID        string
+	GID        string
+	EnvoyUID   string
+	Username   string
+	HomeDir    string
+	HMBin      string
+	ConfigPath string
+}
+
 // FQDNPattern pairs an FQDN selector with its compiled regex for DNS
 // response filtering. Patterns follow Cilium's matchpattern semantics:
 // [FQDNSelector.MatchName] compiles to an exact match, single "*"

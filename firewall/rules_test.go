@@ -12,6 +12,8 @@ import (
 	"go.jacobcolvin.com/terrarium/firewall"
 )
 
+var testUIDs = firewall.UIDs{Sandbox: 1000, Envoy: 999, Root: 0}
+
 func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
 	return &rules
 }
@@ -89,7 +91,7 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 	rec := &ruleRecorder{}
 	cfg := &config.Config{} // nil Egress = unrestricted
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	// Table created.
@@ -126,7 +128,7 @@ func TestApplyRules_UnrestrictedWithLogging(t *testing.T) {
 	rec := &ruleRecorder{}
 	cfg := &config.Config{Logging: true}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	outputRules := rec.rulesForChain("output")
@@ -146,7 +148,7 @@ func TestApplyRules_UnrestrictedWithTCPForwards(t *testing.T) {
 		TCPForwards: []config.TCPForward{{Host: "example.com", Port: 3000}},
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	assert.Contains(t, rec.chainNames(), "nat_output")
@@ -164,7 +166,7 @@ func TestApplyRules_Blocked(t *testing.T) {
 		Egress: egressRules(config.EgressRule{}),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	names := rec.chainNames()
@@ -190,7 +192,7 @@ func TestApplyRules_BlockedWithLogging(t *testing.T) {
 		Logging: true,
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	outputRules := rec.rulesForChain("output")
@@ -223,7 +225,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 		Logging: true,
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	names := rec.chainNames()
@@ -361,7 +363,7 @@ func TestApplyRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	sandboxRules := rec.rulesForChain("sandbox_output")
@@ -400,7 +402,7 @@ func TestApplyRules_FQDNSets(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	// FQDN sets created (v4 + v6).
@@ -449,7 +451,7 @@ func TestApplyRules_FQDNZombieCTOrdering(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	sandboxRules := rec.rulesForChain("sandbox_output")
@@ -495,7 +497,7 @@ func TestApplyRules_UnrestrictedOpenPorts(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	// When HasUnrestrictedOpenPorts(), CIDR chains are skipped.
@@ -539,7 +541,7 @@ func TestApplyRules_OpenTCPSinglePortNATOptimization(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	// NAT should have RETURN for port 443 before REDIRECT.
@@ -579,7 +581,7 @@ func TestApplyRules_TCPForwards(t *testing.T) {
 		},
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	natRules := rec.rulesForChain("nat_output")
@@ -610,7 +612,7 @@ func TestApplyRules_InputChain(t *testing.T) {
 	rec := &ruleRecorder{}
 	cfg := &config.Config{}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	inputRules := rec.rulesForChain("input")
@@ -648,7 +650,7 @@ func TestApplyRules_PerRuleFQDNSetIsolation(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	// Each FQDN rule should get its own pair of sets.
@@ -687,7 +689,7 @@ func TestApplyRules_OpenPortFilterRules(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	sandboxRules := rec.rulesForChain("sandbox_output")
@@ -724,7 +726,7 @@ func TestApplyRules_MultipleRuleCIDRChains(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	// Two separate CIDR chains for two CIDR rules.
@@ -767,7 +769,7 @@ func TestApplyRules_CIDRWithPorts(t *testing.T) {
 		),
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
 	cidrRules := rec.rulesForChain("cidr_0")

@@ -18,7 +18,7 @@ import (
 // nftables ruleset (table, chains, sets, rules), and applies
 // atomically via Flush. A single inet-family table replaces all four
 // iptables tables (nat/filter x IPv4/IPv6).
-func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config) error {
+func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) error {
 	conn.DelTable(&nftables.Table{
 		Name:   tableName,
 		Family: nftables.TableFamilyINet,
@@ -36,11 +36,11 @@ func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config) error {
 
 	switch {
 	case cfg.IsEgressUnrestricted():
-		addUnrestrictedRules(conn, table, cfg)
+		addUnrestrictedRules(conn, table, cfg, uids)
 	case cfg.IsEgressBlocked():
-		addBlockedRules(conn, table, cfg)
+		addBlockedRules(conn, table, cfg, uids)
 	default:
-		err := addFilterRules(conn, table, cfg)
+		err := addFilterRules(conn, table, cfg, uids)
 		if err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func UpdateFQDNSet(conn *nftables.Conn, setName string, ips []net.IP, ttl time.D
 	return nil
 }
 
-func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config) {
+func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
 	addInputChain(conn, table)
 
 	policy := nftables.ChainPolicyDrop
@@ -126,7 +126,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config) 
 	})
 
 	addOutputBaseRules(conn, table, outputChain)
-	addOutputEstablishedAndICMP(conn, table, outputChain)
+	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
 	if cfg.Logging {
 		conn.AddRule(&nftables.Rule{
@@ -141,10 +141,10 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config) 
 	})
 
 	// NAT: TCPForward REDIRECTs only.
-	addTCPForwardNAT(conn, table, cfg)
+	addTCPForwardNAT(conn, table, cfg, uids)
 }
 
-func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config) {
+func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
 	addInputChain(conn, table)
 
 	policy := nftables.ChainPolicyDrop
@@ -158,7 +158,7 @@ func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config) {
 	})
 
 	addOutputBaseRules(conn, table, outputChain)
-	addOutputEstablishedAndICMP(conn, table, outputChain)
+	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
 	if cfg.Logging {
 		conn.AddRule(&nftables.Rule{
@@ -178,7 +178,7 @@ type setRef struct {
 	set4, set6 *nftables.Set
 }
 
-func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config) error {
+func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) error {
 	addInputChain(conn, table)
 
 	resolvedPorts := cfg.ResolvePorts()
@@ -242,12 +242,12 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config) error 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: outputChain,
 		Exprs: flatExprs(
-			matchUID(uidSandbox),
+			matchUID(uids.Sandbox),
 			verdictExprs(expr.VerdictJump, "sandbox_output"),
 		),
 	})
 
-	addOutputEstablishedAndICMP(conn, table, outputChain)
+	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
 	if cfg.Logging {
 		conn.AddRule(&nftables.Rule{
@@ -263,7 +263,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config) error 
 
 	// sandbox_output chain rules.
 	if !unrestricted {
-		addCIDRChains(conn, table, sandboxChain, allCIDRs)
+		addCIDRChains(conn, table, sandboxChain, allCIDRs, uids)
 	}
 
 	// Envoy ACCEPT: Envoy can reach any IP (domain allowlist
@@ -271,7 +271,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config) error 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: sandboxChain,
 		Exprs: flatExprs(
-			matchUID(uidEnvoy),
+			matchUID(uids.Envoy),
 			verdictExprs(expr.VerdictAccept),
 		),
 	})
@@ -283,20 +283,20 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config) error 
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: sandboxChain,
 			Exprs: flatExprs(
-				matchUID(uidSandbox),
+				matchUID(uids.Sandbox),
 				verdictExprs(expr.VerdictAccept),
 			),
 		})
 	} else {
 		// Open port rules.
 		for _, op := range openPortRules {
-			addOpenPortRule(conn, table, sandboxChain, op)
+			addOpenPortRule(conn, table, sandboxChain, op, uids)
 		}
 
 		// FQDN non-TCP port rules.
 		for _, frp := range fqdnRulePorts {
 			ref := fqdnSets[frp.RuleIndex]
-			addFQDNPortRules(conn, table, sandboxChain, frp, ref)
+			addFQDNPortRules(conn, table, sandboxChain, frp, ref, uids)
 		}
 	}
 
@@ -313,7 +313,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config) error 
 	})
 
 	// NAT chain.
-	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, openPortRules)
+	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, openPortRules, uids)
 
 	return nil
 }

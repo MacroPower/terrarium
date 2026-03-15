@@ -7,13 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"go.jacobcolvin.com/terrarium/config"
 )
 
 // SetupDev creates fish history symlinks, persists claude.json to the
 // cache volume, disables atuin systemd socket activation, and ensures the
 // atuin data directory exists. Intended for build-time container setup.
-func SetupDev() error {
-	return SetupDevWithPaths(HomeDir, "/commandhistory", "/claude-state")
+func SetupDev(usr config.User) error {
+	return SetupDevWithPaths(usr.HomeDir, "/commandhistory", "/claude-state")
 }
 
 // SetupDevWithPaths is the parameterized form of [SetupDev], accepting
@@ -95,8 +97,8 @@ func SetupDevWithPaths(homeDir, historyDir, claudeStateDir string) error {
 // SetupUser creates the non-root terrarium user and group by appending
 // entries to /etc/passwd and /etc/group, then recursively chowns the
 // home directory. The nix image lacks useradd/adduser.
-func SetupUser() error {
-	return SetupUserWithPaths("/etc/passwd", "/etc/group", Username, UID, GID, HomeDir)
+func SetupUser(usr config.User) error {
+	return SetupUserWithPaths("/etc/passwd", "/etc/group", usr.Username, usr.UID, usr.GID, usr.HomeDir)
 }
 
 // SetupUserWithPaths is the parameterized form of [SetupUser], accepting

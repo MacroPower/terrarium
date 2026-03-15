@@ -4,12 +4,13 @@ import "github.com/google/nftables"
 
 const tableName = "terrarium"
 
-// UID/GID as uint32 for nftables expressions.
-const (
-	uidSandbox uint32 = 1000
-	uidEnvoy   uint32 = 999
-	uidRoot    uint32 = 0
-)
+// UIDs holds the numeric user IDs used in nftables UID match
+// expressions. Values are passed from the CLI entrypoint.
+type UIDs struct {
+	Sandbox uint32
+	Envoy   uint32
+	Root    uint32
+}
 
 const (
 	protoTCP  = "tcp"

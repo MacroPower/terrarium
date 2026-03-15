@@ -15,7 +15,28 @@ import (
 	"go.jacobcolvin.com/x/log"
 
 	"go.jacobcolvin.com/terrarium"
+	"go.jacobcolvin.com/terrarium/config"
 )
+
+const (
+	uid        = "1000"
+	gid        = "1000"
+	envoyUID   = "999"
+	username   = "dev"
+	homeDir    = "/home/dev"
+	hmBin      = homeDir + "/.local/state/home-manager/gcroots/current-home/home-path/bin"
+	configPath = "/etc/terrarium/config.yaml"
+)
+
+var usr = config.User{
+	UID:        uid,
+	GID:        gid,
+	EnvoyUID:   envoyUID,
+	Username:   username,
+	HomeDir:    homeDir,
+	HMBin:      hmBin,
+	ConfigPath: configPath,
+}
 
 func main() {
 	logCfg := log.NewConfig()
@@ -50,7 +71,7 @@ func main() {
 			Short: "Generate iptables/envoy configs from YAML",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				_, err := terrarium.Generate(cmd.Context(), terrarium.ConfigPath)
+				_, err := terrarium.Generate(cmd.Context(), usr.ConfigPath)
 				return err
 			},
 		},
@@ -59,7 +80,7 @@ func main() {
 			Short: "Fish history symlinks, claude.json persistence, atuin config",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return terrarium.SetupDev()
+				return terrarium.SetupDev(usr)
 			},
 		},
 		&cobra.Command{
@@ -67,7 +88,7 @@ func main() {
 			Short: "Create non-root user in /etc/passwd and /etc/group",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return terrarium.SetupUser()
+				return terrarium.SetupUser(usr)
 			},
 		},
 		&cobra.Command{
@@ -75,7 +96,7 @@ func main() {
 			Short: "Load firewall, start services, drop privileges, exec cmd",
 			Args:  cobra.ArbitraryArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return terrarium.Init(cmd.Context(), args)
+				return terrarium.Init(cmd.Context(), usr, args)
 			},
 		},
 	)
