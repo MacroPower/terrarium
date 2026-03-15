@@ -264,7 +264,21 @@ terrarium init -- sleep infinity &
 TERRARIUM_PID=$!
 
 # Wait for init to apply nftables rules (no Envoy to wait for).
-sleep 3
+# Poll for the nftables table to appear instead of a fixed sleep.
+ready=0
+for i in $(seq 1 30); do
+    if nft list table inet terrarium >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+    echo "FAIL: terrarium nftables rules did not appear within 30 seconds"
+    kill $TERRARIUM_PID 2>/dev/null || true
+    exit 1
+fi
 
 ` + assertions + scriptSuffix
 }
