@@ -3,25 +3,30 @@ package envoy
 // Envoy bootstrap config types. These model the subset of the Envoy v3
 // API used by terrarium's transparent SNI-filtering proxy.
 
-type bootstrap struct {
-	OverloadManager overloadManager `yaml:"overload_manager"`
-	StaticResources staticResources `yaml:"static_resources"`
+// Bootstrap is the top-level Envoy bootstrap configuration.
+type Bootstrap struct {
+	OverloadManager OverloadManager `yaml:"overload_manager"`
+	StaticResources StaticResources `yaml:"static_resources"`
 }
 
-type overloadManager struct {
-	ResourceMonitors []namedTyped `yaml:"resource_monitors"`
+// OverloadManager configures Envoy's overload manager resource monitors.
+type OverloadManager struct {
+	ResourceMonitors []NamedTyped `yaml:"resource_monitors"`
 }
 
-type staticResources struct {
-	Listeners []listener `yaml:"listeners"`
+// StaticResources holds the static listener and cluster definitions.
+type StaticResources struct {
+	Listeners []Listener `yaml:"listeners"`
 	Clusters  []cluster  `yaml:"clusters"`
 }
 
-type listener struct {
+// Listener models an Envoy listener with filter chains and optional
+// listener-level filters.
+type Listener struct {
 	DefaultFilterChain *filterChain  `yaml:"default_filter_chain,omitempty"`
 	Name               string        `yaml:"name"`
 	Address            address       `yaml:"address"`
-	ListenerFilters    []namedTyped  `yaml:"listener_filters,omitempty"`
+	ListenerFilters    []NamedTyped  `yaml:"listener_filters,omitempty"`
 	FilterChains       []filterChain `yaml:"filter_chains"`
 }
 
@@ -34,7 +39,8 @@ type socketAddress struct {
 	PortValue int    `yaml:"port_value"`
 }
 
-type namedTyped struct {
+// NamedTyped is a generic Envoy config element with a name and typed_config.
+type NamedTyped struct {
 	TypedConfig any    `yaml:"typed_config"`
 	Name        string `yaml:"name"`
 }
@@ -97,7 +103,8 @@ type typeOnly struct {
 	AtType string `yaml:"@type"`
 }
 
-type downstreamConnectionsConfig struct {
+// DownstreamConnectionsConfig limits the number of active downstream connections.
+type DownstreamConnectionsConfig struct {
 	AtType                         string `yaml:"@type"`
 	MaxActiveDownstreamConnections int    `yaml:"max_active_downstream_connections"`
 }

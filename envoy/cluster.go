@@ -16,7 +16,10 @@ func hasMITMRules(rules []config.ResolvedRule) bool {
 	return false
 }
 
-func buildClusters(rules []config.ResolvedRule, tcpForwards []config.TCPForward, caBundlePath string) []cluster {
+// BuildClusters creates the static cluster definitions for the Envoy
+// bootstrap config, including dynamic forward proxy, MITM, and TCP
+// forward clusters as needed.
+func BuildClusters(rules []config.ResolvedRule, tcpForwards []config.TCPForward, caBundlePath string) []cluster {
 	// Static cluster with no endpoints used as the upstream for the
 	// default filter chain on TLS listeners. Connections routed here
 	// are immediately reset (no healthy upstream), which is the desired

@@ -7,7 +7,9 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 )
 
-func buildTLSListener(
+// BuildTLSListener creates a TLS listener that matches connections by
+// SNI, with passthrough, wildcard RBAC, and MITM filter chains.
+func BuildTLSListener(
 	name string,
 	listenPort, upstreamPort int,
 	statPrefix string,
@@ -15,7 +17,7 @@ func buildTLSListener(
 	open bool,
 	accessLog []AccessLog,
 	certsDir string,
-) listener {
+) Listener {
 	var (
 		passthroughDomains []string
 		mitmRules          []config.ResolvedRule
@@ -91,13 +93,13 @@ func buildTLSListener(
 	// that should be visible.
 	defaultChain := buildDefaultRejectFilterChain(statPrefix)
 
-	return listener{
+	return Listener{
 		Name: name,
 		Address: address{SocketAddress: socketAddress{
 			Address: "127.0.0.1", PortValue: listenPort,
 		}},
 		DefaultFilterChain: &defaultChain,
-		ListenerFilters: []namedTyped{{
+		ListenerFilters: []NamedTyped{{
 			Name: "envoy.filters.listener.tls_inspector",
 			TypedConfig: typeOnly{
 				AtType: "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector",
@@ -107,7 +109,9 @@ func buildTLSListener(
 	}
 }
 
-func buildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog []AccessLog) listener {
+// BuildHTTPForwardListener creates an HTTP listener that forwards
+// requests based on Host header virtual host matching.
+func BuildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog []AccessLog) Listener {
 	vhosts, wildcardDomains, exactDomains := buildHTTPVirtualHosts(rules, "dynamic_forward_proxy_cluster")
 
 	// Envoy allows only one virtual host with Domains: ["*"] per route
@@ -159,7 +163,7 @@ func buildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog 
 		httpFilters = append([]filter{rbacFilter}, httpFilters...)
 	}
 
-	return listener{
+	return Listener{
 		Name: "http_forward",
 		Address: address{SocketAddress: socketAddress{
 			Address: "127.0.0.1", PortValue: 15080,
@@ -188,13 +192,15 @@ func buildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog 
 	}
 }
 
-func buildTCPForwardListener(
+// BuildTCPForwardListener creates a plain TCP proxy listener that
+// forwards all connections to the named cluster.
+func BuildTCPForwardListener(
 	name string,
 	listenPort int,
 	clusterName string,
 	accessLog []AccessLog,
-) listener {
-	return listener{
+) Listener {
+	return Listener{
 		Name: name,
 		Address: address{SocketAddress: socketAddress{
 			Address: "127.0.0.1", PortValue: listenPort,
