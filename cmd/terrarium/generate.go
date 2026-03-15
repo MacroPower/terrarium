@@ -57,7 +57,7 @@ func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
 		certsDir = usr.CertsDir
 	}
 
-	caBundlePath := findCABundle()
+	caBundlePath := certs.FindCABundle()
 	envoyConf, err := GenerateEnvoyFromConfig(cfg, certsDir, caBundlePath)
 	if err != nil {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
@@ -184,29 +184,4 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 	}
 
 	return buf.String(), nil
-}
-
-// findCABundle returns the path to the system CA certificate bundle.
-// Checks SSL_CERT_FILE and NIX_SSL_CERT_FILE env vars first, then
-// well-known filesystem paths.
-func findCABundle() string {
-	candidates := []string{
-		os.Getenv("SSL_CERT_FILE"),
-		os.Getenv("NIX_SSL_CERT_FILE"),
-		"/etc/ssl/certs/ca-certificates.crt",
-		"/etc/ssl/certs/ca-bundle.crt",
-		"/etc/pki/tls/certs/ca-bundle.crt",
-	}
-	for _, c := range candidates {
-		if c == "" {
-			continue
-		}
-
-		_, err := os.Stat(c) //nolint:gosec // G703: paths are hardcoded candidates.
-		if err == nil {
-			return c
-		}
-	}
-
-	return ""
 }

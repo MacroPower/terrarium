@@ -17,9 +17,11 @@ import (
 
 	"github.com/google/nftables"
 
+	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/firewall"
+	"go.jacobcolvin.com/terrarium/sysctl"
 )
 
 // ExitError carries a process exit code through the error return path
@@ -79,7 +81,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	upstream := ParseUpstreamDNS(string(resolvData))
 
 	// Generate configs at runtime if not pre-baked. The parsed config
-	// is returned so we can reuse it below without re-parsing (ISSUE-71).
+	// is returned so we can reuse it below without re-parsing.
 	var cfg *config.Config
 
 	_, err = os.Stat(usr.EnvoyConfigPath)
@@ -162,10 +164,11 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	// applied regardless of IPv6 stack availability (they simply
 	// never match if IPv6 is disabled). Keep defense-in-depth:
 	// disable IPv6 via sysctl if it appears unsupported.
-	ipv6Disabled := verifyIPv6State(ctx)
+	sys := sysctl.New()
+	ipv6Disabled := verifyIPv6State(ctx, sys)
 	if ipv6Disabled {
 		slog.WarnContext(ctx, "IPv6 not available, disabling")
-		disableIPv6(ctx)
+		disableIPv6(ctx, sys)
 	}
 
 	// Create a separate nftables connection for the DNS proxy to
@@ -186,7 +189,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	}
 
 	// Shut down DNS proxy on error return so goroutines and listeners
-	// do not leak (ISSUE-43).
+	// do not leak.
 	var dnsProxyCleanedUp bool
 
 	defer func() {
@@ -230,7 +233,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		return fmt.Errorf("closing temp resolv.conf: %w", closeErr)
 	}
 
-	umountErr := exec.CommandContext(ctx, "umount", "/etc/resolv.conf").Run()
+	umountErr := syscall.Unmount("/etc/resolv.conf", 0)
 	if umountErr != nil {
 		slog.DebugContext(ctx, "unmounting resolv.conf", slog.Any("err", umountErr))
 	}
@@ -281,11 +284,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	dnsProxyCleanedUp = true
 
 	// Prepare privilege drop.
-	writeErr := os.WriteFile(
-		"/proc/sys/net/ipv4/ping_group_range",
-		[]byte("0 "+usr.UID),
-		0o644,
-	)
+	writeErr := sys.Write("0 "+usr.UID, "net", "ipv4", "ping_group_range")
 	if writeErr != nil {
 		slog.DebugContext(ctx, "setting ping group range", slog.Any("err", writeErr))
 	}
@@ -371,18 +370,18 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 // shutdown performs the full cleanup sequence in the correct order:
 // Envoy first (with drain wait), then DNS proxy, then nftables.
 // Stopping Envoy before DNS ensures in-flight requests can still
-// resolve during Envoy's drain period (ISSUE-52).
+// resolve during Envoy's drain period.
 func shutdown(
 	ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy,
 	conn firewall.Conn, drainTimeout time.Duration,
 ) {
-	// Stop Envoy first so DNS remains available during drain (ISSUE-52).
+	// Stop Envoy first so DNS remains available during drain.
 	if envoyCmd != nil && envoyCmd.Process != nil {
 		err := envoyCmd.Process.Signal(syscall.SIGTERM)
 		if err != nil {
 			slog.DebugContext(ctx, "stopping envoy", slog.Any("err", err))
 		} else {
-			// Wait for Envoy to exit gracefully (ISSUE-51).
+			// Wait for Envoy to exit gracefully.
 			envoyDone := make(chan struct{})
 
 			go func() {
@@ -411,7 +410,7 @@ func shutdown(
 	}
 
 	// Delete the nftables table so a restart in the same network
-	// namespace does not fail on pre-existing resources (ISSUE-53).
+	// namespace does not fail on pre-existing resources.
 	if conn != nil {
 		err := firewall.Cleanup(ctx, conn)
 		if err != nil {
@@ -421,8 +420,7 @@ func shutdown(
 }
 
 // installCA copies terrarium CA certificate into the system trust
-// store and runs update-ca-certificates. Falls back to direct bundle
-// injection when update-ca-certificates is unavailable.
+// store and appends it to the system CA bundle.
 func installCA(ctx context.Context, caCertPath string) error {
 	trustDest := "/usr/local/share/ca-certificates/terrarium-ca.crt"
 
@@ -431,33 +429,26 @@ func installCA(ctx context.Context, caCertPath string) error {
 		return fmt.Errorf("installing CA cert: %w", err)
 	}
 
-	err = exec.CommandContext(ctx, "update-ca-certificates").Run()
+	err = certs.InstallToBundle(caCertPath)
 	if err != nil {
-		slog.WarnContext(ctx, "update-ca-certificates not available, appending to CA bundle",
+		slog.WarnContext(ctx, "installing CA to bundle",
 			slog.Any("err", err),
 		)
-
-		err = installCAToBundle(caCertPath)
-		if err != nil {
-			slog.WarnContext(ctx, "installing CA to bundle",
-				slog.Any("err", err),
-			)
-		}
 	}
 
 	return nil
 }
 
-// disableIPv6 attempts to disable IPv6 on all interfaces via sysctl.
+// disableIPv6 attempts to disable IPv6 on all interfaces via procfs.
 // Failures are logged but not returned because some kernels do not
 // support the sysctl knobs.
-func disableIPv6(ctx context.Context) {
-	err := exec.CommandContext(ctx, "sysctl", "-w", "net.ipv6.conf.all.disable_ipv6=1").Run()
+func disableIPv6(ctx context.Context, sys *sysctl.Sysctl) {
+	err := sys.Enable("net", "ipv6", "conf", "all", "disable_ipv6")
 	if err != nil {
 		slog.DebugContext(ctx, "disabling IPv6 on all interfaces", slog.Any("err", err))
 	}
 
-	err = exec.CommandContext(ctx, "sysctl", "-w", "net.ipv6.conf.default.disable_ipv6=1").Run()
+	err = sys.Enable("net", "ipv6", "conf", "default", "disable_ipv6")
 	if err != nil {
 		slog.DebugContext(ctx, "disabling IPv6 on default interface", slog.Any("err", err))
 	}
@@ -465,17 +456,15 @@ func disableIPv6(ctx context.Context) {
 
 // verifyIPv6State checks whether IPv6 is available. Returns true when
 // IPv6 appears disabled (sysctl flag set to 1 or unreadable).
-func verifyIPv6State(ctx context.Context) bool {
-	disabled, err := os.ReadFile(
-		"/proc/sys/net/ipv6/conf/all/disable_ipv6",
-	)
+func verifyIPv6State(ctx context.Context, sys *sysctl.Sysctl) bool {
+	val, err := sys.Read("net", "ipv6", "conf", "all", "disable_ipv6")
 	if err != nil {
 		slog.DebugContext(ctx, "reading IPv6 disable flag", slog.Any("err", err))
 
 		return true
 	}
 
-	return strings.TrimSpace(string(disabled)) == "1"
+	return val == "1"
 }
 
 // firstListenerPort returns the first Envoy listener port to wait on.
@@ -523,127 +512,6 @@ func waitForListener(ctx context.Context, addr string, timeout time.Duration) er
 
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-// installCAToBundle appends a CA certificate to the system CA bundle and
-// ensures SSL_CERT_FILE points to the updated bundle. This handles systems
-// without update-ca-certificates (e.g. NixOS where the bundle is a
-// read-only symlink into the nix store and SSL_CERT_FILE may point there).
-func installCAToBundle(caCertPath string) error {
-	caData, err := os.ReadFile(caCertPath)
-	if err != nil {
-		return fmt.Errorf("reading CA cert: %w", err)
-	}
-
-	// Collect candidate bundle paths: SSL_CERT_FILE first (what TLS
-	// clients actually use), then well-known system paths.
-	var candidates []string
-	if env := os.Getenv("SSL_CERT_FILE"); env != "" {
-		candidates = append(candidates, env)
-	}
-
-	if env := os.Getenv("NIX_SSL_CERT_FILE"); env != "" {
-		candidates = append(candidates, env)
-	}
-
-	candidates = append(candidates,
-		"/etc/ssl/certs/ca-certificates.crt",
-		"/etc/ssl/certs/ca-bundle.crt",
-		"/etc/pki/tls/certs/ca-bundle.crt",
-	)
-
-	// Deduplicate while preserving order.
-	seen := make(map[string]bool)
-
-	var bundles []string
-	for _, c := range candidates {
-		if c != "" && !seen[c] {
-			seen[c] = true
-			bundles = append(bundles, c)
-		}
-	}
-
-	for _, bundle := range bundles {
-		_, statErr := os.Stat(bundle) //nolint:gosec // G703: paths from hardcoded candidates.
-		if statErr != nil {
-			continue
-		}
-
-		err := appendToBundle(bundle, caData)
-		if err != nil {
-			slog.Warn("appending CA to bundle", //nolint:gosec // G706: bundle path from hardcoded candidates.
-				slog.String("bundle", bundle),
-				slog.Any("err", err),
-			)
-
-			continue
-		}
-
-		// Point SSL_CERT_FILE to the writable bundle so child
-		// processes (running as uid 1000) pick it up.
-		envErr := os.Setenv("SSL_CERT_FILE", bundle)
-		if envErr != nil {
-			slog.Debug("setting SSL_CERT_FILE", slog.Any("err", envErr))
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("no system CA bundle found")
-}
-
-// appendToBundle appends caData to the bundle file. If the file is a
-// symlink (e.g. into the read-only nix store), it is replaced with a
-// writable copy first.
-func appendToBundle(bundle string, caData []byte) error {
-	fi, err := os.Lstat(bundle) //nolint:gosec // G703: path from caller.
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", bundle, err)
-	}
-
-	// Replace symlinks with a writable copy.
-	if fi.Mode()&os.ModeSymlink != 0 {
-		existing, err := os.ReadFile(bundle) //nolint:gosec // G703: path from caller.
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", bundle, err)
-		}
-
-		err = os.Remove(bundle) //nolint:gosec // G703: path from caller.
-		if err != nil {
-			return fmt.Errorf("removing symlink %s: %w", bundle, err)
-		}
-
-		err = os.WriteFile(bundle, existing, 0o644) //nolint:gosec // G703: replacing symlink with writable copy.
-		if err != nil {
-			return fmt.Errorf("writing %s: %w", bundle, err)
-		}
-	}
-
-	f, err := os.OpenFile(bundle, os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec // G703: path from caller.
-	if err != nil {
-		return fmt.Errorf("opening %s: %w", bundle, err)
-	}
-
-	_, err = f.Write(append([]byte("\n"), caData...))
-	if err != nil {
-		closeErr := f.Close()
-		if closeErr != nil {
-			//nolint:gosec // G706: bundle path from caller.
-			slog.Debug("closing bundle file after write error",
-				slog.String("path", bundle),
-				slog.Any("err", closeErr),
-			)
-		}
-
-		return fmt.Errorf("appending to %s: %w", bundle, err)
-	}
-
-	err = f.Close()
-	if err != nil {
-		return fmt.Errorf("closing %s: %w", bundle, err)
-	}
-
-	return nil
 }
 
 func mustAtoi(s string) int {
