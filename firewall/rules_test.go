@@ -1,4 +1,4 @@
-package terrarium_test
+package firewall_test
 
 import (
 	"testing"
@@ -8,93 +8,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.jacobcolvin.com/terrarium"
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/firewall"
 )
 
-// ruleRecorder implements [terrarium.nftablesConn] for tests. It
-// records all AddTable/AddChain/AddRule/AddSet/DelTable calls so
-// tests can verify the rule structure without a real kernel.
-type ruleRecorder struct {
-	tables  []*nftables.Table
-	chains  []*nftables.Chain
-	rules   []*nftables.Rule
-	sets    []*nftables.Set
-	deleted []*nftables.Table
-	nextID  uint32
-}
-
-func (r *ruleRecorder) AddTable(t *nftables.Table) *nftables.Table {
-	r.tables = append(r.tables, t)
-	return t
-}
-
-func (r *ruleRecorder) AddChain(c *nftables.Chain) *nftables.Chain {
-	r.chains = append(r.chains, c)
-	return c
-}
-
-func (r *ruleRecorder) AddRule(rule *nftables.Rule) *nftables.Rule {
-	r.rules = append(r.rules, rule)
-	return rule
-}
-
-func (r *ruleRecorder) AddSet(s *nftables.Set, _ []nftables.SetElement) error {
-	r.nextID++
-	s.ID = r.nextID
-	r.sets = append(r.sets, s)
-
-	return nil
-}
-
-func (r *ruleRecorder) DelTable(t *nftables.Table) {
-	r.deleted = append(r.deleted, t)
-}
-
-func (r *ruleRecorder) Flush() error {
-	return nil
-}
-
-func (r *ruleRecorder) chainNames() []string {
-	var names []string
-	for _, c := range r.chains {
-		names = append(names, c.Name)
-	}
-
-	return names
-}
-
-func (r *ruleRecorder) rulesForChain(name string) []*nftables.Rule {
-	var chain *nftables.Chain
-	for _, c := range r.chains {
-		if c.Name == name {
-			chain = c
-			break
-		}
-	}
-
-	if chain == nil {
-		return nil
-	}
-
-	var result []*nftables.Rule
-
-	for _, rule := range r.rules {
-		if rule.Chain == chain {
-			result = append(result, rule)
-		}
-	}
-
-	return result
-}
-
-func (r *ruleRecorder) setNames() []string {
-	var names []string
-	for _, s := range r.sets {
-		names = append(names, s.Name)
-	}
-
-	return names
+func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
+	return &rules
 }
 
 // ruleVerdict returns the VerdictKind for the terminal verdict in a rule.
@@ -164,13 +83,13 @@ func ruleHasLog(r *nftables.Rule) bool {
 	return false
 }
 
-func TestApplyFirewallRules_Unrestricted(t *testing.T) {
+func TestApplyRules_Unrestricted(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
 	cfg := &config.Config{} // nil Egress = unrestricted
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	// Table created.
@@ -201,13 +120,13 @@ func TestApplyFirewallRules_Unrestricted(t *testing.T) {
 	}
 }
 
-func TestApplyFirewallRules_UnrestrictedWithLogging(t *testing.T) {
+func TestApplyRules_UnrestrictedWithLogging(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
 	cfg := &config.Config{Logging: true}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	outputRules := rec.rulesForChain("output")
@@ -219,7 +138,7 @@ func TestApplyFirewallRules_UnrestrictedWithLogging(t *testing.T) {
 	assert.Equal(t, expr.VerdictAccept, v)
 }
 
-func TestApplyFirewallRules_UnrestrictedWithTCPForwards(t *testing.T) {
+func TestApplyRules_UnrestrictedWithTCPForwards(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -227,7 +146,7 @@ func TestApplyFirewallRules_UnrestrictedWithTCPForwards(t *testing.T) {
 		TCPForwards: []config.TCPForward{{Host: "example.com", Port: 3000}},
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	assert.Contains(t, rec.chainNames(), "nat_output")
@@ -237,7 +156,7 @@ func TestApplyFirewallRules_UnrestrictedWithTCPForwards(t *testing.T) {
 	assert.True(t, ruleHasRedir(natRules[0]))
 }
 
-func TestApplyFirewallRules_Blocked(t *testing.T) {
+func TestApplyRules_Blocked(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -245,7 +164,7 @@ func TestApplyFirewallRules_Blocked(t *testing.T) {
 		Egress: egressRules(config.EgressRule{}),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	names := rec.chainNames()
@@ -262,7 +181,7 @@ func TestApplyFirewallRules_Blocked(t *testing.T) {
 	assert.Equal(t, expr.VerdictDrop, v)
 }
 
-func TestApplyFirewallRules_BlockedWithLogging(t *testing.T) {
+func TestApplyRules_BlockedWithLogging(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -271,7 +190,7 @@ func TestApplyFirewallRules_BlockedWithLogging(t *testing.T) {
 		Logging: true,
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	outputRules := rec.rulesForChain("output")
@@ -282,7 +201,7 @@ func TestApplyFirewallRules_BlockedWithLogging(t *testing.T) {
 	assert.Equal(t, expr.VerdictDrop, v)
 }
 
-func TestApplyFirewallRules_RulesMode(t *testing.T) {
+func TestApplyRules_RulesMode(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -304,7 +223,7 @@ func TestApplyFirewallRules_RulesMode(t *testing.T) {
 		Logging: true,
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	names := rec.chainNames()
@@ -428,7 +347,7 @@ func TestApplyFirewallRules_RulesMode(t *testing.T) {
 	assert.True(t, ruleHasLog(sandboxRules[len(sandboxRules)-2]))
 }
 
-func TestApplyFirewallRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
+func TestApplyRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -442,7 +361,7 @@ func TestApplyFirewallRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	sandboxRules := rec.rulesForChain("sandbox_output")
@@ -466,7 +385,7 @@ func TestApplyFirewallRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 		"Envoy ACCEPT must come after CIDR chain jumps")
 }
 
-func TestApplyFirewallRules_FQDNSets(t *testing.T) {
+func TestApplyRules_FQDNSets(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -481,7 +400,7 @@ func TestApplyFirewallRules_FQDNSets(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	// FQDN sets created (v4 + v6).
@@ -515,7 +434,7 @@ func TestApplyFirewallRules_FQDNSets(t *testing.T) {
 	assert.Equal(t, 2, lookupCount, "should have v4 and v6 set lookup rules")
 }
 
-func TestApplyFirewallRules_FQDNZombieCTOrdering(t *testing.T) {
+func TestApplyRules_FQDNZombieCTOrdering(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -530,7 +449,7 @@ func TestApplyFirewallRules_FQDNZombieCTOrdering(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	sandboxRules := rec.rulesForChain("sandbox_output")
@@ -555,7 +474,7 @@ func TestApplyFirewallRules_FQDNZombieCTOrdering(t *testing.T) {
 		"ESTABLISHED must come before Lookup (zombie/CT semantics)")
 }
 
-func TestApplyFirewallRules_UnrestrictedOpenPorts(t *testing.T) {
+func TestApplyRules_UnrestrictedOpenPorts(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -576,7 +495,7 @@ func TestApplyFirewallRules_UnrestrictedOpenPorts(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	// When HasUnrestrictedOpenPorts(), CIDR chains are skipped.
@@ -598,7 +517,7 @@ func TestApplyFirewallRules_UnrestrictedOpenPorts(t *testing.T) {
 		"unrestricted open ports should have blanket UID 1000 ACCEPT")
 }
 
-func TestApplyFirewallRules_OpenTCPSinglePortNATOptimization(t *testing.T) {
+func TestApplyRules_OpenTCPSinglePortNATOptimization(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -620,7 +539,7 @@ func TestApplyFirewallRules_OpenTCPSinglePortNATOptimization(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	// NAT should have RETURN for port 443 before REDIRECT.
@@ -644,7 +563,7 @@ func TestApplyFirewallRules_OpenTCPSinglePortNATOptimization(t *testing.T) {
 		"open TCP port RETURN must precede REDIRECT")
 }
 
-func TestApplyFirewallRules_TCPForwards(t *testing.T) {
+func TestApplyRules_TCPForwards(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -660,7 +579,7 @@ func TestApplyFirewallRules_TCPForwards(t *testing.T) {
 		},
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	natRules := rec.rulesForChain("nat_output")
@@ -685,13 +604,13 @@ func TestApplyFirewallRules_TCPForwards(t *testing.T) {
 		"TCPForward REDIRECT should appear after Envoy REDIRECT")
 }
 
-func TestApplyFirewallRules_InputChain(t *testing.T) {
+func TestApplyRules_InputChain(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
 	cfg := &config.Config{}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	inputRules := rec.rulesForChain("input")
@@ -708,7 +627,7 @@ func TestApplyFirewallRules_InputChain(t *testing.T) {
 	assert.True(t, ruleHasCtState(inputRules[1]))
 }
 
-func TestApplyFirewallRules_PerRuleFQDNSetIsolation(t *testing.T) {
+func TestApplyRules_PerRuleFQDNSetIsolation(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -729,7 +648,7 @@ func TestApplyFirewallRules_PerRuleFQDNSetIsolation(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	// Each FQDN rule should get its own pair of sets.
@@ -740,7 +659,7 @@ func TestApplyFirewallRules_PerRuleFQDNSetIsolation(t *testing.T) {
 	assert.Contains(t, setNames, "sandbox_fqdn6_1")
 }
 
-func TestApplyFirewallRules_OpenPortFilterRules(t *testing.T) {
+func TestApplyRules_OpenPortFilterRules(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -768,7 +687,7 @@ func TestApplyFirewallRules_OpenPortFilterRules(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	sandboxRules := rec.rulesForChain("sandbox_output")
@@ -788,7 +707,7 @@ func TestApplyFirewallRules_OpenPortFilterRules(t *testing.T) {
 	assert.Equal(t, 3, acceptCount)
 }
 
-func TestApplyFirewallRules_MultipleRuleCIDRChains(t *testing.T) {
+func TestApplyRules_MultipleRuleCIDRChains(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -805,7 +724,7 @@ func TestApplyFirewallRules_MultipleRuleCIDRChains(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	// Two separate CIDR chains for two CIDR rules.
@@ -828,7 +747,7 @@ func TestApplyFirewallRules_MultipleRuleCIDRChains(t *testing.T) {
 	assert.Contains(t, jumpChains, "cidr_1")
 }
 
-func TestApplyFirewallRules_CIDRWithPorts(t *testing.T) {
+func TestApplyRules_CIDRWithPorts(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
@@ -848,7 +767,7 @@ func TestApplyFirewallRules_CIDRWithPorts(t *testing.T) {
 		),
 	}
 
-	err := terrarium.ApplyFirewallRules(t.Context(), rec, cfg)
+	err := firewall.ApplyRules(t.Context(), rec, cfg)
 	require.NoError(t, err)
 
 	cidrRules := rec.rulesForChain("cidr_0")

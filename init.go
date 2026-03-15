@@ -19,6 +19,7 @@ import (
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
+	"go.jacobcolvin.com/terrarium/firewall"
 )
 
 // envoyDrainTimeout is the maximum time to wait for Envoy to exit
@@ -162,7 +163,7 @@ func Init(ctx context.Context, args []string) error {
 
 	slog.InfoContext(ctx, "applying nftables firewall rules")
 
-	err = ApplyFirewallRules(ctx, conn, cfg)
+	err = firewall.ApplyRules(ctx, conn, cfg)
 	if err != nil {
 		return fmt.Errorf("applying firewall rules: %w", err)
 	}
@@ -176,7 +177,7 @@ func Init(ctx context.Context, args []string) error {
 			return
 		}
 
-		cleanupErr := CleanupFirewall(ctx, conn)
+		cleanupErr := firewall.Cleanup(ctx, conn)
 		if cleanupErr != nil {
 			slog.DebugContext(ctx, "cleaning up firewall on init failure", slog.Any("err", cleanupErr))
 		}
@@ -202,7 +203,7 @@ func Init(ctx context.Context, args []string) error {
 	// Start DNS proxy with nftables set update function.
 	dnsProxy, err := dnsproxy.Start(ctx, cfg, net.JoinHostPort(upstream, "53"), "127.0.0.1:53", ipv6Disabled,
 		dnsproxy.WithFQDNSetFunc(func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error {
-			return UpdateFQDNSet(dnsConn, setName, ips, ttl)
+			return firewall.UpdateFQDNSet(dnsConn, setName, ips, ttl)
 		}),
 	)
 	if err != nil {
@@ -405,7 +406,7 @@ func Init(ctx context.Context, args []string) error {
 // Envoy first (with drain wait), then DNS proxy, then nftables.
 // Stopping Envoy before DNS ensures in-flight requests can still
 // resolve during Envoy's drain period (ISSUE-52).
-func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy, conn nftablesConn) {
+func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy, conn firewall.Conn) {
 	// Stop Envoy first so DNS remains available during drain (ISSUE-52).
 	if envoyCmd != nil && envoyCmd.Process != nil {
 		err := envoyCmd.Process.Signal(syscall.SIGTERM)
@@ -443,7 +444,7 @@ func Shutdown(ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy,
 	// Delete the nftables table so a restart in the same network
 	// namespace does not fail on pre-existing resources (ISSUE-53).
 	if conn != nil {
-		err := CleanupFirewall(ctx, conn)
+		err := firewall.Cleanup(ctx, conn)
 		if err != nil {
 			slog.DebugContext(ctx, "cleaning up firewall on shutdown", slog.Any("err", err))
 		}

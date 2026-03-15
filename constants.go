@@ -22,9 +22,3 @@ const (
 	// ConfigPath is the path to terrarium YAML config file.
 	ConfigPath = "/etc/terrarium/config.yaml"
 )
-
-const (
-	protoTCP  = "tcp"
-	protoUDP  = "udp"
-	protoSCTP = "sctp"
-)
