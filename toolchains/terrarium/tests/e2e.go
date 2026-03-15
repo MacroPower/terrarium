@@ -886,16 +886,7 @@ tcpForwards:
 	script := assertionScript(`
 assert_allowed "https://target-allow:443/" "tcp-forward: HTTPS to target-allow via FQDN rule"
 assert_network_denied "https://target-deny:443/" "tcp-forward: HTTPS to target-deny denied"
-
-# Verify TCP forward reaches upstream via localhost proxy port.
-response=$(echo "" | curl -s telnet://127.0.0.1:15022 --max-time 5 2>/dev/null) || true
-if echo "$response" | grep -q "TCP_FORWARD_OK"; then
-    echo "PASS: tcp-forward: TCP forward to target-tcp:22 via localhost:15022"
-    PASS=$((PASS + 1))
-else
-    echo "FAIL: tcp-forward: TCP forward to target-tcp:22 via localhost:15022 (got: $response)"
-    FAIL=$((FAIL + 1))
-fi
+assert_tcp_forward "127.0.0.1:15022" "TCP_FORWARD_OK" "tcp-forward: TCP forward to target-tcp:22 via localhost:15022"
 `)
 
 	return runVariants(ctx, "tcp-forward", config, script, bindings)

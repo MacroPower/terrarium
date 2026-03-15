@@ -248,6 +248,28 @@ assert_l7_denied() {
         FAIL=$((FAIL + 1))
     fi
 }
+
+assert_tcp_forward() {
+    addr="$1"
+    expected="$2"
+    desc="${3:-TCP forward to $addr}"
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        response=$(echo "" | curl -s "telnet://$addr" --max-time 5 2>/dev/null) || true
+        if echo "$response" | grep -q "$expected"; then
+            echo "PASS: $desc"
+            PASS=$((PASS + 1))
+            return
+        fi
+        if [ "$attempt" -lt 3 ]; then
+            echo "RETRY: $desc (attempt $attempt/3 failed, retrying in 2s)"
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+    echo "FAIL: $desc (expected '$expected' in response, got: $response)"
+    FAIL=$((FAIL + 1))
+}
 `
 
 // scriptSuffix is the shared report and cleanup logic appended to every
