@@ -101,17 +101,10 @@ func terrariumContainer(
 	return ctr, nil
 }
 
-// assertionScript builds the full assertion script by prepending the shared
-// framework and appending the test-specific assertions. The script starts
-// terrarium init in the background and waits for Envoy readiness before
-// running assertions.
-func assertionScript(assertions string) string {
-	return `#!/bin/sh
-set -e
-
-PASS=0
-FAIL=0
-
+// assertionPreamble contains all shared shell assertion functions used by
+// both Envoy and non-Envoy test scripts. Defining them once avoids
+// duplication and ensures consistent behavior across test variants.
+const assertionPreamble = `
 assert_allowed() {
     url="$1"
     desc="${2:-$url reachable}"
@@ -176,7 +169,32 @@ assert_l7_denied() {
         FAIL=$((FAIL + 1))
     fi
 }
+`
 
+// scriptSuffix is the shared report and cleanup logic appended to every
+// assertion script.
+const scriptSuffix = `
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+
+# Clean up
+kill $TERRARIUM_PID 2>/dev/null || true
+wait $TERRARIUM_PID 2>/dev/null || true
+
+[ "$FAIL" -eq 0 ]
+`
+
+// assertionScript builds the full assertion script by composing the shared
+// preamble, Envoy startup logic, test-specific assertions, and
+// report/cleanup. The script starts terrarium init in the background and
+// waits for Envoy readiness before running assertions.
+func assertionScript(assertions string) string {
+	return `#!/bin/sh
+set -e
+
+PASS=0
+FAIL=0
+` + assertionPreamble + `
 # Start terrarium init in background
 terrarium init -- sleep infinity &
 TERRARIUM_PID=$!
@@ -204,53 +222,21 @@ fi
 # Give Envoy a moment to finish initialization
 sleep 2
 
-` + assertions + `
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-
-# Clean up
-kill $TERRARIUM_PID 2>/dev/null || true
-wait $TERRARIUM_PID 2>/dev/null || true
-
-[ "$FAIL" -eq 0 ]
-`
+` + assertions + scriptSuffix
 }
 
 // assertionScriptNoEnvoy builds an assertion script for scenarios where
 // Envoy is not started (unrestricted, deny-all, CIDR-only rules). These
-// configs have no FQDN ports, so no Envoy listeners are created.
+// configs have no FQDN ports, so no Envoy listeners are created. The script
+// composes the shared preamble with a simpler startup that only waits for
+// nftables rules.
 func assertionScriptNoEnvoy(assertions string) string {
 	return `#!/bin/sh
 set -e
 
 PASS=0
 FAIL=0
-
-assert_allowed() {
-    url="$1"
-    desc="${2:-$url reachable}"
-    if curl -sf -k --max-time 10 "$url" >/dev/null 2>&1; then
-        echo "PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "FAIL: $desc (expected ALLOWED, got DENIED)"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_denied() {
-    url="$1"
-    desc="${2:-$url denied}"
-    if curl -sf -k --max-time 10 "$url" >/dev/null 2>&1; then
-        echo "FAIL: $desc (expected DENIED, got ALLOWED -- SECURITY VIOLATION)"
-        FAIL=$((FAIL + 1))
-    else
-        echo "PASS: $desc"
-        PASS=$((PASS + 1))
-    fi
-}
-
+` + assertionPreamble + `
 # Start terrarium init in background.
 # No FQDN ports = no Envoy, so init finishes quickly.
 terrarium init -- sleep infinity &
@@ -259,16 +245,7 @@ TERRARIUM_PID=$!
 # Wait for init to apply nftables rules (no Envoy to wait for).
 sleep 3
 
-` + assertions + `
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-
-kill $TERRARIUM_PID 2>/dev/null || true
-wait $TERRARIUM_PID 2>/dev/null || true
-
-[ "$FAIL" -eq 0 ]
-`
+` + assertions + scriptSuffix
 }
 
 // runE2ETest executes an assertion script inside a terrarium container with
