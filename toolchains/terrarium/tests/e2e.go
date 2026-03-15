@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"dagger/tests/internal/dagger"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -431,6 +434,11 @@ func runVariants(
 
 			_, err = ctr.Stdout(ctx)
 			if err != nil {
+				var execErr *dagger.ExecError
+				if errors.As(err, &execErr) {
+					return fmt.Errorf("%s/%s: %w\nstdout:\n%s\nstderr:\n%s",
+						testName, variant, err, execErr.Stdout, execErr.Stderr)
+				}
 				return fmt.Errorf("%s/%s: %w", testName, variant, err)
 			}
 
