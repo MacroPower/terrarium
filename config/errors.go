@@ -248,14 +248,36 @@ var (
 		"serverNames wildcard must be a leading *. or **. prefix",
 	)
 
+	// ErrICMPInvalidType is returned when an [ICMPField] Type is not
+	// a valid numeric code (0-255) or recognized CamelCase name for
+	// the specified address family.
+	ErrICMPInvalidType = errors.New("invalid ICMP type")
+
+	// ErrICMPInvalidFamily is returned when an [ICMPField] Family is
+	// not "IPv4", "IPv6", or empty.
+	ErrICMPInvalidFamily = errors.New("invalid ICMP family: must be IPv4, IPv6, or empty")
+
+	// ErrICMPWithToPorts is returned when an [EgressRule] or
+	// [EgressDenyRule] combines icmps with toPorts. Cilium rejects
+	// this combination (rule_validation.go:328-330).
+	ErrICMPWithToPorts = errors.New("icmps and toPorts cannot be combined in the same rule")
+
+	// ErrICMPFieldsTooMany is returned when an [ICMPRule] has more
+	// than 40 fields. Matches Cilium's +kubebuilder:validation:MaxItems=40.
+	ErrICMPFieldsTooMany = errors.New("too many ICMP fields: maximum 40 per ICMP rule")
+
+	// ErrICMPTypeRequired is returned when an [ICMPField] has an
+	// empty Type string.
+	ErrICMPTypeRequired = errors.New("ICMP type must not be empty")
+
 	// ErrDenyRuleL7 is returned when an [EgressDenyRule] contains L7
 	// rules in toPorts. Cilium's egressDeny does not support L7.
 	ErrDenyRuleL7 = errors.New("egressDeny rules do not support L7 rules")
 
 	// ErrDenyRuleEmpty is returned when an [EgressDenyRule] has no
-	// selectors (no toCIDR, toCIDRSet, or toPorts). An empty deny
-	// rule has no effect and is likely a misconfiguration.
-	ErrDenyRuleEmpty = errors.New("egressDeny rule must have at least toCIDR, toCIDRSet, or toPorts")
+	// selectors (no toCIDR, toCIDRSet, toPorts, or icmps). An empty
+	// deny rule has no effect and is likely a misconfiguration.
+	ErrDenyRuleEmpty = errors.New("egressDeny rule must have at least toCIDR, toCIDRSet, toPorts, or icmps")
 
 	// ErrDenyEntitiesMixedL3 is returned when an [EgressDenyRule]
 	// combines toEntities with another L3 selector (toCIDR or

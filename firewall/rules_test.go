@@ -1040,3 +1040,121 @@ func TestApplyRules_CIDRWithPorts(t *testing.T) {
 
 	assert.Equal(t, 2, acceptCount)
 }
+
+func TestApplyRules_ICMPOnly(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ICMPs: []config.ICMPRule{{
+				Fields: []config.ICMPField{
+					{Family: "IPv4", Type: "8"},
+					{Family: "IPv6", Type: "128"},
+				},
+			}},
+		}),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// ICMP rules should appear in terrarium_output chain.
+	outputRules := rec.rulesForChain("terrarium_output")
+
+	var icmpAccepts int
+	for _, r := range outputRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictAccept && ruleHasPayload(r) {
+			icmpAccepts++
+		}
+	}
+
+	// Two ICMP ACCEPTs: one IPv4 type 8, one IPv6 type 128.
+	assert.Equal(t, 2, icmpAccepts)
+}
+
+func TestApplyRules_DenyICMP(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	denyRules := []config.EgressDenyRule{{
+		ICMPs: []config.ICMPRule{{
+			Fields: []config.ICMPField{
+				{Family: "IPv4", Type: "8"},
+			},
+		}},
+	}}
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToCIDR: []string{"10.0.0.0/8"},
+		}),
+		EgressDeny: &denyRules,
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// Deny ICMP rules appear in terrarium_output chain as DROPs.
+	outputRules := rec.rulesForChain("terrarium_output")
+
+	var icmpDrops int
+	for _, r := range outputRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictDrop && ruleHasPayload(r) {
+			icmpDrops++
+		}
+	}
+
+	assert.Equal(t, 1, icmpDrops)
+}
+
+func TestApplyRules_ICMPWithCIDR(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToCIDR: []string{"10.0.0.0/8"},
+				ICMPs: []config.ICMPRule{{
+					Fields: []config.ICMPField{
+						{Family: "IPv4", Type: "8"},
+					},
+				}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// CIDR chain created for the CIDR part.
+	cidrRules := rec.rulesForChain("cidr_0")
+	assert.NotEmpty(t, cidrRules, "CIDR chain should be created")
+
+	// ICMP ACCEPT in terrarium_output.
+	outputRules := rec.rulesForChain("terrarium_output")
+
+	var icmpAccepts int
+	for _, r := range outputRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictAccept && ruleHasPayload(r) {
+			icmpAccepts++
+		}
+	}
+
+	assert.Equal(t, 1, icmpAccepts)
+}
+
+// ruleHasPayload reports whether a rule contains a Payload expression
+// (used by ICMP type matching).
+func ruleHasPayload(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if _, ok := e.(*expr.Payload); ok {
+			return true
+		}
+	}
+
+	return false
+}

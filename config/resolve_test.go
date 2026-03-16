@@ -1929,3 +1929,129 @@ func TestResolveDenyPortOnlyRules(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveICMPRules(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		want []config.ResolvedICMP
+	}{
+		"single IPv4 ICMP rule": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{Family: "IPv4", Type: 8, RuleIndex: 0},
+			},
+		},
+		"mixed IPv4 and IPv6": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+							{Family: "IPv6", Type: "128"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{Family: "IPv4", Type: 8, RuleIndex: 0},
+				{Family: "IPv6", Type: 128, RuleIndex: 0},
+			},
+		},
+		"multiple rules": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "8"},
+							},
+						}},
+					},
+					config.EgressRule{
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "0"},
+							},
+						}},
+					},
+				),
+			},
+			want: []config.ResolvedICMP{
+				{Family: "IPv4", Type: 8, RuleIndex: 0},
+				{Family: "IPv4", Type: 0, RuleIndex: 1},
+			},
+		},
+		"no ICMP rules": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+				}),
+			},
+			want: nil,
+		},
+		"nil egress": {
+			cfg:  &config.Config{},
+			want: nil,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.cfg.ResolveICMPRules()
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestResolveDenyICMPRules(t *testing.T) {
+	t.Parallel()
+
+	denyRules := func(rules ...config.EgressDenyRule) *[]config.EgressDenyRule {
+		return &rules
+	}
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		want []config.ResolvedICMP
+	}{
+		"deny ICMP rule": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{Family: "IPv4", Type: 8, RuleIndex: 0},
+			},
+		},
+		"no deny rules": {
+			cfg:  &config.Config{},
+			want: nil,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.cfg.ResolveDenyICMPRules()
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

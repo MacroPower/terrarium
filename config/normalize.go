@@ -2,6 +2,7 @@ package config
 
 import (
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -60,6 +61,8 @@ func normalizeEgressRule(c *Config, i int) {
 	for j := range rule.ToCIDR {
 		rule.ToCIDR[j] = normalizeCIDR(rule.ToCIDR[j])
 	}
+
+	normalizeICMPRules(rule.ICMPs)
 }
 
 // normalizeEgressDenyRule mutates an egress deny rule in place to
@@ -78,6 +81,29 @@ func normalizeEgressDenyRule(c *Config, i int) {
 
 	for j := range rule.ToCIDR {
 		rule.ToCIDR[j] = normalizeCIDR(rule.ToCIDR[j])
+	}
+
+	normalizeICMPRules(rule.ICMPs)
+}
+
+// normalizeICMPRules normalizes ICMP rule fields in place: family
+// is case-normalized to "IPv4"/"IPv6", and CamelCase type names are
+// resolved to numeric strings for downstream consistency.
+func normalizeICMPRules(icmps []ICMPRule) {
+	for i := range icmps {
+		for j := range icmps[i].Fields {
+			f := &icmps[i].Fields[j]
+
+			normalized, err := normalizeICMPFamily(f.Family)
+			if err == nil {
+				f.Family = normalized
+			}
+
+			code, err := resolveICMPType(f.Family, f.Type)
+			if err == nil {
+				f.Type = strconv.FormatUint(uint64(code), 10)
+			}
+		}
 	}
 }
 

@@ -664,6 +664,63 @@ func addManglePreRoutingChain(conn Conn, table *nftables.Table, port uint16) {
 	})
 }
 
+// addDenyICMPRules emits DROP rules on the parent chain for deny
+// ICMP entries. Each entry matches UID + nfproto + l4proto + ICMP
+// type -> DROP. Deny ICMP rules are evaluated before allow ICMP
+// rules (deny precedence).
+func addDenyICMPRules(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	icmps []config.ResolvedICMP, uids UIDs,
+) {
+	for _, icmp := range icmps {
+		nfProto, l4Proto := icmpProtos(icmp.Family)
+
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: parentChain,
+			Exprs: flatExprs(
+				matchUID(uids.Terrarium),
+				matchNFProto(nfProto),
+				matchL4Proto(l4Proto),
+				matchICMPType(icmp.Type),
+				verdictExprs(expr.VerdictDrop),
+			),
+		})
+	}
+}
+
+// addICMPRules emits ACCEPT rules on the parent chain for allow
+// ICMP entries. Each entry matches UID + nfproto + l4proto + ICMP
+// type -> ACCEPT.
+func addICMPRules(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	icmps []config.ResolvedICMP, uids UIDs,
+) {
+	for _, icmp := range icmps {
+		nfProto, l4Proto := icmpProtos(icmp.Family)
+
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: parentChain,
+			Exprs: flatExprs(
+				matchUID(uids.Terrarium),
+				matchNFProto(nfProto),
+				matchL4Proto(l4Proto),
+				matchICMPType(icmp.Type),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
+}
+
+// icmpProtos returns the nfproto and l4proto byte values for a given
+// ICMP address family string.
+func icmpProtos(family string) (byte, byte) {
+	if family == config.FamilyIPv6 {
+		return unix.NFPROTO_IPV6, unix.IPPROTO_ICMPV6
+	}
+
+	return unix.NFPROTO_IPV4, unix.IPPROTO_ICMP
+}
+
 // groupCIDRsByRule groups resolved CIDRs by their RuleIndex,
 // preserving order of first appearance.
 func groupCIDRsByRule(cidrs []config.ResolvedCIDR) [][]config.ResolvedCIDR {

@@ -129,6 +129,11 @@ func (c *Config) Validate() error {
 		if err != nil {
 			return err
 		}
+
+		err = validateICMPRules(rule.ICMPs, rule.ToPorts, "rule", i)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Validate egressDeny rules.
@@ -220,7 +225,6 @@ func validateUnsupportedSelectors(rule EgressRule, ruleIdx int) error {
 		{"toNodes", len(rule.ToNodes) > 0},
 		{"toGroups", len(rule.ToGroups) > 0},
 		{"toRequires", len(rule.ToRequires) > 0},
-		{"icmps", len(rule.ICMPs) > 0},
 		{"authentication", rule.Authentication != nil},
 	}
 
@@ -228,6 +232,83 @@ func validateUnsupportedSelectors(rule EgressRule, ruleIdx int) error {
 		if f.set {
 			return fmt.Errorf(
 				"%w: rule %d has %s, which is not implemented by terrarium",
+				ErrUnsupportedSelector, ruleIdx, f.name,
+			)
+		}
+	}
+
+	return nil
+}
+
+// maxICMPFields is the maximum number of field entries allowed in a
+// single [ICMPRule]. Matches Cilium's +kubebuilder:validation:MaxItems=40
+// on ICMPRule.Fields.
+const maxICMPFields = 40
+
+// validateICMPRules checks that ICMP rules are well-formed: valid
+// families, valid type names or codes, no mixing with toPorts, and
+// field count limits.
+func validateICMPRules(icmps []ICMPRule, toPorts []PortRule, prefix string, ruleIdx int) error {
+	if len(icmps) == 0 {
+		return nil
+	}
+
+	// Cilium rejects combining icmps with toPorts on the same rule
+	// (rule_validation.go:328-330).
+	if len(toPorts) > 0 {
+		return fmt.Errorf("%w: %s %d", ErrICMPWithToPorts, prefix, ruleIdx)
+	}
+
+	for i, icmp := range icmps {
+		if len(icmp.Fields) > maxICMPFields {
+			return fmt.Errorf("%w: %s %d icmps[%d] has %d fields",
+				ErrICMPFieldsTooMany, prefix, ruleIdx, i, len(icmp.Fields))
+		}
+
+		for j, f := range icmp.Fields {
+			if f.Type == "" {
+				return fmt.Errorf("%w: %s %d icmps[%d] fields[%d]",
+					ErrICMPTypeRequired, prefix, ruleIdx, i, j)
+			}
+
+			family, err := normalizeICMPFamily(f.Family)
+			if err != nil {
+				return fmt.Errorf("%w: %s %d icmps[%d] fields[%d] family %q",
+					ErrICMPInvalidFamily, prefix, ruleIdx, i, j, f.Family)
+			}
+
+			_, err = resolveICMPType(family, f.Type)
+			if err != nil {
+				return fmt.Errorf("%w: %s %d icmps[%d] fields[%d] type %q",
+					ErrICMPInvalidType, prefix, ruleIdx, i, j, f.Type)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateUnsupportedDenySelectors checks whether any Cilium selectors
+// that terrarium does not implement are present in an egress deny rule.
+func validateUnsupportedDenySelectors(rule EgressDenyRule, ruleIdx int) error {
+	type field struct {
+		name string
+		set  bool
+	}
+
+	fields := []field{
+		{"toEndpoints", len(rule.ToEndpoints) > 0},
+		{"toServices", len(rule.ToServices) > 0},
+		{"toNodes", len(rule.ToNodes) > 0},
+		{"toGroups", len(rule.ToGroups) > 0},
+		{"toRequires", len(rule.ToRequires) > 0},
+		{"authentication", rule.Authentication != nil},
+	}
+
+	for _, f := range fields {
+		if f.set {
+			return fmt.Errorf(
+				"%w: egressDeny rule %d has %s, which is not implemented by terrarium",
 				ErrUnsupportedSelector, ruleIdx, f.name,
 			)
 		}
@@ -847,9 +928,16 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 func (c *Config) validateEgressDenyRules() error {
 	denyRules := c.EgressDenyRules()
 	for i := range denyRules {
+		// Reject unsupported Cilium selectors before any other
+		// processing.
+		err := validateUnsupportedDenySelectors(denyRules[i], i)
+		if err != nil {
+			return err
+		}
+
 		// Expand entities before normalization and the empty-rule
 		// check so expanded CIDRs satisfy selectors.
-		err := expandAndValidateDenyEntities(&(*c.EgressDeny)[i], i)
+		err = expandAndValidateDenyEntities(&(*c.EgressDeny)[i], i)
 		if err != nil {
 			return err
 		}
@@ -858,7 +946,7 @@ func (c *Config) validateEgressDenyRules() error {
 
 		rule := denyRules[i]
 
-		if len(rule.ToCIDR) == 0 && len(rule.ToCIDRSet) == 0 && len(rule.ToPorts) == 0 {
+		if len(rule.ToCIDR) == 0 && len(rule.ToCIDRSet) == 0 && len(rule.ToPorts) == 0 && len(rule.ICMPs) == 0 {
 			return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRuleEmpty, i)
 		}
 
@@ -910,6 +998,11 @@ func (c *Config) validateEgressDenyRules() error {
 		}
 
 		err = validateCIDRSetEntries(rule.ToCIDRSet, "egressDeny rule", i)
+		if err != nil {
+			return err
+		}
+
+		err = validateICMPRules(rule.ICMPs, rule.ToPorts, "egressDeny rule", i)
 		if err != nil {
 			return err
 		}

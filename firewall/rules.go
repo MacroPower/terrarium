@@ -280,14 +280,22 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 		Exprs: flatExprs(verdictExprs(expr.VerdictDrop)),
 	})
 
+	// Resolve ICMP rules.
+	allowICMPs := cfg.ResolveICMPRules()
+	denyICMPs := cfg.ResolveDenyICMPRules()
+
 	// terrarium_output chain rules.
 	// Deny chains first: deny takes precedence over allow.
 	addDenyCIDRChains(conn, table, terrariumChain, allDenyCIDRs, uids)
 	addDenyPortRules(conn, table, terrariumChain, denyPortOnly, uids)
+	addDenyICMPRules(conn, table, terrariumChain, denyICMPs, uids)
 
 	if !unrestricted {
 		addCIDRChains(conn, table, terrariumChain, allCIDRs, uids)
 	}
+
+	// Allow ICMP rules (after deny, after CIDR).
+	addICMPRules(conn, table, terrariumChain, allowICMPs, uids)
 
 	if unrestricted {
 		// Unrestricted open ports: ACCEPT all user traffic.

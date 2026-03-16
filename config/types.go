@@ -122,7 +122,8 @@ func (c *Config) IsEgressBlocked() bool {
 		// Unsupported selectors (ToEndpoints, ToEntities, etc.) are not
 		// checked here because Validate() rejects them before this point.
 		if len(rules[i].ToFQDNs) > 0 || len(rules[i].ToPorts) > 0 ||
-			len(rules[i].ToCIDR) > 0 || len(rules[i].ToCIDRSet) > 0 {
+			len(rules[i].ToCIDR) > 0 || len(rules[i].ToCIDRSet) > 0 ||
+			len(rules[i].ICMPs) > 0 {
 			return false
 		}
 	}
@@ -152,8 +153,8 @@ func (c *Config) IsEgressBlocked() bool {
 // pkg/policy/api/egress.go.
 //
 // Unsupported Cilium selectors (toEndpoints, toEntities, toServices,
-// toNodes, toGroups, toRequires, icmps, authentication) are parsed
-// into stub fields and rejected during [Config.Validate]. Additionally,
+// toNodes, toGroups, toRequires, authentication) are parsed into stub
+// fields and rejected during [Config.Validate]. Additionally,
 // [parseConfigRaw] enables [yaml.DisallowUnknownField] so that any
 // field not present in the struct (including future Cilium additions)
 // produces a parse error rather than silent data loss.
@@ -198,9 +199,11 @@ type EgressRule struct {
 	ToGroups []any `yaml:"toGroups,omitempty"`
 	// ToRequires is a deprecated Cilium field. Rejected unconditionally.
 	ToRequires []any `yaml:"toRequires,omitempty"`
-	// ICMPs is a Cilium selector for ICMP type filtering.
-	// Terrarium does not support ICMP-level policy.
-	ICMPs []any `yaml:"icmps,omitempty"`
+	// ICMPs specifies ICMP type filtering rules. Each [ICMPRule]
+	// contains a list of allowed ICMP type fields, scoped by address
+	// family. ICMPs is mutually exclusive with ToPorts on the same
+	// rule (Cilium: rule_validation.go:328-330).
+	ICMPs []ICMPRule `yaml:"icmps,omitempty"`
 }
 
 // EgressDenyRules returns the egress deny rules slice, or nil when
@@ -213,11 +216,11 @@ func (c *Config) EgressDenyRules() []EgressDenyRule {
 	return *c.EgressDeny
 }
 
-// EgressDenyRule defines an egress deny policy with CIDR and port
-// selectors. Deny rules support only L3 (ToCIDR, ToCIDRSet) and L4
-// (ToPorts) selectors. L7 rules and toFQDNs are not permitted on
-// deny rules, matching Cilium's EgressDenyRule semantics.
-// Deny rules take precedence over allow rules.
+// EgressDenyRule defines an egress deny policy with CIDR, port, and
+// ICMP selectors. Deny rules support L3 (ToCIDR, ToCIDRSet), L4
+// (ToPorts), and ICMP (ICMPs) selectors. L7 rules and toFQDNs are
+// not permitted on deny rules, matching Cilium's EgressDenyRule
+// semantics. Deny rules take precedence over allow rules.
 type EgressDenyRule struct {
 	// ToCIDR denies traffic to IP ranges in CIDR notation.
 	ToCIDR []string `yaml:"toCIDR,omitempty"`
@@ -229,6 +232,61 @@ type EgressDenyRule struct {
 	// and "all" are supported, expanded to dual-stack CIDRs
 	// (0.0.0.0/0 and ::/0) during validation.
 	ToEntities []string `yaml:"toEntities,omitempty"`
+	// ICMPs specifies ICMP type filtering for deny rules. Mutually
+	// exclusive with ToPorts on the same rule.
+	ICMPs []ICMPRule `yaml:"icmps,omitempty"`
+
+	// Unsupported Cilium selectors. These fields exist so that the
+	// YAML decoder captures them instead of relying solely on strict
+	// mode. [Config.Validate] rejects any rule where these are
+	// populated, producing an actionable error message.
+
+	// Authentication is a Cilium field for mutual authentication.
+	// Terrarium does not support authentication policy.
+	Authentication any `yaml:"authentication,omitempty"`
+	// ToEndpoints is a Cilium L3 selector matching endpoints by label.
+	// Terrarium has no endpoint identity system.
+	ToEndpoints []any `yaml:"toEndpoints,omitempty"`
+	// ToServices is a Cilium L3 selector matching Kubernetes services.
+	// Terrarium has no service discovery.
+	ToServices []any `yaml:"toServices,omitempty"`
+	// ToNodes is a Cilium L3 selector matching nodes by label.
+	// Terrarium has no node identity system.
+	ToNodes []any `yaml:"toNodes,omitempty"`
+	// ToGroups is a Cilium L3 selector matching cloud provider groups.
+	// Terrarium has no cloud provider integration.
+	ToGroups []any `yaml:"toGroups,omitempty"`
+	// ToRequires is a deprecated Cilium field. Rejected unconditionally.
+	ToRequires []any `yaml:"toRequires,omitempty"`
+}
+
+// ICMPRule specifies ICMP type filtering constraints. Each rule
+// contains a list of [ICMPField] entries that are OR'd together.
+// Matches Cilium's ICMPRule in pkg/policy/api/icmp.go.
+type ICMPRule struct {
+	// Fields lists allowed ICMP type entries.
+	Fields []ICMPField `yaml:"fields,omitempty"`
+}
+
+// ICMPField specifies a single ICMP type with optional address family.
+// Matches Cilium's ICMPField in pkg/policy/api/icmp.go.
+type ICMPField struct {
+	// Family is the address family: "IPv4" (default) or "IPv6".
+	// Case-insensitive; normalized during validation.
+	Family string `yaml:"family,omitempty"`
+	// Type is the ICMP type as a numeric string (0-255) or a
+	// CamelCase name (e.g. "EchoRequest"). Resolved to numeric
+	// during normalization.
+	Type string `yaml:"type"`
+}
+
+// ResolvedICMP is a resolved ICMP type entry ready for nftables
+// rule generation. Type codes are resolved from names during
+// normalization; Family is normalized to "IPv4" or "IPv6".
+type ResolvedICMP struct {
+	Family    string // "IPv4" or "IPv6"
+	Type      uint8
+	RuleIndex int
 }
 
 // CIDRRule specifies an IP range to allow, with optional exceptions.

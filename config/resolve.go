@@ -1064,6 +1064,74 @@ func resolvePortsFromDenyRule(rule EgressDenyRule) []ResolvedPortProto {
 	return resolvePortsFromPortRules(rule.ToPorts)
 }
 
+// ResolveICMPRules flattens all ICMPRule entries across egress allow
+// rules into per-field [ResolvedICMP] entries with their rule index.
+// Type codes are already resolved to numeric strings during
+// normalization. Returns nil when no egress rules have ICMP entries.
+func (c *Config) ResolveICMPRules() []ResolvedICMP {
+	return resolveICMPs(c.EgressRules())
+}
+
+// ResolveDenyICMPRules flattens all ICMPRule entries across egress
+// deny rules into per-field [ResolvedICMP] entries. Same shape as
+// [Config.ResolveICMPRules] but for deny rules.
+func (c *Config) ResolveDenyICMPRules() []ResolvedICMP {
+	denyRules := c.EgressDenyRules()
+	if len(denyRules) == 0 {
+		return nil
+	}
+
+	// Convert deny rules to the same shape for reuse.
+	var result []ResolvedICMP
+
+	for ri := range denyRules {
+		for _, icmp := range denyRules[ri].ICMPs {
+			for _, f := range icmp.Fields {
+				code, err := strconv.ParseUint(f.Type, 10, 8)
+				if err != nil {
+					continue // already validated
+				}
+
+				result = append(result, ResolvedICMP{
+					Family:    f.Family,
+					Type:      uint8(code),
+					RuleIndex: ri,
+				})
+			}
+		}
+	}
+
+	return result
+}
+
+// resolveICMPs is the shared implementation for ResolveICMPRules.
+func resolveICMPs(rules []EgressRule) []ResolvedICMP {
+	if len(rules) == 0 {
+		return nil
+	}
+
+	var result []ResolvedICMP
+
+	for ri := range rules {
+		for _, icmp := range rules[ri].ICMPs {
+			for _, f := range icmp.Fields {
+				code, err := strconv.ParseUint(f.Type, 10, 8)
+				if err != nil {
+					continue // already validated and normalized
+				}
+
+				result = append(result, ResolvedICMP{
+					Family:    f.Family,
+					Type:      uint8(code),
+					RuleIndex: ri,
+				})
+			}
+		}
+	}
+
+	return result
+}
+
 // ResolveDenyPortOnlyRules collects port-protocol pairs from egress
 // deny rules that have toPorts but no L3 selectors (no toCIDR or
 // toCIDRSet). Under Cilium semantics, a deny rule with only toPorts

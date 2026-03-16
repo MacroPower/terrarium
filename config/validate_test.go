@@ -1676,14 +1676,14 @@ egress:
 `,
 			err: config.ErrUnsupportedSelector,
 		},
-		"icmps rejected": {
+		"icmps valid": {
 			yaml: `
 egress:
   - icmps:
       - fields:
           - type: 8
 `,
-			err: config.ErrUnsupportedSelector,
+			wantRules: 1,
 		},
 		"authentication rejected": {
 			yaml: `
@@ -2407,4 +2407,292 @@ egress:
 			}
 		})
 	}
+}
+
+func TestICMPRules(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		err  error
+	}{
+		"valid numeric IPv4 type": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: "8"
+`,
+		},
+		"valid CamelCase IPv4 type": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: EchoRequest
+`,
+		},
+		"valid numeric IPv6 type": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - family: IPv6
+            type: "128"
+`,
+		},
+		"valid CamelCase IPv6 type": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - family: IPv6
+            type: EchoRequest
+`,
+		},
+		"family case-insensitive": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - family: ipv6
+            type: "128"
+`,
+		},
+		"empty type rejected": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - family: IPv4
+`,
+			err: config.ErrICMPTypeRequired,
+		},
+		"invalid type name rejected": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: NotARealType
+`,
+			err: config.ErrICMPInvalidType,
+		},
+		"out of range type rejected": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: "256"
+`,
+			err: config.ErrICMPInvalidType,
+		},
+		"invalid family rejected": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - family: IPv5
+            type: "8"
+`,
+			err: config.ErrICMPInvalidFamily,
+		},
+		"icmps with toPorts rejected": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: "8"
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			err: config.ErrICMPWithToPorts,
+		},
+		"too many fields rejected": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:` + generateICMPFields(41) + `
+`,
+			err: config.ErrICMPFieldsTooMany,
+		},
+		"icmps coexists with toCIDR": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: "8"
+    toCIDR:
+      - 10.0.0.0/8
+`,
+		},
+		"icmps coexists with toEntities": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: "8"
+    toEntities:
+      - world
+`,
+		},
+		"icmps-only rule not blocked": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: "8"
+`,
+		},
+		"deny rule with icmps valid": {
+			yaml: `
+egressDeny:
+  - icmps:
+      - fields:
+          - type: "8"
+`,
+		},
+		"deny rule with icmps and toPorts rejected": {
+			yaml: `
+egressDeny:
+  - icmps:
+      - fields:
+          - type: "8"
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			err: config.ErrICMPWithToPorts,
+		},
+		"wrong family name for type rejected": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - family: IPv6
+            type: Photuris
+`,
+			err: config.ErrICMPInvalidType,
+		},
+		"multiple fields in one rule": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: EchoRequest
+          - type: EchoReply
+          - family: IPv6
+            type: EchoRequest
+`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestICMPIsEgressBlocked(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ICMPs: []config.ICMPRule{{
+				Fields: []config.ICMPField{{Type: "8"}},
+			}},
+		}),
+	}
+	assert.False(t, cfg.IsEgressBlocked())
+}
+
+func TestEgressDenyUnsupportedSelectors(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		err  error
+	}{
+		"deny toEndpoints rejected": {
+			yaml: `
+egressDeny:
+  - toEndpoints:
+      - matchLabels:
+          role: backend
+`,
+			err: config.ErrUnsupportedSelector,
+		},
+		"deny toServices rejected": {
+			yaml: `
+egressDeny:
+  - toServices:
+      - k8sService:
+          serviceName: my-svc
+`,
+			err: config.ErrUnsupportedSelector,
+		},
+		"deny toNodes rejected": {
+			yaml: `
+egressDeny:
+  - toNodes:
+      - matchLabels:
+          role: worker
+`,
+			err: config.ErrUnsupportedSelector,
+		},
+		"deny toGroups rejected": {
+			yaml: `
+egressDeny:
+  - toGroups:
+      - aws:
+          securityGroupsIds: ["sg-123"]
+`,
+			err: config.ErrUnsupportedSelector,
+		},
+		"deny toRequires rejected": {
+			yaml: `
+egressDeny:
+  - toRequires:
+      - something
+`,
+			err: config.ErrUnsupportedSelector,
+		},
+		"deny authentication rejected": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.0.0.0/8
+    authentication:
+      mode: required
+`,
+			err: config.ErrUnsupportedSelector,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			require.ErrorIs(t, err, tt.err)
+		})
+	}
+}
+
+// generateICMPFields returns a YAML snippet with n ICMP field entries.
+func generateICMPFields(n int) string {
+	var b strings.Builder
+	for range n {
+		b.WriteString("\n          - type: \"8\"")
+	}
+
+	return b.String()
 }
