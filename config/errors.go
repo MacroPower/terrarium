@@ -240,11 +240,13 @@ var (
 	// overlaps with a resolved port.
 	ErrTCPForwardPortConflict = errors.New("tcp forward port conflicts with resolved ports")
 
-	// ErrServerNamesRequiresCIDR is returned when serverNames is used
-	// on a toPorts entry without toCIDR or toCIDRSet on the same rule.
-	// serverNames provides SNI filtering for CIDR-based rules.
-	ErrServerNamesRequiresCIDR = errors.New(
-		"serverNames requires toCIDR or toCIDRSet on the same rule",
+	// ErrServerNamesRequiresL3 is returned when serverNames is used on
+	// a toPorts entry without an L3 selector (toCIDR, toCIDRSet, or
+	// toFQDNs) on the same rule. With toFQDNs, serverNames is
+	// accepted but ignored since FQDN rules already control allowed
+	// domains via their own SNI filter chain.
+	ErrServerNamesRequiresL3 = errors.New(
+		"serverNames requires toCIDR, toCIDRSet, or toFQDNs on the same rule",
 	)
 
 	// ErrServerNamesRequiresTCP is returned when serverNames is used

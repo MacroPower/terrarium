@@ -1990,7 +1990,7 @@ egress:
 `,
 			err: config.ErrUnsupportedFeature,
 		},
-		"serverNames on FQDN rejected (requires CIDR)": {
+		"serverNames on FQDN accepted (no-op)": {
 			yaml: `
 egress:
   - toFQDNs:
@@ -2001,7 +2001,6 @@ egress:
         serverNames:
           - example.com
 `,
-			err: config.ErrServerNamesRequiresCIDR,
 		},
 		"listener rejected": {
 			yaml: `
@@ -2349,7 +2348,7 @@ egress:
           - api.internal.example.com
 `,
 		},
-		"serverNames requires CIDR": {
+		"serverNames requires L3 selector": {
 			yaml: `
 egress:
   - toPorts:
@@ -2358,7 +2357,7 @@ egress:
         serverNames:
           - api.internal.example.com
 `,
-			err: config.ErrServerNamesRequiresCIDR,
+			err: config.ErrServerNamesRequiresL3,
 		},
 		"serverNames requires TCP": {
 			yaml: `

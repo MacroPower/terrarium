@@ -918,16 +918,19 @@ func validateDNSWildcardPattern(p string, ruleIdx, dnsIdx int) error {
 }
 
 // validateServerNames checks that serverNames entries are valid
-// hostnames and that the containing rule uses toCIDR/toCIDRSet
-// with TCP protocol.
+// hostnames and that the containing rule uses an L3 selector with
+// TCP protocol. ServerNames with toFQDNs is accepted for Cilium
+// policy portability but is a no-op: the FQDN SNI filter chain
+// already controls allowed domains.
 func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 	if len(pr.ServerNames) == 0 {
 		return nil
 	}
 
-	// serverNames requires toCIDR or toCIDRSet (not toFQDNs).
-	if len(rule.ToCIDR) == 0 && len(rule.ToCIDRSet) == 0 {
-		return fmt.Errorf("%w: rule %d", ErrServerNamesRequiresCIDR, ruleIdx)
+	// serverNames requires an L3 selector.
+	hasL3 := len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0 || len(rule.ToFQDNs) > 0
+	if !hasL3 {
+		return fmt.Errorf("%w: rule %d", ErrServerNamesRequiresL3, ruleIdx)
 	}
 
 	// All ports must be TCP.
