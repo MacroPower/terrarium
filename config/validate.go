@@ -980,6 +980,10 @@ func (c *Config) validateEgressDenyRules() error {
 				return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRuleL7, i)
 			}
 
+			if len(pr.ServerNames) > 0 {
+				return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRuleServerNames, i)
+			}
+
 			for _, p := range pr.Ports {
 				if p.Port == "" {
 					return fmt.Errorf("%w: egressDeny rule %d", ErrPortEmpty, i)

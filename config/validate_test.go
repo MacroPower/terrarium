@@ -2309,6 +2309,19 @@ egressDeny:
 `,
 			err: config.ErrDenyRuleL7,
 		},
+		"deny rule with serverNames rejected": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - evil.example.com
+`,
+			err: config.ErrDenyRuleServerNames,
+		},
 		"deny empty rule rejected": {
 			yaml: `
 egress:
