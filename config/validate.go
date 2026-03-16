@@ -14,6 +14,11 @@ const maxFQDNLength = 255
 // on PortRule.Ports.
 const maxPorts = 40
 
+// maxFQDNEndPortRange is the maximum number of ports in an endPort
+// range for toFQDNs rules. Each port requires a separate Envoy
+// listener, and large ranges risk exhausting the proxy port space.
+const maxFQDNEndPortRange = 100
+
 // maxRegexLen is the maximum allowed length for path and method
 // regex patterns. Envoy uses RE2 with a default max program size
 // of 100; extremely long patterns could pass Go validation but
@@ -506,6 +511,19 @@ func validateFQDNConstraints(rule EgressRule, ruleIdx int, hasFQDNs bool) error 
 		for _, p := range pr.Ports {
 			if p.Port == "0" {
 				return fmt.Errorf("%w: rule %d", ErrFQDNWildcardPort, ruleIdx)
+			}
+
+			// Limit FQDN port ranges to prevent creating thousands
+			// of Envoy listeners and exhausting proxy port space.
+			if p.EndPort > 0 {
+				n, err := ResolvePort(p.Port)
+				if err == nil && p.EndPort-int(n) > maxFQDNEndPortRange {
+					return fmt.Errorf(
+						"%w: rule %d port %s endPort %d (range %d)",
+						ErrFQDNPortRangeTooLarge, ruleIdx,
+						p.Port, p.EndPort, p.EndPort-int(n),
+					)
+				}
 			}
 		}
 	}

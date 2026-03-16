@@ -362,8 +362,8 @@ func TestResolveRulesForPort(t *testing.T) {
 
 	tests := map[string]struct {
 		cfg      *config.Config
-		port     int
 		want     []config.ResolvedRule
+		port     int
 		wantNone bool
 	}{
 		"domain scoped to port 443 only - matching": {
@@ -1229,6 +1229,29 @@ func TestResolvePorts(t *testing.T) {
 				}),
 			},
 		},
+		"FQDN endPort expands range": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{
+						{Port: "8000", EndPort: 8003},
+					}}},
+				}),
+			},
+			want: []int{8000, 8001, 8002, 8003},
+		},
+		"FQDN endPort mixed with single port": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{
+						{Port: "443"},
+						{Port: "8000", EndPort: 8002},
+					}}},
+				}),
+			},
+			want: []int{443, 8000, 8001, 8002},
+		},
 	}
 
 	for name, tt := range tests {
@@ -1285,9 +1308,9 @@ func TestResolveCIDRRules(t *testing.T) {
 
 	tests := map[string]struct {
 		cfg      *config.Config
-		validate bool
 		wantIPv4 []config.ResolvedCIDR
 		wantIPv6 []config.ResolvedCIDR
+		validate bool
 	}{
 		"mixed IPv4 and IPv6": {
 			cfg: &config.Config{
@@ -1555,11 +1578,11 @@ func TestCompileFQDNPatterns(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg         config.Config
-		want        []string
-		wantIndices []int
 		match       map[string]bool
 		noMatch     map[string]bool
+		want        []string
+		wantIndices []int
+		cfg         config.Config
 	}{
 		"matchName exact": {
 			cfg: config.Config{

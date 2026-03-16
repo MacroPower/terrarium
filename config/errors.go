@@ -125,6 +125,14 @@ var (
 	// filtering). A toPorts-only rule with L7 has no routing context.
 	ErrL7RequiresL3 = errors.New("L7 rules require toFQDNs or toCIDR/toCIDRSet selectors")
 
+	// ErrFQDNPortRangeTooLarge is returned when a toFQDNs rule has a
+	// port range (endPort) that would create too many Envoy listeners.
+	// Each port in the range requires a separate listener, and large
+	// ranges risk exhausting the proxy port space ([MaxProxyablePort]).
+	ErrFQDNPortRangeTooLarge = errors.New(
+		"toFQDNs port range too large: endPort - port must not exceed 100 (terrarium constraint: each port needs an Envoy listener)",
+	)
+
 	// ErrCIDRL7WithServerNames is returned when L7 HTTP rules are
 	// combined with toCIDR/toCIDRSet and serverNames on the same rule.
 	// ServerNames implies TLS traffic, and MITM for CIDR destinations

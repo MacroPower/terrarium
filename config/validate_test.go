@@ -548,7 +548,7 @@ func TestValidate(t *testing.T) {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8000", EndPort: 9000}}}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8000", EndPort: 8100}}}},
 				}),
 			},
 		},
@@ -746,6 +746,27 @@ func TestValidate(t *testing.T) {
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 				}),
 			},
+		},
+		"FQDN endPort range within limit valid": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "8000", EndPort: 8100}},
+					}},
+				}),
+			},
+		},
+		"FQDN endPort range too large rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "8000", EndPort: 8200}},
+					}},
+				}),
+			},
+			err: config.ErrFQDNPortRangeTooLarge,
 		},
 		"path regex too long rejected": {
 			cfg: &config.Config{

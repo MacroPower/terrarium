@@ -447,6 +447,15 @@ func (c *Config) ResolvePorts() []int {
 				resolved, err := ResolvePort(p.Port)
 				if err == nil && resolved > 0 {
 					seen[int(resolved)] = true
+
+					// FQDN rules with endPort need individual
+					// Envoy listeners for each port in the range.
+					// Validation caps the range size.
+					if !isOpenPortRule && p.EndPort > 0 {
+						for ep := int(resolved) + 1; ep <= p.EndPort; ep++ {
+							seen[ep] = true
+						}
+					}
 				}
 			}
 		}
