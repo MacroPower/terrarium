@@ -257,6 +257,13 @@ var (
 	// rule has no effect and is likely a misconfiguration.
 	ErrDenyRuleEmpty = errors.New("egressDeny rule must have at least toCIDR, toCIDRSet, or toPorts")
 
+	// ErrDenyEntitiesMixedL3 is returned when an [EgressDenyRule]
+	// combines toEntities with another L3 selector (toCIDR or
+	// toCIDRSet). Use separate rules instead.
+	ErrDenyEntitiesMixedL3 = errors.New(
+		"egressDeny toEntities cannot be combined with toCIDR or toCIDRSet in the same rule; use separate rules",
+	)
+
 	// ErrEntitiesMixedL3 is returned when an [EgressRule] combines
 	// toEntities with another L3 selector (toCIDR, toCIDRSet, or
 	// toFQDNs). Cilium's EgressCommonRule.sanitize() rejects any

@@ -2204,6 +2204,48 @@ egressDeny:
       - 10.0.0.0/8
 `,
 		},
+		"egressDeny toEntities world expanded": {
+			yaml: `
+egressDeny:
+  - toEntities:
+      - world
+`,
+		},
+		"egressDeny toEntities all expanded": {
+			yaml: `
+egressDeny:
+  - toEntities:
+      - all
+`,
+		},
+		"egressDeny toEntities with toPorts": {
+			yaml: `
+egressDeny:
+  - toEntities:
+      - world
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+		},
+		"egressDeny toEntities mixed with toCIDR rejected": {
+			yaml: `
+egressDeny:
+  - toEntities:
+      - world
+    toCIDR:
+      - 10.0.0.0/8
+`,
+			err: config.ErrDenyEntitiesMixedL3,
+		},
+		"egressDeny toEntities unsupported rejected": {
+			yaml: `
+egressDeny:
+  - toEntities:
+      - host
+`,
+			err: config.ErrUnsupportedEntity,
+		},
 	}
 
 	for name, tt := range tests {

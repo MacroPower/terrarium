@@ -847,6 +847,13 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 func (c *Config) validateEgressDenyRules() error {
 	denyRules := c.EgressDenyRules()
 	for i := range denyRules {
+		// Expand entities before normalization and the empty-rule
+		// check so expanded CIDRs satisfy selectors.
+		err := expandAndValidateDenyEntities(&(*c.EgressDeny)[i], i)
+		if err != nil {
+			return err
+		}
+
 		normalizeEgressDenyRule(c, i)
 
 		rule := denyRules[i]
@@ -902,7 +909,7 @@ func (c *Config) validateEgressDenyRules() error {
 			}
 		}
 
-		err := validateCIDRSetEntries(rule.ToCIDRSet, "egressDeny rule", i)
+		err = validateCIDRSetEntries(rule.ToCIDRSet, "egressDeny rule", i)
 		if err != nil {
 			return err
 		}
@@ -933,6 +940,35 @@ func expandAndValidateEntities(rule *EgressRule, ruleIdx int) error {
 		e := strings.ToLower(entity)
 		if !supportedEntities[e] {
 			return fmt.Errorf("%w: rule %d has %q", ErrUnsupportedEntity, ruleIdx, entity)
+		}
+
+		rule.ToCIDR = append(rule.ToCIDR, "0.0.0.0/0", "::/0")
+	}
+
+	rule.ToEntities = nil
+
+	return nil
+}
+
+// expandAndValidateDenyEntities processes toEntities on an egress deny
+// rule. Supported entities ("world", "all") are expanded into dual-stack
+// CIDRs appended to ToCIDR. Unsupported values are rejected with
+// [ErrUnsupportedEntity]. After processing, ToEntities is cleared.
+func expandAndValidateDenyEntities(rule *EgressDenyRule, ruleIdx int) error {
+	if len(rule.ToEntities) == 0 {
+		return nil
+	}
+
+	// L3 mutual exclusivity: deny rules with entities cannot also
+	// have toCIDR or toCIDRSet.
+	if len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0 {
+		return fmt.Errorf("%w: egressDeny rule %d", ErrDenyEntitiesMixedL3, ruleIdx)
+	}
+
+	for _, entity := range rule.ToEntities {
+		e := strings.ToLower(entity)
+		if !supportedEntities[e] {
+			return fmt.Errorf("%w: egressDeny rule %d has %q", ErrUnsupportedEntity, ruleIdx, entity)
 		}
 
 		rule.ToCIDR = append(rule.ToCIDR, "0.0.0.0/0", "::/0")

@@ -225,6 +225,10 @@ type EgressDenyRule struct {
 	ToCIDRSet []CIDRRule `yaml:"toCIDRSet,omitempty"`
 	// ToPorts restricts denied destination ports.
 	ToPorts []PortRule `yaml:"toPorts,omitempty"`
+	// ToEntities denies traffic to special entities. Only "world"
+	// and "all" are supported, expanded to dual-stack CIDRs
+	// (0.0.0.0/0 and ::/0) during validation.
+	ToEntities []string `yaml:"toEntities,omitempty"`
 }
 
 // CIDRRule specifies an IP range to allow, with optional exceptions.
