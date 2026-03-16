@@ -31,7 +31,7 @@ builds:
       - -X go.jacobcolvin.com/x/version.BuildDate={{.Date}}
     flags:
       - -trimpath
-    buildmode: pie
+      - -buildmode=exe
 
 archives:
   - formats: [tar.gz]
