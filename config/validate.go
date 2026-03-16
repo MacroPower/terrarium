@@ -747,11 +747,15 @@ func validateL7Rules(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 		}
 	}
 
-	// Wildcard matchPatterns break MITM cert paths.
+	// Bare wildcard matchPatterns ("*", "**") cannot produce
+	// meaningful MITM certs. Suffix wildcards ("*.example.com",
+	// "**.example.com") are allowed: Go x509 supports wildcard SANs
+	// and the cert path uses wildcardServerName which normalizes
+	// "**." to "*.".
 	if hasFQDNs {
 		for j, fqdn := range rule.ToFQDNs {
-			if strings.Contains(fqdn.MatchPattern, "*") {
-				return fmt.Errorf("%w: rule %d selector %d", ErrWildcardWithL7, ruleIdx, j)
+			if fqdn.MatchPattern != "" && isBareWildcard(fqdn.MatchPattern) {
+				return fmt.Errorf("%w: rule %d selector %d", ErrBareWildcardWithL7, ruleIdx, j)
 			}
 		}
 	}

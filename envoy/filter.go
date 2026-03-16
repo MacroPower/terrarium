@@ -164,12 +164,38 @@ func buildPassthroughFilterChain(
 	return fc
 }
 
-func buildMITMFilterChain(rule config.ResolvedRule, accessLog []AccessLog, certsDir string) filterChain {
+func buildMITMFilterChain(
+	rule config.ResolvedRule,
+	accessLog []AccessLog,
+	certsDir string,
+	httpRBACFilter *filter,
+) filterChain {
 	sn := wildcardServerName(rule.Domain)
 	certPath := fmt.Sprintf("%s/%s/cert.pem", certsDir, sn)
 	keyPath := fmt.Sprintf("%s/%s/key.pem", certsDir, sn)
 
 	vhosts, _, _ := buildHTTPVirtualHosts([]config.ResolvedRule{rule}, "mitm_forward_proxy_cluster")
+
+	httpFilters := make([]filter, 0, 3)
+	if httpRBACFilter != nil {
+		httpFilters = append(httpFilters, *httpRBACFilter)
+	}
+
+	httpFilters = append(httpFilters,
+		filter{
+			Name: "envoy.filters.http.dynamic_forward_proxy",
+			TypedConfig: httpDFPFilterConfig{
+				AtType:         "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
+				DNSCacheConfig: sharedDNSCacheConfig,
+			},
+		},
+		filter{
+			Name: "envoy.filters.http.router",
+			TypedConfig: typeOnly{
+				AtType: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
+			},
+		},
+	)
 
 	return filterChain{
 		FilterChainMatch: &filterChainMatch{TransportProtocol: "tls", ServerNames: []string{sn}},
@@ -205,21 +231,7 @@ func buildMITMFilterChain(rule config.ResolvedRule, accessLog []AccessLog, certs
 				},
 				AccessLog:      accessLog,
 				UpgradeConfigs: []upgradeConfig{{UpgradeType: "websocket"}},
-				HTTPFilters: []filter{
-					{
-						Name: "envoy.filters.http.dynamic_forward_proxy",
-						TypedConfig: httpDFPFilterConfig{
-							AtType:         "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
-							DNSCacheConfig: sharedDNSCacheConfig,
-						},
-					},
-					{
-						Name: "envoy.filters.http.router",
-						TypedConfig: typeOnly{
-							AtType: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
-						},
-					},
-				},
+				HTTPFilters:    httpFilters,
 			},
 		}},
 	}

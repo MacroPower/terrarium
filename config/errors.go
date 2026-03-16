@@ -165,10 +165,13 @@ var (
 	// to reject negative values at admission.
 	ErrEndPortNegative = errors.New("endPort must not be negative")
 
-	// ErrWildcardWithL7 is returned when a wildcard matchPattern is used
-	// with L7 HTTP rules. The MITM filter chain builds filesystem paths
-	// from the domain name, and wildcards in paths are invalid.
-	ErrWildcardWithL7 = errors.New("wildcard matchPattern cannot be used with L7 HTTP rules")
+	// ErrBareWildcardWithL7 is returned when a bare wildcard matchPattern
+	// ("*" or "**") is used with L7 HTTP rules. Bare wildcards cannot
+	// produce meaningful MITM certificates. Suffix wildcards like
+	// "*.example.com" are allowed since Go x509 supports wildcard SANs.
+	ErrBareWildcardWithL7 = errors.New(
+		"bare wildcard matchPattern (* or **) cannot be used with L7 HTTP rules; use a suffix like *.example.com",
+	)
 
 	// ErrFQDNPatternPartialWildcard is returned when a matchPattern
 	// contains a wildcard that is not the leading "*." prefix.

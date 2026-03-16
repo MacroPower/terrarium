@@ -727,7 +727,7 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"wildcard matchPattern with L7 rejected": {
+		"suffix wildcard matchPattern with L7 valid": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
@@ -737,7 +737,41 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrWildcardWithL7,
+		},
+		"double-star suffix wildcard with L7 valid": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "**.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/api/"}}},
+					}},
+				}),
+			},
+		},
+		"bare wildcard matchPattern with L7 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
+					}},
+				}),
+			},
+			err: config.ErrBareWildcardWithL7,
+		},
+		"bare double-star with L7 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "**"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
+					}},
+				}),
+			},
+			err: config.ErrBareWildcardWithL7,
 		},
 		"wildcard matchPattern without L7 allowed": {
 			cfg: &config.Config{

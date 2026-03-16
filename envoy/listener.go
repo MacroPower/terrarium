@@ -79,7 +79,13 @@ func BuildTLSListener(
 	}
 
 	for _, r := range mitmRules {
-		chains = append(chains, buildMITMFilterChain(r, accessLog, certsDir))
+		var httpRBAC *filter
+		if strings.HasPrefix(r.Domain, "*.") || strings.HasPrefix(r.Domain, "**.") {
+			f := buildWildcardHTTPRBACFilter([]string{r.Domain}, nil)
+			httpRBAC = &f
+		}
+
+		chains = append(chains, buildMITMFilterChain(r, accessLog, certsDir, httpRBAC))
 	}
 
 	// Open ports get a catch-all passthrough chain (no SNI restriction).

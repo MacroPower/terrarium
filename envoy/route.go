@@ -15,9 +15,9 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 	// Classify domains for RBAC filter generation using the original
 	// domain pattern (before wildcardServerName conversion) so that
 	// ** patterns produce multi-label regexes via wildcardToHostRegex.
-	// Restricted domains are always exact names (never wildcards)
-	// because ErrWildcardWithL7 rejects wildcard matchPatterns
-	// combined with L7 rules at config validation time.
+	// Restricted domains may include suffix wildcards ("*.example.com",
+	// "**.example.com") since those are allowed with L7 rules; only
+	// bare wildcards ("*", "**") are rejected by validation.
 	var wildcardDomains, exactDomains []string
 	for _, r := range rules {
 		if r.IsRestricted() {
