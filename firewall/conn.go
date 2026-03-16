@@ -7,9 +7,9 @@ const tableName = "terrarium"
 // UIDs holds the numeric user IDs used in nftables UID match
 // expressions. Values are passed from the CLI entrypoint.
 type UIDs struct {
-	Sandbox uint32
-	Envoy   uint32
-	Root    uint32
+	Terrarium uint32
+	Envoy     uint32
+	Root      uint32
 }
 
 const (

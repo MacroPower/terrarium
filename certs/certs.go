@@ -34,7 +34,7 @@ func GenerateCA(dir string) (string, string, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   "Sandbox CA",
+			CommonName:   "Terrarium CA",
 			Organization: []string{"terrarium"},
 		},
 		NotBefore:             time.Now().Add(-1 * time.Hour),
@@ -198,7 +198,7 @@ func wildcardServerName(domain string) string {
 
 // writePEM writes a PEM-encoded block to path with mode 0o644.
 func writePEM(path, pemType string, data []byte) error {
-	// 0o644: Envoy (uid 999) needs read access to cert and key files.
+	// 0o644: Envoy (uid 1001) needs read access to cert and key files.
 	// These are ephemeral, container-scoped MITM certs -- not long-lived secrets.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {

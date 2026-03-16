@@ -13,7 +13,7 @@ import (
 	"go.jacobcolvin.com/terrarium/firewall"
 )
 
-var testUIDs = firewall.UIDs{Sandbox: 1000, Envoy: 999, Root: 0}
+var testUIDs = firewall.UIDs{Terrarium: 1000, Envoy: 999, Root: 0}
 
 func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
 	return &rules
@@ -100,12 +100,12 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 	assert.Equal(t, "terrarium", rec.tables[0].Name)
 	assert.Equal(t, nftables.TableFamilyINet, rec.tables[0].Family)
 
-	// Chains: input, output, nat_output (no sandbox_output).
+	// Chains: input, output, nat_output (no terrarium_output).
 	names := rec.chainNames()
 	assert.Contains(t, names, "input")
 	assert.Contains(t, names, "output")
 	assert.Contains(t, names, "nat_output")
-	assert.NotContains(t, names, "sandbox_output")
+	assert.NotContains(t, names, "terrarium_output")
 
 	// No FQDN sets.
 	assert.Empty(t, rec.sets)
@@ -194,7 +194,7 @@ func TestApplyRules_Blocked(t *testing.T) {
 	names := rec.chainNames()
 	assert.Contains(t, names, "input")
 	assert.Contains(t, names, "output")
-	assert.NotContains(t, names, "sandbox_output")
+	assert.NotContains(t, names, "terrarium_output")
 	assert.NotContains(t, names, "nat_output")
 
 	// OUTPUT ends with DROP.
@@ -253,18 +253,18 @@ func TestApplyRules_RulesMode(t *testing.T) {
 	names := rec.chainNames()
 	assert.Contains(t, names, "input")
 	assert.Contains(t, names, "output")
-	assert.Contains(t, names, "sandbox_output")
+	assert.Contains(t, names, "terrarium_output")
 	assert.Contains(t, names, "cidr_0")
 	assert.Contains(t, names, "nat_output")
 
-	// OUTPUT chain: verify UID 1000 dispatch to sandbox_output
+	// OUTPUT chain: verify UID 1000 dispatch to terrarium_output
 	// appears before ESTABLISHED.
 	outputRules := rec.rulesForChain("output")
 
 	var jumpIdx, estIdx int
 	for i, r := range outputRules {
 		v, chain := ruleVerdict(r)
-		if v == expr.VerdictJump && chain == "sandbox_output" {
+		if v == expr.VerdictJump && chain == "terrarium_output" {
 			jumpIdx = i
 		}
 
@@ -281,16 +281,16 @@ func TestApplyRules_RulesMode(t *testing.T) {
 	v, _ := ruleVerdict(outputRules[len(outputRules)-1])
 	assert.Equal(t, expr.VerdictDrop, v)
 
-	// sandbox_output ends with DROP.
-	sandboxRules := rec.rulesForChain("sandbox_output")
-	require.NotEmpty(t, sandboxRules)
+	// terrarium_output ends with DROP.
+	terrariumRules := rec.rulesForChain("terrarium_output")
+	require.NotEmpty(t, terrariumRules)
 
-	v, _ = ruleVerdict(sandboxRules[len(sandboxRules)-1])
+	v, _ = ruleVerdict(terrariumRules[len(terrariumRules)-1])
 	assert.Equal(t, expr.VerdictDrop, v)
 
-	// sandbox_output has jump to cidr_0.
+	// terrarium_output has jump to cidr_0.
 	var hasCIDRJump bool
-	for _, r := range sandboxRules {
+	for _, r := range terrariumRules {
 		vk, chain := ruleVerdict(r)
 		if vk == expr.VerdictJump && chain == "cidr_0" {
 			hasCIDRJump = true
@@ -298,7 +298,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 		}
 	}
 
-	assert.True(t, hasCIDRJump, "sandbox_output must jump to cidr_0")
+	assert.True(t, hasCIDRJump, "terrarium_output must jump to cidr_0")
 
 	// cidr_0 chain has RETURN for excepts and ACCEPT for CIDRs.
 	cidrRules := rec.rulesForChain("cidr_0")
@@ -367,8 +367,8 @@ func TestApplyRules_RulesMode(t *testing.T) {
 			"NAT RETURN must precede REDIRECT")
 	}
 
-	// Logging: sandbox_output has LOG before DROP.
-	assert.True(t, ruleHasLog(sandboxRules[len(sandboxRules)-2]))
+	// Logging: terrarium_output has LOG before DROP.
+	assert.True(t, ruleHasLog(terrariumRules[len(terrariumRules)-2]))
 }
 
 func TestApplyRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
@@ -392,13 +392,13 @@ func TestApplyRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 
 	// Envoy ACCEPT (UID 999) must be in the output chain, placed
 	// after the UID 1000 dispatch and before ESTABLISHED. Only UID
-	// 1000 enters sandbox_output, so the Envoy rule must live in
+	// 1000 enters terrarium_output, so the Envoy rule must live in
 	// the output chain for Envoy's outbound connections to pass.
-	sandboxJumpIdx, envoyIdx, estIdx := -1, -1, -1
+	terrariumJumpIdx, envoyIdx, estIdx := -1, -1, -1
 	for i, r := range outputRules {
 		vk, chain := ruleVerdict(r)
-		if vk == expr.VerdictJump && chain == "sandbox_output" {
-			sandboxJumpIdx = i
+		if vk == expr.VerdictJump && chain == "terrarium_output" {
+			terrariumJumpIdx = i
 		}
 
 		if envoyIdx == -1 && vk == expr.VerdictAccept && ruleHasMetaKey(r, expr.MetaKeySKUID) {
@@ -411,11 +411,11 @@ func TestApplyRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 		}
 	}
 
-	require.NotEqual(t, -1, sandboxJumpIdx, "sandbox_output jump must exist")
+	require.NotEqual(t, -1, terrariumJumpIdx, "terrarium_output jump must exist")
 	require.NotEqual(t, -1, envoyIdx, "Envoy ACCEPT must exist in output chain")
 	require.NotEqual(t, -1, estIdx, "ESTABLISHED ACCEPT must exist")
 
-	assert.Greater(t, envoyIdx, sandboxJumpIdx,
+	assert.Greater(t, envoyIdx, terrariumJumpIdx,
 		"Envoy ACCEPT must come after UID 1000 dispatch")
 	assert.Less(t, envoyIdx, estIdx,
 		"Envoy ACCEPT must come before ESTABLISHED")
@@ -441,27 +441,27 @@ func TestApplyRules_FQDNSets(t *testing.T) {
 
 	// FQDN sets created (v4 + v6).
 	setNames := rec.setNames()
-	assert.Contains(t, setNames, "sandbox_fqdn4_0")
-	assert.Contains(t, setNames, "sandbox_fqdn6_0")
+	assert.Contains(t, setNames, "terrarium_fqdn4_0")
+	assert.Contains(t, setNames, "terrarium_fqdn6_0")
 
 	// Sets have correct key types.
 	for _, s := range rec.sets {
-		if s.Name == "sandbox_fqdn4_0" {
+		if s.Name == "terrarium_fqdn4_0" {
 			assert.Equal(t, nftables.TypeIPAddr, s.KeyType)
 			assert.True(t, s.HasTimeout)
 		}
 
-		if s.Name == "sandbox_fqdn6_0" {
+		if s.Name == "terrarium_fqdn6_0" {
 			assert.Equal(t, nftables.TypeIP6Addr, s.KeyType)
 			assert.True(t, s.HasTimeout)
 		}
 	}
 
-	// sandbox_output has FQDN set lookup rules.
-	sandboxRules := rec.rulesForChain("sandbox_output")
+	// terrarium_output has FQDN set lookup rules.
+	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	var lookupCount int
-	for _, r := range sandboxRules {
+	for _, r := range terrariumRules {
 		if ruleHasLookup(r) {
 			lookupCount++
 		}
@@ -488,11 +488,11 @@ func TestApplyRules_FQDNZombieCTOrdering(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
-	sandboxRules := rec.rulesForChain("sandbox_output")
+	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	// Find ESTABLISHED and Lookup rule positions for FQDN port.
 	estIdx, lookupIdx := -1, -1
-	for i, r := range sandboxRules {
+	for i, r := range terrariumRules {
 		if ruleHasCtState(r) && ruleHasMetaKey(r, expr.MetaKeySKUID) {
 			if estIdx == -1 {
 				estIdx = i
@@ -538,11 +538,11 @@ func TestApplyRules_UnrestrictedOpenPorts(t *testing.T) {
 	names := rec.chainNames()
 	assert.NotContains(t, names, "cidr_0")
 
-	// sandbox_output has blanket UID 1000 ACCEPT.
-	sandboxRules := rec.rulesForChain("sandbox_output")
+	// terrarium_output has blanket UID 1000 ACCEPT.
+	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	var hasBlanketAccept bool
-	for _, r := range sandboxRules {
+	for _, r := range terrariumRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictAccept && ruleHasMetaKey(r, expr.MetaKeySKUID) {
 			hasBlanketAccept = true
@@ -688,10 +688,10 @@ func TestApplyRules_PerRuleFQDNSetIsolation(t *testing.T) {
 
 	// Each FQDN rule should get its own pair of sets.
 	setNames := rec.setNames()
-	assert.Contains(t, setNames, "sandbox_fqdn4_0")
-	assert.Contains(t, setNames, "sandbox_fqdn6_0")
-	assert.Contains(t, setNames, "sandbox_fqdn4_1")
-	assert.Contains(t, setNames, "sandbox_fqdn6_1")
+	assert.Contains(t, setNames, "terrarium_fqdn4_0")
+	assert.Contains(t, setNames, "terrarium_fqdn6_0")
+	assert.Contains(t, setNames, "terrarium_fqdn4_1")
+	assert.Contains(t, setNames, "terrarium_fqdn6_1")
 }
 
 func TestApplyRules_OpenPortFilterRules(t *testing.T) {
@@ -725,11 +725,11 @@ func TestApplyRules_OpenPortFilterRules(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
-	sandboxRules := rec.rulesForChain("sandbox_output")
+	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	// Count ACCEPT rules that have UID matching (open port rules).
 	var acceptCount int
-	for _, r := range sandboxRules {
+	for _, r := range terrariumRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictAccept && ruleHasMetaKey(r, expr.MetaKeySKUID) {
 			acceptCount++
@@ -737,7 +737,7 @@ func TestApplyRules_OpenPortFilterRules(t *testing.T) {
 	}
 
 	// Should have: UDP open port ACCEPT + TCP range ACCEPT = 2.
-	// Envoy ACCEPT is in the output chain, not sandbox_output.
+	// Envoy ACCEPT is in the output chain, not terrarium_output.
 	// The FQDN rule is TCP-only so no set lookup rules are generated.
 	assert.Equal(t, 2, acceptCount)
 }
@@ -767,11 +767,11 @@ func TestApplyRules_MultipleRuleCIDRChains(t *testing.T) {
 	assert.Contains(t, names, "cidr_0")
 	assert.Contains(t, names, "cidr_1")
 
-	// Both get jumped from sandbox_output.
-	sandboxRules := rec.rulesForChain("sandbox_output")
+	// Both get jumped from terrarium_output.
+	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	var jumpChains []string
-	for _, r := range sandboxRules {
+	for _, r := range terrariumRules {
 		v, chain := ruleVerdict(r)
 		if v == expr.VerdictJump {
 			jumpChains = append(jumpChains, chain)

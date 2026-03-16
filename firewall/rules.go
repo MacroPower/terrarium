@@ -131,7 +131,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	if cfg.Logging {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix("SANDBOX_ALLOW: ")),
+			Exprs: flatExprs(logPrefix("TERRARIUM_ALLOW: ")),
 		})
 	}
 
@@ -167,7 +167,7 @@ func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids 
 	if cfg.Logging {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix("SANDBOX_DROP: ")),
+			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
 		})
 	}
 
@@ -235,26 +235,26 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 
 	addOutputBaseRules(conn, table, outputChain, tproxyMark)
 
-	// Dispatch UID 1000 to sandbox_output before ESTABLISHED.
+	// Dispatch UID 1000 to terrarium_output before ESTABLISHED.
 	// This avoids the `! --uid-owner` negation pattern and its
 	// ownerless-packet problem with meta skuid.
-	sandboxChain := conn.AddChain(&nftables.Chain{
-		Name:  "sandbox_output",
+	terrariumChain := conn.AddChain(&nftables.Chain{
+		Name:  "terrarium_output",
 		Table: table,
 	})
 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: outputChain,
 		Exprs: flatExprs(
-			matchUID(uids.Sandbox),
-			verdictExprs(expr.VerdictJump, "sandbox_output"),
+			matchUID(uids.Terrarium),
+			verdictExprs(expr.VerdictJump, "terrarium_output"),
 		),
 	})
 
 	// Envoy ACCEPT: Envoy can reach any IP (domain allowlist
 	// in Envoy config provides security). Placed in the output
-	// chain (not sandbox_output) because only UID 1000 is
-	// dispatched to sandbox_output.
+	// chain (not terrarium_output) because only UID 1000 is
+	// dispatched to terrarium_output.
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: outputChain,
 		Exprs: flatExprs(
@@ -268,7 +268,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 	if cfg.Logging {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix("SANDBOX_DROP: ")),
+			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
 		})
 	}
 
@@ -277,9 +277,9 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 		Exprs: flatExprs(verdictExprs(expr.VerdictDrop)),
 	})
 
-	// sandbox_output chain rules.
+	// terrarium_output chain rules.
 	if !unrestricted {
-		addCIDRChains(conn, table, sandboxChain, allCIDRs, uids)
+		addCIDRChains(conn, table, terrariumChain, allCIDRs, uids)
 	}
 
 	if unrestricted {
@@ -287,34 +287,34 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 		// FQDN-port combinations are still intercepted by NAT
 		// REDIRECT rules, preserving Envoy L7 filtering.
 		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: sandboxChain,
+			Table: table, Chain: terrariumChain,
 			Exprs: flatExprs(
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				verdictExprs(expr.VerdictAccept),
 			),
 		})
 	} else {
 		// Open port rules.
 		for _, op := range openPortRules {
-			addOpenPortRule(conn, table, sandboxChain, op, uids)
+			addOpenPortRule(conn, table, terrariumChain, op, uids)
 		}
 
 		// FQDN non-TCP port rules.
 		for _, frp := range fqdnRulePorts {
 			ref := fqdnSets[frp.RuleIndex]
-			addFQDNPortRules(conn, table, sandboxChain, frp, ref, uids)
+			addFQDNPortRules(conn, table, terrariumChain, frp, ref, uids)
 		}
 	}
 
 	if cfg.Logging {
 		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: sandboxChain,
-			Exprs: flatExprs(logPrefix("SANDBOX_DROP: ")),
+			Table: table, Chain: terrariumChain,
+			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
 		})
 	}
 
 	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: sandboxChain,
+		Table: table, Chain: terrariumChain,
 		Exprs: flatExprs(verdictExprs(expr.VerdictDrop)),
 	})
 

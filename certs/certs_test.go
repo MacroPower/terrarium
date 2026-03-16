@@ -34,7 +34,7 @@ func TestGenerateCA(t *testing.T) {
 	cert, err := x509.ParseCertificate(block.Bytes)
 	require.NoError(t, err)
 	assert.True(t, cert.IsCA)
-	assert.Equal(t, "Sandbox CA", cert.Subject.CommonName)
+	assert.Equal(t, "Terrarium CA", cert.Subject.CommonName)
 	assert.Equal(t, 0, cert.MaxPathLen)
 	assert.True(t, cert.MaxPathLenZero)
 

@@ -316,7 +316,7 @@ func TestProxyTCPPopulatesIPSet(t *testing.T) {
 	defer mu.Unlock()
 
 	require.Len(t, recorded, 1)
-	assert.Contains(t, recorded[0], "sandbox_fqdn4_0")
+	assert.Contains(t, recorded[0], "terrarium_fqdn4_0")
 	assert.Contains(t, recorded[0], "10.20.30.40")
 }
 
@@ -459,7 +459,7 @@ func TestProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 	defer mu.Unlock()
 
 	require.Len(t, recorded, 1, "TCP retry should populate set")
-	assert.Contains(t, recorded[0], "sandbox_fqdn4_0")
+	assert.Contains(t, recorded[0], "terrarium_fqdn4_0")
 	assert.Contains(t, recorded[0], "1.1.1.1")
 	assert.Contains(t, recorded[0], "2.2.2.2")
 }

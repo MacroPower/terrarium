@@ -95,7 +95,7 @@ func (m *Tests) TestEgressAll(ctx context.Context) error {
 }
 
 // TestEgressDenyAll verifies that the deny-all config (egress: [{}]) blocks
-// all outbound traffic from the sandbox user. The deny-all pattern has no
+// all outbound traffic from the terrarium user. The deny-all pattern has no
 // ports, so Envoy is not started; nftables rules alone enforce the lockdown.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-deny-all
@@ -1043,8 +1043,8 @@ fi
 	return runVariants(ctx, "dns-proxy-filtering", config, script, bindings)
 }
 
-// TestEgressPrivilegeIsolation verifies that the sandboxed process runs as
-// UID 1000 / GID 1000 with all Linux capabilities dropped. The sandbox
+// TestEgressPrivilegeIsolation verifies that the terrarium process runs as
+// UID 1000 / GID 1000 with all Linux capabilities dropped. The terrarium
 // command writes identity and capability info to files, which the assertion
 // script then validates. A filtered policy (FQDN rule) is used to ensure
 // privilege drop happens in the filtered code path.
@@ -1063,7 +1063,7 @@ func (m *Tests) TestEgressPrivilegeIsolation(ctx context.Context) error {
 		targetService("target-allow", defaultNginxConf),
 	}
 
-	// The sandbox command (after privilege drop) writes id output and
+	// The terrarium command (after privilege drop) writes id output and
 	// capability status to files, then sleeps so the container stays alive
 	// for the assertion script to read them.
 	script := `#!/bin/sh
@@ -1072,11 +1072,11 @@ set -e
 PASS=0
 FAIL=0
 ` + assertionPreamble + `
-# Start terrarium init with a sandbox command that captures identity
+# Start terrarium init with a command that captures identity
 # and capability info to files, then sleeps to keep the container alive.
 terrarium init --config /etc/terrarium/config.yaml -- sh -c '
-    id > /tmp/sandbox_id.txt
-    grep "^Cap" /proc/self/status > /tmp/sandbox_caps.txt
+    id > /tmp/terrarium_id.txt
+    grep "^Cap" /proc/self/status > /tmp/terrarium_caps.txt
     sleep infinity
 ' &
 TERRARIUM_PID=$!
@@ -1100,10 +1100,10 @@ fi
 
 sleep 2
 
-# Wait for sandbox output files to appear (should be near-instant).
+# Wait for terrarium output files to appear (should be near-instant).
 file_ready=0
 for i in $(seq 1 10); do
-    if [ -f /tmp/sandbox_id.txt ] && [ -f /tmp/sandbox_caps.txt ]; then
+    if [ -f /tmp/terrarium_id.txt ] && [ -f /tmp/terrarium_caps.txt ]; then
         file_ready=1
         break
     fi
@@ -1111,13 +1111,13 @@ for i in $(seq 1 10); do
 done
 
 if [ "$file_ready" -ne 1 ]; then
-    echo "FAIL: sandbox output files did not appear within 10 seconds"
+    echo "FAIL: terrarium output files did not appear within 10 seconds"
     kill $TERRARIUM_PID 2>/dev/null || true
     exit 1
 fi
 
 # Verify UID is 1000.
-id_output=$(cat /tmp/sandbox_id.txt)
+id_output=$(cat /tmp/terrarium_id.txt)
 if echo "$id_output" | grep -q "uid=1000"; then
     echo "PASS: privilege-isolation: UID is 1000"
     PASS=$((PASS + 1))
@@ -1136,7 +1136,7 @@ else
 fi
 
 # Verify all capability sets are zeroed out.
-caps_output=$(cat /tmp/sandbox_caps.txt)
+caps_output=$(cat /tmp/terrarium_caps.txt)
 all_caps_zero=1
 for cap_name in CapInh CapPrm CapEff CapBnd CapAmb; do
     cap_val=$(echo "$caps_output" | grep "^${cap_name}:" | awk '{print $2}')
@@ -1223,7 +1223,7 @@ fi
 
 // TestEgressLoopbackDenyAll verifies that localhost communication works even
 // under a deny-all policy. A simple HTTP listener is started on localhost
-// inside the container before terrarium init. The sandbox command (UID 1000)
+// inside the container before terrarium init. The terrarium command (UID 1000)
 // verifies it can reach the localhost service while external traffic is denied.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-loopback-deny-all
@@ -1236,7 +1236,7 @@ func (m *Tests) TestEgressLoopbackDenyAll(ctx context.Context) error {
 	}
 
 	// Custom script: start a localhost HTTP listener, then run terrarium init
-	// with a sandbox command that tests localhost reachability and external
+	// with a command that tests localhost reachability and external
 	// denial. Results are written to files and validated by the assertion script.
 	script := `#!/bin/sh
 set -e
@@ -1267,7 +1267,7 @@ if [ "$listener_ready" -ne 1 ]; then
     exit 1
 fi
 
-# Start terrarium init with a sandbox command that tests connectivity
+# Start terrarium init with a command that tests connectivity
 # and writes results to files.
 terrarium init --config /etc/terrarium/config.yaml -- sh -c '
     # Test localhost reachability (should work under deny-all).
@@ -1310,7 +1310,7 @@ if [ "$ready" -ne 1 ]; then
     exit 1
 fi
 
-# Wait for sandbox output files to appear.
+# Wait for terrarium output files to appear.
 file_ready=0
 for i in $(seq 1 30); do
     if [ -f /tmp/lo_result.txt ] && [ -f /tmp/ext_result.txt ]; then
@@ -1321,23 +1321,23 @@ for i in $(seq 1 30); do
 done
 
 if [ "$file_ready" -ne 1 ]; then
-    echo "FAIL: sandbox output files did not appear within 30 seconds"
+    echo "FAIL: terrarium output files did not appear within 30 seconds"
     kill $TERRARIUM_PID 2>/dev/null || true
     kill $LISTENER_PID 2>/dev/null || true
     exit 1
 fi
 
-# Verify localhost was reachable from sandbox.
+# Verify localhost was reachable from terrarium.
 lo_result=$(cat /tmp/lo_result.txt)
 if echo "$lo_result" | grep -q "LOOPBACK_OK"; then
-    echo "PASS: loopback-deny-all: sandbox can reach localhost:8080"
+    echo "PASS: loopback-deny-all: terrarium can reach localhost:8080"
     PASS=$((PASS + 1))
 else
     echo "FAIL: loopback-deny-all: expected LOOPBACK_OK, got: $lo_result"
     FAIL=$((FAIL + 1))
 fi
 
-# Verify external traffic is denied from sandbox.
+# Verify external traffic is denied from terrarium.
 ext_result=$(cat /tmp/ext_result.txt)
 if [ "$ext_result" = "000" ]; then
     echo "PASS: loopback-deny-all: external traffic denied (HTTP 000)"
@@ -1355,7 +1355,7 @@ kill $LISTENER_PID 2>/dev/null || true
 }
 
 // TestEgressExitCodePropagation verifies that terrarium propagates the child
-// process exit code. When the sandbox command exits with a non-zero code,
+// process exit code. When the terrarium command exits with a non-zero code,
 // terrarium should exit with the same code. When it exits with 0, terrarium
 // should exit with 0.
 //

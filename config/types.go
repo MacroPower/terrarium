@@ -428,7 +428,7 @@ type UserFlags struct {
 	ReadyFile       string
 }
 
-// User holds identity and path values for the sandboxed container user.
+// User holds identity and path values for the terrarium container user.
 // These values are passed from the CLI entrypoint so library packages
 // have no baked-in assumptions. Create instances with [NewUser].
 type User struct {
@@ -467,12 +467,12 @@ func NewUser() *User {
 // flag set. Default values follow XDG Base Directory conventions with
 // container-appropriate fallbacks.
 func (u *User) RegisterFlags(flags *pflag.FlagSet) {
-	flags.StringVar(&u.UID, u.Flags.UID, "1000", "sandbox user UID")
-	flags.StringVar(&u.GID, u.Flags.GID, "1000", "sandbox user GID")
+	flags.StringVar(&u.UID, u.Flags.UID, "1000", "terrarium user UID")
+	flags.StringVar(&u.GID, u.Flags.GID, "1000", "terrarium user GID")
 	flags.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "1001", "Envoy process UID")
-	flags.StringVar(&u.Username, u.Flags.Username, "dev", "sandbox username")
+	flags.StringVar(&u.Username, u.Flags.Username, "dev", "terrarium username")
 	flags.StringVar(&u.HomeDir, u.Flags.HomeDir,
-		userHomeDir(), "sandbox user home directory")
+		userHomeDir(), "terrarium user home directory")
 	flags.StringVar(&u.ConfigPath, u.Flags.ConfigPath,
 		filepath.Join(userConfigDir(), "terrarium", "config.yaml"), "terrarium config file path")
 	flags.StringVar(&u.CertsDir, u.Flags.CertsDir,

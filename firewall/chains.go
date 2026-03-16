@@ -173,7 +173,7 @@ func addCIDRChains(
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
-							matchUID(uids.Sandbox),
+							matchUID(uids.Terrarium),
 							matchDstCIDR(excNet),
 							verdictExprs(expr.VerdictReturn),
 						),
@@ -183,7 +183,7 @@ func addCIDRChains(
 						conn.AddRule(&nftables.Rule{
 							Table: table, Chain: chain,
 							Exprs: flatExprs(
-								matchUID(uids.Sandbox),
+								matchUID(uids.Terrarium),
 								matchPortProto(pp),
 								matchDstCIDR(excNet),
 								verdictExprs(expr.VerdictReturn),
@@ -205,7 +205,7 @@ func addCIDRChains(
 				conn.AddRule(&nftables.Rule{
 					Table: table, Chain: chain,
 					Exprs: flatExprs(
-						matchUID(uids.Sandbox),
+						matchUID(uids.Terrarium),
 						matchDstCIDR(cidrNet),
 						verdictExprs(expr.VerdictAccept),
 					),
@@ -215,7 +215,7 @@ func addCIDRChains(
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
-							matchUID(uids.Sandbox),
+							matchUID(uids.Terrarium),
 							matchPortProto(pp),
 							matchDstCIDR(cidrNet),
 							verdictExprs(expr.VerdictAccept),
@@ -242,7 +242,7 @@ func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				matchL4Proto(protoNum(op.Protocol)),
 				matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
 				verdictExprs(expr.VerdictAccept),
@@ -254,7 +254,7 @@ func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
 				verdictExprs(expr.VerdictAccept),
@@ -282,7 +282,7 @@ func addFQDNPortRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				matchCtState(expr.CtStateBitESTABLISHED),
@@ -295,7 +295,7 @@ func addFQDNPortRules(
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNFProto(unix.NFPROTO_IPV4),
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				setLookupDst(ref.set4),
@@ -308,7 +308,7 @@ func addFQDNPortRules(
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNFProto(unix.NFPROTO_IPV6),
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				setLookupDst(ref.set6),
@@ -343,7 +343,7 @@ func addNATRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(p)),
 				redirectToPort(port16(config.ProxyPortBase+p)),
@@ -356,7 +356,7 @@ func addNATRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(fwd.Port)),
 				redirectToPort(port16(config.ProxyPortBase+fwd.Port)),
@@ -368,7 +368,7 @@ func addNATRules(
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(
-			matchUID(uids.Sandbox),
+			matchUID(uids.Terrarium),
 			matchL4Proto(unix.IPPROTO_TCP),
 			redirectToPort(port16(config.CatchAllProxyPort)),
 		),
@@ -391,7 +391,7 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(
-			matchUID(uids.Sandbox),
+			matchUID(uids.Terrarium),
 			matchL4Proto(unix.IPPROTO_TCP),
 			matchDstPort(80),
 			redirectToPort(15080),
@@ -402,7 +402,7 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(
-			matchUID(uids.Sandbox),
+			matchUID(uids.Terrarium),
 			matchL4Proto(unix.IPPROTO_TCP),
 			matchDstPort(443),
 			redirectToPort(15443),
@@ -414,7 +414,7 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uids.Sandbox),
+				matchUID(uids.Terrarium),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(fwd.Port)),
 				redirectToPort(port16(config.ProxyPortBase+fwd.Port)),
@@ -426,7 +426,7 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(
-			matchUID(uids.Sandbox),
+			matchUID(uids.Terrarium),
 			matchL4Proto(unix.IPPROTO_TCP),
 			redirectToPort(port16(config.CatchAllProxyPort)),
 		),
@@ -444,7 +444,7 @@ func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, c
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: chain,
 				Exprs: flatExprs(
-					matchUID(uids.Sandbox),
+					matchUID(uids.Terrarium),
 					matchDstCIDR(cidrNet),
 					verdictExprs(expr.VerdictReturn),
 				),
@@ -454,7 +454,7 @@ func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, c
 				conn.AddRule(&nftables.Rule{
 					Table: table, Chain: chain,
 					Exprs: flatExprs(
-						matchUID(uids.Sandbox),
+						matchUID(uids.Terrarium),
 						matchPortProto(pp),
 						matchDstCIDR(cidrNet),
 						verdictExprs(expr.VerdictReturn),
@@ -466,7 +466,7 @@ func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, c
 }
 
 // addMangleOutputChain creates a route-type output chain at mangle
-// priority that marks all sandbox-UID UDP packets (except port 53)
+// priority that marks all terrarium-UID UDP packets (except port 53)
 // with the TPROXY fwmark. The route chain type triggers a re-route
 // lookup after marking, sending packets through loopback via policy
 // routing. Port 53 is excluded because DNS must reach the DNS proxy
@@ -480,11 +480,11 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 		Priority: nftables.ChainPriorityMangle,
 	})
 
-	// Mark sandbox UDP (except port 53) with tproxyMark.
+	// Mark terrarium UDP (except port 53) with tproxyMark.
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(
-			matchUID(uids.Sandbox),
+			matchUID(uids.Terrarium),
 			matchL4Proto(unix.IPPROTO_UDP),
 			notMatchDstPort(53),
 			markPacket(tproxyMark),

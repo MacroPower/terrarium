@@ -11,14 +11,14 @@ import (
 )
 
 // FQDNSetName returns the nftables set name for a FQDN rule index
-// and address family. Names follow sandbox_fqdn{4,6}_R where R is
+// and address family. Names follow terrarium_fqdn{4,6}_R where R is
 // the 0-indexed position among FQDN-bearing rules with non-TCP ports.
 func FQDNSetName(ruleIdx int, ipv6 bool) string {
 	if ipv6 {
-		return fmt.Sprintf("sandbox_fqdn6_%d", ruleIdx)
+		return fmt.Sprintf("terrarium_fqdn6_%d", ruleIdx)
 	}
 
-	return fmt.Sprintf("sandbox_fqdn4_%d", ruleIdx)
+	return fmt.Sprintf("terrarium_fqdn4_%d", ruleIdx)
 }
 
 // TCPForwardHosts returns a deduplicated, sorted list of hostnames from

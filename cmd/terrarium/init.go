@@ -134,7 +134,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 
 	uids := firewall.UIDs{
 		//nolint:gosec // G115: UID values from CLI flags.
-		Sandbox: uint32(mustAtoi(usr.UID)),
+		Terrarium: uint32(mustAtoi(usr.UID)),
 		//nolint:gosec // G115: UID values from CLI flags.
 		Envoy: uint32(mustAtoi(usr.EnvoyUID)),
 		Root:  0,
