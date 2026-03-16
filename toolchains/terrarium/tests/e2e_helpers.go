@@ -415,18 +415,15 @@ set -e
 PASS=0
 FAIL=0
 ` + assertionPreamble + `
-# Start terrarium init in background
-terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
+# Start terrarium init in background with a ready-file signal.
+terrarium init --config /etc/terrarium/config.yaml --ready-file /tmp/.terrarium-ready -- sleep infinity &
 TERRARIUM_PID=$!
 
-# Wait for Envoy readiness by polling listener ports with curl.
-# Envoy proxy listens on 15443 (HTTPS) and/or 15080 (HTTP).
-# We use --connect-timeout to test TCP connectivity; any response
-# (including errors) means Envoy is listening.
+# Wait for the ready file to appear, indicating all infrastructure
+# (nftables, DNS proxy, Envoy) is fully operational.
 ready=0
 for i in $(seq 1 60); do
-    if curl -sko /dev/null --connect-timeout 1 https://127.0.0.1:15443/ 2>/dev/null || \
-       curl -so /dev/null --connect-timeout 1 http://127.0.0.1:15080/ 2>/dev/null; then
+    if [ -f /tmp/.terrarium-ready ]; then
         ready=1
         break
     fi
@@ -438,9 +435,6 @@ if [ "$ready" -ne 1 ]; then
     kill $TERRARIUM_PID 2>/dev/null || true
     exit 1
 fi
-
-# Give Envoy a moment to finish initialization
-sleep 2
 
 ` + assertions + scriptSuffix
 }
@@ -457,16 +451,16 @@ set -e
 PASS=0
 FAIL=0
 ` + assertionPreamble + `
-# Start terrarium init in background.
+# Start terrarium init in background with a ready-file signal.
 # No FQDN ports = no Envoy, so init finishes quickly.
-terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
+terrarium init --config /etc/terrarium/config.yaml --ready-file /tmp/.terrarium-ready -- sleep infinity &
 TERRARIUM_PID=$!
 
-# Wait for init to apply nftables rules (no Envoy to wait for).
-# Poll for the nftables table to appear instead of a fixed sleep.
+# Wait for the ready file to appear, indicating all infrastructure
+# (nftables, DNS proxy) is fully operational.
 ready=0
-for i in $(seq 1 30); do
-    if nft list table inet terrarium >/dev/null 2>&1; then
+for i in $(seq 1 60); do
+    if [ -f /tmp/.terrarium-ready ]; then
         ready=1
         break
     fi
@@ -474,7 +468,7 @@ for i in $(seq 1 30); do
 done
 
 if [ "$ready" -ne 1 ]; then
-    echo "FAIL: terrarium nftables rules did not appear within 30 seconds"
+    echo "FAIL: terrarium did not become ready within 60 seconds"
     kill $TERRARIUM_PID 2>/dev/null || true
     exit 1
 fi

@@ -425,6 +425,7 @@ type UserFlags struct {
 	CertsDir        string
 	CADir           string
 	EnvoyConfigPath string
+	ReadyFile       string
 }
 
 // User holds identity and path values for the sandboxed container user.
@@ -440,6 +441,7 @@ type User struct {
 	CertsDir        string
 	CADir           string
 	EnvoyConfigPath string
+	ReadyFile       string
 	Flags           UserFlags
 }
 
@@ -456,6 +458,7 @@ func NewUser() *User {
 			CertsDir:        "certs-dir",
 			CADir:           "ca-dir",
 			EnvoyConfigPath: "envoy-config",
+			ReadyFile:       "ready-file",
 		},
 	}
 }
@@ -478,6 +481,8 @@ func (u *User) RegisterFlags(flags *pflag.FlagSet) {
 		filepath.Join(userDataDir(), "terrarium", "ca"), "CA cert and key directory")
 	flags.StringVar(&u.EnvoyConfigPath, u.Flags.EnvoyConfigPath,
 		envoyConfigDefault(), "Envoy config output path")
+	flags.StringVar(&u.ReadyFile, u.Flags.ReadyFile,
+		"", "path to create when init is ready")
 }
 
 // RegisterCompletions registers shell completions for [User] flags.

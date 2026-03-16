@@ -296,6 +296,21 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	firewallCleanedUp = true
 	dnsProxyCleanedUp = true
 
+	// Signal readiness by creating a file at the requested path.
+	// This happens after all infrastructure is up (nftables, DNS
+	// proxy, Envoy) but before the user command starts.
+	if usr.ReadyFile != "" {
+		f, err := os.Create(usr.ReadyFile)
+		if err != nil {
+			return fmt.Errorf("creating ready file: %w", err)
+		}
+
+		err = f.Close()
+		if err != nil {
+			return fmt.Errorf("closing ready file: %w", err)
+		}
+	}
+
 	// Prepare privilege drop.
 	writeErr := sys.Write("0 "+usr.UID, "net", "ipv4", "ping_group_range")
 	if writeErr != nil {
