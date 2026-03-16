@@ -466,7 +466,7 @@ func NewUser() *User {
 func (u *User) RegisterFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&u.UID, u.Flags.UID, "1000", "sandbox user UID")
 	flags.StringVar(&u.GID, u.Flags.GID, "1000", "sandbox user GID")
-	flags.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "999", "Envoy process UID")
+	flags.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "1001", "Envoy process UID")
 	flags.StringVar(&u.Username, u.Flags.Username, "dev", "sandbox username")
 	flags.StringVar(&u.HomeDir, u.Flags.HomeDir,
 		userHomeDir(), "sandbox user home directory")

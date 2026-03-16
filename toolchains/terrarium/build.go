@@ -177,6 +177,9 @@ func runtimeBaseDebian(platform dagger.Platform) *dagger.Container {
 		From("debian:13-slim").
 		WithExec([]string{"sh", "-c",
 			"apt-get update && apt-get install -y ca-certificates curl util-linux && rm -rf /var/lib/apt/lists/*"}).
+		WithExec([]string{"sh", "-c",
+			"useradd -u 1000 -m -s /bin/sh dev && " +
+				"useradd -u 1001 -M -s /usr/sbin/nologin envoy"}).
 		WithFile("/usr/local/bin/envoy", envoyBinary(platform))
 }
 
@@ -186,6 +189,9 @@ func runtimeBaseAlpine(platform dagger.Platform) *dagger.Container {
 	return dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("alpine:3.22").
 		WithExec([]string{"apk", "add", "--no-cache", "ca-certificates", "curl", "util-linux"}).
+		WithExec([]string{"sh", "-c",
+			"adduser -u 1000 -D -s /bin/sh dev && " +
+				"adduser -u 1001 -H -D -s /sbin/nologin envoy"}).
 		WithFile("/usr/local/bin/envoy", envoyBinary(platform))
 }
 

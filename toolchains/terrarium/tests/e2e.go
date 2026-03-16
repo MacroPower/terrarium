@@ -1209,11 +1209,11 @@ envoy_uid=$(ps -e -o uid,comm | grep envoy | awk '{print $1}' | head -1)
 if [ -z "$envoy_uid" ]; then
     echo "FAIL: envoy-uid: no envoy process found in ps output"
     FAIL=$((FAIL + 1))
-elif [ "$envoy_uid" = "999" ]; then
-    echo "PASS: envoy-uid: Envoy process running as UID 999"
+elif [ "$envoy_uid" = "1001" ]; then
+    echo "PASS: envoy-uid: Envoy process running as UID 1001"
     PASS=$((PASS + 1))
 else
-    echo "FAIL: envoy-uid: expected UID 999, got UID $envoy_uid"
+    echo "FAIL: envoy-uid: expected UID 1001, got UID $envoy_uid"
     FAIL=$((FAIL + 1))
 fi
 ` + scriptSuffix
