@@ -237,7 +237,15 @@ var (
 	// ErrServerNamesInvalidHostname is returned when a serverNames
 	// entry contains invalid hostname characters.
 	ErrServerNamesInvalidHostname = errors.New(
-		"serverNames entry contains invalid characters: only a-z, 0-9, '.', '-', and '_' are allowed",
+		"serverNames entry contains invalid characters: only a-z, 0-9, '.', '-', '_', and '*' are allowed",
+	)
+
+	// ErrServerNamesInvalidWildcard is returned when a serverNames
+	// entry uses a wildcard in an unsupported position. Only leading
+	// "*." or "**." prefixes are allowed, matching Cilium's wildcard
+	// semantics for SNI-based filter chain matching.
+	ErrServerNamesInvalidWildcard = errors.New(
+		"serverNames wildcard must be a leading *. or **. prefix",
 	)
 
 	// ErrDenyRuleL7 is returned when an [EgressDenyRule] contains L7

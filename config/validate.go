@@ -810,11 +810,23 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 		}
 	}
 
-	// Validate hostname characters.
+	// Validate hostname characters and wildcard position.
 	for _, name := range pr.ServerNames {
-		if !allowedMatchNameChars.MatchString(name) {
+		if !allowedMatchPatternChars.MatchString(name) {
 			return fmt.Errorf("%w: rule %d name %q",
 				ErrServerNamesInvalidHostname, ruleIdx, name)
+		}
+
+		if strings.Contains(name, "*") {
+			switch {
+			case strings.HasPrefix(name, "**.") && !strings.Contains(name[3:], "*"):
+				// Multi-label wildcard prefix: valid.
+			case strings.HasPrefix(name, "*.") && !strings.Contains(name[2:], "*"):
+				// Single-label wildcard prefix: valid.
+			default:
+				return fmt.Errorf("%w: rule %d name %q",
+					ErrServerNamesInvalidWildcard, ruleIdx, name)
+			}
 		}
 	}
 

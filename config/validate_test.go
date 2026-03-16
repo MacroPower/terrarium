@@ -2282,6 +2282,56 @@ egress:
           - api.internal.example.com
 `,
 		},
+		"serverNames wildcard *.example.com accepted": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "*.example.com"
+`,
+		},
+		"serverNames wildcard **.example.com accepted": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "**.example.com"
+`,
+		},
+		"serverNames partial wildcard rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "api.*.example.com"
+`,
+			err: config.ErrServerNamesInvalidWildcard,
+		},
+		"serverNames bare wildcard rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "*"
+`,
+			err: config.ErrServerNamesInvalidWildcard,
+		},
 	}
 
 	for name, tt := range tests {

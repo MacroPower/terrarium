@@ -24,6 +24,10 @@ func normalizeEgressRule(c *Config, i int) {
 		for k := range rule.ToPorts[j].ServerNames {
 			rule.ToPorts[j].ServerNames[k] = strings.TrimRight(
 				strings.ToLower(rule.ToPorts[j].ServerNames[k]), ".")
+			for strings.Contains(rule.ToPorts[j].ServerNames[k], "***") {
+				rule.ToPorts[j].ServerNames[k] = strings.ReplaceAll(
+					rule.ToPorts[j].ServerNames[k], "***", "**")
+			}
 		}
 	}
 
