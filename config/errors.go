@@ -249,6 +249,15 @@ var (
 	// rule has no effect and is likely a misconfiguration.
 	ErrDenyRuleEmpty = errors.New("egressDeny rule must have at least toCIDR, toCIDRSet, or toPorts")
 
+	// ErrEntitiesMixedL3 is returned when an [EgressRule] combines
+	// toEntities with another L3 selector (toCIDR, toCIDRSet, or
+	// toFQDNs). Cilium's EgressCommonRule.sanitize() rejects any
+	// rule combining two different L3 selector fields; use separate
+	// rules instead.
+	ErrEntitiesMixedL3 = errors.New(
+		"toEntities cannot be combined with toCIDR, toCIDRSet, or toFQDNs in the same rule; use separate rules",
+	)
+
 	// ErrUnsupportedEntity is returned when a [EgressRule] has a
 	// toEntities value that terrarium does not support. Only "world"
 	// is supported; other Cilium entities (host, cluster,

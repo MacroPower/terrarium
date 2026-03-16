@@ -1063,3 +1063,54 @@ func (c *Config) ResolveDenyCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 func resolvePortsFromDenyRule(rule EgressDenyRule) []ResolvedPortProto {
 	return resolvePortsFromPortRules(rule.ToPorts)
 }
+
+// ResolveDenyPortOnlyRules collects port-protocol pairs from egress
+// deny rules that have toPorts but no L3 selectors (no toCIDR or
+// toCIDRSet). Under Cilium semantics, a deny rule with only toPorts
+// means "deny traffic to any destination on these ports." These are
+// separate from [Config.ResolveDenyCIDRRules], which handles deny
+// rules with CIDR selectors.
+func (c *Config) ResolveDenyPortOnlyRules() []ResolvedPortProto {
+	denyRules := c.EgressDenyRules()
+
+	seen := make(map[string]bool)
+
+	var result []ResolvedPortProto
+
+	for ri := range denyRules {
+		if len(denyRules[ri].ToCIDR) > 0 || len(denyRules[ri].ToCIDRSet) > 0 {
+			continue
+		}
+
+		ports := resolvePortsFromDenyRule(denyRules[ri])
+		if ports == nil {
+			// nil means wildcard (all ports). Emit a single
+			// zero-port entry so the firewall can generate a
+			// blanket DROP without port matching.
+			ports = []ResolvedPortProto{{}}
+		}
+
+		for _, pp := range ports {
+			k := pp.Protocol + "/" + strconv.Itoa(pp.Port) + "/" + strconv.Itoa(pp.EndPort)
+			if !seen[k] {
+				seen[k] = true
+
+				result = append(result, pp)
+			}
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Port != result[j].Port {
+			return result[i].Port < result[j].Port
+		}
+
+		if result[i].EndPort != result[j].EndPort {
+			return result[i].EndPort < result[j].EndPort
+		}
+
+		return result[i].Protocol < result[j].Protocol
+	})
+
+	return result
+}

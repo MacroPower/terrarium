@@ -1860,3 +1860,72 @@ func TestResolveDenyCIDRRules(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveDenyPortOnlyRules(t *testing.T) {
+	t.Parallel()
+
+	denyRules := func(rules ...config.EgressDenyRule) *[]config.EgressDenyRule {
+		return &rules
+	}
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		want []config.ResolvedPortProto
+	}{
+		"nil egressDeny": {
+			cfg: &config.Config{},
+		},
+		"port-only deny rule": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "6379", Protocol: "TCP"}}}},
+				}),
+			},
+			want: []config.ResolvedPortProto{
+				{Port: 6379, Protocol: "TCP"},
+			},
+		},
+		"CIDR+port deny rule not included": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToCIDR:  []string{"10.0.0.0/8"},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}},
+				}),
+			},
+		},
+		"port-only with ANY expands": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "53"}}}},
+				}),
+			},
+			want: []config.ResolvedPortProto{
+				{Port: 53, Protocol: "TCP"},
+				{Port: 53, Protocol: "UDP"},
+			},
+		},
+		"empty ports list means wildcard": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToPorts: []config.PortRule{{}},
+				}),
+			},
+			want: []config.ResolvedPortProto{
+				{},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.cfg.ResolveDenyPortOnlyRules()
+			if tt.want == nil {
+				assert.Empty(t, got)
+			} else {
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}

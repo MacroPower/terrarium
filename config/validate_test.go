@@ -1816,6 +1816,16 @@ egress:
 `,
 			wantCIDR: []string{"0.0.0.0/0", "::/0"},
 		},
+		"world with toCIDR rejected (mutual exclusivity)": {
+			yaml: `
+egress:
+  - toEntities:
+      - world
+    toCIDR:
+      - 10.0.0.0/8
+`,
+			err: config.ErrEntitiesMixedL3,
+		},
 		"world with toCIDRSet rejected (mutual exclusivity)": {
 			yaml: `
 egress:
@@ -1824,7 +1834,20 @@ egress:
     toCIDRSet:
       - cidr: 10.0.0.0/8
 `,
-			err: config.ErrCIDRAndCIDRSetMixed,
+			err: config.ErrEntitiesMixedL3,
+		},
+		"world with toFQDNs rejected (mutual exclusivity)": {
+			yaml: `
+egress:
+  - toEntities:
+      - world
+    toFQDNs:
+      - matchName: example.com
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			err: config.ErrEntitiesMixedL3,
 		},
 		"world case-insensitive": {
 			yaml: `

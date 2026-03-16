@@ -84,9 +84,9 @@ func (c *Config) Validate() error {
 
 		// L3 mutual exclusivity: Cilium's EgressCommonRule.sanitize()
 		// rejects any rule combining two different L3 selector fields.
-		// Since our EgressRule only has ToCIDR and ToCIDRSet as L3
-		// selectors, this is the only pair we need to check. ToFQDNs
-		// was already validated above by validateFQDNConstraints.
+		// ToEntities is checked in expandAndValidateEntities (before
+		// expansion), and ToFQDNs in validateFQDNConstraints. The
+		// remaining pair is ToCIDR + ToCIDRSet.
 		if len(rule.ToCIDR) > 0 && len(rule.ToCIDRSet) > 0 {
 			return fmt.Errorf("%w: rule %d", ErrCIDRAndCIDRSetMixed, i)
 		}
@@ -900,6 +900,13 @@ func (c *Config) validateEgressDenyRules() error {
 func expandAndValidateEntities(rule *EgressRule, ruleIdx int) error {
 	if len(rule.ToEntities) == 0 {
 		return nil
+	}
+
+	// L3 mutual exclusivity: Cilium rejects any rule combining two
+	// different L3 selector fields. Check before expansion so the
+	// original user intent is visible in the error.
+	if len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0 || len(rule.ToFQDNs) > 0 {
+		return fmt.Errorf("%w: rule %d", ErrEntitiesMixedL3, ruleIdx)
 	}
 
 	for _, entity := range rule.ToEntities {

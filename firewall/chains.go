@@ -232,6 +232,38 @@ func addDenyCIDRChains(
 	}
 }
 
+// addDenyPortRules emits DROP rules on the parent chain for port-only
+// deny rules (no L3 selector). Under Cilium semantics, a deny rule
+// with only toPorts means "deny traffic to any destination on these
+// ports." A zero-value [config.ResolvedPortProto] (port 0, empty
+// protocol) means wildcard: deny all ports/protocols.
+func addDenyPortRules(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	ports []config.ResolvedPortProto, uids UIDs,
+) {
+	for _, pp := range ports {
+		if pp.Port == 0 && pp.Protocol == "" {
+			// Wildcard: deny all traffic from terrarium UID.
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: parentChain,
+				Exprs: flatExprs(
+					matchUID(uids.Terrarium),
+					verdictExprs(expr.VerdictDrop),
+				),
+			})
+		} else {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: parentChain,
+				Exprs: flatExprs(
+					matchUID(uids.Terrarium),
+					matchPortProto(pp),
+					verdictExprs(expr.VerdictDrop),
+				),
+			})
+		}
+	}
+}
+
 // addCIDRChains creates per-rule CIDR chains and adds jumps from
 // the parent chain. Each chain evaluates one rule's CIDRs and
 // excepts independently: RETURN for except hits (try next rule),
