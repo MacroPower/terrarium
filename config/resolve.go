@@ -65,7 +65,15 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 
 	egressRules := c.EgressRules()
 	for i := range egressRules {
-		if len(egressRules[i].ToFQDNs) == 0 {
+		hasFQDNs := len(egressRules[i].ToFQDNs) > 0
+		hasCIDR := len(egressRules[i].ToCIDR) > 0 || len(egressRules[i].ToCIDRSet) > 0
+
+		if !hasFQDNs && !hasCIDR {
+			continue
+		}
+
+		// CIDR rules only contribute when they have L7 rules.
+		if hasCIDR && !hasFQDNs && !ruleHasL7(egressRules[i]) {
 			continue
 		}
 
@@ -74,16 +82,7 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 			continue
 		}
 
-		for _, fqdn := range egressRules[i].ToFQDNs {
-			domain := fqdn.MatchName
-			if domain == "" {
-				domain = fqdn.MatchPattern
-				// Bare "**" is equivalent to "*" (match all FQDNs).
-				if domain == "**" {
-					domain = "*"
-				}
-			}
-
+		addDomain := func(domain string) {
 			m, exists := byDomain[domain]
 			if !exists {
 				m = &merged{}
@@ -92,13 +91,31 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 			}
 
 			if hasPlainL4 {
-				// Plain L4 on this port nullifies L7 for this
-				// EgressRule. Across EgressRules, unrestricted
-				// wins (OR semantics).
 				m.unrestricted = true
 			} else {
 				m.httpRules = append(m.httpRules, httpRules...)
 			}
+		}
+
+		if hasFQDNs {
+			for _, fqdn := range egressRules[i].ToFQDNs {
+				domain := fqdn.MatchName
+				if domain == "" {
+					domain = fqdn.MatchPattern
+					if domain == "**" {
+						domain = "*"
+					}
+				}
+
+				addDomain(domain)
+			}
+		}
+
+		// CIDR+L7 rules use a catch-all domain ("*") with HTTP
+		// restrictions. The Envoy listener receives CIDR traffic
+		// via nftables REDIRECT and applies the L7 filter.
+		if hasCIDR && len(httpRules) > 0 {
+			addDomain("*")
 		}
 	}
 
@@ -138,6 +155,18 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 	}
 
 	return result
+}
+
+// ruleHasL7 reports whether an egress rule has any L7 HTTP rules
+// in its toPorts entries.
+func ruleHasL7(rule EgressRule) bool {
+	for _, pr := range rule.ToPorts {
+		if pr.Rules != nil && len(pr.Rules.HTTP) > 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 // matchRuleForPort determines whether an egress rule applies to the
@@ -385,11 +414,13 @@ func (c *Config) ResolvePorts() []int {
 		}
 
 		// CIDR-only rules bypass Envoy unless they have
-		// serverNames (which require Envoy for SNI inspection).
-		// Validation prevents FQDN+CIDR combinations, so this
-		// is equivalent to "not an FQDN rule" when no serverNames.
+		// serverNames (which require Envoy for SNI inspection)
+		// or L7 HTTP rules (which require Envoy for request
+		// filtering). Validation prevents FQDN+CIDR combinations,
+		// so this is equivalent to "not an FQDN rule" when no
+		// serverNames and no L7.
 		if len(rules[ri].ToCIDRSet) > 0 || len(rules[ri].ToCIDR) > 0 {
-			if !ruleHasServerNames(rules[ri]) {
+			if !ruleHasServerNames(rules[ri]) && !ruleHasL7(rules[ri]) {
 				continue
 			}
 		}
@@ -793,6 +824,10 @@ func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 		ports := resolvePortsFromRule(cidrRules[ri])
 		serverNames := collectServerNames(cidrRules[ri])
 
+		// Collect ports that have L7 rules so the firewall can
+		// redirect those to Envoy instead of issuing RETURN.
+		l7Ports := resolveL7Ports(cidrRules[ri])
+
 		// Combine toCIDR and toCIDRSet into a unified list.
 		allCIDRs := make([]CIDRRule, 0, len(cidrRules[ri].ToCIDR)+len(cidrRules[ri].ToCIDRSet))
 		for _, cidr := range cidrRules[ri].ToCIDR {
@@ -805,11 +840,13 @@ func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 			v4, v6 := classifyCIDR(cidr, ports, ruleIdx)
 			if v4 != nil {
 				v4.ServerNames = serverNames
+				v4.L7Ports = l7Ports
 				ipv4 = append(ipv4, *v4)
 			}
 
 			if v6 != nil {
 				v6.ServerNames = serverNames
+				v6.L7Ports = l7Ports
 				ipv6 = append(ipv6, *v6)
 			}
 		}
@@ -857,6 +894,33 @@ func (c *Config) ResolveServerNameRulesForPort(port int) []ResolvedRule {
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Domain < result[j].Domain
 	})
+
+	return result
+}
+
+// resolveL7Ports returns the set of port numbers from toPorts entries
+// that have L7 HTTP rules. Returns nil when no L7 rules are present.
+func resolveL7Ports(rule EgressRule) map[int]bool {
+	var result map[int]bool
+
+	for _, pr := range rule.ToPorts {
+		if pr.Rules == nil || len(pr.Rules.HTTP) == 0 {
+			continue
+		}
+
+		for _, p := range pr.Ports {
+			resolved, err := ResolvePort(p.Port)
+			if err != nil || resolved == 0 {
+				continue
+			}
+
+			if result == nil {
+				result = make(map[int]bool)
+			}
+
+			result[int(resolved)] = true
+		}
+	}
 
 	return result
 }

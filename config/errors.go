@@ -119,10 +119,19 @@ var (
 		"except CIDR address family must match parent CIDR",
 	)
 
-	// ErrL7RequiresFQDN is returned when L7 rules are specified on a rule
-	// without toFQDNs selectors. Terrarium cannot enforce L7 rules
-	// without domain context for MITM; CIDR rules bypass Envoy.
-	ErrL7RequiresFQDN = errors.New("L7 rules require toFQDNs selectors")
+	// ErrL7RequiresL3 is returned when L7 rules are specified on a rule
+	// without any L3 selectors. L7 HTTP rules require either toFQDNs
+	// (for MITM inspection) or toCIDR/toCIDRSet (for plain HTTP
+	// filtering). A toPorts-only rule with L7 has no routing context.
+	ErrL7RequiresL3 = errors.New("L7 rules require toFQDNs or toCIDR/toCIDRSet selectors")
+
+	// ErrCIDRL7WithServerNames is returned when L7 HTTP rules are
+	// combined with toCIDR/toCIDRSet and serverNames on the same rule.
+	// ServerNames implies TLS traffic, and MITM for CIDR destinations
+	// without known domain names is not feasible.
+	ErrCIDRL7WithServerNames = errors.New(
+		"L7 HTTP rules with toCIDR/toCIDRSet cannot use serverNames (implies TLS; use toFQDNs for TLS L7)",
+	)
 
 	// ErrL7RequiresTCP is returned when L7 HTTP rules are paired with
 	// a non-TCP protocol. Envoy's HTTP connection manager requires TCP

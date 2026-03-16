@@ -658,7 +658,42 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrL7RequiresFQDN,
+			err: config.ErrL7RequiresL3,
+		},
+		"L7 with toCIDR valid": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/api/"}}},
+					}},
+				}),
+			},
+		},
+		"L7 with toCIDRSet valid": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+					}},
+				}),
+			},
+		},
+		"L7 with toCIDR and serverNames rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+					ToPorts: []config.PortRule{{
+						Ports:       []config.Port{{Port: "443"}},
+						ServerNames: []string{"api.internal.example.com"},
+						Rules:       &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
+					}},
+				}),
+			},
+			err: config.ErrCIDRL7WithServerNames,
 		},
 		"empty HTTP on toPorts-only valid": {
 			cfg: &config.Config{
@@ -1598,8 +1633,8 @@ func TestUnsupportedSelectors(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		yaml      string
 		err       error
+		yaml      string
 		wantRules int
 	}{
 		"toEndpoints rejected": {
@@ -1903,8 +1938,8 @@ func TestUnsupportedFeatures(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		yaml string
 		err  error
+		yaml string
 	}{
 		"terminatingTLS rejected": {
 			yaml: `
@@ -2108,8 +2143,8 @@ func TestEgressDenyRules(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		yaml string
 		err  error
+		yaml string
 	}{
 		"valid deny CIDR": {
 			yaml: `
@@ -2266,8 +2301,8 @@ func TestServerNames(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		yaml string
 		err  error
+		yaml string
 	}{
 		"valid serverNames on CIDR rule": {
 			yaml: `
@@ -2413,8 +2448,8 @@ func TestICMPRules(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		yaml string
 		err  error
+		yaml string
 	}{
 		"valid numeric IPv4 type": {
 			yaml: `
@@ -2618,8 +2653,8 @@ func TestEgressDenyUnsupportedSelectors(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		yaml string
 		err  error
+		yaml string
 	}{
 		"deny toEndpoints rejected": {
 			yaml: `

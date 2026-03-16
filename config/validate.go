@@ -694,22 +694,43 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 	return nil
 }
 
-// validateL7Rules checks that L7 rules are only used with toFQDNs
+// validateL7Rules checks that L7 rules have an appropriate L3 selector
 // and that wildcard matchPatterns are not combined with L7 rules.
+// L7 HTTP rules are allowed with:
+//   - toFQDNs: MITM-based HTTP inspection (existing behavior).
+//   - toCIDR/toCIDRSet: plain HTTP filtering via catch-all Envoy
+//     virtual hosts. ServerNames must not be present (implies TLS,
+//     and MITM without known domains is not feasible).
 func validateL7Rules(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
+	hasCIDR := len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0
 	hasL7 := false
+
 	for _, pr := range rule.ToPorts {
 		if pr.Rules != nil && len(pr.Rules.HTTP) > 0 {
-			if !hasFQDNs {
-				return fmt.Errorf("%w: rule %d", ErrL7RequiresFQDN, ruleIdx)
+			if !hasFQDNs && !hasCIDR {
+				return fmt.Errorf("%w: rule %d", ErrL7RequiresL3, ruleIdx)
 			}
 
 			hasL7 = true
 		}
 	}
 
+	if !hasL7 {
+		return nil
+	}
+
+	// CIDR+L7 with serverNames is rejected: serverNames implies TLS,
+	// and MITM without domain names is not feasible.
+	if hasCIDR {
+		for _, pr := range rule.ToPorts {
+			if len(pr.ServerNames) > 0 {
+				return fmt.Errorf("%w: rule %d", ErrCIDRL7WithServerNames, ruleIdx)
+			}
+		}
+	}
+
 	// Wildcard matchPatterns break MITM cert paths.
-	if hasL7 {
+	if hasFQDNs {
 		for j, fqdn := range rule.ToFQDNs {
 			if strings.Contains(fqdn.MatchPattern, "*") {
 				return fmt.Errorf("%w: rule %d selector %d", ErrWildcardWithL7, ruleIdx, j)

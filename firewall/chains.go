@@ -318,7 +318,9 @@ func addCIDRChains(
 
 		// CIDR ACCEPTs scoped to this rule. CIDR rules with
 		// serverNames skip ACCEPT here; they are handled by NAT
-		// REDIRECT to Envoy for SNI inspection.
+		// REDIRECT to Envoy for SNI inspection. CIDR rules with
+		// L7 ports also skip ACCEPT for those ports; they are
+		// handled by REDIRECT to Envoy for HTTP filtering.
 		for _, rule := range group {
 			if len(rule.ServerNames) > 0 {
 				continue
@@ -340,6 +342,11 @@ func addCIDRChains(
 				})
 			} else {
 				for _, pp := range rule.Ports {
+					// L7 ports are handled by Envoy; skip ACCEPT.
+					if rule.L7Ports[pp.Port] {
+						continue
+					}
+
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
@@ -587,6 +594,13 @@ func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, c
 			})
 		} else {
 			for _, pp := range rule.Ports {
+				// CIDR+L7 ports need REDIRECT to Envoy for HTTP
+				// filtering; skip RETURN so they fall through to
+				// the per-port REDIRECT rules.
+				if rule.L7Ports[pp.Port] {
+					continue
+				}
+
 				conn.AddRule(&nftables.Rule{
 					Table: table, Chain: chain,
 					Exprs: flatExprs(

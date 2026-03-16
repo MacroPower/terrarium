@@ -503,8 +503,11 @@ type ResolvedPortProto struct {
 // egress rule this CIDR came from, enabling per-rule iptables chains
 // that preserve Cilium's OR semantics across rules. When ServerNames
 // is non-empty, the CIDR rule is routed through Envoy for SNI
-// inspection instead of direct ACCEPT.
+// inspection instead of direct ACCEPT. When L7Ports is non-empty,
+// those ports are routed through Envoy for HTTP L7 filtering instead
+// of direct ACCEPT.
 type ResolvedCIDR struct {
+	L7Ports     map[int]bool
 	CIDR        string
 	Except      []string
 	Ports       []ResolvedPortProto
