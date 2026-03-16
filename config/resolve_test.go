@@ -275,6 +275,36 @@ func TestResolveRules(t *testing.T) {
 				}},
 			},
 		},
+		"same method/path/host with different headers not deduped": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "443"}},
+							Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+								{Method: "GET", Path: "/api", Headers: []string{"X-Token"}},
+							}},
+						}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "443"}},
+							Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+								{Method: "GET", Path: "/api"},
+							}},
+						}},
+					},
+				),
+			},
+			want: []config.ResolvedRule{
+				{Domain: "api.example.com", HTTPRules: []config.ResolvedHTTPRule{
+					{Method: "GET", Path: "/api"},
+					{Method: "GET", Path: "/api", Headers: []string{"X-Token"}},
+				}},
+			},
+		},
 		"CIDR-only rule skipped": {
 			cfg: &config.Config{
 				Egress: egressRules(

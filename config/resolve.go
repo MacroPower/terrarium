@@ -9,6 +9,72 @@ import (
 	"strings"
 )
 
+// httpRuleKey returns a canonical string key for deduplicating
+// [ResolvedHTTPRule] entries. The key includes all fields (method,
+// path, host, headers, header matches) so that rules differing only
+// in header constraints are not collapsed.
+func httpRuleKey(hr ResolvedHTTPRule) string {
+	var b strings.Builder
+
+	b.WriteString(hr.Method)
+	b.WriteByte('\x00')
+	b.WriteString(hr.Path)
+	b.WriteByte('\x00')
+	b.WriteString(hr.Host)
+
+	if len(hr.Headers) > 0 {
+		sorted := make([]string, len(hr.Headers))
+		copy(sorted, hr.Headers)
+		sort.Strings(sorted)
+
+		for _, h := range sorted {
+			b.WriteByte('\x00')
+			b.WriteString(h)
+		}
+	}
+
+	if len(hr.HeaderMatches) > 0 {
+		sorted := make([]HeaderMatch, len(hr.HeaderMatches))
+		copy(sorted, hr.HeaderMatches)
+		sort.Slice(sorted, func(i, j int) bool {
+			if sorted[i].Name != sorted[j].Name {
+				return sorted[i].Name < sorted[j].Name
+			}
+
+			return sorted[i].Value < sorted[j].Value
+		})
+
+		for _, hm := range sorted {
+			b.WriteByte('\x01')
+			b.WriteString(hm.Name)
+			b.WriteByte('=')
+			b.WriteString(hm.Value)
+		}
+	}
+
+	return b.String()
+}
+
+// sortHTTPRules sorts resolved HTTP rules by path, method, host, then
+// by full canonical key for deterministic output when those fields tie.
+func sortHTTPRules(rules []ResolvedHTTPRule) {
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].Path != rules[j].Path {
+			return rules[i].Path < rules[j].Path
+		}
+
+		if rules[i].Method != rules[j].Method {
+			return rules[i].Method < rules[j].Method
+		}
+
+		if rules[i].Host != rules[j].Host {
+			return rules[i].Host < rules[j].Host
+		}
+
+		return httpRuleKey(rules[i]) < httpRuleKey(rules[j])
+	})
+}
+
 // FQDNSetName returns the nftables set name for a FQDN rule index
 // and address family. Names follow terrarium_fqdn{4,6}_R where R is
 // the 0-indexed position among FQDN-bearing rules with non-TCP ports.
@@ -138,10 +204,11 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 		r := ResolvedRule{Domain: d}
 
 		if !m.unrestricted && len(m.httpRules) > 0 {
-			// Deduplicate HTTP rules by {method, path, host}.
-			seen := make(map[[3]string]bool, len(m.httpRules))
+			// Deduplicate HTTP rules by all fields (method,
+			// path, host, headers, header matches).
+			seen := make(map[string]bool, len(m.httpRules))
 			for _, hr := range m.httpRules {
-				k := [3]string{hr.Method, hr.Path, hr.Host}
+				k := httpRuleKey(hr)
 				if !seen[k] {
 					seen[k] = true
 
@@ -149,17 +216,7 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 				}
 			}
 
-			sort.Slice(r.HTTPRules, func(i, j int) bool {
-				if r.HTTPRules[i].Path != r.HTTPRules[j].Path {
-					return r.HTTPRules[i].Path < r.HTTPRules[j].Path
-				}
-
-				if r.HTTPRules[i].Method != r.HTTPRules[j].Method {
-					return r.HTTPRules[i].Method < r.HTTPRules[j].Method
-				}
-
-				return r.HTTPRules[i].Host < r.HTTPRules[j].Host
-			})
+			sortHTTPRules(r.HTTPRules)
 		}
 
 		result = append(result, r)
@@ -315,7 +372,7 @@ func (c *Config) ResolveRules() []ResolvedRule {
 	ports := c.ResolvePorts()
 
 	type merged struct {
-		httpRules    map[[3]string]ResolvedHTTPRule
+		httpRules    map[string]ResolvedHTTPRule
 		unrestricted bool
 	}
 
@@ -330,7 +387,7 @@ func (c *Config) ResolveRules() []ResolvedRule {
 			m, exists := byDomain[r.Domain]
 			if !exists {
 				m = &merged{
-					httpRules: make(map[[3]string]ResolvedHTTPRule),
+					httpRules: make(map[string]ResolvedHTTPRule),
 				}
 				byDomain[r.Domain] = m
 				order = append(order, r.Domain)
@@ -341,7 +398,7 @@ func (c *Config) ResolveRules() []ResolvedRule {
 			}
 
 			for _, hr := range r.HTTPRules {
-				k := [3]string{hr.Method, hr.Path, hr.Host}
+				k := httpRuleKey(hr)
 				m.httpRules[k] = hr
 			}
 		}
@@ -359,17 +416,7 @@ func (c *Config) ResolveRules() []ResolvedRule {
 				r.HTTPRules = append(r.HTTPRules, hr)
 			}
 
-			sort.Slice(r.HTTPRules, func(i, j int) bool {
-				if r.HTTPRules[i].Path != r.HTTPRules[j].Path {
-					return r.HTTPRules[i].Path < r.HTTPRules[j].Path
-				}
-
-				if r.HTTPRules[i].Method != r.HTTPRules[j].Method {
-					return r.HTTPRules[i].Method < r.HTTPRules[j].Method
-				}
-
-				return r.HTTPRules[i].Host < r.HTTPRules[j].Host
-			})
+			sortHTTPRules(r.HTTPRules)
 		}
 
 		result = append(result, r)
