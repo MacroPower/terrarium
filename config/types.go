@@ -505,6 +505,10 @@ const (
 	// manager connection limit when
 	// [EnvoySettings.MaxDownstreamConnections] is zero.
 	DefaultEnvoyMaxDownstreamConnections = 65535
+
+	// DefaultEnvoyUDPIdleTimeout is the idle timeout for UDP proxy
+	// sessions in Envoy when [EnvoySettings.UDPIdleTimeout] is zero.
+	DefaultEnvoyUDPIdleTimeout = 60 * time.Second
 )
 
 // validEnvoyLogLevels lists the log levels accepted by Envoy's
@@ -536,6 +540,9 @@ type EnvoySettings struct {
 	// MaxDownstreamConnections limits the number of active downstream
 	// connections Envoy will accept. Zero means use the default (65535).
 	MaxDownstreamConnections int `yaml:"maxDownstreamConnections,omitempty"`
+	// UDPIdleTimeout is the idle timeout for UDP proxy sessions.
+	// Sessions with no traffic for this duration are closed.
+	UDPIdleTimeout Duration `yaml:"udpIdleTimeout,omitempty"`
 }
 
 // EnvoyDefaults returns an [EnvoySettings] with defaults applied for
@@ -547,6 +554,7 @@ func (c *Config) EnvoyDefaults() EnvoySettings {
 		DrainTimeout:             Duration{DefaultEnvoyDrainTimeout},
 		StartupTimeout:           Duration{DefaultEnvoyStartupTimeout},
 		MaxDownstreamConnections: DefaultEnvoyMaxDownstreamConnections,
+		UDPIdleTimeout:           Duration{DefaultEnvoyUDPIdleTimeout},
 	}
 
 	if c.Envoy == nil {
@@ -567,6 +575,10 @@ func (c *Config) EnvoyDefaults() EnvoySettings {
 
 	if c.Envoy.MaxDownstreamConnections != 0 {
 		s.MaxDownstreamConnections = c.Envoy.MaxDownstreamConnections
+	}
+
+	if c.Envoy.UDPIdleTimeout.Duration != 0 {
+		s.UDPIdleTimeout = c.Envoy.UDPIdleTimeout
 	}
 
 	return s

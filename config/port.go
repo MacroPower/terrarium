@@ -20,6 +20,12 @@ const MaxProxyablePort = 65535 - ProxyPortBase
 // Follows the Istio convention for port 15001.
 const CatchAllProxyPort = 15001
 
+// CatchAllUDPProxyPort is the Envoy listener port that handles UDP
+// traffic via TPROXY. Unlike TCP (which uses NAT REDIRECT and
+// SO_ORIGINAL_DST), UDP requires TPROXY to preserve the original
+// destination address in the socket itself.
+const CatchAllUDPProxyPort = 15002
+
 const (
 	protoTCP  = "tcp"
 	protoUDP  = "udp"

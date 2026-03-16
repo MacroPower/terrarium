@@ -78,6 +78,7 @@ func TestEnvoyDefaults(t *testing.T) {
 				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
 				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
 				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
+				UDPIdleTimeout:           config.Duration{Duration: config.DefaultEnvoyUDPIdleTimeout},
 			},
 		},
 		"partial override fills remaining defaults": {
@@ -91,6 +92,7 @@ func TestEnvoyDefaults(t *testing.T) {
 				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
 				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
 				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
+				UDPIdleTimeout:           config.Duration{Duration: config.DefaultEnvoyUDPIdleTimeout},
 			},
 		},
 		"full override returns user values": {
@@ -100,6 +102,7 @@ func TestEnvoyDefaults(t *testing.T) {
 					DrainTimeout:             config.Duration{Duration: 30 * time.Second},
 					StartupTimeout:           config.Duration{Duration: 20 * time.Second},
 					MaxDownstreamConnections: 1024,
+					UDPIdleTimeout:           config.Duration{Duration: 120 * time.Second},
 				},
 			},
 			want: config.EnvoySettings{
@@ -107,6 +110,7 @@ func TestEnvoyDefaults(t *testing.T) {
 				DrainTimeout:             config.Duration{Duration: 30 * time.Second},
 				StartupTimeout:           config.Duration{Duration: 20 * time.Second},
 				MaxDownstreamConnections: 1024,
+				UDPIdleTimeout:           config.Duration{Duration: 120 * time.Second},
 			},
 		},
 	}

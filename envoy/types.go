@@ -23,11 +23,13 @@ type StaticResources struct {
 // Listener models an Envoy listener with filter chains and optional
 // listener-level filters.
 type Listener struct {
-	DefaultFilterChain *filterChain  `yaml:"default_filter_chain,omitempty"`
-	Name               string        `yaml:"name"`
-	Address            address       `yaml:"address"`
-	ListenerFilters    []NamedTyped  `yaml:"listener_filters,omitempty"`
-	FilterChains       []filterChain `yaml:"filter_chains"`
+	DefaultFilterChain *filterChain       `yaml:"default_filter_chain,omitempty"`
+	UDPListenerConfig  *udpListenerConfig `yaml:"udp_listener_config,omitempty"`
+	Name               string             `yaml:"name"`
+	Address            address            `yaml:"address"`
+	ListenerFilters    []NamedTyped       `yaml:"listener_filters,omitempty"`
+	FilterChains       []filterChain      `yaml:"filter_chains,omitempty"`
+	Transparent        bool               `yaml:"transparent,omitempty"`
 }
 
 type address struct {
@@ -36,6 +38,7 @@ type address struct {
 
 type socketAddress struct {
 	Address   string `yaml:"address"`
+	Protocol  string `yaml:"protocol,omitempty"`
 	PortValue int    `yaml:"port_value"`
 }
 
@@ -334,6 +337,26 @@ type endpointAddress struct {
 var sharedDNSCacheConfig = dnsCacheConfig{
 	Name:            "dynamic_forward_proxy_cache",
 	DNSLookupFamily: "ALL",
+}
+
+// udpListenerConfig models Envoy's UdpListenerConfig message.
+type udpListenerConfig struct {
+	DownstreamSocketConfig downstreamSocketConfig `yaml:"downstream_socket_config"`
+}
+
+// downstreamSocketConfig models Envoy's UdpSocketConfig for GRO.
+type downstreamSocketConfig struct {
+	PreferGRO bool `yaml:"prefer_gro,omitempty"`
+}
+
+// udpProxyConfig models the Envoy UDP proxy filter typed config.
+type udpProxyConfig struct {
+	AtType                    string      `yaml:"@type"`
+	StatPrefix                string      `yaml:"stat_prefix"`
+	Cluster                   string      `yaml:"cluster"`
+	IdleTimeout               string      `yaml:"idle_timeout"`
+	AccessLog                 []AccessLog `yaml:"access_log,omitempty"`
+	UsePerPacketLoadBalancing bool        `yaml:"use_per_packet_load_balancing,omitempty"`
 }
 
 func boolPtr(v bool) *bool {

@@ -154,6 +154,10 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 			return
 		}
 
+		if needsEnvoy {
+			firewall.CleanupPolicyRouting(ctx)
+		}
+
 		cleanupErr := firewall.Cleanup(ctx, conn)
 		if cleanupErr != nil {
 			slog.DebugContext(ctx, "cleaning up firewall on init failure", slog.Any("err", cleanupErr))
@@ -169,6 +173,14 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	if ipv6Disabled {
 		slog.WarnContext(ctx, "IPv6 not available, disabling")
 		disableIPv6(ctx, sys)
+	}
+
+	// Set up policy routing for UDP TPROXY when Envoy is needed.
+	if needsEnvoy {
+		err := firewall.SetupPolicyRouting(ctx, sys)
+		if err != nil {
+			return fmt.Errorf("setting up policy routing: %w", err)
+		}
 	}
 
 	// Create a separate nftables connection for the DNS proxy to
@@ -254,7 +266,8 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	if needsEnvoy {
 		//nolint:gosec // G204: args from config.User populated via CLI flags.
 		envoyCmd = exec.CommandContext(ctx, "setpriv",
-			"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups", "--no-new-privs",
+			"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups",
+			"--inh-caps=+cap_net_admin", "--ambient-caps=+cap_net_admin",
 			"--", "envoy", "-c", usr.EnvoyConfigPath, "--log-level", envoySettings.LogLevel)
 		envoyCmd.Stdout = os.Stdout
 		envoyCmd.Stderr = os.Stderr
@@ -408,6 +421,10 @@ func shutdown(
 			slog.DebugContext(ctx, "stopping DNS proxy", slog.Any("err", err))
 		}
 	}
+
+	// Remove policy routes before the nftables table so that
+	// TPROXY rules are inactive when routes are removed.
+	firewall.CleanupPolicyRouting(ctx)
 
 	// Delete the nftables table so a restart in the same network
 	// namespace does not fail on pre-existing resources.

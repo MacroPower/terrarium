@@ -45,13 +45,20 @@ func addInputChain(conn Conn, table *nftables.Table) {
 
 // addOutputBaseRules emits the initial OUTPUT rules that appear in all
 // three modes: loopback interface accept and loopback CIDR accept
-// (nfproto-scoped).
-func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain) {
-	// 1. Allow loopback interface.
+// (nfproto-scoped). When excludeMark is non-zero, the loopback OIF
+// accept rule is qualified with fwmark != excludeMark so that
+// TPROXY-marked packets fall through to security evaluation.
+func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain, excludeMark uint32) {
+	// 1. Allow loopback interface (optionally excluding marked packets).
+	loExprs := matchOIFName("lo")
+	if excludeMark != 0 {
+		loExprs = flatExprs(loExprs, matchNotMark(excludeMark))
+	}
+
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(
-			matchOIFName("lo"),
+			loExprs,
 			verdictExprs(expr.VerdictAccept),
 		),
 	})
@@ -456,6 +463,69 @@ func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, c
 			}
 		}
 	}
+}
+
+// addMangleOutputChain creates a route-type output chain at mangle
+// priority that marks all sandbox-UID UDP packets (except port 53)
+// with the TPROXY fwmark. The route chain type triggers a re-route
+// lookup after marking, sending packets through loopback via policy
+// routing. Port 53 is excluded because DNS must reach the DNS proxy
+// directly.
+func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "mangle_output",
+		Table:    table,
+		Type:     nftables.ChainTypeRoute,
+		Hooknum:  nftables.ChainHookOutput,
+		Priority: nftables.ChainPriorityMangle,
+	})
+
+	// Mark sandbox UDP (except port 53) with tproxyMark.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchUID(uids.Sandbox),
+			matchL4Proto(unix.IPPROTO_UDP),
+			notMatchDstPort(53),
+			markPacket(tproxyMark),
+		),
+	})
+}
+
+// addManglePreRoutingChain creates a filter-type prerouting chain at
+// mangle priority that applies TPROXY to marked UDP packets. Per-AF
+// rules are used (IPv4 and IPv6 separately) matching the codebase's
+// convention in matchDstCIDR.
+func addManglePreRoutingChain(conn Conn, table *nftables.Table, port uint16) {
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "mangle_prerouting",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: nftables.ChainPriorityMangle,
+	})
+
+	// IPv4: match fwmark + UDP -> TPROXY to port.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchMark(tproxyMark),
+			matchL4Proto(unix.IPPROTO_UDP),
+			matchNFProto(unix.NFPROTO_IPV4),
+			tproxyToPort(unix.NFPROTO_IPV4, port),
+		),
+	})
+
+	// IPv6: match fwmark + UDP -> TPROXY to port.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchMark(tproxyMark),
+			matchL4Proto(unix.IPPROTO_UDP),
+			matchNFProto(unix.NFPROTO_IPV6),
+			tproxyToPort(unix.NFPROTO_IPV6, port),
+		),
+	})
 }
 
 // groupCIDRsByRule groups resolved CIDRs by their RuleIndex,

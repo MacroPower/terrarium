@@ -86,6 +86,10 @@ func (m *Tests) TestEgressAll(ctx context.Context) error {
 	g.Go(func() error { return m.TestEgressLoopbackDenyAll(ctx) })
 	g.Go(func() error { return m.TestEgressExitCodePropagation(ctx) })
 	g.Go(func() error { return m.TestEgressLogging(ctx) })
+	g.Go(func() error { return m.TestEgressUdpForward(ctx) })
+	g.Go(func() error { return m.TestEgressUdpDenyAll(ctx) })
+	g.Go(func() error { return m.TestEgressUdpFiltered(ctx) })
+	g.Go(func() error { return m.TestEgressUdpLogging(ctx) })
 
 	return g.Wait()
 }
@@ -1475,6 +1479,273 @@ assert_network_denied "https://target-deny:443/" "logging: HTTPS to target-deny"
 			// Look for access log entries that indicate proxied traffic was logged.
 			if !strings.Contains(stderr, "target-allow") {
 				return fmt.Errorf("logging/%s: stderr does not contain Envoy access log entries for target-allow\nstderr:\n%s",
+					variant, stderr)
+			}
+
+			return nil
+		})
+	}
+
+	return g.Wait()
+}
+
+// TestEgressUdpForward verifies that UDP datagrams reach an echo service
+// through Envoy's TPROXY listener in unrestricted mode (no egress rules).
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-udp-forward
+func (m *Tests) TestEgressUdpForward(ctx context.Context) error {
+	config := `logging: false
+`
+	bindings := []serviceBinding{
+		udpEchoService("target-udp", 5000),
+	}
+
+	// socat must be installed before terrarium init locks down the network.
+	script := `#!/bin/sh
+set -e
+
+PASS=0
+FAIL=0
+` + assertionPreamble + `
+# Install socat before starting terrarium (firewall would block package repos).
+if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache socat >/dev/null 2>&1
+else
+    apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
+fi
+
+# Start terrarium init in background.
+terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
+TERRARIUM_PID=$!
+
+# Wait for nftables rules to appear.
+ready=0
+for i in $(seq 1 30); do
+    if nft list table inet terrarium >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+    echo "FAIL: terrarium nftables rules did not appear within 30 seconds"
+    kill $TERRARIUM_PID 2>/dev/null || true
+    exit 1
+fi
+
+sleep 2
+
+assert_udp_allowed "target-udp" 5000 "UDP_ECHO_OK" "udp-forward: UDP to target-udp:5000 allowed"
+` + scriptSuffix
+
+	return runVariants(ctx, "udp-forward", config, script, bindings)
+}
+
+// TestEgressUdpDenyAll verifies that UDP is blocked in deny-all mode.
+// No mangle chains or Envoy TPROXY listener are created.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-udp-deny-all
+func (m *Tests) TestEgressUdpDenyAll(ctx context.Context) error {
+	config := `egress:
+  - {}
+`
+	bindings := []serviceBinding{
+		udpEchoService("target-udp", 5000),
+	}
+
+	// socat must be installed before terrarium init locks down the network.
+	script := `#!/bin/sh
+set -e
+
+PASS=0
+FAIL=0
+` + assertionPreamble + `
+# Install socat before starting terrarium (firewall would block package repos).
+if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache socat >/dev/null 2>&1
+else
+    apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
+fi
+
+# Start terrarium init in background.
+terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
+TERRARIUM_PID=$!
+
+# Wait for nftables rules to appear.
+ready=0
+for i in $(seq 1 30); do
+    if nft list table inet terrarium >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+    echo "FAIL: terrarium nftables rules did not appear within 30 seconds"
+    kill $TERRARIUM_PID 2>/dev/null || true
+    exit 1
+fi
+
+sleep 2
+
+assert_udp_denied "target-udp" 5000 "udp-deny-all: UDP to target-udp:5000 denied"
+` + scriptSuffix
+
+	return runVariants(ctx, "udp-deny-all", config, script, bindings)
+}
+
+// TestEgressUdpFiltered verifies that UDP traffic is allowed or denied based
+// on CIDR rules with port and protocol matching. A CIDR 0.0.0.0/0 rule
+// allowing UDP port 5000 permits matching traffic through TPROXY while
+// blocking UDP on other ports.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-udp-filtered
+func (m *Tests) TestEgressUdpFiltered(ctx context.Context) error {
+	config := `egress:
+  - toCIDRSet:
+      - cidr: "0.0.0.0/0"
+    toPorts:
+      - ports:
+          - port: "5000"
+            protocol: UDP
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`
+	bindings := []serviceBinding{
+		udpEchoService("target-udp", 5000),
+		udpEchoService("target-udp-deny", 6000),
+		targetService("target-allow", defaultNginxConf),
+	}
+
+	// socat must be installed before terrarium init locks down the network.
+	script := `#!/bin/sh
+set -e
+
+PASS=0
+FAIL=0
+` + assertionPreamble + `
+# Install socat before starting terrarium (firewall would block package repos).
+if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache socat >/dev/null 2>&1
+else
+    apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
+fi
+
+# Start terrarium init in background.
+terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
+TERRARIUM_PID=$!
+
+# Wait for Envoy readiness (FQDN rule triggers Envoy startup).
+ready=0
+for i in $(seq 1 60); do
+    if curl -sko /dev/null --connect-timeout 1 https://127.0.0.1:15443/ 2>/dev/null || \
+       curl -so /dev/null --connect-timeout 1 http://127.0.0.1:15080/ 2>/dev/null; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+    echo "FAIL: terrarium did not become ready within 60 seconds"
+    kill $TERRARIUM_PID 2>/dev/null || true
+    exit 1
+fi
+
+sleep 2
+
+assert_udp_allowed "target-udp" 5000 "UDP_ECHO_OK" "udp-filtered: UDP to target-udp:5000 allowed by CIDR rule"
+assert_udp_denied "target-udp-deny" 6000 "udp-filtered: UDP to target-udp-deny:6000 denied (wrong port)"
+` + scriptSuffix
+
+	return runVariants(ctx, "udp-filtered", config, script, bindings)
+}
+
+// TestEgressUdpLogging verifies that Envoy access logs on stderr contain
+// evidence of UDP connections when logging is enabled.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-udp-logging
+func (m *Tests) TestEgressUdpLogging(ctx context.Context) error {
+	config := `logging: true
+`
+	bindings := []serviceBinding{
+		udpEchoService("target-udp", 5000),
+		targetService("target-allow", defaultNginxConf),
+	}
+
+	// socat must be installed before terrarium init locks down the network.
+	script := `#!/bin/sh
+set -e
+
+PASS=0
+FAIL=0
+` + assertionPreamble + `
+# Install socat before starting terrarium (firewall would block package repos).
+if command -v apk >/dev/null 2>&1; then
+    apk add --no-cache socat >/dev/null 2>&1
+else
+    apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
+fi
+
+# Start terrarium init in background.
+terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
+TERRARIUM_PID=$!
+
+# Wait for nftables rules to appear.
+ready=0
+for i in $(seq 1 30); do
+    if nft list table inet terrarium >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+    echo "FAIL: terrarium nftables rules did not appear within 30 seconds"
+    kill $TERRARIUM_PID 2>/dev/null || true
+    exit 1
+fi
+
+sleep 2
+
+assert_udp_allowed "target-udp" 5000 "UDP_ECHO_OK" "udp-logging: UDP to target-udp:5000 allowed"
+` + scriptSuffix
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	for _, variant := range e2eVariants {
+		g.Go(func() error {
+			ctr, err := runE2ETest(ctx, variant, config, script, bindings)
+			if err != nil {
+				return fmt.Errorf("udp-logging/%s: %w", variant, err)
+			}
+
+			// Force execution and capture stdout (assertions).
+			_, err = ctr.Stdout(ctx)
+			if err != nil {
+				var execErr *dagger.ExecError
+				if errors.As(err, &execErr) {
+					return fmt.Errorf("udp-logging/%s: %w\nstdout:\n%s\nstderr:\n%s",
+						variant, err, execErr.Stdout, execErr.Stderr)
+				}
+				return fmt.Errorf("udp-logging/%s: %w", variant, err)
+			}
+
+			// Capture stderr and verify Envoy access log entries for UDP.
+			stderr, err := ctr.Stderr(ctx)
+			if err != nil {
+				return fmt.Errorf("udp-logging/%s: capturing stderr: %w", variant, err)
+			}
+
+			if !strings.Contains(stderr, "target-udp") {
+				return fmt.Errorf("udp-logging/%s: stderr does not contain Envoy access log entries for target-udp\nstderr:\n%s",
 					variant, stderr)
 			}
 

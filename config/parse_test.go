@@ -362,6 +362,7 @@ envoy:
 				DrainTimeout:             config.Duration{Duration: 10 * time.Second},
 				StartupTimeout:           config.Duration{Duration: 30 * time.Second},
 				MaxDownstreamConnections: 1024,
+				UDPIdleTimeout:           config.Duration{Duration: config.DefaultEnvoyUDPIdleTimeout},
 			},
 		},
 		"partial fields use defaults": {
@@ -374,6 +375,7 @@ envoy:
 				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
 				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
 				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
+				UDPIdleTimeout:           config.Duration{Duration: config.DefaultEnvoyUDPIdleTimeout},
 			},
 		},
 		"absent envoy uses all defaults": {
@@ -383,6 +385,7 @@ envoy:
 				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
 				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
 				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
+				UDPIdleTimeout:           config.Duration{Duration: config.DefaultEnvoyUDPIdleTimeout},
 			},
 		},
 	}

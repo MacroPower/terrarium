@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"go.jacobcolvin.com/niceyaml"
 
@@ -61,6 +62,11 @@ func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
 	envoyConf, err := GenerateEnvoyFromConfig(cfg, certsDir, caBundlePath)
 	if err != nil {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
+	}
+
+	err = os.MkdirAll(filepath.Dir(usr.EnvoyConfigPath), 0o755)
+	if err != nil {
+		return nil, fmt.Errorf("creating envoy config directory: %w", err)
 	}
 
 	err = os.WriteFile(usr.EnvoyConfigPath, []byte(envoyConf), 0o644)
@@ -131,15 +137,19 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 		))
 	}
 
-	// Catch-all TCP listener for non-blocked modes.
+	envoySettings := cfg.EnvoyDefaults()
+
+	// Catch-all TCP and UDP listeners for non-blocked modes.
 	if !cfg.IsEgressBlocked() {
-		listeners = append(listeners, envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, accessLog))
+		listeners = append(listeners,
+			envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, accessLog),
+			envoy.BuildCatchAllUDPListener(
+				config.CatchAllUDPProxyPort, envoySettings.UDPIdleTimeout.Duration, accessLog),
+		)
 	}
 
 	// Use global rules for cluster determination.
 	allRules := cfg.ResolveRules()
-
-	envoySettings := cfg.EnvoyDefaults()
 
 	bs := envoy.Bootstrap{
 		OverloadManager: envoy.OverloadManager{

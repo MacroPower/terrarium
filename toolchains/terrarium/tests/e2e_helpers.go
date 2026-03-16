@@ -75,6 +75,28 @@ func targetServiceOnPort(hostname string, port int) serviceBinding {
 	return serviceBinding{alias: hostname, service: svc}
 }
 
+// udpEchoService creates a socat-based UDP echo service that responds with
+// "UDP_ECHO_OK" on the specified port. Used for testing UDP TPROXY forwarding
+// through Envoy.
+func udpEchoService(hostname string, port int) serviceBinding {
+	svc := dag.Container().
+		From("alpine:3.22").
+		WithExec([]string{"apk", "add", "--no-cache", "socat"}).
+		WithExposedPort(port, dagger.ContainerWithExposedPortOpts{
+			Protocol: dagger.NetworkProtocolUdp,
+		}).
+		AsService(dagger.ContainerAsServiceOpts{
+			Args: []string{
+				"socat",
+				fmt.Sprintf("UDP-RECVFROM:%d,fork,reuseaddr", port),
+				"EXEC:echo UDP_ECHO_OK",
+			},
+		}).
+		WithHostname(hostname)
+
+	return serviceBinding{alias: hostname, service: svc}
+}
+
 // tcpEchoService creates a socat-based TCP echo service that responds with
 // "TCP_FORWARD_OK" on the specified port. Used for testing tcpForwards
 // without HTTP/TLS.
@@ -119,8 +141,26 @@ func terrariumContainer(
 		return nil, fmt.Errorf("no containers built for variant %s", variant)
 	}
 
-	// Use the first platform container (linux/amd64).
-	ctr := &containers[0]
+	// Select the container matching the engine's native platform.
+	nativePlatform, err := dag.DefaultPlatform(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("querying default platform: %w", err)
+	}
+
+	var ctr *dagger.Container
+	for i := range containers {
+		p, err := containers[i].Platform(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("querying container platform: %w", err)
+		}
+		if p == nativePlatform {
+			ctr = &containers[i]
+			break
+		}
+	}
+	if ctr == nil {
+		return nil, fmt.Errorf("no container for platform %s in variant %s", nativePlatform, variant)
+	}
 
 	// Mount the config at an explicit path decoupled from XDG resolution.
 	ctr = ctr.WithNewFile("/etc/terrarium/config.yaml", configContent)
@@ -298,6 +338,34 @@ assert_passthrough() {
             return
         fi
     done
+}
+
+assert_udp_allowed() {
+    host="$1"; port="$2"; expected="$3"
+    desc="${4:-UDP to $host:$port allowed}"
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        response=$(echo "hello" | socat -t2 - UDP:"$host":"$port" 2>/dev/null) || true
+        if echo "$response" | grep -q "$expected"; then
+            echo "PASS: $desc"; PASS=$((PASS + 1)); return
+        fi
+        if [ "$attempt" -lt 3 ]; then
+            echo "RETRY: $desc (attempt $attempt/3, retrying in 2s)"; sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+    echo "FAIL: $desc (expected '$expected', got: $response)"; FAIL=$((FAIL + 1))
+}
+
+assert_udp_denied() {
+    host="$1"; port="$2"
+    desc="${3:-UDP to $host:$port denied}"
+    response=$(echo "hello" | socat -t3 - UDP:"$host":"$port" 2>/dev/null) || true
+    if [ -z "$response" ]; then
+        echo "PASS: $desc (no response)"; PASS=$((PASS + 1))
+    else
+        echo "FAIL: $desc (expected no response, got: $response)"; FAIL=$((FAIL + 1))
+    fi
 }
 
 assert_tcp_forward() {

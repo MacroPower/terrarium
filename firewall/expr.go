@@ -264,6 +264,67 @@ func redirectToPort(port uint16) []expr.Any {
 	}
 }
 
+// markPacket sets the packet fwmark to the given value.
+func markPacket(mark uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Immediate{
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(mark),
+		},
+		&expr.Meta{
+			Key:            expr.MetaKeyMARK,
+			SourceRegister: true,
+			Register:       1,
+		},
+	}
+}
+
+// matchMark matches packets with the given fwmark value.
+func matchMark(mark uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
+	}
+}
+
+// matchNotMark matches packets whose fwmark is not the given value.
+func matchNotMark(mark uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
+	}
+}
+
+// tproxyToPort applies TPROXY to redirect traffic to a local port.
+// Requires per-AF rules (NFPROTO_IPV4 or NFPROTO_IPV6).
+func tproxyToPort(family byte, port uint16) []expr.Any {
+	return []expr.Any{
+		&expr.Immediate{
+			Register: 1,
+			Data:     binaryutil.BigEndian.PutUint16(port),
+		},
+		&expr.TProxy{
+			Family:      family,
+			TableFamily: family,
+			RegPort:     1,
+		},
+	}
+}
+
+// notMatchDstPort matches packets whose destination port is not the
+// given value. Used to exclude DNS port 53 from TPROXY marking.
+func notMatchDstPort(port uint16) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       2, // destination port
+			Len:          2,
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
+	}
+}
+
 // protoNum converts a protocol string to its IP protocol number.
 func protoNum(proto string) byte {
 	switch proto {

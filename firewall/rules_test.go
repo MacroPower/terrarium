@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -843,6 +844,165 @@ func TestApplyRules_CIDROnlyFilteredMode(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, redirCount, "should have only the catch-all REDIRECT")
+}
+
+// ruleHasTProxy reports whether a rule contains a TProxy expression.
+func ruleHasTProxy(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if _, ok := e.(*expr.TProxy); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleHasMark reports whether a rule contains a Meta expression that
+// sets or reads the fwmark.
+func ruleHasMark(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if m, ok := e.(*expr.Meta); ok && m.Key == expr.MetaKeyMARK {
+			return true
+		}
+	}
+
+	return false
+}
+
+func TestApplyRules_MangleChains_Unrestricted(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.Contains(t, names, "mangle_output")
+	assert.Contains(t, names, "mangle_prerouting")
+
+	// mangle_output should mark UDP packets.
+	mangleRules := rec.rulesForChain("mangle_output")
+	require.NotEmpty(t, mangleRules)
+
+	var hasMarkSet bool
+	for _, r := range mangleRules {
+		if ruleHasMark(r) {
+			hasMarkSet = true
+		}
+	}
+
+	assert.True(t, hasMarkSet, "mangle_output should set fwmark")
+
+	// mangle_prerouting should have TPROXY rules.
+	preRules := rec.rulesForChain("mangle_prerouting")
+	require.NotEmpty(t, preRules)
+
+	var tproxyCount int
+	for _, r := range preRules {
+		if ruleHasTProxy(r) {
+			tproxyCount++
+		}
+	}
+
+	assert.Equal(t, 2, tproxyCount, "should have IPv4 and IPv6 TPROXY rules")
+}
+
+func TestApplyRules_MangleChains_Filtered(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.Contains(t, names, "mangle_output")
+	assert.Contains(t, names, "mangle_prerouting")
+
+	// Filtered mode: loopback accept in output should exclude
+	// TPROXY-marked packets (fwmark != 0x1).
+	outputRules := rec.rulesForChain("output")
+	require.NotEmpty(t, outputRules)
+
+	// First rule should be the loopback accept with mark exclusion.
+	firstRule := outputRules[0]
+	assert.True(t, ruleHasMetaKey(firstRule, expr.MetaKeyOIFNAME),
+		"first output rule should match oifname")
+	assert.True(t, ruleHasMark(firstRule),
+		"first output rule should check fwmark (mark exclusion)")
+
+	// Verify the mark comparison is CmpOpNeq with value 0x1.
+	var foundMarkNeq bool
+
+	for _, e := range firstRule.Exprs {
+		c, ok := e.(*expr.Cmp)
+		if !ok || c.Op != expr.CmpOpNeq {
+			continue
+		}
+
+		// The mark value 0x1 in native endian (4 bytes).
+		markVal := binaryutil.NativeEndian.PutUint32(0x1)
+		if assert.ObjectsAreEqual(markVal, c.Data) {
+			foundMarkNeq = true
+		}
+	}
+
+	assert.True(t, foundMarkNeq,
+		"loopback accept must exclude fwmark 0x1 via CmpOpNeq")
+}
+
+func TestApplyRules_MangleChains_Blocked(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{}),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.NotContains(t, names, "mangle_output",
+		"blocked mode should not have mangle chains")
+	assert.NotContains(t, names, "mangle_prerouting",
+		"blocked mode should not have mangle chains")
+}
+
+func TestApplyRules_MangleChains_DNSExclusion(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// mangle_output should have a port 53 exclusion (CmpOpNeq on
+	// dst port).
+	mangleRules := rec.rulesForChain("mangle_output")
+	require.NotEmpty(t, mangleRules)
+
+	var hasDstPortNeq bool
+	for _, r := range mangleRules {
+		for _, e := range r.Exprs {
+			if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpNeq {
+				hasDstPortNeq = true
+			}
+		}
+	}
+
+	assert.True(t, hasDstPortNeq, "mangle_output should exclude port 53 via CmpOpNeq")
 }
 
 func TestApplyRules_CIDRWithPorts(t *testing.T) {

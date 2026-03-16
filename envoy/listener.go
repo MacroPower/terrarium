@@ -1,8 +1,10 @@
 package envoy
 
 import (
+	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"go.jacobcolvin.com/terrarium/config"
 )
@@ -245,6 +247,41 @@ func BuildCatchAllTCPListener(listenPort int, accessLog []AccessLog) Listener {
 					AccessLog:  accessLog,
 				},
 			}},
+		}},
+	}
+}
+
+// BuildCatchAllUDPListener creates a transparent UDP proxy [Listener]
+// that handles UDP traffic intercepted via TPROXY. The listener binds
+// to 0.0.0.0 (not 127.0.0.1) because TPROXY preserves the original
+// destination IP; the transparent socket receives packets addressed to
+// non-local IPs. The original_dst listener filter is NOT used (it is
+// TCP-only); the ORIGINAL_DST cluster recovers the destination from
+// the transparent socket address instead.
+func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []AccessLog) Listener {
+	return Listener{
+		Name: "catch_all_udp",
+		Address: address{SocketAddress: socketAddress{
+			Address:   "0.0.0.0",
+			Protocol:  "UDP",
+			PortValue: port,
+		}},
+		Transparent: true,
+		UDPListenerConfig: &udpListenerConfig{
+			DownstreamSocketConfig: downstreamSocketConfig{
+				PreferGRO: true,
+			},
+		},
+		ListenerFilters: []NamedTyped{{
+			Name: "envoy.filters.udp_listener.udp_proxy",
+			TypedConfig: udpProxyConfig{
+				AtType:                    "type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.UdpProxyConfig",
+				StatPrefix:                "catch_all_udp",
+				Cluster:                   "original_dst",
+				IdleTimeout:               fmt.Sprintf("%.0fs", idleTimeout.Seconds()),
+				AccessLog:                 accessLog,
+				UsePerPacketLoadBalancing: true,
+			},
 		}},
 	}
 }

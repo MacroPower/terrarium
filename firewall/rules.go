@@ -125,7 +125,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 		Policy:   &policy,
 	})
 
-	addOutputBaseRules(conn, table, outputChain)
+	addOutputBaseRules(conn, table, outputChain, 0)
 	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
 	if cfg.Logging {
@@ -142,6 +142,10 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 
 	// NAT: 80, 443, TCPForwards, and catch-all TCP.
 	addUnrestrictedNAT(conn, table, cfg, uids)
+
+	// Mangle chains for UDP TPROXY.
+	addMangleOutputChain(conn, table, uids)
+	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort))
 }
 
 func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
@@ -157,7 +161,7 @@ func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids 
 		Policy:   &policy,
 	})
 
-	addOutputBaseRules(conn, table, outputChain)
+	addOutputBaseRules(conn, table, outputChain, 0)
 	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
 	if cfg.Logging {
@@ -229,7 +233,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 		Policy:   &policy,
 	})
 
-	addOutputBaseRules(conn, table, outputChain)
+	addOutputBaseRules(conn, table, outputChain, tproxyMark)
 
 	// Dispatch UID 1000 to sandbox_output before ESTABLISHED.
 	// This avoids the `! --uid-owner` negation pattern and its
@@ -316,6 +320,10 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 
 	// NAT chain.
 	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, uids)
+
+	// Mangle chains for UDP TPROXY.
+	addMangleOutputChain(conn, table, uids)
+	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort))
 
 	return nil
 }
