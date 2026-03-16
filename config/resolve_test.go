@@ -799,27 +799,27 @@ func TestResolveOpenPortRules(t *testing.T) {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080", Protocol: "TCP"}}}},
 			})},
-			want: []config.ResolvedOpenPort{{Port: 8080, Protocol: "tcp"}},
+			want: []config.ResolvedOpenPort{{Port: 8080, Protocol: "TCP"}},
 		},
 		"UDP open port": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "5353", Protocol: "UDP"}}}},
 			})},
-			want: []config.ResolvedOpenPort{{Port: 5353, Protocol: "udp"}},
+			want: []config.ResolvedOpenPort{{Port: 5353, Protocol: "UDP"}},
 		},
 		"SCTP open port": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "3868", Protocol: "SCTP"}}}},
 			})},
-			want: []config.ResolvedOpenPort{{Port: 3868, Protocol: "sctp"}},
+			want: []config.ResolvedOpenPort{{Port: 3868, Protocol: "SCTP"}},
 		},
 		"ANY protocol open port expands": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080", Protocol: "ANY"}}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 8080, Protocol: "tcp"},
-				{Port: 8080, Protocol: "udp"},
+				{Port: 8080, Protocol: "TCP"},
+				{Port: 8080, Protocol: "UDP"},
 			},
 		},
 		"empty protocol open port expands": {
@@ -827,8 +827,8 @@ func TestResolveOpenPortRules(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080"}}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 8080, Protocol: "tcp"},
-				{Port: 8080, Protocol: "udp"},
+				{Port: 8080, Protocol: "TCP"},
+				{Port: 8080, Protocol: "UDP"},
 			},
 		},
 		"rule with toFQDNs not open": {
@@ -844,7 +844,7 @@ func TestResolveOpenPortRules(t *testing.T) {
 				}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
+				{Port: 8000, EndPort: 9000, Protocol: "TCP"},
 			},
 		},
 		"UDP open port with endPort": {
@@ -854,7 +854,7 @@ func TestResolveOpenPortRules(t *testing.T) {
 				}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 5000, EndPort: 6000, Protocol: "udp"},
+				{Port: 5000, EndPort: 6000, Protocol: "UDP"},
 			},
 		},
 		"ANY protocol open port with endPort expands": {
@@ -862,8 +862,8 @@ func TestResolveOpenPortRules(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8000", EndPort: 9000}}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
-				{Port: 8000, EndPort: 9000, Protocol: "udp"},
+				{Port: 8000, EndPort: 9000, Protocol: "TCP"},
+				{Port: 8000, EndPort: 9000, Protocol: "UDP"},
 			},
 		},
 		"endPort equal to port": {
@@ -873,7 +873,7 @@ func TestResolveOpenPortRules(t *testing.T) {
 				}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 8000, EndPort: 8000, Protocol: "tcp"},
+				{Port: 8000, EndPort: 8000, Protocol: "TCP"},
 			},
 		},
 		"dedup across rules with same range": {
@@ -890,7 +890,7 @@ func TestResolveOpenPortRules(t *testing.T) {
 				},
 			)},
 			want: []config.ResolvedOpenPort{
-				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
+				{Port: 8000, EndPort: 9000, Protocol: "TCP"},
 			},
 		},
 		"mixed single and range for same start port": {
@@ -905,8 +905,8 @@ func TestResolveOpenPortRules(t *testing.T) {
 				},
 			)},
 			want: []config.ResolvedOpenPort{
-				{Port: 8000, Protocol: "tcp"},
-				{Port: 8000, EndPort: 9000, Protocol: "tcp"},
+				{Port: 8000, Protocol: "TCP"},
+				{Port: 8000, EndPort: 9000, Protocol: "TCP"},
 			},
 		},
 	}
@@ -981,7 +981,7 @@ func TestResolveFQDNNonTCPPorts(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "UDP"}}}},
 			})},
 			want: []config.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
+				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 443, Protocol: "UDP"}}},
 			},
 		},
 		"FQDN SCTP port": {
@@ -990,7 +990,7 @@ func TestResolveFQDNNonTCPPorts(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "3868", Protocol: "SCTP"}}}},
 			})},
 			want: []config.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 3868, Protocol: "sctp"}}},
+				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 3868, Protocol: "SCTP"}}},
 			},
 		},
 		"FQDN ANY port expands to udp": {
@@ -999,7 +999,7 @@ func TestResolveFQDNNonTCPPorts(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			})},
 			want: []config.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
+				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 443, Protocol: "UDP"}}},
 			},
 		},
 		"FQDN TCP-only returns nil": {
@@ -1029,8 +1029,8 @@ func TestResolveFQDNNonTCPPorts(t *testing.T) {
 				},
 			)},
 			want: []config.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 443, Protocol: "udp"}}},
-				{RuleIndex: 1, Ports: []config.ResolvedOpenPort{{Port: 8080, Protocol: "udp"}}},
+				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 443, Protocol: "UDP"}}},
+				{RuleIndex: 1, Ports: []config.ResolvedOpenPort{{Port: 8080, Protocol: "UDP"}}},
 			},
 		},
 	}
@@ -1322,10 +1322,10 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 80, Protocol: "tcp"},
-					{Port: 80, Protocol: "udp"},
-					{Port: 443, Protocol: "tcp"},
-					{Port: 443, Protocol: "udp"},
+					{Port: 80, Protocol: "TCP"},
+					{Port: 80, Protocol: "UDP"},
+					{Port: 443, Protocol: "TCP"},
+					{Port: 443, Protocol: "UDP"},
 				}},
 			},
 		},
@@ -1367,12 +1367,12 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 53, Protocol: "tcp"},
-					{Port: 53, Protocol: "udp"},
+					{Port: 53, Protocol: "TCP"},
+					{Port: 53, Protocol: "UDP"},
 				}, RuleIndex: 0},
 				{CIDR: "1.1.1.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 443, Protocol: "tcp"},
-					{Port: 443, Protocol: "udp"},
+					{Port: 443, Protocol: "TCP"},
+					{Port: 443, Protocol: "UDP"},
 				}, RuleIndex: 1},
 			},
 		},
@@ -1420,7 +1420,7 @@ func TestResolveCIDRRules(t *testing.T) {
 				}),
 			},
 			wantIPv4: []config.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{{Port: 53, Protocol: "udp"}}},
+				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{{Port: 53, Protocol: "UDP"}}},
 			},
 		},
 		"ANY protocol CIDR": {
@@ -1432,8 +1432,8 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 53, Protocol: "tcp"},
-					{Port: 53, Protocol: "udp"},
+					{Port: 53, Protocol: "TCP"},
+					{Port: 53, Protocol: "UDP"},
 				}},
 			},
 		},
@@ -1446,8 +1446,8 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 8000, EndPort: 9000, Protocol: "tcp"},
-					{Port: 8000, EndPort: 9000, Protocol: "udp"},
+					{Port: 8000, EndPort: 9000, Protocol: "TCP"},
+					{Port: 8000, EndPort: 9000, Protocol: "UDP"},
 				}},
 			},
 		},
@@ -1469,8 +1469,8 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "10.0.0.0/8", Ports: []config.ResolvedPortProto{
-					{Port: 443, Protocol: "tcp"},
-					{Port: 443, Protocol: "udp"},
+					{Port: 443, Protocol: "TCP"},
+					{Port: 443, Protocol: "UDP"},
 				}, RuleIndex: 0},
 			},
 		},
@@ -1494,8 +1494,8 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 53, Protocol: "tcp"},
-					{Port: 53, Protocol: "udp"},
+					{Port: 53, Protocol: "TCP"},
+					{Port: 53, Protocol: "UDP"},
 				}},
 			},
 		},
@@ -1508,7 +1508,7 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 3868, Protocol: "sctp"},
+					{Port: 3868, Protocol: "SCTP"},
 				}},
 			},
 		},
@@ -1750,6 +1750,113 @@ func TestCompileFQDNPatterns(t *testing.T) {
 
 				assert.False(t, matched, "expected %q not to match", qname)
 			}
+		})
+	}
+}
+
+func TestResolveCIDRRulesWithServerNames(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToCIDR: []string{"10.0.0.0/8"},
+			ToPorts: []config.PortRule{{
+				Ports:       []config.Port{{Port: "443", Protocol: "TCP"}},
+				ServerNames: []string{"api.internal.example.com"},
+			}},
+		}),
+	}
+
+	v4, _ := cfg.ResolveCIDRRules()
+	require.Len(t, v4, 1)
+	assert.Equal(t, []string{"api.internal.example.com"}, v4[0].ServerNames)
+}
+
+func TestResolveServerNameRulesForPort(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToCIDR: []string{"10.0.0.0/8"},
+			ToPorts: []config.PortRule{{
+				Ports:       []config.Port{{Port: "443", Protocol: "TCP"}},
+				ServerNames: []string{"api.internal.example.com", "db.internal.example.com"},
+			}},
+		}),
+	}
+
+	rules := cfg.ResolveServerNameRulesForPort(443)
+	require.Len(t, rules, 2)
+	assert.Equal(t, "api.internal.example.com", rules[0].Domain)
+	assert.Equal(t, "db.internal.example.com", rules[1].Domain)
+	assert.False(t, rules[0].IsRestricted())
+
+	// Port 80 should not match.
+	rules80 := cfg.ResolveServerNameRulesForPort(80)
+	assert.Empty(t, rules80)
+}
+
+func TestResolveDenyCIDRRules(t *testing.T) {
+	t.Parallel()
+
+	denyRules := func(rules ...config.EgressDenyRule) *[]config.EgressDenyRule {
+		return &rules
+	}
+
+	tests := map[string]struct {
+		cfg    *config.Config
+		wantV4 []config.ResolvedCIDR
+		wantV6 []config.ResolvedCIDR
+	}{
+		"nil egressDeny": {
+			cfg: &config.Config{},
+		},
+		"deny CIDR v4": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+				}),
+			},
+			wantV4: []config.ResolvedCIDR{
+				{CIDR: "10.0.0.0/8", RuleIndex: 0},
+			},
+		},
+		"deny CIDR v6": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToCIDR: []string{"fd00::/8"},
+				}),
+			},
+			wantV6: []config.ResolvedCIDR{
+				{CIDR: "fd00::/8", RuleIndex: 0},
+			},
+		},
+		"deny CIDR with ports": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToCIDR:  []string{"10.0.0.0/8"},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}},
+				}),
+			},
+			wantV4: []config.ResolvedCIDR{
+				{
+					CIDR:      "10.0.0.0/8",
+					RuleIndex: 0,
+					Ports: []config.ResolvedPortProto{
+						{Port: 443, Protocol: "TCP"},
+					},
+				},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			v4, v6 := tt.cfg.ResolveDenyCIDRRules()
+			assert.Equal(t, tt.wantV4, v4)
+			assert.Equal(t, tt.wantV6, v6)
 		})
 	}
 }

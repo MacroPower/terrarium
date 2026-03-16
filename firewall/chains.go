@@ -142,6 +142,96 @@ func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftabl
 	}
 }
 
+// addDenyCIDRChains creates per-rule deny CIDR chains and adds jumps
+// from the parent chain. Each chain evaluates one deny rule's CIDRs
+// and excepts independently: RETURN for except hits (don't deny),
+// DROP for CIDR hits (deny packet). Deny chains are evaluated before
+// allow chains so deny takes precedence.
+func addDenyCIDRChains(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR, uids UIDs,
+) {
+	groups := groupCIDRsByRule(cidrs)
+
+	for i, group := range groups {
+		chainName := fmt.Sprintf("deny_cidr_%d", i)
+		chain := conn.AddChain(&nftables.Chain{
+			Name:  chainName,
+			Table: table,
+		})
+
+		// Except RETURNs: don't deny these sub-ranges.
+		for _, rule := range group {
+			for _, exc := range rule.Except {
+				_, excNet, err := net.ParseCIDR(exc)
+				if err != nil {
+					continue
+				}
+
+				if len(rule.Ports) == 0 {
+					conn.AddRule(&nftables.Rule{
+						Table: table, Chain: chain,
+						Exprs: flatExprs(
+							matchUID(uids.Terrarium),
+							matchDstCIDR(excNet),
+							verdictExprs(expr.VerdictReturn),
+						),
+					})
+				} else {
+					for _, pp := range rule.Ports {
+						conn.AddRule(&nftables.Rule{
+							Table: table, Chain: chain,
+							Exprs: flatExprs(
+								matchUID(uids.Terrarium),
+								matchPortProto(pp),
+								matchDstCIDR(excNet),
+								verdictExprs(expr.VerdictReturn),
+							),
+						})
+					}
+				}
+			}
+		}
+
+		// CIDR DROPs: deny matching traffic.
+		for _, rule := range group {
+			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
+			if err != nil {
+				continue
+			}
+
+			if len(rule.Ports) == 0 {
+				conn.AddRule(&nftables.Rule{
+					Table: table, Chain: chain,
+					Exprs: flatExprs(
+						matchUID(uids.Terrarium),
+						matchDstCIDR(cidrNet),
+						verdictExprs(expr.VerdictDrop),
+					),
+				})
+			} else {
+				for _, pp := range rule.Ports {
+					conn.AddRule(&nftables.Rule{
+						Table: table, Chain: chain,
+						Exprs: flatExprs(
+							matchUID(uids.Terrarium),
+							matchPortProto(pp),
+							matchDstCIDR(cidrNet),
+							verdictExprs(expr.VerdictDrop),
+						),
+					})
+				}
+			}
+		}
+
+		// Jump from parent chain.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: parentChain,
+			Exprs: flatExprs(verdictExprs(expr.VerdictJump, chainName)),
+		})
+	}
+}
+
 // addCIDRChains creates per-rule CIDR chains and adds jumps from
 // the parent chain. Each chain evaluates one rule's CIDRs and
 // excepts independently: RETURN for except hits (try next rule),
@@ -194,8 +284,14 @@ func addCIDRChains(
 			}
 		}
 
-		// CIDR ACCEPTs scoped to this rule.
+		// CIDR ACCEPTs scoped to this rule. CIDR rules with
+		// serverNames skip ACCEPT here; they are handled by NAT
+		// REDIRECT to Envoy for SNI inspection.
 		for _, rule := range group {
+			if len(rule.ServerNames) > 0 {
+				continue
+			}
+
 			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
 			if err != nil {
 				continue
@@ -239,7 +335,7 @@ func addCIDRChains(
 // direct ACCEPT (Envoy cannot create listeners for arbitrary ranges);
 // TCP single ports are handled by Envoy via NAT REDIRECT.
 func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op config.ResolvedOpenPort, uids UIDs) {
-	if op.Protocol == protoUDP || op.Protocol == protoSCTP {
+	if op.Protocol == config.ProtoUDP || op.Protocol == config.ProtoSCTP {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
@@ -251,7 +347,7 @@ func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op
 		})
 	}
 
-	if op.Protocol == protoTCP && op.EndPort > 0 {
+	if op.Protocol == config.ProtoTCP && op.EndPort > 0 {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
@@ -436,6 +532,13 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 
 func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, cidrs []config.ResolvedCIDR, uids UIDs) {
 	for _, rule := range cidrs {
+		// CIDR rules with serverNames need NAT REDIRECT to Envoy
+		// for SNI inspection; skip the RETURN so they fall through
+		// to the per-port REDIRECT rules.
+		if len(rule.ServerNames) > 0 {
+			continue
+		}
+
 		_, cidrNet, err := net.ParseCIDR(rule.CIDR)
 		if err != nil {
 			continue

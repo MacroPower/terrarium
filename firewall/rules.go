@@ -188,6 +188,8 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 	resolvedPorts := cfg.ResolvePorts()
 	cidr4, cidr6 := cfg.ResolveCIDRRules()
 	allCIDRs := slices.Concat(cidr4, cidr6)
+	deny4, deny6 := cfg.ResolveDenyCIDRRules()
+	allDenyCIDRs := slices.Concat(deny4, deny6)
 	openPortRules := cfg.ResolveOpenPortRules()
 	fqdnRulePorts := cfg.ResolveFQDNNonTCPPorts()
 	unrestricted := cfg.HasUnrestrictedOpenPorts()
@@ -278,6 +280,9 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 	})
 
 	// terrarium_output chain rules.
+	// Deny chains first: deny takes precedence over allow.
+	addDenyCIDRChains(conn, table, terrariumChain, allDenyCIDRs, uids)
+
 	if !unrestricted {
 		addCIDRChains(conn, table, terrariumChain, allCIDRs, uids)
 	}

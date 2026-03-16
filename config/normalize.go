@@ -20,6 +20,13 @@ func normalizeEgressRule(c *Config, i int) {
 		}
 	}
 
+	for j := range rule.ToPorts {
+		for k := range rule.ToPorts[j].ServerNames {
+			rule.ToPorts[j].ServerNames[k] = strings.TrimRight(
+				strings.ToLower(rule.ToPorts[j].ServerNames[k]), ".")
+		}
+	}
+
 	for j := range rule.ToFQDNs {
 		fqdn := &rule.ToFQDNs[j]
 		fqdn.MatchName = strings.TrimRight(strings.ToLower(fqdn.MatchName), ".")
@@ -42,6 +49,25 @@ func normalizeEgressRule(c *Config, i int) {
 			dns.MatchPattern = strings.TrimRight(strings.ToLower(dns.MatchPattern), ".")
 			for strings.Contains(dns.MatchPattern, "***") {
 				dns.MatchPattern = strings.ReplaceAll(dns.MatchPattern, "***", "**")
+			}
+		}
+	}
+
+	for j := range rule.ToCIDR {
+		rule.ToCIDR[j] = normalizeCIDR(rule.ToCIDR[j])
+	}
+}
+
+// normalizeEgressDenyRule mutates an egress deny rule in place to
+// normalize protocol case and CIDR notation.
+func normalizeEgressDenyRule(c *Config, i int) {
+	rule := &(*c.EgressDeny)[i]
+
+	for j := range rule.ToPorts {
+		for k := range rule.ToPorts[j].Ports {
+			rule.ToPorts[j].Ports[k].Protocol = strings.ToUpper(rule.ToPorts[j].Ports[k].Protocol)
+			if isSvcName(rule.ToPorts[j].Ports[k].Port) {
+				rule.ToPorts[j].Ports[k].Port = strings.ToLower(rule.ToPorts[j].Ports[k].Port)
 			}
 		}
 	}

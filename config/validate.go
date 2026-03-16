@@ -37,19 +37,26 @@ var (
 	// IP-layer protocols without ports and cannot be expressed in the
 	// terrarium's port-based model.
 	validProtocols = map[string]bool{
-		"": true, "TCP": true, "UDP": true, "SCTP": true, "ANY": true,
+		"": true, ProtoTCP: true, ProtoUDP: true, ProtoSCTP: true, ProtoAny: true,
 	}
 )
 
 // Validate checks that the config is internally consistent.
 func (c *Config) Validate() error {
 	for i := range c.EgressRules() {
+		// Expand supported entities (e.g. "world" -> dual-stack
+		// CIDRs) before rejecting unsupported selectors.
+		err := expandAndValidateEntities(&(*c.Egress)[i], i)
+		if err != nil {
+			return err
+		}
+
 		// Reject unsupported Cilium selectors before any other
 		// processing. This prevents silent data loss from fields
-		// like toEntities or toEndpoints being ignored.
+		// like toEndpoints being ignored.
 		// The unsupported fields don't need normalization, so this
 		// can safely run first.
-		err := validateUnsupportedSelectors((*c.Egress)[i], i)
+		err = validateUnsupportedSelectors((*c.Egress)[i], i)
 		if err != nil {
 			return err
 		}
@@ -116,6 +123,12 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate egressDeny rules.
+	err := c.validateEgressDenyRules()
+	if err != nil {
+		return err
+	}
+
 	// TCPForwards require egress rules to route traffic. If egress is
 	// blocked, forwards would silently do nothing.
 	if c.IsEgressBlocked() && len(c.TCPForwards) > 0 {
@@ -155,12 +168,7 @@ func (c *Config) Validate() error {
 
 	normalizeEnvoySettings(c)
 
-	err := c.validateEnvoySettings()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return c.validateEnvoySettings()
 }
 
 // validateEnvoySettings checks that envoy settings contain valid values.
@@ -200,7 +208,6 @@ func validateUnsupportedSelectors(rule EgressRule, ruleIdx int) error {
 
 	fields := []field{
 		{"toEndpoints", len(rule.ToEndpoints) > 0},
-		{"toEntities", len(rule.ToEntities) > 0},
 		{"toServices", len(rule.ToServices) > 0},
 		{"toNodes", len(rule.ToNodes) > 0},
 		{"toGroups", len(rule.ToGroups) > 0},
@@ -232,7 +239,6 @@ func validateUnsupportedPortRuleFeatures(pr PortRule, ruleIdx int) error {
 	fields := []field{
 		{"terminatingTLS", pr.TerminatingTLS != nil},
 		{"originatingTLS", pr.OriginatingTLS != nil},
-		{"serverNames", len(pr.ServerNames) > 0},
 		{"listener", pr.Listener != nil},
 	}
 
@@ -432,6 +438,11 @@ func validatePorts(rule EgressRule, ruleIdx int) error {
 			return err
 		}
 
+		err = validateServerNames(pr, rule, ruleIdx)
+		if err != nil {
+			return err
+		}
+
 		if len(pr.Ports) > maxPorts {
 			return fmt.Errorf("%w: rule %d has %d ports",
 				ErrPortsTooMany, ruleIdx, len(pr.Ports))
@@ -474,7 +485,7 @@ func validatePorts(rule EgressRule, ruleIdx int) error {
 			}
 
 			for _, p := range pr.Ports {
-				if p.Protocol != "" && p.Protocol != "TCP" {
+				if p.Protocol != "" && p.Protocol != ProtoTCP {
 					return fmt.Errorf("%w: rule %d port %s protocol %s",
 						ErrL7RequiresTCP, ruleIdx, p.Port, p.Protocol)
 				}
@@ -623,42 +634,47 @@ func validateL7Rules(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 // validateCIDRSets checks that each CIDR set entry is valid and that
 // except entries are subnets of the parent CIDR.
 func validateCIDRSets(rule EgressRule, ruleIdx int) error {
-	for _, cidr := range rule.ToCIDRSet {
-		err := validateUnsupportedCIDRRuleFeatures(cidr, ruleIdx)
+	return validateCIDRSetEntries(rule.ToCIDRSet, "rule", ruleIdx)
+}
+
+// validateCIDRSetEntries validates a list of [CIDRRule] entries,
+// checking unsupported features, CIDR format, address family
+// consistency, and except subnet containment. The prefix parameter
+// (e.g. "rule" or "egressDeny rule") is used in error messages.
+func validateCIDRSetEntries(cidrs []CIDRRule, prefix string, idx int) error {
+	for _, cidr := range cidrs {
+		err := validateUnsupportedCIDRRuleFeatures(cidr, idx)
 		if err != nil {
 			return err
 		}
 
 		_, parentNet, err := net.ParseCIDR(cidr.CIDR)
 		if err != nil {
-			return fmt.Errorf("%w: rule %d cidr %q", ErrCIDRInvalid, ruleIdx, cidr.CIDR)
+			return fmt.Errorf("%w: %s %d cidr %q", ErrCIDRInvalid, prefix, idx, cidr.CIDR)
 		}
 
 		if isIPv4MappedIPv6(cidr.CIDR) {
-			return fmt.Errorf("%w: rule %d cidr %q", ErrCIDRIPv4MappedIPv6, ruleIdx, cidr.CIDR)
+			return fmt.Errorf("%w: %s %d cidr %q", ErrCIDRIPv4MappedIPv6, prefix, idx, cidr.CIDR)
 		}
 
 		parentIsV6 := cidrIsIPv6(cidr.CIDR)
 		parentOnes, _ := parentNet.Mask.Size()
 
 		for _, exc := range cidr.Except {
-			_, excNet, err := net.ParseCIDR(exc)
-			if err != nil {
-				return fmt.Errorf("%w: rule %d except %q", ErrCIDRInvalid, ruleIdx, exc)
+			_, excNet, excErr := net.ParseCIDR(exc)
+			if excErr != nil {
+				return fmt.Errorf("%w: %s %d except %q", ErrCIDRInvalid, prefix, idx, exc)
 			}
 
 			if isIPv4MappedIPv6(exc) {
-				return fmt.Errorf("%w: rule %d except %q", ErrCIDRIPv4MappedIPv6, ruleIdx, exc)
+				return fmt.Errorf("%w: %s %d except %q", ErrCIDRIPv4MappedIPv6, prefix, idx, exc)
 			}
 
-			// Explicit address family match check. Cross-family
-			// except entries silently have no effect because
-			// net.IPNet.Contains returns false across families.
 			if cidrIsIPv6(exc) != parentIsV6 {
 				return fmt.Errorf(
-					"%w: rule %d except %q (%s) does not match parent %q (%s)",
+					"%w: %s %d except %q (%s) does not match parent %q (%s)",
 					ErrExceptAddressFamilyMismatch,
-					ruleIdx,
+					prefix, idx,
 					exc, familyLabel(cidrIsIPv6(exc)),
 					cidr.CIDR, familyLabel(parentIsV6),
 				)
@@ -666,7 +682,10 @@ func validateCIDRSets(rule EgressRule, ruleIdx int) error {
 
 			excOnes, _ := excNet.Mask.Size()
 			if !parentNet.Contains(excNet.IP) || excOnes < parentOnes {
-				return fmt.Errorf("%w: rule %d except %q not in %q", ErrExceptNotSubnet, ruleIdx, exc, cidr.CIDR)
+				return fmt.Errorf(
+					"%w: %s %d except %q not in %q",
+					ErrExceptNotSubnet, prefix, idx, exc, cidr.CIDR,
+				)
 			}
 		}
 	}
@@ -766,6 +785,133 @@ func validateDNSWildcardPattern(p string, ruleIdx, dnsIdx int) error {
 		return fmt.Errorf("%w: rule %d dns %d pattern %q",
 			ErrFQDNPatternPartialWildcard, ruleIdx, dnsIdx, p)
 	}
+
+	return nil
+}
+
+// validateServerNames checks that serverNames entries are valid
+// hostnames and that the containing rule uses toCIDR/toCIDRSet
+// with TCP protocol.
+func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
+	if len(pr.ServerNames) == 0 {
+		return nil
+	}
+
+	// serverNames requires toCIDR or toCIDRSet (not toFQDNs).
+	if len(rule.ToCIDR) == 0 && len(rule.ToCIDRSet) == 0 {
+		return fmt.Errorf("%w: rule %d", ErrServerNamesRequiresCIDR, ruleIdx)
+	}
+
+	// All ports must be TCP.
+	for _, p := range pr.Ports {
+		if p.Protocol != "" && p.Protocol != ProtoTCP {
+			return fmt.Errorf("%w: rule %d port %s protocol %s",
+				ErrServerNamesRequiresTCP, ruleIdx, p.Port, p.Protocol)
+		}
+	}
+
+	// Validate hostname characters.
+	for _, name := range pr.ServerNames {
+		if !allowedMatchNameChars.MatchString(name) {
+			return fmt.Errorf("%w: rule %d name %q",
+				ErrServerNamesInvalidHostname, ruleIdx, name)
+		}
+	}
+
+	return nil
+}
+
+// validateEgressDenyRules checks that all egress deny rules are
+// well-formed: valid CIDRs, valid ports, no L7 rules, and at least
+// one selector present.
+func (c *Config) validateEgressDenyRules() error {
+	denyRules := c.EgressDenyRules()
+	for i := range denyRules {
+		normalizeEgressDenyRule(c, i)
+
+		rule := denyRules[i]
+
+		if len(rule.ToCIDR) == 0 && len(rule.ToCIDRSet) == 0 && len(rule.ToPorts) == 0 {
+			return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRuleEmpty, i)
+		}
+
+		if len(rule.ToCIDR) > 0 && len(rule.ToCIDRSet) > 0 {
+			return fmt.Errorf("%w: egressDeny rule %d", ErrCIDRAndCIDRSetMixed, i)
+		}
+
+		for _, cidr := range rule.ToCIDR {
+			_, _, parseErr := net.ParseCIDR(cidr)
+			if parseErr != nil {
+				return fmt.Errorf("%w: egressDeny rule %d cidr %q", ErrCIDRInvalid, i, cidr)
+			}
+
+			if isIPv4MappedIPv6(cidr) {
+				return fmt.Errorf("%w: egressDeny rule %d cidr %q", ErrCIDRIPv4MappedIPv6, i, cidr)
+			}
+		}
+
+		for _, pr := range rule.ToPorts {
+			if pr.Rules != nil {
+				return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRuleL7, i)
+			}
+
+			for _, p := range pr.Ports {
+				if p.Port == "" {
+					return fmt.Errorf("%w: egressDeny rule %d", ErrPortEmpty, i)
+				}
+
+				n, err := ResolvePort(p.Port)
+				if err != nil {
+					return fmt.Errorf(
+						"%w: egressDeny rule %d port %q",
+						ErrPortInvalid, i, p.Port,
+					)
+				}
+
+				if !validProtocols[p.Protocol] {
+					return fmt.Errorf(
+						"%w: egressDeny rule %d port %q protocol %q",
+						ErrProtocolInvalid, i, p.Port, p.Protocol,
+					)
+				}
+
+				err = validateEndPort(p, int(n), i)
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		err := validateCIDRSetEntries(rule.ToCIDRSet, "egressDeny rule", i)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// expandAndValidateEntities processes toEntities on an egress rule.
+// "world" is expanded into dual-stack CIDRs (0.0.0.0/0 and ::/0)
+// appended to ToCIDR. Other entity values are rejected with
+// [ErrUnsupportedEntity]. After processing, ToEntities is cleared
+// so downstream L3 mutual-exclusivity checks operate on the
+// expanded CIDRs.
+func expandAndValidateEntities(rule *EgressRule, ruleIdx int) error {
+	if len(rule.ToEntities) == 0 {
+		return nil
+	}
+
+	for _, entity := range rule.ToEntities {
+		e := strings.ToLower(entity)
+		if e != "world" {
+			return fmt.Errorf("%w: rule %d has %q", ErrUnsupportedEntity, ruleIdx, entity)
+		}
+
+		rule.ToCIDR = append(rule.ToCIDR, "0.0.0.0/0", "::/0")
+	}
+
+	rule.ToEntities = nil
 
 	return nil
 }

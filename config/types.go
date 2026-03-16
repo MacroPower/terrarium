@@ -44,6 +44,12 @@ type Config struct {
 	// An empty slice is equivalent to nil; Cilium infers default-deny
 	// from rule presence, so an empty list never activates enforcement.
 	Egress *[]EgressRule `yaml:"egress,omitempty"`
+	// EgressDeny lists egress deny rules with CIDR and port selectors.
+	// Deny rules take precedence over allow rules (evaluated first in
+	// nftables). Only L3 (toCIDR, toCIDRSet) and L4 (toPorts) are
+	// supported; L7 rules and toFQDNs are not valid on deny rules.
+	// A nil pointer means the field was absent from YAML.
+	EgressDeny *[]EgressDenyRule `yaml:"egressDeny,omitempty"`
 	// Envoy configures Envoy proxy runtime behavior (log level,
 	// timeouts, connection limits). A nil pointer means the field
 	// was absent from YAML; all defaults apply. See [EnvoySettings].
@@ -176,9 +182,11 @@ type EgressRule struct {
 	// ToEndpoints is a Cilium L3 selector matching endpoints by label.
 	// Terrarium has no endpoint identity system.
 	ToEndpoints []any `yaml:"toEndpoints,omitempty"`
-	// ToEntities is a Cilium L3 selector matching special entities
-	// (world, cluster, host, etc). Terrarium has no entity resolution.
-	ToEntities []any `yaml:"toEntities,omitempty"`
+	// ToEntities is a Cilium L3 selector matching special entities.
+	// Only "world" is supported (expanded to 0.0.0.0/0 and ::/0
+	// during validation); other values (host, cluster, etc.) are
+	// rejected with [ErrUnsupportedEntity].
+	ToEntities []string `yaml:"toEntities,omitempty"`
 	// ToServices is a Cilium L3 selector matching Kubernetes services.
 	// Terrarium has no service discovery.
 	ToServices []any `yaml:"toServices,omitempty"`
@@ -193,6 +201,30 @@ type EgressRule struct {
 	// ICMPs is a Cilium selector for ICMP type filtering.
 	// Terrarium does not support ICMP-level policy.
 	ICMPs []any `yaml:"icmps,omitempty"`
+}
+
+// EgressDenyRules returns the egress deny rules slice, or nil when
+// EgressDeny is absent.
+func (c *Config) EgressDenyRules() []EgressDenyRule {
+	if c.EgressDeny == nil {
+		return nil
+	}
+
+	return *c.EgressDeny
+}
+
+// EgressDenyRule defines an egress deny policy with CIDR and port
+// selectors. Deny rules support only L3 (ToCIDR, ToCIDRSet) and L4
+// (ToPorts) selectors. L7 rules and toFQDNs are not permitted on
+// deny rules, matching Cilium's EgressDenyRule semantics.
+// Deny rules take precedence over allow rules.
+type EgressDenyRule struct {
+	// ToCIDR denies traffic to IP ranges in CIDR notation.
+	ToCIDR []string `yaml:"toCIDR,omitempty"`
+	// ToCIDRSet denies traffic to IP ranges with optional exceptions.
+	ToCIDRSet []CIDRRule `yaml:"toCIDRSet,omitempty"`
+	// ToPorts restricts denied destination ports.
+	ToPorts []PortRule `yaml:"toPorts,omitempty"`
 }
 
 // CIDRRule specifies an IP range to allow, with optional exceptions.
@@ -239,9 +271,11 @@ type PortRule struct {
 	Rules *L7Rules `yaml:"rules,omitempty"`
 	// Ports lists allowed destination ports.
 	Ports []Port `yaml:"ports,omitempty"`
-	// ServerNames is a Cilium field for SNI-based filtering on ports.
-	// Terrarium handles SNI via Envoy filter chains, not port rules.
-	ServerNames []any `yaml:"serverNames,omitempty"`
+	// ServerNames restricts TLS destinations by SNI. Requires
+	// toCIDR or toCIDRSet on the same rule and TCP protocol on all
+	// ports. CIDR rules with serverNames are routed through Envoy
+	// for SNI inspection instead of direct ACCEPT.
+	ServerNames []string `yaml:"serverNames,omitempty"`
 }
 
 // Port specifies a destination port number with optional protocol and range.
@@ -396,23 +430,24 @@ func (r ResolvedRule) IsRestricted() bool {
 
 // ResolvedPortProto is a resolved port with protocol and optional range.
 type ResolvedPortProto struct {
-	Protocol string // "tcp", "udp", "" = any (no -p flag)
+	Protocol string // "TCP", "UDP", "SCTP", or "ANY"
 	Port     int
 	EndPort  int // 0 = no range
 }
 
-// ResolvedCIDR is a port-aware resolved CIDR entry. Each entry
-// represents a direct IP-level allow rule that bypasses the Envoy
-// proxy. Ports are inherited from the parent [EgressRule]'s toPorts;
-// an empty Ports slice means any port (no L4 restriction).
-// RuleIndex tracks which egress rule this CIDR came from, enabling
-// per-rule iptables chains that preserve Cilium's OR semantics
-// across rules.
+// ResolvedCIDR is a port-aware resolved CIDR entry. Ports are
+// inherited from the parent [EgressRule]'s toPorts; an empty Ports
+// slice means any port (no L4 restriction). RuleIndex tracks which
+// egress rule this CIDR came from, enabling per-rule iptables chains
+// that preserve Cilium's OR semantics across rules. When ServerNames
+// is non-empty, the CIDR rule is routed through Envoy for SNI
+// inspection instead of direct ACCEPT.
 type ResolvedCIDR struct {
-	CIDR      string
-	Except    []string
-	Ports     []ResolvedPortProto
-	RuleIndex int
+	CIDR        string
+	Except      []string
+	Ports       []ResolvedPortProto
+	ServerNames []string
+	RuleIndex   int
 }
 
 // ResolvedOpenPort is a resolved open port with its normalized protocol.

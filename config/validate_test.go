@@ -740,7 +740,7 @@ func TestValidate(t *testing.T) {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "tcp"}}}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}},
 				}),
 			},
 		},
@@ -989,7 +989,7 @@ func TestValidate(t *testing.T) {
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
 					ToPorts: []config.PortRule{{
-						Ports: []config.Port{{Port: "443", Protocol: "udp"}},
+						Ports: []config.Port{{Port: "443", Protocol: "UDP"}},
 						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
@@ -1614,13 +1614,30 @@ egress:
 `,
 			err: config.ErrUnsupportedSelector,
 		},
-		"toEntities world rejected": {
+		"toEntities world expanded to CIDRs": {
 			yaml: `
 egress:
   - toEntities:
       - world
 `,
-			err: config.ErrUnsupportedSelector,
+			wantRules: 1,
+		},
+		"toEntities host rejected": {
+			yaml: `
+egress:
+  - toEntities:
+      - host
+`,
+			err: config.ErrUnsupportedEntity,
+		},
+		"toEntities mixed world and host rejected": {
+			yaml: `
+egress:
+  - toEntities:
+      - world
+      - host
+`,
+			err: config.ErrUnsupportedEntity,
 		},
 		"toServices rejected": {
 			yaml: `
@@ -1707,8 +1724,9 @@ egress:
 egress:
   - toCIDR:
       - 10.0.0.0/8
-  - toEntities:
-      - world
+  - toEndpoints:
+      - matchLabels:
+          role: backend
 `,
 			err: config.ErrUnsupportedSelector,
 		},
@@ -1762,12 +1780,81 @@ egressPolicy:
 egress:
   - toCIDR:
       - 10.0.0.0/8
-  - toEntities:
-      - world
+  - toEndpoints:
+      - matchLabels:
+          role: backend
 `))
 		require.ErrorIs(t, err, config.ErrUnsupportedSelector)
-		assert.ErrorContains(t, err, "rule 1 has toEntities")
+		assert.ErrorContains(t, err, "rule 1 has toEndpoints")
 	})
+}
+
+func TestToEntitiesWorldExpansion(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml     string
+		err      error
+		wantCIDR []string
+	}{
+		"world expands to dual-stack CIDRs": {
+			yaml: `
+egress:
+  - toEntities:
+      - world
+`,
+			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+		},
+		"world with toPorts preserved": {
+			yaml: `
+egress:
+  - toEntities:
+      - world
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+		},
+		"world with toCIDRSet rejected (mutual exclusivity)": {
+			yaml: `
+egress:
+  - toEntities:
+      - world
+    toCIDRSet:
+      - cidr: 10.0.0.0/8
+`,
+			err: config.ErrCIDRAndCIDRSetMixed,
+		},
+		"world case-insensitive": {
+			yaml: `
+egress:
+  - toEntities:
+      - World
+`,
+			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			rules := cfg.EgressRules()
+			require.Len(t, rules, 1)
+			assert.Equal(t, tt.wantCIDR, rules[0].ToCIDR)
+			assert.Empty(t, rules[0].ToEntities)
+		})
+	}
 }
 
 func TestUnsupportedFeatures(t *testing.T) {
@@ -1805,7 +1892,7 @@ egress:
 `,
 			err: config.ErrUnsupportedFeature,
 		},
-		"serverNames rejected": {
+		"serverNames on FQDN rejected (requires CIDR)": {
 			yaml: `
 egress:
   - toFQDNs:
@@ -1816,7 +1903,7 @@ egress:
         serverNames:
           - example.com
 `,
-			err: config.ErrUnsupportedFeature,
+			err: config.ErrServerNamesRequiresCIDR,
 		},
 		"listener rejected": {
 			yaml: `
@@ -1973,4 +2060,217 @@ egress:
 		require.ErrorContains(t, err, "rule 1")
 		require.ErrorContains(t, err, "cidrGroupRef")
 	})
+}
+
+func TestEgressDenyRules(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		err  error
+	}{
+		"valid deny CIDR": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+`,
+		},
+		"valid deny CIDRSet": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - toCIDRSet:
+      - cidr: 10.0.0.0/8
+        except:
+          - 10.1.0.0/16
+`,
+		},
+		"valid deny with toPorts": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+		},
+		"deny with L7 rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - ports:
+          - port: "443"
+        rules:
+          http:
+            - path: /secret
+`,
+			err: config.ErrDenyRuleL7,
+		},
+		"deny empty rule rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - {}
+`,
+			err: config.ErrDenyRuleEmpty,
+		},
+		"deny invalid CIDR rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - toCIDR:
+      - not-a-cidr
+`,
+			err: config.ErrCIDRInvalid,
+		},
+		"deny toCIDR and toCIDRSet mixed rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toCIDRSet:
+      - cidr: 10.2.0.0/16
+`,
+			err: config.ErrCIDRAndCIDRSetMixed,
+		},
+		"deny-only config with no allow rules is valid": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.0.0.0/8
+`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestServerNames(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		err  error
+	}{
+		"valid serverNames on CIDR rule": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - api.internal.example.com
+`,
+		},
+		"valid serverNames on CIDRSet rule": {
+			yaml: `
+egress:
+  - toCIDRSet:
+      - cidr: 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - api.internal.example.com
+`,
+		},
+		"serverNames requires CIDR": {
+			yaml: `
+egress:
+  - toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - api.internal.example.com
+`,
+			err: config.ErrServerNamesRequiresCIDR,
+		},
+		"serverNames requires TCP": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: UDP
+        serverNames:
+          - api.internal.example.com
+`,
+			err: config.ErrServerNamesRequiresTCP,
+		},
+		"serverNames invalid hostname": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "api.example.com/path"
+`,
+			err: config.ErrServerNamesInvalidHostname,
+		},
+		"serverNames empty protocol ok (defaults to TCP)": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - api.internal.example.com
+`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }

@@ -223,6 +223,38 @@ var (
 	// overlaps with a resolved port.
 	ErrTCPForwardPortConflict = errors.New("tcp forward port conflicts with resolved ports")
 
+	// ErrServerNamesRequiresCIDR is returned when serverNames is used
+	// on a toPorts entry without toCIDR or toCIDRSet on the same rule.
+	// serverNames provides SNI filtering for CIDR-based rules.
+	ErrServerNamesRequiresCIDR = errors.New(
+		"serverNames requires toCIDR or toCIDRSet on the same rule",
+	)
+
+	// ErrServerNamesRequiresTCP is returned when serverNames is used
+	// with a non-TCP protocol. SNI inspection requires TCP.
+	ErrServerNamesRequiresTCP = errors.New("serverNames requires TCP protocol")
+
+	// ErrServerNamesInvalidHostname is returned when a serverNames
+	// entry contains invalid hostname characters.
+	ErrServerNamesInvalidHostname = errors.New(
+		"serverNames entry contains invalid characters: only a-z, 0-9, '.', '-', and '_' are allowed",
+	)
+
+	// ErrDenyRuleL7 is returned when an [EgressDenyRule] contains L7
+	// rules in toPorts. Cilium's egressDeny does not support L7.
+	ErrDenyRuleL7 = errors.New("egressDeny rules do not support L7 rules")
+
+	// ErrDenyRuleEmpty is returned when an [EgressDenyRule] has no
+	// selectors (no toCIDR, toCIDRSet, or toPorts). An empty deny
+	// rule has no effect and is likely a misconfiguration.
+	ErrDenyRuleEmpty = errors.New("egressDeny rule must have at least toCIDR, toCIDRSet, or toPorts")
+
+	// ErrUnsupportedEntity is returned when a [EgressRule] has a
+	// toEntities value that terrarium does not support. Only "world"
+	// is supported; other Cilium entities (host, cluster,
+	// kube-apiserver, etc.) require cluster infrastructure.
+	ErrUnsupportedEntity = errors.New("unsupported entity: only 'world' is supported by terrarium")
+
 	// ErrUnsupportedSelector is returned when an [EgressRule] contains a
 	// CiliumNetworkPolicy selector that terrarium does not implement.
 	// Terrarium only supports toFQDNs, toPorts, toCIDR, and toCIDRSet.

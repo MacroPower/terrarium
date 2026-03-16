@@ -27,10 +27,18 @@ const CatchAllProxyPort = 15001
 const CatchAllUDPProxyPort = 15002
 
 const (
-	protoTCP  = "tcp"
-	protoUDP  = "udp"
-	protoSCTP = "sctp"
-	protoAny  = "ANY"
+	// ProtoTCP is the canonical protocol string for TCP after YAML
+	// normalization (uppercase).
+	ProtoTCP = "TCP"
+	// ProtoUDP is the canonical protocol string for UDP after YAML
+	// normalization (uppercase).
+	ProtoUDP = "UDP"
+	// ProtoSCTP is the canonical protocol string for SCTP after YAML
+	// normalization (uppercase).
+	ProtoSCTP = "SCTP"
+	// ProtoAny is the canonical protocol string for ANY (matches
+	// TCP and UDP). Empty protocol is normalized to this value.
+	ProtoAny = "ANY"
 )
 
 // wellKnownPorts maps IANA service names to their standard port
@@ -105,24 +113,24 @@ func ResolvePort(s string) (uint16, error) {
 	return 0, fmt.Errorf("unknown service name %q", s)
 }
 
-// normalizeProtocol converts a config-level protocol string to the
-// canonical form used internally. "TCP" maps to "tcp", "UDP" to
-// "udp", "SCTP" to "sctp", and empty or "ANY" to "ANY" (matching
-// Cilium's canonical [protoAny] representation). Under Cilium default
-// semantics, an omitted protocol means TCP and UDP. SCTP requires
-// explicit opt-in (Cilium Helm value sctp.enabled=true); terrarium
-// matches this default by expanding ANY to TCP+UDP only.
+// normalizeProtocol converts a protocol string to the canonical
+// uppercase form. Input is already uppercased by [normalizeEgressRule]
+// so this mainly handles empty strings (mapped to [ProtoAny]).
+// Under Cilium default semantics, an omitted protocol means TCP and
+// UDP. SCTP requires explicit opt-in (Cilium Helm value
+// sctp.enabled=true); terrarium matches this default by expanding
+// ANY to TCP+UDP only.
 func normalizeProtocol(proto string) string {
 	switch proto {
-	case "TCP":
-		return protoTCP
-	case "UDP":
-		return protoUDP
-	case "SCTP":
-		return protoSCTP
-	case "", "ANY":
-		return protoAny
+	case ProtoTCP:
+		return ProtoTCP
+	case ProtoUDP:
+		return ProtoUDP
+	case ProtoSCTP:
+		return ProtoSCTP
+	case "", ProtoAny:
+		return ProtoAny
 	default:
-		return protoAny
+		return ProtoAny
 	}
 }

@@ -328,11 +328,11 @@ func notMatchDstPort(port uint16) []expr.Any {
 // protoNum converts a protocol string to its IP protocol number.
 func protoNum(proto string) byte {
 	switch proto {
-	case protoTCP:
+	case config.ProtoTCP:
 		return unix.IPPROTO_TCP
-	case protoUDP:
+	case config.ProtoUDP:
 		return unix.IPPROTO_UDP
-	case protoSCTP:
+	case config.ProtoSCTP:
 		return unix.IPPROTO_SCTP
 	default:
 		return 0

@@ -239,7 +239,7 @@ func portRuleHasTCPPort(pr PortRule, port int) bool {
 
 	for _, p := range pr.Ports {
 		proto := normalizeProtocol(p.Protocol)
-		if proto != protoAny && proto != protoTCP {
+		if proto != ProtoAny && proto != ProtoTCP {
 			continue // UDP, SCTP -- skip
 		}
 
@@ -384,11 +384,14 @@ func (c *Config) ResolvePorts() []int {
 			continue
 		}
 
-		// CIDR-only rules bypass Envoy; their ports don't need
-		// Envoy listeners. Validation prevents FQDN+CIDR
-		// combinations, so this is equivalent to "not an FQDN rule".
+		// CIDR-only rules bypass Envoy unless they have
+		// serverNames (which require Envoy for SNI inspection).
+		// Validation prevents FQDN+CIDR combinations, so this
+		// is equivalent to "not an FQDN rule" when no serverNames.
 		if len(rules[ri].ToCIDRSet) > 0 || len(rules[ri].ToCIDR) > 0 {
-			continue
+			if !ruleHasServerNames(rules[ri]) {
+				continue
+			}
 		}
 
 		isOpenPortRule := len(rules[ri].ToFQDNs) == 0
@@ -402,7 +405,7 @@ func (c *Config) ResolvePorts() []int {
 		for _, pr := range rules[ri].ToPorts {
 			for _, p := range pr.Ports {
 				proto := normalizeProtocol(p.Protocol)
-				if proto != protoAny && proto != protoTCP {
+				if proto != ProtoAny && proto != ProtoTCP {
 					continue
 				}
 
@@ -501,8 +504,8 @@ func (c *Config) ResolveOpenPortRules() []ResolvedOpenPort {
 				n := int(resolved)
 				proto := normalizeProtocol(p.Protocol)
 				protos := []string{proto}
-				if proto == protoAny {
-					protos = []string{protoTCP, protoUDP}
+				if proto == ProtoAny {
+					protos = []string{ProtoTCP, ProtoUDP}
 				}
 
 				for _, pr := range protos {
@@ -556,7 +559,7 @@ func ruleHasNonTCPPorts(rule EgressRule) bool {
 	for _, pr := range rule.ToPorts {
 		for _, p := range pr.Ports {
 			proto := normalizeProtocol(p.Protocol)
-			if proto != protoTCP {
+			if proto != ProtoTCP {
 				return true
 			}
 		}
@@ -613,14 +616,14 @@ func (c *Config) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
 				var protos []string
 
 				switch proto {
-				case protoTCP:
+				case ProtoTCP:
 					continue
-				case protoUDP, protoSCTP:
+				case ProtoUDP, ProtoSCTP:
 					protos = []string{proto}
-				case protoAny:
+				case ProtoAny:
 					// ANY: expand to non-TCP protocols only.
 					// SCTP requires explicit opt-in (Cilium: sctp.enabled=true).
-					protos = []string{protoUDP}
+					protos = []string{ProtoUDP}
 				}
 
 				for _, pr := range protos {
@@ -788,6 +791,7 @@ func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 		}
 
 		ports := resolvePortsFromRule(cidrRules[ri])
+		serverNames := collectServerNames(cidrRules[ri])
 
 		// Combine toCIDR and toCIDRSet into a unified list.
 		allCIDRs := make([]CIDRRule, 0, len(cidrRules[ri].ToCIDR)+len(cidrRules[ri].ToCIDRSet))
@@ -800,10 +804,12 @@ func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 		for _, cidr := range allCIDRs {
 			v4, v6 := classifyCIDR(cidr, ports, ruleIdx)
 			if v4 != nil {
+				v4.ServerNames = serverNames
 				ipv4 = append(ipv4, *v4)
 			}
 
 			if v6 != nil {
+				v6.ServerNames = serverNames
 				ipv6 = append(ipv6, *v6)
 			}
 		}
@@ -814,12 +820,99 @@ func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 	return ipv4, ipv6
 }
 
+// ResolveServerNameRulesForPort returns resolved rules from CIDR
+// rules that have serverNames on the given port. These are converted
+// into [ResolvedRule] entries so Envoy can create SNI filter chains
+// for them. ServerNames on CIDR rules are always passthrough (no L7
+// HTTP inspection).
+func (c *Config) ResolveServerNameRulesForPort(port int) []ResolvedRule {
+	seen := make(map[string]bool)
+
+	var result []ResolvedRule
+
+	rules := c.EgressRules()
+	for ri := range rules {
+		if len(rules[ri].ToCIDR) == 0 && len(rules[ri].ToCIDRSet) == 0 {
+			continue
+		}
+
+		for _, pr := range rules[ri].ToPorts {
+			if len(pr.ServerNames) == 0 {
+				continue
+			}
+
+			if !portRuleMatchesPort(PortRule{Ports: pr.Ports}, port) {
+				continue
+			}
+
+			for _, name := range pr.ServerNames {
+				if !seen[name] {
+					seen[name] = true
+					result = append(result, ResolvedRule{Domain: name})
+				}
+			}
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Domain < result[j].Domain
+	})
+
+	return result
+}
+
+// ruleHasServerNames reports whether any toPorts entry in an egress
+// rule has serverNames set.
+func ruleHasServerNames(rule EgressRule) bool {
+	for _, pr := range rule.ToPorts {
+		if len(pr.ServerNames) > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// collectServerNames returns a deduplicated, sorted list of
+// serverNames from all toPorts entries on an egress rule.
+func collectServerNames(rule EgressRule) []string {
+	seen := make(map[string]bool)
+
+	var names []string
+
+	for _, pr := range rule.ToPorts {
+		for _, name := range pr.ServerNames {
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+	}
+
+	sort.Strings(names)
+
+	if len(names) == 0 {
+		return nil
+	}
+
+	return names
+}
+
 // resolvePortsFromRule extracts a sorted, deduplicated list of resolved
 // port-protocol pairs from a rule's toPorts. Returns nil when the rule
 // has no toPorts or when any PortRule has an empty Ports list (meaning
 // all ports).
 func resolvePortsFromRule(rule EgressRule) []ResolvedPortProto {
-	if len(rule.ToPorts) == 0 {
+	return resolvePortsFromPortRules(rule.ToPorts)
+}
+
+// resolvePortsFromPortRules extracts a sorted, deduplicated list of
+// resolved port-protocol pairs from a list of [PortRule]s. Returns
+// nil when the list is empty or when any PortRule has an empty Ports
+// list (meaning all ports). Used by both allow and deny rule
+// resolution.
+func resolvePortsFromPortRules(portRules []PortRule) []ResolvedPortProto {
+	if len(portRules) == 0 {
 		return nil
 	}
 
@@ -827,7 +920,7 @@ func resolvePortsFromRule(rule EgressRule) []ResolvedPortProto {
 
 	var ports []ResolvedPortProto
 
-	for _, pr := range rule.ToPorts {
+	for _, pr := range portRules {
 		if len(pr.Ports) == 0 {
 			// Empty Ports list means all ports.
 			return nil
@@ -850,8 +943,8 @@ func resolvePortsFromRule(rule EgressRule) []ResolvedPortProto {
 			// so port matching always has a concrete protocol.
 			// SCTP requires explicit opt-in.
 			protos := []string{proto}
-			if proto == protoAny {
-				protos = []string{protoTCP, protoUDP}
+			if proto == ProtoAny {
+				protos = []string{ProtoTCP, ProtoUDP}
 			}
 
 			for _, expandedProto := range protos {
@@ -926,4 +1019,47 @@ func classifyCIDR(cidr CIDRRule, ports []ResolvedPortProto, ruleIndex int) (*Res
 	}
 
 	return &resolved, nil
+}
+
+// ResolveDenyCIDRRules collects toCIDR and toCIDRSet entries from all
+// egress deny rules, preserving port associations, and separates them
+// by address family. Same shape as [Config.ResolveCIDRRules] but for
+// deny rules.
+func (c *Config) ResolveDenyCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
+	var ipv4, ipv6 []ResolvedCIDR
+
+	denyRules := c.EgressDenyRules()
+	for ri := range denyRules {
+		if len(denyRules[ri].ToCIDRSet) == 0 && len(denyRules[ri].ToCIDR) == 0 {
+			continue
+		}
+
+		ports := resolvePortsFromDenyRule(denyRules[ri])
+
+		allCIDRs := make([]CIDRRule, 0, len(denyRules[ri].ToCIDR)+len(denyRules[ri].ToCIDRSet))
+		for _, cidr := range denyRules[ri].ToCIDR {
+			allCIDRs = append(allCIDRs, CIDRRule{CIDR: cidr})
+		}
+
+		allCIDRs = append(allCIDRs, denyRules[ri].ToCIDRSet...)
+
+		for _, cidr := range allCIDRs {
+			v4, v6 := classifyCIDR(cidr, ports, ri)
+			if v4 != nil {
+				ipv4 = append(ipv4, *v4)
+			}
+
+			if v6 != nil {
+				ipv6 = append(ipv6, *v6)
+			}
+		}
+	}
+
+	return ipv4, ipv6
+}
+
+// resolvePortsFromDenyRule extracts resolved port-protocol pairs from
+// a deny rule's toPorts. Delegates to [resolvePortsFromPortRules].
+func resolvePortsFromDenyRule(rule EgressDenyRule) []ResolvedPortProto {
+	return resolvePortsFromPortRules(rule.ToPorts)
 }

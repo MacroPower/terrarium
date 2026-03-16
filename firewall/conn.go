@@ -13,12 +13,6 @@ type UIDs struct {
 }
 
 const (
-	protoTCP  = "tcp"
-	protoUDP  = "udp"
-	protoSCTP = "sctp"
-)
-
-const (
 	// tproxyMark is the fwmark value used to identify UDP packets
 	// that need TPROXY processing. Set in the mangle output chain,
 	// matched in the mangle prerouting chain.

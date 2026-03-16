@@ -122,8 +122,11 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 
 	// Extra port listeners support both passthrough and MITM (when L7
 	// rules with path/method restrictions are present and certsDir is set).
+	// ServerName rules from CIDR rules are merged so Envoy creates
+	// SNI filter chains for them.
 	for _, p := range cfg.ExtraPorts() {
 		rulesP := cfg.ResolveRulesForPort(p)
+		rulesP = append(rulesP, cfg.ResolveServerNameRulesForPort(p)...)
 
 		if openPortSet[p] {
 			rulesP = envoy.StripL7Restrictions(rulesP)
@@ -187,6 +190,7 @@ func buildTLSPassthroughListener(
 	certsDir string,
 ) envoy.Listener {
 	rules := cfg.ResolveRulesForPort(443)
+	rules = append(rules, cfg.ResolveServerNameRulesForPort(443)...)
 	open := openPortSet[443]
 
 	if !resolvedPortSet[443] {
