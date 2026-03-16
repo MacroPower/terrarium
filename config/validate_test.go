@@ -377,32 +377,29 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"partial wildcard mid-label rejected": {
+		"partial wildcard mid-label allowed": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchPattern: "api.*-staging.example.com"}},
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 				}),
 			},
-			err: config.ErrFQDNPatternPartialWildcard,
 		},
-		"partial wildcard suffix rejected": {
+		"partial wildcard suffix allowed": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchPattern: "example.com.*"}},
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 				}),
 			},
-			err: config.ErrFQDNPatternPartialWildcard,
 		},
-		"multiple wildcards rejected": {
+		"multiple wildcards allowed": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.*.example.com"}},
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 				}),
 			},
-			err: config.ErrFQDNPatternPartialWildcard,
 		},
 		"valid leading wildcard prefix": {
 			cfg: &config.Config{
@@ -759,7 +756,7 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrBareWildcardWithL7,
+			err: config.ErrPartialWildcardWithL7,
 		},
 		"bare double-star with L7 rejected": {
 			cfg: &config.Config{
@@ -771,7 +768,62 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrBareWildcardWithL7,
+			err: config.ErrPartialWildcardWithL7,
+		},
+		"partial wildcard with L7 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "api.*.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
+					}},
+				}),
+			},
+			err: config.ErrPartialWildcardWithL7,
+		},
+		"wildcard suffix with L7 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.ci*.io"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
+					}},
+				}),
+			},
+			err: config.ErrPartialWildcardWithL7,
+		},
+		"multiple wildcards with L7 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.*.cilium.io"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
+					}},
+				}),
+			},
+			err: config.ErrPartialWildcardWithL7,
+		},
+		"partial wildcard without L7 allowed": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "api.*.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
+		"partial wildcard with serverNames allowed": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "api.*.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports:       []config.Port{{Port: "443"}},
+						ServerNames: []string{"api.*.example.com"},
+					}},
+				}),
+			},
 		},
 		"wildcard matchPattern without L7 allowed": {
 			cfg: &config.Config{
@@ -1466,7 +1518,7 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrFQDNPatternInvalidChars,
 		},
-		"DNS rule partial wildcard rejected": {
+		"DNS rule partial wildcard allowed": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
@@ -1478,7 +1530,6 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrFQDNPatternPartialWildcard,
 		},
 		"DNS rule normalized uppercase and trailing dot": {
 			cfg: &config.Config{
@@ -2456,7 +2507,7 @@ egress:
           - "**.example.com"
 `,
 		},
-		"serverNames partial wildcard rejected": {
+		"serverNames partial wildcard allowed": {
 			yaml: `
 egress:
   - toCIDR:
@@ -2467,7 +2518,6 @@ egress:
         serverNames:
           - "api.*.example.com"
 `,
-			err: config.ErrServerNamesInvalidWildcard,
 		},
 		"serverNames bare wildcard rejected": {
 			yaml: `

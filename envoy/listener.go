@@ -3,7 +3,6 @@ package envoy
 import (
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"go.jacobcolvin.com/terrarium/config"
@@ -52,7 +51,7 @@ func BuildTLSListener(
 	// subdomains for single-star patterns like "*.example.com".
 	var exactDomains, wildcardDomains []string
 	for _, d := range passthroughDomains {
-		if strings.HasPrefix(d, "*.") || strings.HasPrefix(d, "**.") {
+		if IsWildcardDomain(d) {
 			wildcardDomains = append(wildcardDomains, d)
 		} else {
 			exactDomains = append(exactDomains, d)
@@ -69,7 +68,7 @@ func BuildTLSListener(
 
 		envoyNames := make([]string, len(wildcardDomains))
 		for i, d := range wildcardDomains {
-			envoyNames[i] = wildcardServerName(d)
+			envoyNames[i] = WildcardServerName(d)
 		}
 
 		chains = append(
@@ -80,7 +79,7 @@ func BuildTLSListener(
 
 	for _, r := range mitmRules {
 		var httpRBAC *filter
-		if strings.HasPrefix(r.Domain, "*.") || strings.HasPrefix(r.Domain, "**.") {
+		if IsWildcardDomain(r.Domain) {
 			f := buildWildcardHTTPRBACFilter([]string{r.Domain}, nil)
 			httpRBAC = &f
 		}

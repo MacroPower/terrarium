@@ -165,21 +165,15 @@ var (
 	// to reject negative values at admission.
 	ErrEndPortNegative = errors.New("endPort must not be negative")
 
-	// ErrBareWildcardWithL7 is returned when a bare wildcard matchPattern
-	// ("*" or "**") is used with L7 HTTP rules. Bare wildcards cannot
-	// produce meaningful MITM certificates. Suffix wildcards like
-	// "*.example.com" are allowed since Go x509 supports wildcard SANs.
-	ErrBareWildcardWithL7 = errors.New(
-		"bare wildcard matchPattern (* or **) cannot be used with L7 HTTP rules; use a suffix like *.example.com",
-	)
-
-	// ErrFQDNPatternPartialWildcard is returned when a matchPattern
-	// contains a wildcard that is not the leading "*." prefix.
-	// Cilium supports partial wildcards like "api.*-staging.example.com"
-	// where "*" matches characters within a label, but Envoy's
-	// server_names does not; they would silently fail to match.
-	ErrFQDNPatternPartialWildcard = errors.New(
-		"matchPattern with partial wildcard is not supported; only leading *. prefix is allowed",
+	// ErrPartialWildcardWithL7 is returned when a matchPattern with
+	// wildcards in non-leading positions (or bare wildcards like "*",
+	// "**") is used with L7 HTTP rules. MITM certificate generation
+	// requires a wildcard-free suffix for the SAN (RFC 6125 only
+	// supports *.suffix form). Patterns like "api.*.example.com",
+	// "*.ci*.io", and "*.*.cilium.io" all have wildcards in the
+	// suffix after stripping any leading "*." or "**." prefix.
+	ErrPartialWildcardWithL7 = errors.New(
+		"matchPattern with non-leading wildcards cannot be used with L7 HTTP rules; MITM certs require a wildcard-free suffix",
 	)
 
 	// ErrFQDNNameInvalidChars is returned when a matchName contains
@@ -263,11 +257,10 @@ var (
 	)
 
 	// ErrServerNamesInvalidWildcard is returned when a serverNames
-	// entry uses a wildcard in an unsupported position. Only leading
-	// "*." or "**." prefixes are allowed, matching Cilium's wildcard
-	// semantics for SNI-based filter chain matching.
+	// entry uses a bare wildcard ("*") without a dot-separated suffix.
+	// Bare wildcards have no meaningful SNI matching semantics.
 	ErrServerNamesInvalidWildcard = errors.New(
-		"serverNames wildcard must be a leading *. or **. prefix",
+		"serverNames entry must not be a bare wildcard; use a pattern like *.example.com",
 	)
 
 	// ErrICMPInvalidType is returned when an [ICMPField] Type is not

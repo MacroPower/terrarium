@@ -13,8 +13,8 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 	)
 
 	// Classify domains for RBAC filter generation using the original
-	// domain pattern (before wildcardServerName conversion) so that
-	// ** patterns produce multi-label regexes via wildcardToHostRegex.
+	// domain pattern (before WildcardServerName conversion) so that
+	// ** patterns produce multi-label regexes via WildcardToHostRegex.
 	// Restricted domains may include suffix wildcards ("*.example.com",
 	// "**.example.com") since those are allowed with L7 rules; only
 	// bare wildcards ("*", "**") are rejected by validation.
@@ -23,11 +23,11 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 		if r.IsRestricted() {
 			restricted = append(restricted, r)
 		} else {
-			unrestricted = append(unrestricted, wildcardServerName(r.Domain))
-			// Use the original r.Domain (not the wildcardServerName-converted
+			unrestricted = append(unrestricted, WildcardServerName(r.Domain))
+			// Use the original r.Domain (not the WildcardServerName-converted
 			// value) so that ** patterns retain their multi-label semantics
-			// through wildcardToHostRegex.
-			if strings.HasPrefix(r.Domain, "*.") || strings.HasPrefix(r.Domain, "**.") {
+			// through WildcardToHostRegex.
+			if r.Domain != "*" && IsWildcardDomain(r.Domain) {
 				wildcardDomains = append(wildcardDomains, r.Domain)
 			} else if r.Domain != "*" {
 				exactDomains = append(exactDomains, r.Domain)
@@ -102,7 +102,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 		})
 		vhosts = append(vhosts, virtualHost{
 			Name:    "restricted_" + r.Domain,
-			Domains: []string{wildcardServerName(r.Domain)},
+			Domains: []string{WildcardServerName(r.Domain)},
 			Routes:  routes,
 		})
 	}

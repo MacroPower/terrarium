@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -804,13 +803,6 @@ func patternToAnchoredRegex(pattern string, isMatchName bool) string {
 // characters (e.g. "*", "**", "***").
 func isBareWildcard(pattern string) bool {
 	return strings.TrimLeft(pattern, "*") == ""
-}
-
-// containsMidPositionDoubleStar reports whether pattern contains "**" as a
-// complete dot-separated label in a non-leading position (e.g.
-// "test.**.cilium.io"). Leading "**." is handled separately by the caller.
-func containsMidPositionDoubleStar(pattern string) bool {
-	return slices.Contains(strings.Split(pattern, "."), "**")
 }
 
 // ResolveCIDRRules collects toCIDR and toCIDRSet entries from all

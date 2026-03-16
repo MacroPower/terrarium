@@ -19,7 +19,7 @@ import (
 // confines "*" to a single DNS label. This filter is prepended to
 // passthrough filter chains that contain wildcard patterns; it checks
 // the TLS SNI (requested_server_name) against per-domain regexes
-// (via [wildcardToSNIRegex]) and closes the connection if the SNI
+// (via [WildcardToSNIRegex]) and closes the connection if the SNI
 // does not match.
 //
 // The RBAC action is ALLOW with one permission per wildcard domain.
@@ -34,7 +34,7 @@ func buildWildcardRBACFilter(wildcardDomains []string) filter {
 	for _, d := range wildcardDomains {
 		permissions = append(permissions, rbacPermission{
 			RequestedServerName: &stringMatch{
-				SafeRegex: &safeRegex{Regex: wildcardToSNIRegex(d)},
+				SafeRegex: &safeRegex{Regex: WildcardToSNIRegex(d)},
 			},
 		})
 	}
@@ -72,7 +72,7 @@ func buildWildcardRBACFilter(wildcardDomains []string) filter {
 //
 // Because the RBAC filter applies globally to the HCM (not per virtual
 // host), the permissions must also allow exact domains through. Each
-// wildcard gets a depth-enforcement regex (via [wildcardToHostRegex]);
+// wildcard gets a depth-enforcement regex (via [WildcardToHostRegex]);
 // each exact domain gets a regex that matches the literal name with an
 // optional port suffix. All permissions are OR'd.
 func buildWildcardHTTPRBACFilter(wildcardDomains, exactDomains []string) filter {
@@ -84,7 +84,7 @@ func buildWildcardHTTPRBACFilter(wildcardDomains, exactDomains []string) filter 
 				Name: ":authority",
 				StringMatch: &stringMatch{
 					SafeRegex: &safeRegex{
-						Regex: wildcardToHostRegex(d),
+						Regex: WildcardToHostRegex(d),
 					},
 				},
 			},
@@ -170,7 +170,7 @@ func buildMITMFilterChain(
 	certsDir string,
 	httpRBACFilter *filter,
 ) filterChain {
-	sn := wildcardServerName(rule.Domain)
+	sn := WildcardServerName(rule.Domain)
 	certPath := fmt.Sprintf("%s/%s/cert.pem", certsDir, sn)
 	keyPath := fmt.Sprintf("%s/%s/key.pem", certsDir, sn)
 

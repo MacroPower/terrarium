@@ -1,6 +1,7 @@
 package dnsproxy
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 
@@ -12,7 +13,14 @@ import (
 // match subdomains only; exact entries match the domain itself and
 // all subdomains.
 type Domain struct {
-	// Name is the domain without any wildcard prefix.
+	// Regex is a compiled pattern for partial wildcard matching
+	// (e.g. "api.*.example.com", "*.ci*.io"). When set, [Matches]
+	// uses this regex instead of suffix-based logic. The regex
+	// matches lowercase non-FQDN form (no trailing dot).
+	Regex *regexp.Regexp
+	// Name is the domain without any wildcard prefix. For partial
+	// wildcard patterns, this is the longest wildcard-free suffix
+	// (used for DNS forwarding breadth).
 	Name string
 	// Wildcard is true when the entry originated from a matchPattern
 	// with a leading wildcard prefix ("*." or "**."), restricting
@@ -26,7 +34,8 @@ type Domain struct {
 }
 
 // Matches reports whether qname (in FQDN wire format with trailing
-// dot) matches this domain entry. Non-wildcard entries match the
+// dot) matches this domain entry. When Regex is set, the compiled
+// pattern is used directly. Otherwise, non-wildcard entries match the
 // domain and all subdomains (like dnsmasq /domain/). Wildcard entries
 // match subdomains only, not the bare parent (like dnsmasq /*.domain/).
 // The leading-dot check prevents false positives (notexample.com vs
@@ -38,6 +47,10 @@ func (d Domain) Matches(qname string) bool {
 	}
 
 	q = strings.ToLower(q)
+
+	if d.Regex != nil {
+		return d.Regex.MatchString(q)
+	}
 
 	if d.Wildcard {
 		suffix := "." + d.Name
@@ -76,26 +89,17 @@ func CollectDomains(cfg *config.Config) []Domain {
 			if fqdn.MatchName != "" {
 				d = Domain{Name: fqdn.MatchName}
 			} else {
-				// Detect multi-level ("**.") before stripping.
-				multiLevel := strings.HasPrefix(fqdn.MatchPattern, "**.")
+				d = patternToDomain(fqdn.MatchPattern)
+			}
 
-				// Strip all leading "*" characters then the
-				// following "." to extract the base domain.
-				stripped := strings.TrimLeft(fqdn.MatchPattern, "*")
-				stripped = strings.TrimPrefix(stripped, ".")
-				if stripped == "" {
-					// Bare wildcard "*", "**", etc.: pass
-					// through for catch-all handling.
-					if !seen["*"] {
-						seen["*"] = true
+			if d.Name == "*" {
+				if !seen["*"] {
+					seen["*"] = true
 
-						result = append(result, Domain{Name: "*"})
-					}
-
-					continue
+					result = append(result, Domain{Name: "*"})
 				}
 
-				d = Domain{Name: stripped, Wildcard: true, MultiLevel: multiLevel}
+				continue
 			}
 
 			if seen[d.Name] {
@@ -122,21 +126,17 @@ func CollectDomains(cfg *config.Config) []Domain {
 				if dns.MatchName != "" {
 					d = Domain{Name: dns.MatchName}
 				} else {
-					multiLevel := strings.HasPrefix(dns.MatchPattern, "**.")
+					d = patternToDomain(dns.MatchPattern)
+				}
 
-					stripped := strings.TrimLeft(dns.MatchPattern, "*")
-					stripped = strings.TrimPrefix(stripped, ".")
-					if stripped == "" {
-						if !seen["*"] {
-							seen["*"] = true
+				if d.Name == "*" {
+					if !seen["*"] {
+						seen["*"] = true
 
-							result = append(result, Domain{Name: "*"})
-						}
-
-						continue
+						result = append(result, Domain{Name: "*"})
 					}
 
-					d = Domain{Name: stripped, Wildcard: true, MultiLevel: multiLevel}
+					continue
 				}
 
 				if seen[d.Name] {
@@ -152,6 +152,92 @@ func CollectDomains(cfg *config.Config) []Domain {
 	}
 
 	return collectTCPForwardHosts(cfg, result, seen)
+}
+
+// patternToDomain converts a matchPattern into a [Domain]. For simple
+// leading wildcard patterns ("*.suffix", "**.suffix"), the suffix is
+// extracted directly. For patterns with non-leading wildcards (e.g.
+// "api.*.example.com", "*.ci*.io"), a regex is compiled and the
+// longest wildcard-free suffix is used as Name for DNS forwarding
+// breadth. The intentionally broad forwarding is acceptable because
+// [Matches] (regex) and the Envoy/nftables layers enforce the actual
+// security restriction.
+func patternToDomain(pattern string) Domain {
+	// Detect multi-level ("**.") before stripping.
+	multiLevel := strings.HasPrefix(pattern, "**.")
+
+	// Strip all leading "*" characters then the following "." to
+	// extract the base domain.
+	stripped := strings.TrimLeft(pattern, "*")
+	stripped = strings.TrimPrefix(stripped, ".")
+
+	if stripped == "" {
+		// Bare wildcard "*", "**", etc.
+		return Domain{Name: "*"}
+	}
+
+	// Check if the stripped suffix still contains wildcards. If so,
+	// this is a partial wildcard pattern that needs regex matching.
+	if strings.Contains(stripped, "*") {
+		// Build a regex matching the full pattern (lowercase,
+		// non-FQDN form, no trailing dot).
+		re := CompileMatchRegex(pattern)
+
+		// Extract the longest wildcard-free suffix for DNS
+		// forwarding. This is intentionally broad.
+		suffix := longestWildcardFreeSuffix(pattern)
+
+		return Domain{
+			Name:       suffix,
+			Wildcard:   true,
+			MultiLevel: true,
+			Regex:      re,
+		}
+	}
+
+	return Domain{Name: stripped, Wildcard: true, MultiLevel: multiLevel}
+}
+
+// CompileMatchRegex compiles a matchPattern into a regex that
+// matches lowercase non-FQDN domain names (no trailing dot). Each
+// "*" matches zero or more label characters ([-a-zA-Z0-9_]), and
+// "." is a literal dot separator. Exported for testing.
+func CompileMatchRegex(pattern string) *regexp.Regexp {
+	// Handle "**." prefix: one or more dot-separated labels.
+	if strings.HasPrefix(pattern, "**.") {
+		rest := pattern[3:]
+		suffixRe := strings.ReplaceAll(regexp.QuoteMeta(rest), `\*`, `[-a-zA-Z0-9_]*`)
+
+		return regexp.MustCompile(`^[-a-zA-Z0-9_]+(\.[-a-zA-Z0-9_]+)*\.` + suffixRe + `$`)
+	}
+
+	// General: escape then replace stars. QuoteMeta escapes "*" to
+	// "\*" and "." to "\." which is already valid regex for literal
+	// dots, so only the star replacement is needed.
+	re := strings.ReplaceAll(regexp.QuoteMeta(pattern), `\*`, `[-a-zA-Z0-9_]*`)
+
+	return regexp.MustCompile(`^` + re + `$`)
+}
+
+// longestWildcardFreeSuffix returns the longest right-aligned run of
+// dot-separated labels that contain no wildcards.
+func longestWildcardFreeSuffix(s string) string {
+	labels := strings.Split(s, ".")
+	start := len(labels)
+
+	for i := len(labels) - 1; i >= 0; i-- {
+		if strings.Contains(labels[i], "*") {
+			break
+		}
+
+		start = i
+	}
+
+	if start >= len(labels) {
+		return labels[len(labels)-1]
+	}
+
+	return strings.Join(labels[start:], ".")
 }
 
 // upgradeDomain adjusts an existing entry in result when the same

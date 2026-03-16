@@ -449,35 +449,13 @@ func validateFQDNSelectors(rule EgressRule, ruleIdx int) error {
 			continue
 		}
 
-		switch {
-		case p == "*" || p == "**":
-			// Bare wildcards: match all FQDNs.
-		case strings.HasPrefix(p, "**."):
-			// Multi-label wildcard. The remainder after "**." must be
-			// wildcard-free.
-			if strings.Contains(p[3:], "*") {
-				return fmt.Errorf("%w: rule %d selector %d pattern %q",
-					ErrFQDNPatternPartialWildcard, ruleIdx, j, fqdn.MatchPattern)
-			}
-
-		case strings.HasPrefix(p, "*."):
-			// Single-label wildcard. The remainder after "*." must be
-			// wildcard-free.
-			if strings.Contains(p[2:], "*") {
-				return fmt.Errorf("%w: rule %d selector %d pattern %q",
-					ErrFQDNPatternPartialWildcard, ruleIdx, j, fqdn.MatchPattern)
-			}
-
-		case containsMidPositionDoubleStar(p):
-			// Mid-position ** as a complete label (e.g. "test.**.cilium.io").
-			// patternToAnchoredRegex handles this via the generic path,
-			// producing correct single-label semantics per star.
-
-		case strings.Contains(p, "*"):
-			// Wildcard not in a valid leading position.
-			return fmt.Errorf("%w: rule %d selector %d pattern %q",
-				ErrFQDNPatternPartialWildcard, ruleIdx, j, fqdn.MatchPattern)
-		}
+		// All wildcard positions are valid. The character allowlist
+		// (allowedMatchPatternChars) already ensures only valid DNS
+		// and wildcard characters. patternToAnchoredRegex in
+		// resolve.go handles any wildcard position correctly via the
+		// generic strings.ReplaceAll(result, "*", "[-a-zA-Z0-9_]*")
+		// path. L7 MITM restrictions are enforced separately in
+		// validateL7Rules.
 	}
 
 	return nil
@@ -747,15 +725,19 @@ func validateL7Rules(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 		}
 	}
 
-	// Bare wildcard matchPatterns ("*", "**") cannot produce
-	// meaningful MITM certs. Suffix wildcards ("*.example.com",
-	// "**.example.com") are allowed: Go x509 supports wildcard SANs
-	// and the cert path uses wildcardServerName which normalizes
-	// "**." to "*.".
+	// MITM cert generation requires a wildcard-free suffix. Patterns
+	// are L7-incompatible if, after stripping any leading "*." or
+	// "**." prefix, the remainder still contains "*". This catches:
+	//   - bare wildcards: "*", "**"
+	//   - non-leading wildcards: "api.*.example.com"
+	//   - suffix wildcards: "*.ci*.io", "*.*.cilium.io"
+	// Simple prefix wildcards ("*.example.com", "**.example.com")
+	// are allowed: Go x509 supports wildcard SANs.
 	if hasFQDNs {
 		for j, fqdn := range rule.ToFQDNs {
-			if fqdn.MatchPattern != "" && isBareWildcard(fqdn.MatchPattern) {
-				return fmt.Errorf("%w: rule %d selector %d", ErrBareWildcardWithL7, ruleIdx, j)
+			if fqdn.MatchPattern != "" && isL7IncompatibleWildcard(fqdn.MatchPattern) {
+				return fmt.Errorf("%w: rule %d selector %d pattern %q",
+					ErrPartialWildcardWithL7, ruleIdx, j, fqdn.MatchPattern)
 			}
 		}
 	}
@@ -892,32 +874,11 @@ func validateDNSRules(rule EgressRule, ruleIdx int) error {
 	return nil
 }
 
-// validateDNSWildcardPattern validates wildcard patterns in DNS rules
-// using the same leading-wildcard rules as [validateFQDNSelectors].
-func validateDNSWildcardPattern(p string, ruleIdx, dnsIdx int) error {
-	switch {
-	case p == "*" || p == "**":
-		// Bare wildcards: match all.
-	case strings.HasPrefix(p, "**."):
-		if strings.Contains(p[3:], "*") {
-			return fmt.Errorf("%w: rule %d dns %d pattern %q",
-				ErrFQDNPatternPartialWildcard, ruleIdx, dnsIdx, p)
-		}
-
-	case strings.HasPrefix(p, "*."):
-		if strings.Contains(p[2:], "*") {
-			return fmt.Errorf("%w: rule %d dns %d pattern %q",
-				ErrFQDNPatternPartialWildcard, ruleIdx, dnsIdx, p)
-		}
-
-	case containsMidPositionDoubleStar(p):
-		// Mid-position ** as a complete label.
-
-	case strings.Contains(p, "*"):
-		return fmt.Errorf("%w: rule %d dns %d pattern %q",
-			ErrFQDNPatternPartialWildcard, ruleIdx, dnsIdx, p)
-	}
-
+// validateDNSWildcardPattern validates wildcard patterns in DNS rules.
+// All wildcard positions are valid; the character allowlist already
+// ensures only valid DNS and wildcard characters, and
+// patternToAnchoredRegex handles any position correctly.
+func validateDNSWildcardPattern(_ string, _, _ int) error {
 	return nil
 }
 
@@ -945,23 +906,18 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 		}
 	}
 
-	// Validate hostname characters and wildcard position.
+	// Validate hostname characters and reject bare wildcards.
+	// All wildcard positions are valid; the RBAC regex approach
+	// handles arbitrary positions for SNI matching.
 	for _, name := range pr.ServerNames {
 		if !allowedMatchPatternChars.MatchString(name) {
 			return fmt.Errorf("%w: rule %d name %q",
 				ErrServerNamesInvalidHostname, ruleIdx, name)
 		}
 
-		if strings.Contains(name, "*") {
-			switch {
-			case strings.HasPrefix(name, "**.") && !strings.Contains(name[3:], "*"):
-				// Multi-label wildcard prefix: valid.
-			case strings.HasPrefix(name, "*.") && !strings.Contains(name[2:], "*"):
-				// Single-label wildcard prefix: valid.
-			default:
-				return fmt.Errorf("%w: rule %d name %q",
-					ErrServerNamesInvalidWildcard, ruleIdx, name)
-			}
+		if isBareWildcard(name) {
+			return fmt.Errorf("%w: rule %d name %q",
+				ErrServerNamesInvalidWildcard, ruleIdx, name)
 		}
 	}
 
@@ -1116,6 +1072,22 @@ func expandAndValidateDenyEntities(rule *EgressDenyRule, ruleIdx int) error {
 	rule.ToEntities = nil
 
 	return nil
+}
+
+// isL7IncompatibleWildcard reports whether a matchPattern cannot be
+// used with L7 HTTP rules. MITM cert generation requires a
+// wildcard-free suffix (RFC 6125 only supports *.suffix form). A
+// pattern is incompatible if, after stripping any leading "*." or
+// "**." prefix, the remainder still contains "*".
+func isL7IncompatibleWildcard(pattern string) bool {
+	suffix := pattern
+	if strings.HasPrefix(suffix, "**.") {
+		suffix = suffix[3:]
+	} else if strings.HasPrefix(suffix, "*.") {
+		suffix = suffix[2:]
+	}
+
+	return strings.Contains(suffix, "*")
 }
 
 // portRuleIncludesPort53 reports whether a [PortRule] includes port 53

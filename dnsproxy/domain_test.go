@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
@@ -91,6 +92,56 @@ func TestDomainMatches(t *testing.T) {
 			domain: dnsproxy.Domain{Name: "example.com"},
 			qname:  "EXAMPLE.COM.",
 			want:   true,
+		},
+		"regex partial wildcard match": {
+			domain: dnsproxy.Domain{
+				Name:       "example.com",
+				Wildcard:   true,
+				MultiLevel: true,
+				Regex:      dnsproxy.CompileMatchRegex("api.*.example.com"),
+			},
+			qname: "api.foo.example.com.",
+			want:  true,
+		},
+		"regex partial wildcard rejects deep": {
+			domain: dnsproxy.Domain{
+				Name:       "example.com",
+				Wildcard:   true,
+				MultiLevel: true,
+				Regex:      dnsproxy.CompileMatchRegex("api.*.example.com"),
+			},
+			qname: "api.foo.bar.example.com.",
+			want:  false,
+		},
+		"regex partial wildcard rejects wrong prefix": {
+			domain: dnsproxy.Domain{
+				Name:       "example.com",
+				Wildcard:   true,
+				MultiLevel: true,
+				Regex:      dnsproxy.CompileMatchRegex("api.*.example.com"),
+			},
+			qname: "notapi.foo.example.com.",
+			want:  false,
+		},
+		"regex intra-label wildcard": {
+			domain: dnsproxy.Domain{
+				Name:       "io",
+				Wildcard:   true,
+				MultiLevel: true,
+				Regex:      dnsproxy.CompileMatchRegex("*.ci*.io"),
+			},
+			qname: "sub.cilium.io.",
+			want:  true,
+		},
+		"regex intra-label wildcard rejects bare": {
+			domain: dnsproxy.Domain{
+				Name:       "io",
+				Wildcard:   true,
+				MultiLevel: true,
+				Regex:      dnsproxy.CompileMatchRegex("*.ci*.io"),
+			},
+			qname: "cilium.io.",
+			want:  false,
 		},
 	}
 
@@ -338,6 +389,47 @@ func TestCollectDomains(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestCollectDomainsPartialWildcard(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchPattern: "api.*.example.com"}},
+			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+		}),
+	}
+
+	got := dnsproxy.CollectDomains(&cfg)
+	require.Len(t, got, 1)
+	assert.Equal(t, "example.com", got[0].Name)
+	assert.True(t, got[0].Wildcard)
+	assert.True(t, got[0].MultiLevel)
+	assert.NotNil(t, got[0].Regex)
+	assert.True(t, got[0].Matches("api.foo.example.com."))
+	assert.False(t, got[0].Matches("api.foo.bar.example.com."))
+	assert.False(t, got[0].Matches("notapi.foo.example.com."))
+}
+
+func TestCollectDomainsIntraLabelWildcard(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.ci*.io"}},
+			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+		}),
+	}
+
+	got := dnsproxy.CollectDomains(&cfg)
+	require.Len(t, got, 1)
+	assert.Equal(t, "io", got[0].Name)
+	assert.True(t, got[0].Wildcard)
+	assert.NotNil(t, got[0].Regex)
+	assert.True(t, got[0].Matches("sub.cilium.io."))
+	assert.True(t, got[0].Matches("sub.ci.io."))
+	assert.False(t, got[0].Matches("cilium.io."))
 }
 
 func TestMatchFQDNPatterns(t *testing.T) {
