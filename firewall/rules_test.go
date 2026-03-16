@@ -1133,7 +1133,43 @@ func TestApplyRules_ICMPWithCIDR(t *testing.T) {
 	cidrRules := rec.rulesForChain("cidr_0")
 	assert.NotEmpty(t, cidrRules, "CIDR chain should be created")
 
-	// ICMP ACCEPT in terrarium_output.
+	// ICMP with CIDRs uses a per-rule chain instead of flat rules
+	// on the output chain.
+	icmpChainRules := rec.rulesForChain("icmp_0")
+	assert.NotEmpty(t, icmpChainRules, "ICMP chain should be created for CIDR-scoped rule")
+
+	// The ICMP chain should have a CIDR-scoped ACCEPT with payload.
+	var icmpAccepts int
+	for _, r := range icmpChainRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictAccept && ruleHasPayload(r) {
+			icmpAccepts++
+		}
+	}
+
+	assert.Equal(t, 1, icmpAccepts)
+}
+
+func TestApplyRules_ICMPWithoutCIDR(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ICMPs: []config.ICMPRule{{
+					Fields: []config.ICMPField{
+						{Family: "IPv4", Type: "8"},
+					},
+				}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// Standalone ICMP (no CIDRs) should be flat on the output chain.
 	outputRules := rec.rulesForChain("terrarium_output")
 
 	var icmpAccepts int

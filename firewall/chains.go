@@ -678,48 +678,149 @@ func addManglePreRoutingChain(conn Conn, table *nftables.Table, port uint16) {
 	})
 }
 
-// addDenyICMPRules emits DROP rules on the parent chain for deny
-// ICMP entries. Each entry matches UID + nfproto + l4proto + ICMP
-// type -> DROP. Deny ICMP rules are evaluated before allow ICMP
-// rules (deny precedence).
+// addDenyICMPRules emits DROP rules for deny ICMP entries. When an
+// entry has CIDRs (L3 scope from sibling selectors), a per-rule
+// chain is created with CIDR-scoped DROPs and except RETURNs,
+// mirroring [addDenyCIDRChains]. Standalone entries (nil CIDRs)
+// are emitted flat on the parent chain. Deny ICMP rules are
+// evaluated before allow ICMP rules (deny precedence).
 func addDenyICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, uids UIDs,
 ) {
+	chainIdx := 0
+
 	for _, icmp := range icmps {
 		nfProto, l4Proto := icmpProtos(icmp.Family)
 
+		if len(icmp.CIDRs) == 0 {
+			// Standalone: DROP on parent chain.
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: parentChain,
+				Exprs: flatExprs(
+					matchUID(uids.Terrarium),
+					matchNFProto(nfProto),
+					matchL4Proto(l4Proto),
+					matchICMPType(icmp.Type),
+					verdictExprs(expr.VerdictDrop),
+				),
+			})
+
+			continue
+		}
+
+		// CIDR-scoped: per-entry chain with except RETURN + CIDR DROP.
+		chainName := fmt.Sprintf("deny_icmp_%d", chainIdx)
+		chainIdx++
+
+		chain := conn.AddChain(&nftables.Chain{
+			Name:  chainName,
+			Table: table,
+		})
+
+		addICMPCIDRRules(conn, table, chain, icmp, nfProto, l4Proto, uids, expr.VerdictDrop)
+
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: parentChain,
-			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
-				matchNFProto(nfProto),
-				matchL4Proto(l4Proto),
-				matchICMPType(icmp.Type),
-				verdictExprs(expr.VerdictDrop),
-			),
+			Exprs: flatExprs(verdictExprs(expr.VerdictJump, chainName)),
 		})
 	}
 }
 
-// addICMPRules emits ACCEPT rules on the parent chain for allow
-// ICMP entries. Each entry matches UID + nfproto + l4proto + ICMP
-// type -> ACCEPT.
+// addICMPRules emits ACCEPT rules for allow ICMP entries. When an
+// entry has CIDRs (L3 scope from sibling selectors), a per-rule
+// chain is created with CIDR-scoped ACCEPTs and except RETURNs,
+// mirroring [addCIDRChains]. Standalone entries (nil CIDRs) are
+// emitted flat on the parent chain.
 func addICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, uids UIDs,
 ) {
+	chainIdx := 0
+
 	for _, icmp := range icmps {
 		nfProto, l4Proto := icmpProtos(icmp.Family)
 
+		if len(icmp.CIDRs) == 0 {
+			// Standalone: ACCEPT on parent chain.
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: parentChain,
+				Exprs: flatExprs(
+					matchUID(uids.Terrarium),
+					matchNFProto(nfProto),
+					matchL4Proto(l4Proto),
+					matchICMPType(icmp.Type),
+					verdictExprs(expr.VerdictAccept),
+				),
+			})
+
+			continue
+		}
+
+		// CIDR-scoped: per-entry chain with except RETURN + CIDR ACCEPT.
+		chainName := fmt.Sprintf("icmp_%d", chainIdx)
+		chainIdx++
+
+		chain := conn.AddChain(&nftables.Chain{
+			Name:  chainName,
+			Table: table,
+		})
+
+		addICMPCIDRRules(conn, table, chain, icmp, nfProto, l4Proto, uids, expr.VerdictAccept)
+
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: parentChain,
+			Exprs: flatExprs(verdictExprs(expr.VerdictJump, chainName)),
+		})
+	}
+}
+
+// addICMPCIDRRules emits except RETURN and CIDR verdict rules for a
+// single CIDR-scoped ICMP entry on the given chain. Used by both
+// allow and deny ICMP rule generation.
+func addICMPCIDRRules(
+	conn Conn, table *nftables.Table, chain *nftables.Chain,
+	icmp config.ResolvedICMP, nfProto, l4Proto byte, uids UIDs,
+	verdict expr.VerdictKind,
+) {
+	// Except RETURNs first.
+	for _, cidr := range icmp.CIDRs {
+		for _, exc := range cidr.Except {
+			_, excNet, err := net.ParseCIDR(exc)
+			if err != nil {
+				continue
+			}
+
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchUID(uids.Terrarium),
+					matchNFProto(nfProto),
+					matchL4Proto(l4Proto),
+					matchICMPType(icmp.Type),
+					matchDstCIDR(excNet),
+					verdictExprs(expr.VerdictReturn),
+				),
+			})
+		}
+	}
+
+	// CIDR match rules.
+	for _, cidr := range icmp.CIDRs {
+		_, cidrNet, err := net.ParseCIDR(cidr.CIDR)
+		if err != nil {
+			continue
+		}
+
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchUID(uids.Terrarium),
 				matchNFProto(nfProto),
 				matchL4Proto(l4Proto),
 				matchICMPType(icmp.Type),
-				verdictExprs(expr.VerdictAccept),
+				matchDstCIDR(cidrNet),
+				verdictExprs(verdict),
 			),
 		})
 	}

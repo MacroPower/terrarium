@@ -2056,6 +2056,91 @@ func TestResolveICMPRules(t *testing.T) {
 			cfg:  &config.Config{},
 			want: nil,
 		},
+		"ICMP with toCIDR attaches CIDRs": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{
+					Family:    "IPv4",
+					Type:      8,
+					RuleIndex: 0,
+					CIDRs:     []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+				},
+			},
+		},
+		"ICMP without L3 has nil CIDRs": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{Family: "IPv4", Type: 8, RuleIndex: 0},
+			},
+		},
+		"ICMP filters CIDRs by address family": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8", "fd00::/64"},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+							{Family: "IPv6", Type: "128"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{
+					Family:    "IPv4",
+					Type:      8,
+					RuleIndex: 0,
+					CIDRs:     []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+				},
+				{
+					Family:    "IPv6",
+					Type:      128,
+					RuleIndex: 0,
+					CIDRs:     []config.CIDRRule{{CIDR: "fd00::/64"}},
+				},
+			},
+		},
+		"ICMP with toCIDRSet preserves except": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{
+						{CIDR: "10.0.0.0/8", Except: []string{"10.1.0.0/16"}},
+					},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{
+					Family:    "IPv4",
+					Type:      8,
+					RuleIndex: 0,
+					CIDRs: []config.CIDRRule{
+						{CIDR: "10.0.0.0/8", Except: []string{"10.1.0.0/16"}},
+					},
+				},
+			},
+		},
 	}
 
 	for name, tt := range tests {
@@ -2096,6 +2181,26 @@ func TestResolveDenyICMPRules(t *testing.T) {
 		"no deny rules": {
 			cfg:  &config.Config{},
 			want: nil,
+		},
+		"deny ICMP with toCIDR attaches CIDRs": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{
+					Family:    "IPv4",
+					Type:      8,
+					RuleIndex: 0,
+					CIDRs:     []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+				},
+			},
 		},
 	}
 

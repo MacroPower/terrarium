@@ -288,10 +288,20 @@ type ICMPField struct {
 // ResolvedICMP is a resolved ICMP type entry ready for nftables
 // rule generation. Type codes are resolved from names during
 // normalization; Family is normalized to "IPv4" or "IPv6".
+//
+// When CIDRs is non-nil, the ICMP rule is scoped to those
+// destinations (AND'd with L3 selectors from the parent rule,
+// matching Cilium's BPF datapath behavior). When CIDRs is nil,
+// the rule applies to all destinations (standalone ICMP rule
+// without L3 selectors).
 type ResolvedICMP struct {
-	Family    string // "IPv4" or "IPv6"
-	Type      uint8
+	Family string // "IPv4" or "IPv6"
+	// CIDRs restricts the ICMP rule to specific destination
+	// ranges. Nil means all destinations (no L3 scope). Only
+	// CIDRs matching this entry's address family are included.
+	CIDRs     []CIDRRule
 	RuleIndex int
+	Type      uint8
 }
 
 // CIDRRule specifies an IP range to allow, with optional exceptions.
