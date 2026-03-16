@@ -1277,6 +1277,132 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrInvalidEnvoyMaxConnections,
 		},
+		"valid DNS rule on port 53": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "example.com"},
+						}},
+					}},
+				}),
+			},
+		},
+		"valid DNS rule with matchPattern on port 53": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchPattern: "*.example.com"},
+						}},
+					}},
+				}),
+			},
+		},
+		"DNS rule on non-53 port rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{
+						{Ports: []config.Port{{Port: "443"}}},
+						{
+							Ports: []config.Port{{Port: "8053"}},
+							Rules: &config.L7Rules{DNS: []config.DNSRule{
+								{MatchName: "example.com"},
+							}},
+						},
+					},
+				}),
+			},
+			err: config.ErrDNSRuleRequiresPort53,
+		},
+		"DNS rule empty selector rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrDNSRuleSelectorEmpty,
+		},
+		"DNS rule ambiguous selector rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "example.com", MatchPattern: "*.example.com"},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrDNSRuleSelectorAmbiguous,
+		},
+		"DNS rule invalid matchName chars rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "exam ple.com"},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrFQDNNameInvalidChars,
+		},
+		"DNS rule invalid matchPattern chars rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchPattern: "*.exam ple.com"},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrFQDNPatternInvalidChars,
+		},
+		"DNS rule partial wildcard rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchPattern: "api.*-staging.example.com"},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrFQDNPatternPartialWildcard,
+		},
+		"DNS rule normalized uppercase and trailing dot": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "Example.COM."},
+						}},
+					}},
+				}),
+			},
+		},
 	}
 
 	for name, tt := range tests {
@@ -1740,7 +1866,7 @@ egress:
 `,
 			err: config.ErrUnsupportedFeature,
 		},
-		"dns L7 rejected": {
+		"dns L7 on port 53 accepted": {
 			yaml: `
 egress:
   - toFQDNs:
@@ -1752,7 +1878,6 @@ egress:
           dns:
             - matchPattern: "*.example.com"
 `,
-			err: config.ErrUnsupportedFeature,
 		},
 		"l7proto rejected": {
 			yaml: `

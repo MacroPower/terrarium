@@ -260,26 +260,44 @@ type Port struct {
 	EndPort int `yaml:"endPort,omitempty"`
 }
 
-// L7Rules contains protocol-specific inspection rules.
+// L7Rules contains protocol-specific inspection rules. HTTP rules
+// provide MITM-based request filtering; DNS rules restrict which
+// queries the DNS proxy forwards, merging into the same domain
+// allowlist as toFQDNs.
 type L7Rules struct {
 	// HTTP specifies HTTP-level rules for MITM inspection.
 	HTTP []HTTPRule `yaml:"http,omitempty"`
+	// DNS specifies DNS-level rules restricting which queries the
+	// DNS proxy forwards. Each entry's matchName/matchPattern is
+	// merged into the domain allowlist alongside toFQDNs entries.
+	// DNS rules must appear on port-53 toPorts entries only.
+	DNS []DNSRule `yaml:"dns,omitempty"`
 
 	// Unsupported Cilium L7 protocol fields. See Cilium's L7Rules
 	// in pkg/policy/api/l7.go.
 
 	// Kafka is a Cilium field for Kafka protocol rules (deprecated).
-	// Terrarium only supports HTTP L7 inspection.
+	// Terrarium only supports HTTP and DNS L7 inspection.
 	Kafka []any `yaml:"kafka,omitempty"`
-	// DNS is a Cilium field for DNS protocol rules.
-	// Terrarium handles DNS via its own DNS proxy, not L7 rules.
-	DNS []any `yaml:"dns,omitempty"`
 	// L7Proto is a Cilium field specifying a custom L7 protocol parser.
 	// Terrarium does not support custom L7 protocol parsers.
 	L7Proto string `yaml:"l7proto,omitempty"`
 	// L7 is a Cilium field for generic key-value L7 rules.
 	// Terrarium does not support custom L7 protocol rules.
 	L7 []any `yaml:"l7,omitempty"`
+}
+
+// DNSRule restricts which DNS queries the DNS proxy forwards.
+// Exactly one of MatchName or MatchPattern should be set, using
+// the same syntax as [FQDNSelector]. DNS rules merge into the
+// domain allowlist alongside toFQDNs entries via
+// [dnsproxy.CollectDomains].
+type DNSRule struct {
+	// MatchName matches an exact DNS query name.
+	MatchName string `yaml:"matchName,omitempty"`
+	// MatchPattern matches DNS query names using wildcard patterns
+	// (e.g. "*.example.com").
+	MatchPattern string `yaml:"matchPattern,omitempty"`
 }
 
 // HTTPRule specifies an allowed HTTP method, path, host, and/or

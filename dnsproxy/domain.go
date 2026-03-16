@@ -109,6 +109,48 @@ func CollectDomains(cfg *config.Config) []Domain {
 		}
 	}
 
+	// Collect DNS L7 rule domains from port-53 toPorts entries.
+	for ri := range eRules {
+		for _, pr := range eRules[ri].ToPorts {
+			if pr.Rules == nil || len(pr.Rules.DNS) == 0 {
+				continue
+			}
+
+			for _, dns := range pr.Rules.DNS {
+				var d Domain
+
+				if dns.MatchName != "" {
+					d = Domain{Name: dns.MatchName}
+				} else {
+					multiLevel := strings.HasPrefix(dns.MatchPattern, "**.")
+
+					stripped := strings.TrimLeft(dns.MatchPattern, "*")
+					stripped = strings.TrimPrefix(stripped, ".")
+					if stripped == "" {
+						if !seen["*"] {
+							seen["*"] = true
+
+							result = append(result, Domain{Name: "*"})
+						}
+
+						continue
+					}
+
+					d = Domain{Name: stripped, Wildcard: true, MultiLevel: multiLevel}
+				}
+
+				if seen[d.Name] {
+					upgradeDomain(result, d)
+
+					continue
+				}
+
+				seen[d.Name] = true
+				result = append(result, d)
+			}
+		}
+	}
+
 	return collectTCPForwardHosts(cfg, result, seen)
 }
 

@@ -229,6 +229,105 @@ func TestCollectDomains(t *testing.T) {
 				{Name: "z.example.com"},
 			},
 		},
+		"DNS rule matchName contributes to domains": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{
+						{Ports: []config.Port{{Port: "443"}}},
+						{
+							Ports: []config.Port{{Port: "53"}},
+							Rules: &config.L7Rules{DNS: []config.DNSRule{
+								{MatchName: "api.example.com"},
+							}},
+						},
+					},
+				}),
+			},
+			want: []dnsproxy.Domain{
+				{Name: "api.example.com"},
+				{Name: "dns.example.com"},
+			},
+		},
+		"DNS rule matchPattern contributes wildcard domain": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{
+						{Ports: []config.Port{{Port: "443"}}},
+						{
+							Ports: []config.Port{{Port: "53"}},
+							Rules: &config.L7Rules{DNS: []config.DNSRule{
+								{MatchPattern: "*.example.com"},
+							}},
+						},
+					},
+				}),
+			},
+			want: []dnsproxy.Domain{
+				{Name: "dns.example.com"},
+				{Name: "example.com", Wildcard: true},
+			},
+		},
+		"DNS rule double-star pattern contributes multi-level wildcard": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{
+						{Ports: []config.Port{{Port: "443"}}},
+						{
+							Ports: []config.Port{{Port: "53"}},
+							Rules: &config.L7Rules{DNS: []config.DNSRule{
+								{MatchPattern: "**.example.com"},
+							}},
+						},
+					},
+				}),
+			},
+			want: []dnsproxy.Domain{
+				{Name: "dns.example.com"},
+				{Name: "example.com", Wildcard: true, MultiLevel: true},
+			},
+		},
+		"DNS rule deduplicates with toFQDNs domain": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{
+						{Ports: []config.Port{{Port: "443"}}},
+						{
+							Ports: []config.Port{{Port: "53"}},
+							Rules: &config.L7Rules{DNS: []config.DNSRule{
+								{MatchName: "example.com"},
+							}},
+						},
+					},
+				}),
+			},
+			want: []dnsproxy.Domain{
+				{Name: "example.com"},
+			},
+		},
+		"DNS rule bare wildcard passthrough": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{
+						{Ports: []config.Port{{Port: "443"}}},
+						{
+							Ports: []config.Port{{Port: "53"}},
+							Rules: &config.L7Rules{DNS: []config.DNSRule{
+								{MatchPattern: "*"},
+							}},
+						},
+					},
+				}),
+			},
+			want: []dnsproxy.Domain{
+				{Name: "*"},
+				{Name: "dns.example.com"},
+			},
+		},
 	}
 
 	for name, tt := range tests {

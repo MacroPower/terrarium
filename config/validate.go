@@ -105,6 +105,11 @@ func (c *Config) Validate() error {
 			return err
 		}
 
+		err = validateDNSRules(rule, i)
+		if err != nil {
+			return err
+		}
+
 		err = validateCIDRSets(rule, i)
 		if err != nil {
 			return err
@@ -257,7 +262,6 @@ func validateUnsupportedL7Features(rules *L7Rules, ruleIdx int) error {
 
 	fields := []field{
 		{"kafka", len(rules.Kafka) > 0},
-		{"dns", len(rules.DNS) > 0},
 		{"l7proto", rules.L7Proto != ""},
 		{"l7", len(rules.L7) > 0},
 	}
@@ -677,4 +681,118 @@ func familyLabel(isV6 bool) string {
 	}
 
 	return "IPv4"
+}
+
+// validateDNSRules checks that DNS L7 rules are well-formed and appear
+// only on port-53 toPorts entries. Each DNS rule must have exactly one
+// of matchName or matchPattern, using the same character and wildcard
+// constraints as [FQDNSelector].
+func validateDNSRules(rule EgressRule, ruleIdx int) error {
+	for _, pr := range rule.ToPorts {
+		if pr.Rules == nil || len(pr.Rules.DNS) == 0 {
+			continue
+		}
+
+		// DNS rules must be on a toPorts entry that includes port 53.
+		if !portRuleIncludesPort53(pr) {
+			return fmt.Errorf("%w: rule %d", ErrDNSRuleRequiresPort53, ruleIdx)
+		}
+
+		for j, dns := range pr.Rules.DNS {
+			if dns.MatchName == "" && dns.MatchPattern == "" {
+				return fmt.Errorf("%w: rule %d dns %d", ErrDNSRuleSelectorEmpty, ruleIdx, j)
+			}
+
+			if dns.MatchName != "" && dns.MatchPattern != "" {
+				return fmt.Errorf("%w: rule %d dns %d", ErrDNSRuleSelectorAmbiguous, ruleIdx, j)
+			}
+
+			if dns.MatchName != "" {
+				if len(dns.MatchName) > maxFQDNLength {
+					return fmt.Errorf("%w: rule %d dns %d name %q (%d chars)",
+						ErrFQDNTooLong, ruleIdx, j, dns.MatchName, len(dns.MatchName))
+				}
+
+				if !allowedMatchNameChars.MatchString(dns.MatchName) {
+					return fmt.Errorf("%w: rule %d dns %d name %q",
+						ErrFQDNNameInvalidChars, ruleIdx, j, dns.MatchName)
+				}
+			}
+
+			if dns.MatchPattern != "" {
+				if len(dns.MatchPattern) > maxFQDNLength {
+					return fmt.Errorf("%w: rule %d dns %d pattern %q (%d chars)",
+						ErrFQDNTooLong, ruleIdx, j, dns.MatchPattern, len(dns.MatchPattern))
+				}
+
+				if !allowedMatchPatternChars.MatchString(dns.MatchPattern) {
+					return fmt.Errorf("%w: rule %d dns %d pattern %q",
+						ErrFQDNPatternInvalidChars, ruleIdx, j, dns.MatchPattern)
+				}
+
+				err := validateDNSWildcardPattern(dns.MatchPattern, ruleIdx, j)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateDNSWildcardPattern validates wildcard patterns in DNS rules
+// using the same leading-wildcard rules as [validateFQDNSelectors].
+func validateDNSWildcardPattern(p string, ruleIdx, dnsIdx int) error {
+	switch {
+	case p == "*" || p == "**":
+		// Bare wildcards: match all.
+	case strings.HasPrefix(p, "**."):
+		if strings.Contains(p[3:], "*") {
+			return fmt.Errorf("%w: rule %d dns %d pattern %q",
+				ErrFQDNPatternPartialWildcard, ruleIdx, dnsIdx, p)
+		}
+
+	case strings.HasPrefix(p, "*."):
+		if strings.Contains(p[2:], "*") {
+			return fmt.Errorf("%w: rule %d dns %d pattern %q",
+				ErrFQDNPatternPartialWildcard, ruleIdx, dnsIdx, p)
+		}
+
+	case containsMidPositionDoubleStar(p):
+		// Mid-position ** as a complete label.
+
+	case strings.Contains(p, "*"):
+		return fmt.Errorf("%w: rule %d dns %d pattern %q",
+			ErrFQDNPatternPartialWildcard, ruleIdx, dnsIdx, p)
+	}
+
+	return nil
+}
+
+// portRuleIncludesPort53 reports whether a [PortRule] includes port 53
+// (or has an empty Ports list, which matches all ports).
+func portRuleIncludesPort53(pr PortRule) bool {
+	if len(pr.Ports) == 0 {
+		return true
+	}
+
+	for _, p := range pr.Ports {
+		resolved, err := ResolvePort(p.Port)
+		if err != nil {
+			continue
+		}
+
+		n := int(resolved)
+
+		if n == 0 || n == 53 {
+			return true
+		}
+
+		if p.EndPort > 0 && 53 >= n && 53 <= p.EndPort {
+			return true
+		}
+	}
+
+	return false
 }

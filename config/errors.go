@@ -237,6 +237,21 @@ var (
 	// of an opaque "unknown field" parse failure.
 	ErrUnsupportedFeature = errors.New("unsupported feature")
 
+	// ErrDNSRuleRequiresPort53 is returned when a DNS L7 rule appears
+	// on a toPorts entry that does not include port 53. Cilium requires
+	// rules.dns only on port-53 entries.
+	ErrDNSRuleRequiresPort53 = errors.New(
+		"DNS L7 rules require port 53 in the toPorts entry",
+	)
+
+	// ErrDNSRuleSelectorEmpty is returned when a [DNSRule] has neither
+	// matchName nor matchPattern set.
+	ErrDNSRuleSelectorEmpty = errors.New("DNS rule must have matchName or matchPattern")
+
+	// ErrDNSRuleSelectorAmbiguous is returned when a [DNSRule] has both
+	// matchName and matchPattern set. Exactly one must be specified.
+	ErrDNSRuleSelectorAmbiguous = errors.New("DNS rule must have exactly one of matchName or matchPattern, not both")
+
 	// ErrInvalidEnvoyLogLevel is returned when [EnvoySettings.LogLevel]
 	// is not one of the values accepted by Envoy's --log-level flag.
 	ErrInvalidEnvoyLogLevel = errors.New(

@@ -233,10 +233,11 @@ func addCIDRChains(
 	}
 }
 
-// addOpenPortRule adds ACCEPT rules for open port protocols that
-// bypass Envoy. UDP/SCTP ports get direct ACCEPT; TCP port ranges
-// get direct ACCEPT (Envoy cannot create listeners for arbitrary
-// ranges); TCP single ports are handled by Envoy via NAT REDIRECT.
+// addOpenPortRule adds ACCEPT rules for open port protocols. UDP/SCTP
+// ports get direct ACCEPT (security decision); TPROXY routes them
+// through Envoy independently for access logging. TCP port ranges get
+// direct ACCEPT (Envoy cannot create listeners for arbitrary ranges);
+// TCP single ports are handled by Envoy via NAT REDIRECT.
 func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op config.ResolvedOpenPort, uids UIDs) {
 	if op.Protocol == protoUDP || op.Protocol == protoSCTP {
 		conn.AddRule(&nftables.Rule{

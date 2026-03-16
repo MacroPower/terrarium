@@ -568,12 +568,14 @@ func ruleHasNonTCPPorts(rule EgressRule) bool {
 // ResolveFQDNNonTCPPorts returns resolved UDP port entries from FQDN
 // rules, grouped per rule. Each qualifying rule (FQDN selectors with
 // non-TCP ports) gets its own [FQDNRulePorts] entry so iptables can
-// reference per-rule ipsets. These ports cannot use Envoy (TCP-only)
-// and are instead enforced via ipset-backed iptables rules that
-// restrict traffic to DNS-resolved IPs. ANY protocol is expanded into
-// udp entries (TCP is handled by [Config.ResolvePorts] + Envoy; SCTP
-// requires explicit opt-in). Returns nil when egress is unrestricted,
-// blocked, or has no FQDN rules with non-TCP ports.
+// reference per-rule ipsets. These ports are enforced via
+// ipset-backed iptables rules that restrict traffic to DNS-resolved
+// IPs (the security decision). TPROXY independently routes all
+// terrarium UDP through Envoy for access logging, but the filter
+// chain ACCEPT here is what permits the traffic. ANY protocol is
+// expanded into udp entries (TCP is handled by [Config.ResolvePorts]
+// + Envoy; SCTP requires explicit opt-in). Returns nil when egress
+// is unrestricted, blocked, or has no FQDN rules with non-TCP ports.
 func (c *Config) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
 	if c.IsEgressUnrestricted() {
 		return nil

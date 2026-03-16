@@ -30,6 +30,22 @@ func normalizeEgressRule(c *Config, i int) {
 		}
 	}
 
+	for j := range rule.ToPorts {
+		if rule.ToPorts[j].Rules == nil {
+			continue
+		}
+
+		for k := range rule.ToPorts[j].Rules.DNS {
+			dns := &rule.ToPorts[j].Rules.DNS[k]
+			dns.MatchName = strings.TrimRight(strings.ToLower(dns.MatchName), ".")
+
+			dns.MatchPattern = strings.TrimRight(strings.ToLower(dns.MatchPattern), ".")
+			for strings.Contains(dns.MatchPattern, "***") {
+				dns.MatchPattern = strings.ReplaceAll(dns.MatchPattern, "***", "**")
+			}
+		}
+	}
+
 	for j := range rule.ToCIDR {
 		rule.ToCIDR[j] = normalizeCIDR(rule.ToCIDR[j])
 	}
