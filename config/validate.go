@@ -135,6 +135,10 @@ func (c *Config) Validate() error {
 		if err != nil {
 			return err
 		}
+
+		if len(rule.ICMPs) > 0 && len(rule.ToFQDNs) > 0 {
+			return fmt.Errorf("%w: rule %d", ErrICMPWithFQDNs, i)
+		}
 	}
 
 	// Validate egressDeny rules.
