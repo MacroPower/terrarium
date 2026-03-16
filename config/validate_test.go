@@ -1601,7 +1601,7 @@ func TestNamedPortValidation(t *testing.T) {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToCIDRSet: []config.CIDRRule{{CIDR: "0.0.0.0/0"}},
-					ToPorts:   []config.PortRule{{Ports: []config.Port{{Port: "redis"}}}},
+					ToPorts:   []config.PortRule{{Ports: []config.Port{{Port: "zzz-unknown"}}}},
 				}),
 			},
 			err: config.ErrPortInvalid,

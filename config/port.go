@@ -46,11 +46,21 @@ const (
 // pod specs (containerPort.name); terrarium uses this static map
 // instead since there are no pods to query.
 var wellKnownPorts = map[string]uint16{
-	"domain":  53,
-	"dns":     53,
-	"dns-tcp": 53, // Kubernetes naming convention, not IANA
-	"http":    80,
-	"https":   443,
+	"domain":     53,
+	"dns":        53,
+	"dns-tcp":    53, // Kubernetes naming convention, not IANA
+	"ftp":        21,
+	"ssh":        22,
+	"smtp":       25,
+	"http":       80,
+	"ntp":        123,
+	"ldap":       389,
+	"https":      443,
+	"ldaps":      636,
+	"mysql":      3306,
+	"postgresql": 5432,
+	"redis":      6379,
+	"syslog":     514,
 }
 
 // isSvcName reports whether s is a valid IANA service name per RFC
