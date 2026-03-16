@@ -46,7 +46,7 @@ tasks:
   test:
     desc: Runs Go tests via Dagger
     cmds:
-      - dagger check go:test
+      - dagger check go:test-unit
 
   test:integration:
     desc: Runs CI module integration tests via Dagger
