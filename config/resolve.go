@@ -1202,52 +1202,18 @@ func (c *Config) ResolveICMPRules() []ResolvedICMP {
 // [Config.ResolveICMPRules] but for deny rules. CIDRs from sibling
 // L3 selectors are attached for destination scoping.
 func (c *Config) ResolveDenyICMPRules() []ResolvedICMP {
-	denyRules := c.EgressDenyRules()
-	if len(denyRules) == 0 {
-		return nil
-	}
+	deny := c.EgressDenyRules()
+	rules := make([]EgressRule, len(deny))
 
-	var result []ResolvedICMP
-
-	for ri := range denyRules {
-		// Collect CIDRs from sibling L3 selectors.
-		var allCIDRs []CIDRRule
-		if len(denyRules[ri].ToCIDR) > 0 || len(denyRules[ri].ToCIDRSet) > 0 {
-			for _, cidr := range denyRules[ri].ToCIDR {
-				allCIDRs = append(allCIDRs, CIDRRule{CIDR: cidr})
-			}
-
-			allCIDRs = append(allCIDRs, denyRules[ri].ToCIDRSet...)
-		}
-
-		for _, icmp := range denyRules[ri].ICMPs {
-			for _, f := range icmp.Fields {
-				code, err := strconv.ParseUint(f.Type, 10, 8)
-				if err != nil {
-					continue // already validated
-				}
-
-				var cidrs []CIDRRule
-				if len(allCIDRs) > 0 {
-					isV6 := f.Family == FamilyIPv6
-					for _, c := range allCIDRs {
-						if cidrIsIPv6(c.CIDR) == isV6 {
-							cidrs = append(cidrs, c)
-						}
-					}
-				}
-
-				result = append(result, ResolvedICMP{
-					CIDRs:     cidrs,
-					Family:    f.Family,
-					Type:      uint8(code),
-					RuleIndex: ri,
-				})
-			}
+	for i := range deny {
+		rules[i] = EgressRule{
+			ToCIDR:    deny[i].ToCIDR,
+			ToCIDRSet: deny[i].ToCIDRSet,
+			ICMPs:     deny[i].ICMPs,
 		}
 	}
 
-	return result
+	return resolveICMPs(rules)
 }
 
 // resolveICMPs is the shared implementation for ResolveICMPRules.

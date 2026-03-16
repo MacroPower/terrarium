@@ -688,43 +688,7 @@ func addDenyICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, uids UIDs,
 ) {
-	chainIdx := 0
-
-	for _, icmp := range icmps {
-		nfProto, l4Proto := icmpProtos(icmp.Family)
-
-		if len(icmp.CIDRs) == 0 {
-			// Standalone: DROP on parent chain.
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: parentChain,
-				Exprs: flatExprs(
-					matchUID(uids.Terrarium),
-					matchNFProto(nfProto),
-					matchL4Proto(l4Proto),
-					matchICMPType(icmp.Type),
-					verdictExprs(expr.VerdictDrop),
-				),
-			})
-
-			continue
-		}
-
-		// CIDR-scoped: per-entry chain with except RETURN + CIDR DROP.
-		chainName := fmt.Sprintf("deny_icmp_%d", chainIdx)
-		chainIdx++
-
-		chain := conn.AddChain(&nftables.Chain{
-			Name:  chainName,
-			Table: table,
-		})
-
-		addICMPCIDRRules(conn, table, chain, icmp, nfProto, l4Proto, uids, expr.VerdictDrop)
-
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: parentChain,
-			Exprs: flatExprs(verdictExprs(expr.VerdictJump, chainName)),
-		})
-	}
+	addICMPVerdictRules(conn, table, parentChain, icmps, uids, "deny_icmp", expr.VerdictDrop)
 }
 
 // addICMPRules emits ACCEPT rules for allow ICMP entries. When an
@@ -736,13 +700,24 @@ func addICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, uids UIDs,
 ) {
+	addICMPVerdictRules(conn, table, parentChain, icmps, uids, "icmp", expr.VerdictAccept)
+}
+
+// addICMPVerdictRules is the shared implementation for
+// [addDenyICMPRules] and [addICMPRules]. It emits per-entry rules
+// with the given verdict kind. The chainPrefix names per-entry
+// sub-chains for CIDR-scoped entries.
+func addICMPVerdictRules(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	icmps []config.ResolvedICMP, uids UIDs,
+	chainPrefix string, verdict expr.VerdictKind,
+) {
 	chainIdx := 0
 
 	for _, icmp := range icmps {
 		nfProto, l4Proto := icmpProtos(icmp.Family)
 
 		if len(icmp.CIDRs) == 0 {
-			// Standalone: ACCEPT on parent chain.
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: parentChain,
 				Exprs: flatExprs(
@@ -750,15 +725,14 @@ func addICMPRules(
 					matchNFProto(nfProto),
 					matchL4Proto(l4Proto),
 					matchICMPType(icmp.Type),
-					verdictExprs(expr.VerdictAccept),
+					verdictExprs(verdict),
 				),
 			})
 
 			continue
 		}
 
-		// CIDR-scoped: per-entry chain with except RETURN + CIDR ACCEPT.
-		chainName := fmt.Sprintf("icmp_%d", chainIdx)
+		chainName := fmt.Sprintf("%s_%d", chainPrefix, chainIdx)
 		chainIdx++
 
 		chain := conn.AddChain(&nftables.Chain{
@@ -766,7 +740,7 @@ func addICMPRules(
 			Table: table,
 		})
 
-		addICMPCIDRRules(conn, table, chain, icmp, nfProto, l4Proto, uids, expr.VerdictAccept)
+		addICMPCIDRRules(conn, table, chain, icmp, nfProto, l4Proto, uids, verdict)
 
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: parentChain,
