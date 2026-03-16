@@ -99,15 +99,15 @@ egress:
 			wantRules:   2,
 			wantDomains: []string{"api.example.com", "cdn.example.com"},
 		},
-		"FQDN without toPorts rejected": {
+		"FQDN without toPorts accepted": {
 			yaml: `
 egress:
   - toFQDNs:
       - matchName: example.com
 `,
-			err: config.ErrFQDNRequiresPorts,
+			wantRules: 1,
 		},
-		"FQDN with wildcard port 0 rejected": {
+		"FQDN with wildcard port 0 accepted": {
 			yaml: `
 egress:
   - toFQDNs:
@@ -116,7 +116,7 @@ egress:
       - ports:
           - port: "0"
 `,
-			err: config.ErrFQDNWildcardPort,
+			wantRules: 1,
 		},
 		"FQDN selector empty": {
 			yaml: `

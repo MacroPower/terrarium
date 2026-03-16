@@ -458,7 +458,11 @@ func validateFQDNSelectors(rule EgressRule, ruleIdx int) error {
 }
 
 // validateFQDNConstraints checks cross-selector constraints when a rule
-// has toFQDNs: no CIDR mixing, and explicit ports are required.
+// has toFQDNs: no CIDR mixing, and port constraints for L7 rules.
+// FQDN rules without toPorts are allowed (catch-all IP-level
+// enforcement via ipsets, matching Cilium's default behavior).
+// FQDN rules with L7 HTTP rules still require explicit ports because
+// Envoy needs per-port listeners for HTTP inspection.
 func validateFQDNConstraints(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 	if !hasFQDNs {
 		return nil
@@ -467,6 +471,8 @@ func validateFQDNConstraints(rule EgressRule, ruleIdx int, hasFQDNs bool) error 
 	if len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0 {
 		return fmt.Errorf("%w: rule %d", ErrFQDNWithCIDR, ruleIdx)
 	}
+
+	hasL7 := ruleHasL7(rule)
 
 	hasExplicitPorts := false
 	for _, pr := range rule.ToPorts {
@@ -477,14 +483,28 @@ func validateFQDNConstraints(rule EgressRule, ruleIdx int, hasFQDNs bool) error 
 		}
 	}
 
-	if !hasExplicitPorts {
+	// L7 rules require explicit ports for Envoy listeners.
+	if hasL7 && !hasExplicitPorts {
 		return fmt.Errorf("%w: rule %d", ErrFQDNRequiresPorts, ruleIdx)
+	}
+
+	// Without toPorts (or only L7-only toPorts with empty Ports),
+	// the rule is a catch-all: allow all ports via FQDN ipsets.
+	if !hasExplicitPorts {
+		return nil
 	}
 
 	for _, pr := range rule.ToPorts {
 		for _, p := range pr.Ports {
 			if p.Port == "0" {
-				return fmt.Errorf("%w: rule %d", ErrFQDNWildcardPort, ruleIdx)
+				// Wildcard port 0 with L7 is rejected (Envoy
+				// needs concrete ports). Without L7, port 0 is
+				// treated as catch-all.
+				if hasL7 {
+					return fmt.Errorf("%w: rule %d", ErrFQDNWildcardPort, ruleIdx)
+				}
+
+				return nil
 			}
 
 			// Limit FQDN port ranges to prevent creating thousands
@@ -949,7 +969,6 @@ func (c *Config) validateEgressDenyRules() error {
 			if parseErr != nil {
 				return fmt.Errorf("%w: egressDeny rule %d cidr %q", ErrCIDRInvalid, i, cidr)
 			}
-
 		}
 
 		for _, pr := range rule.ToPorts {

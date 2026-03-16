@@ -735,6 +735,57 @@ func icmpProtos(family string) (byte, byte) {
 	return unix.NFPROTO_IPV4, unix.IPPROTO_ICMP
 }
 
+// addCatchAllFQDNRules adds per-rule FQDN set lookup rules that ACCEPT
+// traffic matching the FQDN ipset on any port and protocol. These rules
+// enforce catch-all FQDN rules (toFQDNs without toPorts) at the IP
+// level, matching how Cilium's datapath handles portless FQDN selectors.
+// For TCP, traffic is also captured by the catch-all NAT REDIRECT for
+// access logging via Envoy, but the ACCEPT here is the security decision.
+func addCatchAllFQDNRules(
+	conn Conn,
+	table *nftables.Table,
+	chain *nftables.Chain,
+	ruleIndices []int,
+	sets map[int]setRef,
+	uids UIDs,
+) {
+	for _, ruleIdx := range ruleIndices {
+		ref := sets[ruleIdx]
+
+		// ESTABLISHED first (zombie/CT semantics).
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchUID(uids.Terrarium),
+				matchCtState(expr.CtStateBitESTABLISHED),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+
+		// Set lookup (v4) -- any port, any protocol.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV4),
+				matchUID(uids.Terrarium),
+				setLookupDst(ref.set4),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+
+		// Set lookup (v6) -- any port, any protocol.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV6),
+				matchUID(uids.Terrarium),
+				setLookupDst(ref.set6),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
+}
+
 // groupCIDRsByRule groups resolved CIDRs by their RuleIndex,
 // preserving order of first appearance.
 func groupCIDRsByRule(cidrs []config.ResolvedCIDR) [][]config.ResolvedCIDR {

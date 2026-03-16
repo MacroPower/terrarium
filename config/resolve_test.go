@@ -2078,3 +2078,99 @@ func TestResolveDenyICMPRules(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveCatchAllFQDNRules(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		want []int
+	}{
+		"no toPorts": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				}),
+			},
+			want: []int{0},
+		},
+		"wildcard port 0": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "0"}}}},
+				}),
+			},
+			want: []int{0},
+		},
+		"explicit ports not catch-all": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+			want: nil,
+		},
+		"mixed catch-all and ported": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "other.com"}},
+					},
+				),
+			},
+			want: []int{0, 1},
+		},
+		"unrestricted returns nil": {
+			cfg:  &config.Config{},
+			want: nil,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			require.NoError(t, tt.cfg.Validate())
+
+			got := tt.cfg.ResolveCatchAllFQDNRules()
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCompileCatchAllFQDNPatterns(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{
+					{MatchName: "example.com"},
+					{MatchPattern: "*.test.com"},
+				},
+			},
+		),
+	}
+	require.NoError(t, cfg.Validate())
+
+	patterns := cfg.CompileCatchAllFQDNPatterns()
+	require.Len(t, patterns, 2)
+	assert.Equal(t, "example.com", patterns[0].Original)
+	assert.Equal(t, 0, patterns[0].RuleIndex)
+	assert.Equal(t, "*.test.com", patterns[1].Original)
+	assert.Equal(t, 0, patterns[1].RuleIndex)
+
+	// Verify regex matching.
+	assert.True(t, patterns[0].Regex.MatchString("example.com."))
+	assert.False(t, patterns[0].Regex.MatchString("sub.example.com."))
+	assert.True(t, patterns[1].Regex.MatchString("foo.test.com."))
+}

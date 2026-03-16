@@ -57,15 +57,14 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrFQDNSelectorEmpty,
 		},
-		"FQDN without toPorts rejected": {
+		"FQDN without toPorts valid (catch-all)": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 				}),
 			},
-			err: config.ErrFQDNRequiresPorts,
 		},
-		"FQDN with empty Ports list rejected": {
+		"FQDN with L7 and empty Ports list rejected": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
@@ -76,12 +75,23 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrFQDNRequiresPorts,
 		},
-		"FQDN with wildcard port 0 rejected": {
+		"FQDN with wildcard port 0 valid (catch-all)": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 					ToPorts: []config.PortRule{{
 						Ports: []config.Port{{Port: "0"}},
+					}},
+				}),
+			},
+		},
+		"FQDN with L7 and wildcard port 0 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "0"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),
 			},
@@ -1285,14 +1295,13 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"port 0 with FQDN rejected": {
+		"port 0 with FQDN accepted": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "0"}}}},
 				}),
 			},
-			err: config.ErrFQDNWildcardPort,
 		},
 		"port 0 with FQDN and L7 rejected": {
 			cfg: &config.Config{

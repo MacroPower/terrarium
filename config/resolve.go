@@ -20,6 +20,18 @@ func FQDNSetName(ruleIdx int, ipv6 bool) string {
 	return fmt.Sprintf("terrarium_fqdn4_%d", ruleIdx)
 }
 
+// CatchAllFQDNSetName returns the nftables set name for a catch-all
+// FQDN rule index and address family. Names follow
+// terrarium_fqdnca{4,6}_R where R is the 0-indexed position among
+// catch-all FQDN rules (those without toPorts or with wildcard port 0).
+func CatchAllFQDNSetName(ruleIdx int, ipv6 bool) string {
+	if ipv6 {
+		return fmt.Sprintf("terrarium_fqdnca6_%d", ruleIdx)
+	}
+
+	return fmt.Sprintf("terrarium_fqdnca4_%d", ruleIdx)
+}
+
 // TCPForwardHosts returns a deduplicated, sorted list of hostnames from
 // the config's [TCPForward] entries.
 func (c *Config) TCPForwardHosts() []string {
@@ -427,11 +439,12 @@ func (c *Config) ResolvePorts() []int {
 		isOpenPortRule := len(rules[ri].ToFQDNs) == 0
 
 		// Explicit ports from FQDN and open-port rules contribute.
-		// Validation ensures FQDN rules always have toPorts.
-		// Skip ports that are exclusively non-TCP (e.g. UDP-only
-		// or SCTP-only), since Envoy only handles TCP listeners.
-		// Open-port ranges bypass Envoy via direct iptables ACCEPT;
-		// they don't need REDIRECT listeners.
+		// FQDN rules without toPorts (catch-all) are handled by
+		// [Config.ResolveCatchAllFQDNRules] and don't need Envoy
+		// listeners. Skip ports that are exclusively non-TCP (e.g.
+		// UDP-only or SCTP-only), since Envoy only handles TCP
+		// listeners. Open-port ranges bypass Envoy via direct
+		// iptables ACCEPT; they don't need REDIRECT listeners.
 		for _, pr := range rules[ri].ToPorts {
 			for _, p := range pr.Ports {
 				proto := normalizeProtocol(p.Protocol)
@@ -1246,4 +1259,113 @@ func (c *Config) ResolveDenyPortOnlyRules() []ResolvedPortProto {
 	})
 
 	return result
+}
+
+// isCatchAllFQDNRule reports whether an egress rule has toFQDNs but no
+// explicit ports, meaning it should allow all ports to matched domains.
+// This includes rules with no toPorts at all, and rules where all ports
+// are wildcard port 0 (without L7).
+func isCatchAllFQDNRule(rule EgressRule) bool {
+	if len(rule.ToFQDNs) == 0 {
+		return false
+	}
+
+	if len(rule.ToPorts) == 0 {
+		return true
+	}
+
+	// Check if all port entries are wildcard 0.
+	for _, pr := range rule.ToPorts {
+		if len(pr.Ports) == 0 {
+			return true
+		}
+
+		for _, p := range pr.Ports {
+			if p.Port != "0" {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+// ResolveCatchAllFQDNRules returns rule indices for FQDN rules that
+// need all-port ipset-based enforcement (no toPorts or wildcard port 0
+// without L7). Each rule gets its own ipset pair. Returns nil when
+// egress is unrestricted, blocked, or has no catch-all FQDN rules.
+func (c *Config) ResolveCatchAllFQDNRules() []int {
+	if c.IsEgressUnrestricted() {
+		return nil
+	}
+
+	rules := c.EgressRules()
+	if rules == nil {
+		return nil
+	}
+
+	var result []int
+
+	ruleIdx := 0
+
+	for ri := range rules {
+		if !isCatchAllFQDNRule(rules[ri]) {
+			continue
+		}
+
+		result = append(result, ruleIdx)
+		ruleIdx++
+	}
+
+	return result
+}
+
+// CompileCatchAllFQDNPatterns returns compiled regexes for all
+// [FQDNSelector] entries in catch-all FQDN rules (no toPorts or
+// wildcard port 0). Each pattern carries a RuleIndex matching the
+// index used by [Config.ResolveCatchAllFQDNRules], so DNS responses
+// can populate the correct per-rule ipset.
+func (c *Config) CompileCatchAllFQDNPatterns() []FQDNPattern {
+	var patterns []FQDNPattern
+
+	ruleIdx := 0
+
+	rules := c.EgressRules()
+	for ri := range rules {
+		if !isCatchAllFQDNRule(rules[ri]) {
+			continue
+		}
+
+		seen := make(map[string]bool)
+
+		for _, fqdn := range rules[ri].ToFQDNs {
+			var original string
+
+			var isMatchName bool
+
+			if fqdn.MatchName != "" {
+				original = fqdn.MatchName
+				isMatchName = true
+			} else {
+				original = fqdn.MatchPattern
+			}
+
+			if seen[original] {
+				continue
+			}
+
+			seen[original] = true
+
+			regex := patternToAnchoredRegex(original, isMatchName)
+			patterns = append(patterns, FQDNPattern{
+				Original:  original,
+				Regex:     regexp.MustCompile(regex),
+				RuleIndex: ruleIdx,
+			})
+		}
+
+		ruleIdx++
+	}
+
+	return patterns
 }

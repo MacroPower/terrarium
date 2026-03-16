@@ -78,22 +78,21 @@ var (
 	ErrDuplicateTCPForwardPort = errors.New("duplicate tcp forward port")
 
 	// ErrFQDNRequiresPorts is returned when an [EgressRule] has toFQDNs
-	// but no toPorts with non-empty ports. Terrarium requires explicit
-	// ports because Envoy needs per-port listeners; Cilium itself does
-	// not require toPorts with toFQDNs.
+	// with L7 HTTP rules but no toPorts with non-empty ports. L7
+	// inspection requires explicit ports because Envoy needs per-port
+	// listeners. FQDN rules without L7 are allowed without toPorts
+	// (catch-all IP-level enforcement via ipsets).
 	ErrFQDNRequiresPorts = errors.New(
-		"toFQDNs rules require explicit toPorts with non-empty ports (terrarium constraint: Envoy needs per-port listeners)",
+		"toFQDNs with L7 rules require explicit toPorts with non-empty ports (Envoy needs per-port listeners)",
 	)
 
 	// ErrFQDNWildcardPort is returned when an [EgressRule] with toFQDNs
-	// contains a wildcard port (port 0). Port 0 with toFQDNs produces no
-	// enforcement in terrarium because [Config.ResolvePorts] and
-	// [Config.ResolveFQDNNonTCPPorts] both skip port 0, creating no Envoy
-	// listener, ipset, or iptables rules. Cilium treats port 0 as a
-	// wildcard allowing all ports; terrarium rejects it to prevent
-	// silent no-enforcement.
+	// and L7 HTTP rules contains a wildcard port (port 0). L7
+	// inspection requires concrete ports for Envoy proxy binding.
+	// FQDN rules without L7 treat port 0 as catch-all (allow all
+	// ports via ipsets).
 	ErrFQDNWildcardPort = errors.New(
-		"toFQDNs rules require explicit ports; wildcard port 0 is not supported (terrarium constraint: produces no enforcement)",
+		"toFQDNs with L7 rules require explicit ports; wildcard port 0 is not supported",
 	)
 
 	// ErrExceptNotSubnet is returned when an except CIDR is not a subnet

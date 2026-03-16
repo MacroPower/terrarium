@@ -193,6 +193,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 	denyPortOnly := cfg.ResolveDenyPortOnlyRules()
 	openPortRules := cfg.ResolveOpenPortRules()
 	fqdnRulePorts := cfg.ResolveFQDNNonTCPPorts()
+	catchAllFQDNRules := cfg.ResolveCatchAllFQDNRules()
 	unrestricted := cfg.HasUnrestrictedOpenPorts()
 
 	// Create FQDN sets before rules reference them.
@@ -223,6 +224,37 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 		}
 
 		fqdnSets[frp.RuleIndex] = setRef{set4: s4, set6: s6}
+	}
+
+	// Create catch-all FQDN sets (all-port ipset enforcement).
+	catchAllSets := make(map[int]setRef)
+
+	for _, ruleIdx := range catchAllFQDNRules {
+		s4 := &nftables.Set{
+			Table:      table,
+			Name:       config.CatchAllFQDNSetName(ruleIdx, false),
+			KeyType:    nftables.TypeIPAddr,
+			HasTimeout: true,
+		}
+
+		err := conn.AddSet(s4, nil)
+		if err != nil {
+			return fmt.Errorf("creating set %s: %w", s4.Name, err)
+		}
+
+		s6 := &nftables.Set{
+			Table:      table,
+			Name:       config.CatchAllFQDNSetName(ruleIdx, true),
+			KeyType:    nftables.TypeIP6Addr,
+			HasTimeout: true,
+		}
+
+		err = conn.AddSet(s6, nil)
+		if err != nil {
+			return fmt.Errorf("creating set %s: %w", s6.Name, err)
+		}
+
+		catchAllSets[ruleIdx] = setRef{set4: s4, set6: s6}
 	}
 
 	// OUTPUT chain (filter).
@@ -319,6 +351,10 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 			ref := fqdnSets[frp.RuleIndex]
 			addFQDNPortRules(conn, table, terrariumChain, frp, ref, uids)
 		}
+
+		// Catch-all FQDN rules (all ports via ipset).
+		addCatchAllFQDNRules(conn, table, terrariumChain,
+			catchAllFQDNRules, catchAllSets, uids)
 	}
 
 	if cfg.Logging {

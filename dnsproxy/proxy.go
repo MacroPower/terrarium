@@ -48,21 +48,22 @@ const minIPSetTTL = 60
 // replacing the previous dnsmasq + RefuseDNS two-hop chain with a
 // single process.
 type Proxy struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	fqdnSetFunc   func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error
-	udp4          *dns.Server
-	udp6          *dns.Server
-	tcp4          *dns.Server
-	tcp6          *dns.Server
-	upstream      string
-	Addr          string
-	domains       []Domain
-	patterns      []config.FQDNPattern
-	clientTimeout time.Duration
-	filterMode    mode
-	logging       bool
-	ipv6Disabled  bool
+	ctx              context.Context
+	cancel           context.CancelFunc
+	fqdnSetFunc      func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error
+	udp4             *dns.Server
+	udp6             *dns.Server
+	tcp4             *dns.Server
+	tcp6             *dns.Server
+	upstream         string
+	Addr             string
+	domains          []Domain
+	patterns         []config.FQDNPattern
+	catchAllPatterns []config.FQDNPattern
+	clientTimeout    time.Duration
+	filterMode       mode
+	logging          bool
+	ipv6Disabled     bool
 }
 
 // Option configures optional behavior of a [Proxy].
@@ -141,6 +142,11 @@ func Start(
 	// Compile FQDN patterns for set population (non-TCP ports only).
 	if cfg != nil && cfg.HasFQDNNonTCPPorts() {
 		p.patterns = cfg.CompileFQDNPatterns()
+	}
+
+	// Compile catch-all FQDN patterns (all-port ipset enforcement).
+	if cfg != nil && len(cfg.ResolveCatchAllFQDNRules()) > 0 {
+		p.catchAllPatterns = cfg.CompileCatchAllFQDNPatterns()
 	}
 
 	if cfg != nil {
@@ -394,7 +400,11 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 	// must be added to the firewall allow list.
 	if resp.Rcode == dns.RcodeSuccess {
 		if indices := matchingFQDNRuleIndices(p.patterns, qname); len(indices) > 0 {
-			p.populateFQDNSets(qname, resp, indices)
+			p.populateFQDNSets(qname, resp, indices, config.FQDNSetName)
+		}
+
+		if indices := matchingFQDNRuleIndices(p.catchAllPatterns, qname); len(indices) > 0 {
+			p.populateFQDNSets(qname, resp, indices, config.CatchAllFQDNSetName)
 		}
 	}
 
@@ -454,10 +464,11 @@ func matchingFQDNRuleIndices(patterns []config.FQDNPattern, qname string) []int 
 
 // populateFQDNSets extracts A and AAAA records from the DNS response
 // and adds them to the per-rule nftables sets for each matching rule
-// index. The TTL is the minimum across all records in the response
+// index. The setNameFunc maps (ruleIndex, ipv6) to the nftables set
+// name. The TTL is the minimum across all records in the response
 // (including CNAME chain), matching Cilium's ExtractMsgDetails
 // behavior. TTLs are clamped to a minimum of [minIPSetTTL].
-func (p *Proxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []int) {
+func (p *Proxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []int, setNameFunc func(int, bool) string) {
 	// Compute minimum TTL across all answer records (A, AAAA,
 	// CNAME) to match Cilium's lowest-TTL-in-chain behavior.
 	minTTL := -1
@@ -505,12 +516,12 @@ func (p *Proxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []int)
 	// Update each matching rule's sets.
 	for _, idx := range ruleIndices {
 		if len(v4IPs) > 0 {
-			setName := config.FQDNSetName(idx, false)
+			setName := setNameFunc(idx, false)
 			p.updateFQDNSet(qname, setName, v4IPs, ttl)
 		}
 
 		if len(v6IPs) > 0 && !p.ipv6Disabled {
-			setName := config.FQDNSetName(idx, true)
+			setName := setNameFunc(idx, true)
 			p.updateFQDNSet(qname, setName, v6IPs, ttl)
 		}
 	}
