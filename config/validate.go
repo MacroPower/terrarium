@@ -39,6 +39,14 @@ var (
 	validProtocols = map[string]bool{
 		"": true, ProtoTCP: true, ProtoUDP: true, ProtoSCTP: true, ProtoAny: true,
 	}
+
+	// supportedEntities lists the toEntities values that terrarium
+	// supports. Both "world" and "all" expand to dual-stack CIDRs
+	// (0.0.0.0/0 and ::/0). In Cilium's non-Kubernetes context,
+	// "all" is functionally identical to "world".
+	supportedEntities = map[string]bool{
+		"world": true, "all": true,
+	}
 )
 
 // Validate checks that the config is internally consistent.
@@ -923,7 +931,7 @@ func expandAndValidateEntities(rule *EgressRule, ruleIdx int) error {
 
 	for _, entity := range rule.ToEntities {
 		e := strings.ToLower(entity)
-		if e != "world" {
+		if !supportedEntities[e] {
 			return fmt.Errorf("%w: rule %d has %q", ErrUnsupportedEntity, ruleIdx, entity)
 		}
 

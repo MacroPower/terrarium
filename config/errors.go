@@ -268,9 +268,9 @@ var (
 
 	// ErrUnsupportedEntity is returned when a [EgressRule] has a
 	// toEntities value that terrarium does not support. Only "world"
-	// is supported; other Cilium entities (host, cluster,
+	// and "all" are supported; other Cilium entities (host, cluster,
 	// kube-apiserver, etc.) require cluster infrastructure.
-	ErrUnsupportedEntity = errors.New("unsupported entity: only 'world' is supported by terrarium")
+	ErrUnsupportedEntity = errors.New("unsupported entity: only 'world' and 'all' are supported by terrarium")
 
 	// ErrUnsupportedSelector is returned when an [EgressRule] contains a
 	// CiliumNetworkPolicy selector that terrarium does not implement.

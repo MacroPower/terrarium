@@ -1857,6 +1857,25 @@ egress:
 `,
 			wantCIDR: []string{"0.0.0.0/0", "::/0"},
 		},
+		"toEntities all expanded to dual-stack CIDRs": {
+			yaml: `
+egress:
+  - toEntities:
+      - all
+`,
+			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+		},
+		"toEntities all with toPorts": {
+			yaml: `
+egress:
+  - toEntities:
+      - all
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+		},
 	}
 
 	for name, tt := range tests {
