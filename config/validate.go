@@ -114,10 +114,6 @@ func (c *Config) Validate() error {
 			if parseErr != nil {
 				return fmt.Errorf("%w: rule %d cidr %q", ErrCIDRInvalid, i, cidr)
 			}
-
-			if isIPv4MappedIPv6(cidr) {
-				return fmt.Errorf("%w: rule %d cidr %q", ErrCIDRIPv4MappedIPv6, i, cidr)
-			}
 		}
 
 		err = validateL7Rules(rule, i, hasFQDNs)
@@ -767,10 +763,6 @@ func validateCIDRSetEntries(cidrs []CIDRRule, prefix string, idx int) error {
 			return fmt.Errorf("%w: %s %d cidr %q", ErrCIDRInvalid, prefix, idx, cidr.CIDR)
 		}
 
-		if isIPv4MappedIPv6(cidr.CIDR) {
-			return fmt.Errorf("%w: %s %d cidr %q", ErrCIDRIPv4MappedIPv6, prefix, idx, cidr.CIDR)
-		}
-
 		parentIsV6 := cidrIsIPv6(cidr.CIDR)
 		parentOnes, _ := parentNet.Mask.Size()
 
@@ -778,10 +770,6 @@ func validateCIDRSetEntries(cidrs []CIDRRule, prefix string, idx int) error {
 			_, excNet, excErr := net.ParseCIDR(exc)
 			if excErr != nil {
 				return fmt.Errorf("%w: %s %d except %q", ErrCIDRInvalid, prefix, idx, exc)
-			}
-
-			if isIPv4MappedIPv6(exc) {
-				return fmt.Errorf("%w: %s %d except %q", ErrCIDRIPv4MappedIPv6, prefix, idx, exc)
 			}
 
 			if cidrIsIPv6(exc) != parentIsV6 {
@@ -962,9 +950,6 @@ func (c *Config) validateEgressDenyRules() error {
 				return fmt.Errorf("%w: egressDeny rule %d cidr %q", ErrCIDRInvalid, i, cidr)
 			}
 
-			if isIPv4MappedIPv6(cidr) {
-				return fmt.Errorf("%w: egressDeny rule %d cidr %q", ErrCIDRIPv4MappedIPv6, i, cidr)
-			}
 		}
 
 		for _, pr := range rule.ToPorts {

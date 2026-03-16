@@ -101,16 +101,6 @@ var (
 	// within the parent range.
 	ErrExceptNotSubnet = errors.New("except CIDR must be a subnet of the parent CIDR")
 
-	// ErrCIDRIPv4MappedIPv6 is returned when a CIDR uses an IPv4-mapped
-	// IPv6 address (e.g. ::ffff:10.0.0.0/104). These addresses are
-	// ambiguous: [net.ParseCIDR] normalizes them to IPv4, but string-based
-	// family detection routes them to IPv6, causing silent misclassification.
-	// Cilium normalizes via Unmap() in the ipcache layer; terrarium
-	// rejects them outright to prevent silent failures.
-	ErrCIDRIPv4MappedIPv6 = errors.New(
-		"IPv4-mapped IPv6 CIDRs (::ffff:0.0.0.0/N) are not supported; use the IPv4 equivalent",
-	)
-
 	// ErrExceptAddressFamilyMismatch is returned when an except CIDR's
 	// address family differs from its parent CIDR. An IPv6 except on an
 	// IPv4 parent (or vice versa) can never match any address in the

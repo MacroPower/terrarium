@@ -430,31 +430,28 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"bare IPv4-mapped IPv6 in toCIDR rejected": {
+		"bare IPv4-mapped IPv6 in toCIDR normalized": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToCIDR: []string{"::ffff:10.0.0.1"},
 				}),
 			},
-			err: config.ErrCIDRIPv4MappedIPv6,
 		},
-		"IPv4-mapped IPv6 CIDR in toCIDR rejected": {
+		"IPv4-mapped IPv6 CIDR in toCIDR normalized": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToCIDR: []string{"::ffff:10.0.0.0/104"},
 				}),
 			},
-			err: config.ErrCIDRIPv4MappedIPv6,
 		},
-		"IPv4-mapped IPv6 parent in toCIDRSet rejected": {
+		"IPv4-mapped IPv6 parent in toCIDRSet normalized": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToCIDRSet: []config.CIDRRule{{CIDR: "::ffff:10.0.0.0/104"}},
 				}),
 			},
-			err: config.ErrCIDRIPv4MappedIPv6,
 		},
-		"IPv4-mapped IPv6 except entry rejected": {
+		"IPv4-mapped IPv6 except entry family mismatch after normalization": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToCIDRSet: []config.CIDRRule{{
@@ -463,7 +460,7 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrCIDRIPv4MappedIPv6,
+			err: config.ErrExceptAddressFamilyMismatch,
 		},
 		"cross-family except IPv4 parent IPv6 except rejected": {
 			cfg: &config.Config{

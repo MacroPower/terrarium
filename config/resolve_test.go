@@ -1474,9 +1474,9 @@ func TestResolveCIDRRules(t *testing.T) {
 				}},
 			},
 		},
-		// IPv4-mapped IPv6 CIDRs are now rejected at validation time
-		// (ErrCIDRIPv4MappedIPv6), so they never reach ResolveCIDRRules.
-		// See TestValidate for the rejection tests.
+		// IPv4-mapped IPv6 CIDRs (e.g. ::ffff:10.0.0.0/104) are
+		// silently normalized to their IPv4 equivalents during
+		// validation, matching Cilium's Unmap() behavior.
 		"separate FQDN and CIDR rules contribute CIDRs": {
 			cfg: &config.Config{
 				Egress: egressRules(
