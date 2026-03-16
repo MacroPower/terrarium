@@ -2322,6 +2322,14 @@ egressDeny:
 `,
 			err: config.ErrDenyRuleServerNames,
 		},
+		"deny rule with toFQDNs rejected": {
+			yaml: `
+egressDeny:
+  - toFQDNs:
+      - matchName: example.com
+`,
+			err: config.ErrUnsupportedSelector,
+		},
 		"deny empty rule rejected": {
 			yaml: `
 egress:

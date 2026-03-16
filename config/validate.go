@@ -302,6 +302,7 @@ func validateUnsupportedDenySelectors(rule EgressDenyRule, ruleIdx int) error {
 	}
 
 	fields := []field{
+		{"toFQDNs", len(rule.ToFQDNs) > 0},
 		{"toEndpoints", len(rule.ToEndpoints) > 0},
 		{"toServices", len(rule.ToServices) > 0},
 		{"toNodes", len(rule.ToNodes) > 0},
