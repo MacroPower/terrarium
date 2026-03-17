@@ -311,14 +311,28 @@ func validateICMPRules(icmps []ICMPRule, toPorts []PortRule, prefix string, rule
 
 // validateUnsupportedDenySelectors checks whether any Cilium selectors
 // that terrarium does not implement are present in an egress deny rule.
+// toFQDNs is checked separately with a targeted error because Cilium's
+// EgressDenyRule type structurally lacks a ToFQDNs field (unlike the
+// generic unsupported selectors which exist in Cilium but require
+// cluster infrastructure).
 func validateUnsupportedDenySelectors(rule EgressDenyRule, ruleIdx int) error {
+	// toFQDNs gets a targeted error distinct from the generic
+	// unsupported-selector message, because the structural absence
+	// of ToFQDNs on Cilium's EgressDenyRule is a deliberate design
+	// constraint, not a terrarium limitation.
+	if len(rule.ToFQDNs) > 0 {
+		return fmt.Errorf(
+			"%w: egressDeny rule %d",
+			ErrDenyRuleToFQDNs, ruleIdx,
+		)
+	}
+
 	type field struct {
 		name string
 		set  bool
 	}
 
 	fields := []field{
-		{"toFQDNs", len(rule.ToFQDNs) > 0},
 		{"toEndpoints", len(rule.ToEndpoints) > 0},
 		{"toServices", len(rule.ToServices) > 0},
 		{"toNodes", len(rule.ToNodes) > 0},

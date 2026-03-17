@@ -2649,13 +2649,21 @@ egressDeny:
 `,
 			err: config.ErrDenyRuleServerNames,
 		},
-		"deny rule with toFQDNs rejected": {
+		"deny rule with toFQDNs matchName rejected": {
 			yaml: `
 egressDeny:
   - toFQDNs:
       - matchName: example.com
 `,
-			err: config.ErrUnsupportedSelector,
+			err: config.ErrDenyRuleToFQDNs,
+		},
+		"deny rule with toFQDNs matchPattern rejected": {
+			yaml: `
+egressDeny:
+  - toFQDNs:
+      - matchPattern: "*.example.com"
+`,
+			err: config.ErrDenyRuleToFQDNs,
 		},
 		"deny empty rule expanded to deny-all": {
 			yaml: `

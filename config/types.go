@@ -245,10 +245,11 @@ type EgressDenyRule struct {
 	// mode. [Config.Validate] rejects any rule where these are
 	// populated, producing an actionable error message.
 
-	// ToFQDNs is a Cilium L3 selector matching FQDNs. Deny rules
-	// do not support FQDN selectors. This stub field exists so the
-	// YAML decoder produces an actionable [ErrUnsupportedSelector]
-	// error instead of a generic "unknown field" parse error.
+	// ToFQDNs is a Cilium L3 selector matching FQDNs. Cilium's
+	// EgressDenyRule type structurally lacks a ToFQDNs field; deny
+	// rules cannot target FQDNs. This stub field exists so the YAML
+	// decoder produces an actionable [ErrDenyRuleToFQDNs] error
+	// instead of a generic "unknown field" parse error.
 	ToFQDNs []any `yaml:"toFQDNs,omitempty"`
 	// Authentication is a Cilium field for mutual authentication.
 	// Terrarium does not support authentication policy.

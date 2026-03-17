@@ -284,6 +284,15 @@ var (
 	// ICMP has no ports. Use separate rules instead.
 	ErrICMPWithFQDNs = errors.New("icmps and toFQDNs cannot be combined in the same rule")
 
+	// ErrDenyRuleToFQDNs is returned when an [EgressDenyRule] contains
+	// toFQDNs. Cilium's EgressDenyRule type structurally lacks a
+	// ToFQDNs field; deny rules cannot target FQDNs. The stub field
+	// on [EgressDenyRule] exists to capture the YAML and produce this
+	// targeted error instead of a generic unknown-field parse error.
+	ErrDenyRuleToFQDNs = errors.New(
+		"deny rules do not support FQDN selectors: Cilium's EgressDenyRule has no ToFQDNs field",
+	)
+
 	// ErrDenyRuleServerNames is returned when an [EgressDenyRule]
 	// contains serverNames on a toPorts entry. Deny CIDR chains do
 	// not perform SNI inspection, so serverNames on deny rules would
