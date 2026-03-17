@@ -197,6 +197,13 @@ var (
 	// and kubebuilder MaxLength validation.
 	ErrFQDNTooLong = errors.New("FQDN selector exceeds maximum length of 255 characters")
 
+	// ErrFQDNPatternCompile is returned when a matchPattern or
+	// matchName produces an anchored regex that fails to compile.
+	// The restricted character allowlist makes this extremely
+	// unlikely, but compiling during validation provides
+	// defense-in-depth against panics in [Config.CompileFQDNPatterns].
+	ErrFQDNPatternCompile = errors.New("FQDN pattern produces invalid regex")
+
 	// ErrFQDNWithCIDR is returned when an [EgressRule] combines toFQDNs
 	// with toCIDR or toCIDRSet. Under CiliumNetworkPolicy semantics,
 	// toFQDNs is mutually exclusive with other L3 selectors within a

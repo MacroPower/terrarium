@@ -481,18 +481,27 @@ func validateFQDNSelectors(rule EgressRule, ruleIdx int) error {
 			}
 		}
 
-		p := fqdn.MatchPattern
-		if p == "" {
-			continue
+		// Compile the anchored regex as defense-in-depth. The
+		// character allowlist makes failure extremely unlikely, but
+		// catching it here avoids a panic from regexp.MustCompile
+		// in CompileFQDNPatterns during resolution.
+		var (
+			value       string
+			isMatchName bool
+		)
+
+		if fqdn.MatchName != "" {
+			value = fqdn.MatchName
+			isMatchName = true
+		} else {
+			value = fqdn.MatchPattern
 		}
 
-		// All wildcard positions are valid. The character allowlist
-		// (allowedMatchPatternChars) already ensures only valid DNS
-		// and wildcard characters. patternToAnchoredRegex in
-		// resolve.go handles any wildcard position correctly via the
-		// generic strings.ReplaceAll(result, "*", "[-a-zA-Z0-9_]*")
-		// path. L7 MITM restrictions are enforced separately in
-		// validateL7Rules.
+		regex := patternToAnchoredRegex(value, isMatchName)
+		_, err := regexp.Compile(regex)
+		if err != nil {
+			return fmt.Errorf("%w: rule %d selector %d: %w", ErrFQDNPatternCompile, ruleIdx, j, err)
+		}
 	}
 
 	return nil

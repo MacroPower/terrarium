@@ -388,6 +388,30 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
+		"matchName regex compiles during validation": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
+		"matchPattern with underscore compiles": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*._tcp.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
+		"matchPattern with hyphen and digits compiles": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.api-v2.example-123.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
 		"partial wildcard mid-label allowed": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
