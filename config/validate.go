@@ -90,7 +90,10 @@ func (c *Config) Validate() error {
 		// Normalize before validation so that e.g. "tcp" passes
 		// the uppercase protocol check and "GitHub.COM." passes
 		// FQDN validation as "github.com".
-		normalizeEgressRule(c, i)
+		err = normalizeEgressRule(c, i)
+		if err != nil {
+			return err
+		}
 
 		rule := (*c.Egress)[i]
 

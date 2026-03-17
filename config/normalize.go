@@ -1,16 +1,20 @@
 package config
 
 import (
+	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 // normalizeEgressRule mutates an egress rule in place to normalize
 // protocol case, FQDN case, and trailing dots. Must be called before
-// validation so that normalized values pass the validators.
-func normalizeEgressRule(c *Config, i int) {
-	rule := &(*c.Egress)[i]
+// validation so that normalized values pass the validators. Returns an
+// error if a serverNames entry is empty, since normalization would
+// otherwise silently filter it via [isBareWildcard].
+func normalizeEgressRule(c *Config, ruleIdx int) error {
+	rule := &(*c.Egress)[ruleIdx]
 
 	for j := range rule.ToPorts {
 		for k := range rule.ToPorts[j].Ports {
@@ -22,6 +26,13 @@ func normalizeEgressRule(c *Config, i int) {
 	}
 
 	for j := range rule.ToPorts {
+		// Check for empty server names before normalization so the
+		// error is specific (not a generic invalid-characters error
+		// from the regex check or silent filtering via isBareWildcard).
+		if slices.Contains(rule.ToPorts[j].ServerNames, "") {
+			return fmt.Errorf("%w: rule %d", ErrServerNamesEmpty, ruleIdx)
+		}
+
 		for k := range rule.ToPorts[j].ServerNames {
 			rule.ToPorts[j].ServerNames[k] = strings.TrimRight(
 				strings.ToLower(rule.ToPorts[j].ServerNames[k]), ".")
@@ -86,6 +97,8 @@ func normalizeEgressRule(c *Config, i int) {
 	}
 
 	normalizeICMPRules(rule.ICMPs)
+
+	return nil
 }
 
 // normalizeEgressDenyRule mutates an egress deny rule in place to

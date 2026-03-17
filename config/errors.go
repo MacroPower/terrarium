@@ -237,6 +237,11 @@ var (
 	// with a non-TCP protocol. SNI inspection requires TCP.
 	ErrServerNamesRequiresTCP = errors.New("serverNames requires TCP protocol")
 
+	// ErrServerNamesEmpty is returned when a serverNames entry is an
+	// empty string. Cilium's PortRule.sanitize() explicitly checks for
+	// empty server names via [slices.Contains].
+	ErrServerNamesEmpty = errors.New("serverNames must not contain empty strings")
+
 	// ErrServerNamesInvalidHostname is returned when a serverNames
 	// entry contains invalid hostname characters.
 	ErrServerNamesInvalidHostname = errors.New(

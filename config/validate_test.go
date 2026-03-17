@@ -2932,6 +2932,33 @@ egress:
 `,
 			err: config.ErrServerNamesRequiresTCP,
 		},
+		"serverNames empty string": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - ""
+`,
+			err: config.ErrServerNamesEmpty,
+		},
+		"serverNames empty string among valid names": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "api.example.com"
+          - ""
+`,
+			err: config.ErrServerNamesEmpty,
+		},
 		"serverNames invalid hostname": {
 			yaml: `
 egress:
