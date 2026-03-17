@@ -2993,7 +2993,7 @@ egress:
           - "api.*.example.com"
 `,
 		},
-		"serverNames bare wildcard rejected": {
+		"serverNames bare wildcard accepted (equivalent to omitting)": {
 			yaml: `
 egress:
   - toCIDR:
@@ -3004,7 +3004,32 @@ egress:
         serverNames:
           - "*"
 `,
-			err: config.ErrServerNamesInvalidWildcard,
+		},
+		"serverNames bare wildcard alongside other names": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "*"
+          - api.example.com
+`,
+		},
+		"serverNames bare wildcard alongside suffix wildcards": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "*"
+          - "*.example.com"
+`,
 		},
 	}
 

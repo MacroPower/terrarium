@@ -965,18 +965,14 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 		}
 	}
 
-	// Validate hostname characters and reject bare wildcards.
-	// All wildcard positions are valid; the RBAC regex approach
-	// handles arbitrary positions for SNI matching.
+	// Validate hostname characters. All wildcard positions are valid;
+	// the RBAC regex approach handles arbitrary positions for SNI
+	// matching. Bare wildcards are already filtered during
+	// normalization (treated as omitting serverNames).
 	for _, name := range pr.ServerNames {
 		if !allowedMatchPatternChars.MatchString(name) {
 			return fmt.Errorf("%w: rule %d name %q",
 				ErrServerNamesInvalidHostname, ruleIdx, name)
-		}
-
-		if isBareWildcard(name) {
-			return fmt.Errorf("%w: rule %d name %q",
-				ErrServerNamesInvalidWildcard, ruleIdx, name)
 		}
 	}
 

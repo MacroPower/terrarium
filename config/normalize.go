@@ -30,6 +30,22 @@ func normalizeEgressRule(c *Config, i int) {
 					rule.ToPorts[j].ServerNames[k], "***", "**")
 			}
 		}
+
+		// Bare wildcards ("*", "**", etc.) are semantically equivalent
+		// to omitting serverNames (no SNI restriction). Filter them out
+		// so downstream validation and resolution see an empty list.
+		filtered := rule.ToPorts[j].ServerNames[:0]
+		for _, name := range rule.ToPorts[j].ServerNames {
+			if !isBareWildcard(name) {
+				filtered = append(filtered, name)
+			}
+		}
+
+		if len(filtered) == 0 {
+			rule.ToPorts[j].ServerNames = nil
+		} else {
+			rule.ToPorts[j].ServerNames = filtered
+		}
 	}
 
 	for j := range rule.ToFQDNs {
