@@ -1750,7 +1750,7 @@ func TestUnsupportedSelectors(t *testing.T) {
 		yaml      string
 		wantRules int
 	}{
-		"toEndpoints rejected": {
+		"toEndpoints with labels rejected": {
 			yaml: `
 egress:
   - toEndpoints:
@@ -1761,6 +1761,31 @@ egress:
           - port: "443"
 `,
 			err: config.ErrUnsupportedSelector,
+		},
+		"toEndpoints wildcard expanded to CIDRs": {
+			yaml: `
+egress:
+  - toEndpoints:
+      - {}
+`,
+			wantRules: 1,
+		},
+		"toEndpoints empty list selects nothing": {
+			yaml: `
+egress:
+  - toEndpoints: []
+    toCIDR:
+      - 10.0.0.0/8
+`,
+			wantRules: 1,
+		},
+		"toEndpoints nil not rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+`,
+			wantRules: 1,
 		},
 		"toEntities world expanded to CIDRs": {
 			yaml: `
@@ -2043,6 +2068,104 @@ egress:
 			require.Len(t, rules, 1)
 			assert.Equal(t, tt.wantCIDR, rules[0].ToCIDR)
 			assert.Empty(t, rules[0].ToEntities)
+		})
+	}
+}
+
+func TestToEndpointsWildcardExpansion(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml     string
+		err      error
+		wantCIDR []string
+	}{
+		"wildcard expands to dual-stack CIDRs": {
+			yaml: `
+egress:
+  - toEndpoints:
+      - {}
+`,
+			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+		},
+		"wildcard with toPorts preserved": {
+			yaml: `
+egress:
+  - toEndpoints:
+      - {}
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+		},
+		"wildcard with toCIDR rejected (mutual exclusivity)": {
+			yaml: `
+egress:
+  - toEndpoints:
+      - {}
+    toCIDR:
+      - 10.0.0.0/8
+`,
+			err: config.ErrEndpointsMixedL3,
+		},
+		"wildcard with toCIDRSet rejected (mutual exclusivity)": {
+			yaml: `
+egress:
+  - toEndpoints:
+      - {}
+    toCIDRSet:
+      - cidr: 10.0.0.0/8
+`,
+			err: config.ErrEndpointsMixedL3,
+		},
+		"wildcard with toFQDNs rejected (mutual exclusivity)": {
+			yaml: `
+egress:
+  - toEndpoints:
+      - {}
+    toFQDNs:
+      - matchName: example.com
+`,
+			err: config.ErrEndpointsMixedL3,
+		},
+		"empty list treated as absent": {
+			yaml: `
+egress:
+  - toEndpoints: []
+    toCIDR:
+      - 10.0.0.0/8
+`,
+			wantCIDR: []string{"10.0.0.0/8"},
+		},
+		"non-empty labels rejected": {
+			yaml: `
+egress:
+  - toEndpoints:
+      - matchLabels:
+          k: v
+`,
+			err: config.ErrUnsupportedSelector,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			rules := cfg.EgressRules()
+			require.Len(t, rules, 1)
+			assert.Equal(t, tt.wantCIDR, rules[0].ToCIDR)
+			assert.Empty(t, rules[0].ToEndpoints)
 		})
 	}
 }
@@ -2484,6 +2607,31 @@ egressDeny:
 `,
 			err: config.ErrUnsupportedFeature,
 		},
+		"deny toEndpoints wildcard expanded": {
+			yaml: `
+egressDeny:
+  - toEndpoints:
+      - {}
+`,
+		},
+		"deny toEndpoints empty list not rejected": {
+			yaml: `
+egressDeny:
+  - toEndpoints: []
+    toCIDR:
+      - 10.0.0.0/8
+`,
+		},
+		"deny toEndpoints wildcard with toCIDR rejected": {
+			yaml: `
+egressDeny:
+  - toEndpoints:
+      - {}
+    toCIDR:
+      - 10.0.0.0/8
+`,
+			err: config.ErrEndpointsMixedL3,
+		},
 	}
 
 	for name, tt := range tests {
@@ -2869,7 +3017,7 @@ func TestEgressDenyUnsupportedSelectors(t *testing.T) {
 		err  error
 		yaml string
 	}{
-		"deny toEndpoints rejected": {
+		"deny toEndpoints with labels rejected": {
 			yaml: `
 egressDeny:
   - toEndpoints:

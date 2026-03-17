@@ -64,6 +64,15 @@ func (c *Config) Validate() error {
 			return err
 		}
 
+		// Expand toEndpoints: [{}] (wildcard) into dual-stack
+		// CIDRs before rejecting unsupported selectors. An empty
+		// endpoint selector {} matches all destinations, equivalent
+		// to toEntities: [world] in Cilium's LabelSelector semantics.
+		err = expandAndValidateEndpoints(&(*c.Egress)[i], i)
+		if err != nil {
+			return err
+		}
+
 		// Reject unsupported Cilium selectors before any other
 		// processing. This prevents silent data loss from fields
 		// like toEndpoints being ignored.
@@ -943,9 +952,16 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 func (c *Config) validateEgressDenyRules() error {
 	denyRules := c.EgressDenyRules()
 	for i := range denyRules {
+		// Expand toEndpoints: [{}] wildcard before rejecting
+		// unsupported selectors.
+		err := expandAndValidateDenyEndpoints(&(*c.EgressDeny)[i], i)
+		if err != nil {
+			return err
+		}
+
 		// Reject unsupported Cilium selectors before any other
 		// processing.
-		err := validateUnsupportedDenySelectors(denyRules[i], i)
+		err = validateUnsupportedDenySelectors(denyRules[i], i)
 		if err != nil {
 			return err
 		}
@@ -1101,6 +1117,83 @@ func expandAndValidateDenyEntities(rule *EgressDenyRule, ruleIdx int) error {
 	}
 
 	rule.ToEntities = nil
+
+	return nil
+}
+
+// expandAndValidateEndpoints processes toEndpoints on an egress rule.
+// In Cilium, an empty EndpointSelector {} (no matchLabels constraints)
+// matches all endpoints, following standard Kubernetes LabelSelector
+// semantics. Terrarium expands toEndpoints: [{}] into dual-stack CIDRs
+// (0.0.0.0/0 and ::/0), equivalent to toEntities: [world].
+//
+// An empty list (toEndpoints: []) selects nothing per Cilium's
+// documented behavior and is treated as omitting the field.
+//
+// Non-empty label selectors (e.g., [{matchLabels: {k: v}}]) are left
+// in place for [validateUnsupportedSelectors] to reject with
+// [ErrUnsupportedSelector].
+func expandAndValidateEndpoints(rule *EgressRule, ruleIdx int) error {
+	if len(rule.ToEndpoints) == 0 {
+		return nil
+	}
+
+	// Check each endpoint selector. An empty map (or nil) is the
+	// wildcard; anything with keys is a label selector we cannot
+	// support.
+	allEmpty := true
+	for _, ep := range rule.ToEndpoints {
+		m, ok := ep.(map[string]any)
+		if !ok || len(m) > 0 {
+			allEmpty = false
+			break
+		}
+	}
+
+	if !allEmpty {
+		// Leave non-empty selectors for validateUnsupportedSelectors
+		// to reject with ErrUnsupportedSelector.
+		return nil
+	}
+
+	// All entries are empty selectors: wildcard match-all.
+	// L3 mutual exclusivity: cannot combine with other L3 selectors.
+	if len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0 || len(rule.ToFQDNs) > 0 {
+		return fmt.Errorf("%w: rule %d", ErrEndpointsMixedL3, ruleIdx)
+	}
+
+	rule.ToCIDR = append(rule.ToCIDR, "0.0.0.0/0", "::/0")
+	rule.ToEndpoints = nil
+
+	return nil
+}
+
+// expandAndValidateDenyEndpoints processes toEndpoints on an egress
+// deny rule, following the same logic as [expandAndValidateEndpoints].
+func expandAndValidateDenyEndpoints(rule *EgressDenyRule, ruleIdx int) error {
+	if len(rule.ToEndpoints) == 0 {
+		return nil
+	}
+
+	allEmpty := true
+	for _, ep := range rule.ToEndpoints {
+		m, ok := ep.(map[string]any)
+		if !ok || len(m) > 0 {
+			allEmpty = false
+			break
+		}
+	}
+
+	if !allEmpty {
+		return nil
+	}
+
+	if len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0 {
+		return fmt.Errorf("%w: egressDeny rule %d", ErrEndpointsMixedL3, ruleIdx)
+	}
+
+	rule.ToCIDR = append(rule.ToCIDR, "0.0.0.0/0", "::/0")
+	rule.ToEndpoints = nil
 
 	return nil
 }

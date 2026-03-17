@@ -331,6 +331,14 @@ var (
 	// kube-apiserver, etc.) require cluster infrastructure.
 	ErrUnsupportedEntity = errors.New("unsupported entity: only 'world' and 'all' are supported by terrarium")
 
+	// ErrEndpointsMixedL3 is returned when an [EgressRule] or
+	// [EgressDenyRule] combines toEndpoints: [{}] (wildcard) with
+	// another L3 selector (toCIDR, toCIDRSet, or toFQDNs). Use
+	// separate rules instead.
+	ErrEndpointsMixedL3 = errors.New(
+		"toEndpoints cannot be combined with toCIDR, toCIDRSet, or toFQDNs in the same rule; use separate rules",
+	)
+
 	// ErrUnsupportedSelector is returned when an [EgressRule] contains a
 	// CiliumNetworkPolicy selector that terrarium does not implement.
 	// Terrarium only supports toFQDNs, toPorts, toCIDR, and toCIDRSet.
