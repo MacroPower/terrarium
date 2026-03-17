@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -2413,6 +2414,76 @@ egressDeny:
 `,
 			err: config.ErrUnsupportedEntity,
 		},
+		"deny toPorts with empty ports list rejected": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - {}
+`,
+			err: config.ErrDenyRulePortsEmpty,
+		},
+		"deny toPorts with wildcard port 0 rejected": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - ports:
+          - port: "0"
+`,
+			err: config.ErrDenyRuleWildcardPort,
+		},
+		"deny toPorts exceeds maxPorts rejected": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - ports:` + generatePorts(41) + `
+`,
+			err: config.ErrPortsTooMany,
+		},
+		"deny toPorts with terminatingTLS rejected": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - ports:
+          - port: "443"
+        terminatingTLS:
+          secret: foo
+`,
+			err: config.ErrUnsupportedFeature,
+		},
+		"deny toPorts with originatingTLS rejected": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - ports:
+          - port: "443"
+        originatingTLS:
+          secret: foo
+`,
+			err: config.ErrUnsupportedFeature,
+		},
+		"deny toPorts with listener rejected": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.1.0.0/16
+    toPorts:
+      - ports:
+          - port: "443"
+        listener:
+          name: my-listener
+`,
+			err: config.ErrUnsupportedFeature,
+		},
 	}
 
 	for name, tt := range tests {
@@ -2869,6 +2940,15 @@ func generateICMPFields(n int) string {
 	var b strings.Builder
 	for range n {
 		b.WriteString("\n          - type: \"8\"")
+	}
+
+	return b.String()
+}
+
+func generatePorts(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "\n          - port: \"%d\"", i+1)
 	}
 
 	return b.String()

@@ -985,6 +985,20 @@ func (c *Config) validateEgressDenyRules() error {
 				return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRuleServerNames, i)
 			}
 
+			err = validateUnsupportedPortRuleFeatures(pr, i)
+			if err != nil {
+				return err
+			}
+
+			if len(pr.Ports) == 0 {
+				return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRulePortsEmpty, i)
+			}
+
+			if len(pr.Ports) > maxPorts {
+				return fmt.Errorf("%w: egressDeny rule %d has %d ports",
+					ErrPortsTooMany, i, len(pr.Ports))
+			}
+
 			for _, p := range pr.Ports {
 				if p.Port == "" {
 					return fmt.Errorf("%w: egressDeny rule %d", ErrPortEmpty, i)
@@ -996,6 +1010,10 @@ func (c *Config) validateEgressDenyRules() error {
 						"%w: egressDeny rule %d port %q",
 						ErrPortInvalid, i, p.Port,
 					)
+				}
+
+				if n == 0 {
+					return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRuleWildcardPort, i)
 				}
 
 				if !validProtocols[p.Protocol] {
