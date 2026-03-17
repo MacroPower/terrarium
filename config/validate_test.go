@@ -3070,6 +3070,30 @@ egress:
           - type: EchoRequest
 `,
 		},
+		"valid Echo alias for type 8": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: Echo
+`,
+		},
+		"valid RouterSelection alias for type 10": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: RouterSelection
+`,
+		},
+		"valid RouterSolicitation for type 10": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: RouterSolicitation
+`,
+		},
 		"valid numeric IPv6 type": {
 			yaml: `
 egress:
