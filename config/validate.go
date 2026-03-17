@@ -1219,13 +1219,10 @@ func isL7IncompatibleWildcard(pattern string) bool {
 	return strings.Contains(suffix, "*")
 }
 
-// portRuleIncludesPort53 reports whether a [PortRule] includes port 53
-// (or has an empty Ports list, which matches all ports).
+// portRuleIncludesPort53 reports whether a [PortRule] includes port 53.
+// An empty Ports list does not match; Cilium requires an explicit port
+// 53 entry for DNS rules.
 func portRuleIncludesPort53(pr PortRule) bool {
-	if len(pr.Ports) == 0 {
-		return true
-	}
-
 	for _, p := range pr.Ports {
 		resolved, err := ResolvePort(p.Port)
 		if err != nil {

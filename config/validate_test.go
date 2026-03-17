@@ -1452,6 +1452,32 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
+		"valid DNS rule with port name dns": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "dns"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "example.com"},
+						}},
+					}},
+				}),
+			},
+		},
+		"DNS rule with empty ports list rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "example.com"},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrDNSRuleRequiresPort53,
+		},
 		"DNS rule on non-53 port rejected": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
