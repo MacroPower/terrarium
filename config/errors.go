@@ -412,6 +412,12 @@ var (
 	// matchName and matchPattern set. Exactly one must be specified.
 	ErrDNSRuleSelectorAmbiguous = errors.New("DNS rule must have exactly one of matchName or matchPattern, not both")
 
+	// ErrDNSPatternCompile is returned when a DNS L7 rule matchPattern
+	// or matchName produces an anchored regex that fails to compile.
+	// The restricted character allowlist makes this extremely unlikely,
+	// but compiling during validation provides defense-in-depth.
+	ErrDNSPatternCompile = errors.New("DNS pattern produces invalid regex")
+
 	// ErrInvalidEnvoyLogLevel is returned when [EnvoySettings.LogLevel]
 	// is not one of the values accepted by Envoy's --log-level flag.
 	ErrInvalidEnvoyLogLevel = errors.New(

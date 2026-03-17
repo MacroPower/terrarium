@@ -964,6 +964,31 @@ func validateDNSRules(rule EgressRule, ruleIdx int) error {
 					return err
 				}
 			}
+
+			// Compile the anchored regex as defense-in-depth. The
+			// character allowlist makes failure extremely unlikely, but
+			// catching it here avoids a downstream failure during
+			// resolution.
+			var (
+				value       string
+				isMatchName bool
+			)
+
+			if dns.MatchName != "" {
+				value = dns.MatchName
+				isMatchName = true
+			} else {
+				value = dns.MatchPattern
+			}
+
+			regex := patternToAnchoredRegex(value, isMatchName)
+			_, err := regexp.Compile(regex)
+			if err != nil {
+				return fmt.Errorf(
+					"%w: rule %d dns %d: %w",
+					ErrDNSPatternCompile, ruleIdx, j, err,
+				)
+			}
 		}
 	}
 

@@ -1799,6 +1799,58 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
+		"DNS rule matchName compiles regex": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "api.example.com"},
+						}},
+					}},
+				}),
+			},
+		},
+		"DNS rule matchPattern compiles regex": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchPattern: "*.example.com"},
+						}},
+					}},
+				}),
+			},
+		},
+		"DNS rule matchPattern with underscores compiles regex": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchPattern: "*._tcp.example.com"},
+						}},
+					}},
+				}),
+			},
+		},
+		"DNS rule matchPattern with hyphens and digits compiles regex": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchPattern: "api-v2.*-staging.example.com"},
+						}},
+					}},
+				}),
+			},
+		},
 	}
 
 	for name, tt := range tests {
