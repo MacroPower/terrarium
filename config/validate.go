@@ -830,6 +830,10 @@ func validateCIDRSets(rule EgressRule, ruleIdx int) error {
 // (e.g. "rule" or "egressDeny rule") is used in error messages.
 func validateCIDRSetEntries(cidrs []CIDRRule, prefix string, idx int) error {
 	for _, cidr := range cidrs {
+		if cidr.CIDR == "" {
+			return fmt.Errorf("%w: %s %d", ErrCIDREmpty, prefix, idx)
+		}
+
 		err := validateUnsupportedCIDRRuleFeatures(cidr, idx)
 		if err != nil {
 			return err

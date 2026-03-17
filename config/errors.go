@@ -29,6 +29,13 @@ var (
 	// exceeds 65535 or is less than the port.
 	ErrEndPortInvalid = errors.New("endPort must be >= port and <= 65535")
 
+	// ErrCIDREmpty is returned when a [CIDRRule] in toCIDRSet has an
+	// empty cidr string. This catches both explicit cidr: "" and
+	// toCIDRSet: [{}] (where cidr defaults to empty). Cilium's
+	// CIDRRule.sanitize() validates that exactly one of cidr,
+	// cidrGroupRef, or cidrGroupSelector is set.
+	ErrCIDREmpty = errors.New("toCIDRSet entry has empty cidr")
+
 	// ErrCIDRInvalid is returned when a CIDR string cannot be parsed.
 	ErrCIDRInvalid = errors.New("invalid CIDR")
 

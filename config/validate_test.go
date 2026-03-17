@@ -557,6 +557,22 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
+		"empty CIDR string": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: ""}},
+				}),
+			},
+			err: config.ErrCIDREmpty,
+		},
+		"toCIDRSet with empty object": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{}},
+				}),
+			},
+			err: config.ErrCIDREmpty,
+		},
 		"invalid CIDR": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
@@ -2734,6 +2750,28 @@ egressDeny:
       - 10.0.0.0/8
   - {}
 `,
+		},
+		"deny empty CIDR in toCIDRSet rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - toCIDRSet:
+      - cidr: ""
+`,
+			err: config.ErrCIDREmpty,
+		},
+		"deny toCIDRSet empty object rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+egressDeny:
+  - toCIDRSet:
+      - {}
+`,
+			err: config.ErrCIDREmpty,
 		},
 		"deny invalid CIDR rejected": {
 			yaml: `
