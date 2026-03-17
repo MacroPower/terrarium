@@ -363,6 +363,11 @@ var (
 		"DNS L7 rules require port 53 in the toPorts entry",
 	)
 
+	// ErrDNSRulePortRange is returned when a toPorts entry with DNS
+	// L7 rules has a port entry where endPort > port. Cilium's
+	// PortProtocol.sanitize() rejects port ranges on DNS rules.
+	ErrDNSRulePortRange = errors.New("DNS rules do not support port ranges")
+
 	// ErrDNSRuleSelectorEmpty is returned when a [DNSRule] has neither
 	// matchName nor matchPattern set.
 	ErrDNSRuleSelectorEmpty = errors.New("DNS rule must have matchName or matchPattern")

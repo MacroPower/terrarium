@@ -1465,6 +1465,46 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
+		"DNS rule with port range rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53", EndPort: 100}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "example.com"},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrDNSRulePortRange,
+		},
+		"DNS rule with endPort equal to port accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53", EndPort: 53}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "example.com"},
+						}},
+					}},
+				}),
+			},
+		},
+		"DNS rule without endPort accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{
+							{MatchName: "example.com"},
+						}},
+					}},
+				}),
+			},
+		},
 		"DNS rule with empty ports list rejected": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{

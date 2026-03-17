@@ -857,6 +857,24 @@ func validateDNSRules(rule EgressRule, ruleIdx int) error {
 			return fmt.Errorf("%w: rule %d", ErrDNSRuleRequiresPort53, ruleIdx)
 		}
 
+		// Cilium's PortProtocol.sanitize() rejects port ranges on
+		// DNS rules ("DNS rules do not support port ranges").
+		for _, p := range pr.Ports {
+			if p.EndPort == 0 {
+				continue
+			}
+
+			n, err := ResolvePort(p.Port)
+			if err != nil {
+				continue
+			}
+
+			if p.EndPort > int(n) {
+				return fmt.Errorf("%w: rule %d port %s endPort %d",
+					ErrDNSRulePortRange, ruleIdx, p.Port, p.EndPort)
+			}
+		}
+
 		for j, dns := range pr.Rules.DNS {
 			if dns.MatchName == "" && dns.MatchPattern == "" {
 				return fmt.Errorf("%w: rule %d dns %d", ErrDNSRuleSelectorEmpty, ruleIdx, j)
