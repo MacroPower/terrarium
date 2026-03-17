@@ -326,10 +326,13 @@ var (
 	)
 
 	// ErrUnsupportedEntity is returned when a [EgressRule] has a
-	// toEntities value that terrarium does not support. Only "world"
-	// and "all" are supported; other Cilium entities (host, cluster,
-	// kube-apiserver, etc.) require cluster infrastructure.
-	ErrUnsupportedEntity = errors.New("unsupported entity: only 'world' and 'all' are supported by terrarium")
+	// toEntities value that terrarium does not support. Only "world",
+	// "world-ipv4", "world-ipv6", and "all" are supported; other
+	// Cilium entities (host, cluster, kube-apiserver, etc.) require
+	// cluster infrastructure.
+	ErrUnsupportedEntity = errors.New(
+		"unsupported entity: only 'world', 'world-ipv4', 'world-ipv6', and 'all' are supported by terrarium",
+	)
 
 	// ErrEndpointsMixedL3 is returned when an [EgressRule] or
 	// [EgressDenyRule] combines toEndpoints: [{}] (wildcard) with

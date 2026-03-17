@@ -45,12 +45,16 @@ var (
 		"": true, ProtoTCP: true, ProtoUDP: true, ProtoSCTP: true, ProtoAny: true,
 	}
 
-	// supportedEntities lists the toEntities values that terrarium
-	// supports. Both "world" and "all" expand to dual-stack CIDRs
-	// (0.0.0.0/0 and ::/0). In Cilium's non-Kubernetes context,
+	// entityCIDRs maps each supported toEntities value to the CIDRs
+	// it expands into. "world" and "all" expand to dual-stack CIDRs
+	// (0.0.0.0/0 and ::/0). "world-ipv4" and "world-ipv6" expand to
+	// a single address family. In Cilium's non-Kubernetes context,
 	// "all" is functionally identical to "world".
-	supportedEntities = map[string]bool{
-		"world": true, "all": true,
+	entityCIDRs = map[string][]string{
+		"world":      {"0.0.0.0/0", "::/0"},
+		"all":        {"0.0.0.0/0", "::/0"},
+		"world-ipv4": {"0.0.0.0/0"},
+		"world-ipv6": {"::/0"},
 	}
 )
 
@@ -1061,11 +1065,12 @@ func (c *Config) validateEgressDenyRules() error {
 }
 
 // expandAndValidateEntities processes toEntities on an egress rule.
-// "world" is expanded into dual-stack CIDRs (0.0.0.0/0 and ::/0)
-// appended to ToCIDR. Other entity values are rejected with
-// [ErrUnsupportedEntity]. After processing, ToEntities is cleared
-// so downstream L3 mutual-exclusivity checks operate on the
-// expanded CIDRs.
+// Supported entities are expanded into CIDRs appended to ToCIDR:
+// "world" and "all" expand to dual-stack (0.0.0.0/0 and ::/0),
+// "world-ipv4" to 0.0.0.0/0 only, and "world-ipv6" to ::/0 only.
+// Unsupported values are rejected with [ErrUnsupportedEntity]. After
+// processing, ToEntities is cleared so downstream L3 mutual-exclusivity
+// checks operate on the expanded CIDRs.
 func expandAndValidateEntities(rule *EgressRule, ruleIdx int) error {
 	if len(rule.ToEntities) == 0 {
 		return nil
@@ -1079,12 +1084,12 @@ func expandAndValidateEntities(rule *EgressRule, ruleIdx int) error {
 	}
 
 	for _, entity := range rule.ToEntities {
-		e := strings.ToLower(entity)
-		if !supportedEntities[e] {
+		cidrs, ok := entityCIDRs[strings.ToLower(entity)]
+		if !ok {
 			return fmt.Errorf("%w: rule %d has %q", ErrUnsupportedEntity, ruleIdx, entity)
 		}
 
-		rule.ToCIDR = append(rule.ToCIDR, "0.0.0.0/0", "::/0")
+		rule.ToCIDR = append(rule.ToCIDR, cidrs...)
 	}
 
 	rule.ToEntities = nil
@@ -1093,9 +1098,9 @@ func expandAndValidateEntities(rule *EgressRule, ruleIdx int) error {
 }
 
 // expandAndValidateDenyEntities processes toEntities on an egress deny
-// rule. Supported entities ("world", "all") are expanded into dual-stack
-// CIDRs appended to ToCIDR. Unsupported values are rejected with
-// [ErrUnsupportedEntity]. After processing, ToEntities is cleared.
+// rule. Supported entities are expanded into CIDRs appended to ToCIDR.
+// Unsupported values are rejected with [ErrUnsupportedEntity]. After
+// processing, ToEntities is cleared.
 func expandAndValidateDenyEntities(rule *EgressDenyRule, ruleIdx int) error {
 	if len(rule.ToEntities) == 0 {
 		return nil
@@ -1108,12 +1113,12 @@ func expandAndValidateDenyEntities(rule *EgressDenyRule, ruleIdx int) error {
 	}
 
 	for _, entity := range rule.ToEntities {
-		e := strings.ToLower(entity)
-		if !supportedEntities[e] {
+		cidrs, ok := entityCIDRs[strings.ToLower(entity)]
+		if !ok {
 			return fmt.Errorf("%w: egressDeny rule %d has %q", ErrUnsupportedEntity, ruleIdx, entity)
 		}
 
-		rule.ToCIDR = append(rule.ToCIDR, "0.0.0.0/0", "::/0")
+		rule.ToCIDR = append(rule.ToCIDR, cidrs...)
 	}
 
 	rule.ToEntities = nil

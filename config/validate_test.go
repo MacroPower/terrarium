@@ -2049,6 +2049,50 @@ egress:
 `,
 			wantCIDR: []string{"0.0.0.0/0", "::/0"},
 		},
+		"world-ipv4 expands to IPv4 only": {
+			yaml: `
+egress:
+  - toEntities:
+      - world-ipv4
+`,
+			wantCIDR: []string{"0.0.0.0/0"},
+		},
+		"world-ipv6 expands to IPv6 only": {
+			yaml: `
+egress:
+  - toEntities:
+      - world-ipv6
+`,
+			wantCIDR: []string{"::/0"},
+		},
+		"world-ipv4 case-insensitive": {
+			yaml: `
+egress:
+  - toEntities:
+      - World-IPv4
+`,
+			wantCIDR: []string{"0.0.0.0/0"},
+		},
+		"world-ipv6 with toPorts": {
+			yaml: `
+egress:
+  - toEntities:
+      - world-ipv6
+    toPorts:
+      - ports:
+          - port: "443"
+`,
+			wantCIDR: []string{"::/0"},
+		},
+		"world-ipv4 combined with world-ipv6": {
+			yaml: `
+egress:
+  - toEntities:
+      - world-ipv4
+      - world-ipv6
+`,
+			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+		},
 	}
 
 	for name, tt := range tests {
@@ -2536,6 +2580,20 @@ egressDeny:
       - host
 `,
 			err: config.ErrUnsupportedEntity,
+		},
+		"egressDeny toEntities world-ipv4 expanded": {
+			yaml: `
+egressDeny:
+  - toEntities:
+      - world-ipv4
+`,
+		},
+		"egressDeny toEntities world-ipv6 expanded": {
+			yaml: `
+egressDeny:
+  - toEntities:
+      - world-ipv6
+`,
 		},
 		"deny toPorts with empty ports list rejected": {
 			yaml: `
