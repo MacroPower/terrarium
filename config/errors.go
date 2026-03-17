@@ -291,11 +291,6 @@ var (
 	// rules in toPorts. Cilium's egressDeny does not support L7.
 	ErrDenyRuleL7 = errors.New("egressDeny rules do not support L7 rules")
 
-	// ErrDenyRuleEmpty is returned when an [EgressDenyRule] has no
-	// selectors (no toCIDR, toCIDRSet, toPorts, or icmps). An empty
-	// deny rule has no effect and is likely a misconfiguration.
-	ErrDenyRuleEmpty = errors.New("egressDeny rule must have at least toCIDR, toCIDRSet, toPorts, or icmps")
-
 	// ErrDenyRulePortsEmpty is returned when an [EgressDenyRule] has
 	// a toPorts entry with an empty Ports list. Unlike allow rules
 	// (where an empty Ports list can imply a wildcard via L7 rules),

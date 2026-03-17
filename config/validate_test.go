@@ -2657,15 +2657,26 @@ egressDeny:
 `,
 			err: config.ErrUnsupportedSelector,
 		},
-		"deny empty rule rejected": {
+		"deny empty rule expanded to deny-all": {
 			yaml: `
-egress:
-  - toCIDR:
-      - 10.0.0.0/8
 egressDeny:
   - {}
 `,
-			err: config.ErrDenyRuleEmpty,
+		},
+		"deny empty rule with selectors unchanged": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.0.0.0/8
+`,
+		},
+		"multiple deny rules one empty": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.0.0.0/8
+  - {}
+`,
 		},
 		"deny invalid CIDR rejected": {
 			yaml: `
