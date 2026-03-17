@@ -389,6 +389,12 @@ func validateUnsupportedL7Features(rules *L7Rules, ruleIdx int) error {
 		}
 	}
 
+	// Cilium's L7Rules.sanitize() counts HTTP, DNS, and L7Proto rule
+	// types and rejects any PortRule with more than one L7 type.
+	if len(rules.HTTP) > 0 && len(rules.DNS) > 0 {
+		return fmt.Errorf("%w: rule %d", ErrL7MutualExclusivity, ruleIdx)
+	}
+
 	return nil
 }
 

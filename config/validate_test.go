@@ -1392,6 +1392,51 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
+		"both HTTP and DNS L7 rules rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53"}, {Port: "443"}},
+						Rules: &config.L7Rules{
+							HTTP: []config.HTTPRule{{Path: "/api"}},
+							DNS:  []config.DNSRule{{MatchName: "example.com"}},
+						},
+					}},
+				}),
+			},
+			err: config.ErrL7MutualExclusivity,
+		},
+		"HTTP only L7 rules accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/api"}}},
+					}},
+				}),
+			},
+		},
+		"DNS only L7 rules accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "53", Protocol: "UDP"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{{MatchName: "example.com"}}},
+					}},
+				}),
+			},
+		},
+		"neither HTTP nor DNS L7 rules accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts:   []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
 		"negative endPort rejected": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{

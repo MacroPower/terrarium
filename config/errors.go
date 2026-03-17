@@ -368,6 +368,13 @@ var (
 	// PortProtocol.sanitize() rejects port ranges on DNS rules.
 	ErrDNSRulePortRange = errors.New("DNS rules do not support port ranges")
 
+	// ErrL7MutualExclusivity is returned when a toPorts entry has both
+	// rules.http and rules.dns set. Cilium's L7Rules.sanitize() counts
+	// L7 rule types and rejects any PortRule with more than one type.
+	ErrL7MutualExclusivity = errors.New(
+		"only one L7 rule type (HTTP or DNS) is allowed per toPorts entry",
+	)
+
 	// ErrDNSRuleSelectorEmpty is returned when a [DNSRule] has neither
 	// matchName nor matchPattern set.
 	ErrDNSRuleSelectorEmpty = errors.New("DNS rule must have matchName or matchPattern")
