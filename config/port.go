@@ -37,7 +37,7 @@ const (
 	// normalization (uppercase).
 	ProtoSCTP = "SCTP"
 	// ProtoAny is the canonical protocol string for ANY (matches
-	// TCP and UDP). Empty protocol is normalized to this value.
+	// TCP, UDP, and SCTP). Empty protocol is normalized to this value.
 	ProtoAny = "ANY"
 )
 
@@ -126,10 +126,9 @@ func ResolvePort(s string) (uint16, error) {
 // normalizeProtocol converts a protocol string to the canonical
 // uppercase form. Input is already uppercased by [normalizeEgressRule]
 // so this mainly handles empty strings (mapped to [ProtoAny]).
-// Under Cilium default semantics, an omitted protocol means TCP and
-// UDP. SCTP requires explicit opt-in (Cilium Helm value
-// sctp.enabled=true); terrarium matches this default by expanding
-// ANY to TCP+UDP only.
+// Under Cilium semantics, an omitted or ANY protocol means TCP, UDP,
+// and SCTP (per SupportedProtocols(), which returns all three
+// unconditionally).
 func normalizeProtocol(proto string) string {
 	switch proto {
 	case ProtoTCP:

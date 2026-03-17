@@ -20,11 +20,9 @@ var (
 
 	// ErrProtocolInvalid is returned when a [Port] has an unrecognized
 	// protocol. Valid values are TCP, UDP, SCTP, ANY, or empty (defaults
-	// to ANY).
-	//
-	// Under Cilium's default configuration, ANY expands to TCP and UDP.
-	// SCTP requires explicit opt-in (Cilium Helm value sctp.enabled=true);
-	// terrarium matches this default by expanding ANY to TCP+UDP only.
+	// to ANY). Under Cilium semantics, ANY expands to TCP, UDP, and
+	// SCTP (per SupportedProtocols(), which returns all three
+	// unconditionally).
 	ErrProtocolInvalid = errors.New("invalid protocol: must be TCP, UDP, SCTP, ANY, or empty")
 
 	// ErrEndPortInvalid is returned when a [Port] has an endPort that

@@ -581,7 +581,7 @@ func (c *Config) HasUnrestrictedOpenPorts() bool {
 // ResolveOpenPortRules returns resolved open port entries from rules
 // that have toPorts but neither toFQDNs nor toCIDRSet. These ports
 // allow all destinations (passthrough without domain filtering). ANY
-// protocol is expanded into separate tcp and udp entries.
+// protocol is expanded into separate TCP, UDP, and SCTP entries.
 func (c *Config) ResolveOpenPortRules() []ResolvedOpenPort {
 	seen := make(map[string]bool)
 
@@ -604,7 +604,7 @@ func (c *Config) ResolveOpenPortRules() []ResolvedOpenPort {
 				proto := normalizeProtocol(p.Protocol)
 				protos := []string{proto}
 				if proto == ProtoAny {
-					protos = []string{ProtoTCP, ProtoUDP}
+					protos = []string{ProtoTCP, ProtoUDP, ProtoSCTP}
 				}
 
 				for _, pr := range protos {
@@ -667,17 +667,17 @@ func ruleHasNonTCPPorts(rule EgressRule) bool {
 	return false
 }
 
-// ResolveFQDNNonTCPPorts returns resolved UDP port entries from FQDN
-// rules, grouped per rule. Each qualifying rule (FQDN selectors with
-// non-TCP ports) gets its own [FQDNRulePorts] entry so iptables can
-// reference per-rule ipsets. These ports are enforced via
+// ResolveFQDNNonTCPPorts returns resolved non-TCP port entries from
+// FQDN rules, grouped per rule. Each qualifying rule (FQDN selectors
+// with non-TCP ports) gets its own [FQDNRulePorts] entry so iptables
+// can reference per-rule ipsets. These ports are enforced via
 // ipset-backed iptables rules that restrict traffic to DNS-resolved
 // IPs (the security decision). TPROXY independently routes all
 // terrarium UDP through Envoy for access logging, but the filter
 // chain ACCEPT here is what permits the traffic. ANY protocol is
-// expanded into udp entries (TCP is handled by [Config.ResolvePorts]
-// + Envoy; SCTP requires explicit opt-in). Returns nil when egress
-// is unrestricted, blocked, or has no FQDN rules with non-TCP ports.
+// expanded into UDP and SCTP entries (TCP is handled by
+// [Config.ResolvePorts] + Envoy). Returns nil when egress is
+// unrestricted, blocked, or has no FQDN rules with non-TCP ports.
 func (c *Config) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
 	if c.IsEgressUnrestricted() {
 		return nil
@@ -721,8 +721,7 @@ func (c *Config) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
 					protos = []string{proto}
 				case ProtoAny:
 					// ANY: expand to non-TCP protocols only.
-					// SCTP requires explicit opt-in (Cilium: sctp.enabled=true).
-					protos = []string{ProtoUDP}
+					protos = []string{ProtoUDP, ProtoSCTP}
 				}
 
 				for _, pr := range protos {
@@ -1064,12 +1063,11 @@ func resolvePortsFromPortRules(portRules []PortRule) []ResolvedPortProto {
 
 			n := int(resolved)
 			proto := normalizeProtocol(p.Protocol)
-			// Expand ANY protocol into separate tcp and udp entries
-			// so port matching always has a concrete protocol.
-			// SCTP requires explicit opt-in.
+			// Expand ANY protocol into separate TCP, UDP, and SCTP
+			// entries so port matching always has a concrete protocol.
 			protos := []string{proto}
 			if proto == ProtoAny {
-				protos = []string{ProtoTCP, ProtoUDP}
+				protos = []string{ProtoTCP, ProtoUDP, ProtoSCTP}
 			}
 
 			for _, expandedProto := range protos {
