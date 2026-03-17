@@ -716,6 +716,13 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 				return fmt.Errorf("%w: rule %d headerMatches[%d] mismatch %q",
 					ErrHeaderMatchMismatchAction, ruleIdx, i, hm.Mismatch)
 			}
+
+			if hm.Secret != nil {
+				return fmt.Errorf(
+					"%w: rule %d headerMatches[%d]",
+					ErrHeaderMatchSecret, ruleIdx, i,
+				)
+			}
 		}
 
 		if h.Path != "" {

@@ -1039,6 +1039,55 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrHeaderMatchMismatchAction,
 		},
+		"headerMatches secret rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Token", Secret: map[string]any{"name": "my-secret"}},
+							}},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrHeaderMatchSecret,
+		},
+		"headerMatches without secret valid": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{{Name: "X-Token", Value: "abc"}}},
+						}},
+					}},
+				}),
+			},
+		},
+		"headerMatches secret alongside other fields rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{
+									Name:   "X-Token",
+									Value:  "fallback",
+									Secret: map[string]any{"name": "my-secret"},
+								},
+							}},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrHeaderMatchSecret,
+		},
 		"L7 on port 8443 valid": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{

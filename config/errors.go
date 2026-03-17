@@ -61,6 +61,14 @@ var (
 	// modification semantics (LOG, ADD, DELETE, REPLACE).
 	ErrHeaderMatchMismatchAction = errors.New("headerMatch mismatch actions are not supported by terrarium")
 
+	// ErrHeaderMatchSecret is returned when a [HeaderMatch] sets
+	// a Secret field. Cilium uses this to reference Kubernetes
+	// Secrets for populating header values. Terrarium does not run
+	// inside Kubernetes and cannot resolve Secret references.
+	ErrHeaderMatchSecret = errors.New(
+		"headerMatch secret references are not supported by terrarium",
+	)
+
 	// ErrPortExceedsProxyRange is returned when a port exceeds the
 	// maximum value that can be offset by [ProxyPortBase] without
 	// overflowing uint16. Ports above 50535 produce proxy listen

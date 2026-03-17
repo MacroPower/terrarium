@@ -449,6 +449,14 @@ type HTTPRule struct {
 // configs that set Mismatch since it cannot enforce modification
 // semantics.
 type HeaderMatch struct {
+	// Secret is a Cilium field for referencing Kubernetes Secrets
+	// to populate the header value. Terrarium does not run inside
+	// Kubernetes and cannot resolve Secret references. This stub
+	// field exists so the YAML parser does not produce a generic
+	// unknown-field error; instead, validation returns
+	// [ErrHeaderMatchSecret].
+	Secret any `yaml:"secret,omitempty"`
+
 	// Mismatch defines the action when the header value does not
 	// match. Terrarium rejects any non-empty value.
 	Mismatch MismatchAction `yaml:"mismatch,omitempty"`
