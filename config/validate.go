@@ -598,8 +598,17 @@ func validatePorts(rule EgressRule, ruleIdx int) error {
 			return err
 		}
 
+		// Cilium's PortRule.sanitize() rejects L7 rules with port 0:
+		// "L7 rules can not be used when a port is 0". This applies
+		// to all L7 rule types (DNS, HTTP).
+		hasL7 := pr.Rules != nil &&
+			(len(pr.Rules.HTTP) > 0 || len(pr.Rules.DNS) > 0)
+		if hasL7 && hasWildcardPort {
+			return fmt.Errorf("%w: rule %d", ErrL7WithWildcardPort, ruleIdx)
+		}
+
 		if pr.Rules != nil && len(pr.Rules.HTTP) > 0 {
-			if len(pr.Ports) == 0 || hasWildcardPort {
+			if len(pr.Ports) == 0 {
 				return fmt.Errorf("%w: rule %d", ErrL7WithWildcardPort, ruleIdx)
 			}
 
@@ -1249,7 +1258,7 @@ func portRuleIncludesPort53(pr PortRule) bool {
 
 		n := int(resolved)
 
-		if n == 0 || n == 53 {
+		if n == 53 {
 			return true
 		}
 

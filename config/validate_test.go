@@ -1328,6 +1328,54 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrL7WithWildcardPort,
 		},
+		"DNS rules with port 0 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "0"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{{MatchName: "example.com"}}},
+					}},
+				}),
+			},
+			err: config.ErrL7WithWildcardPort,
+		},
+		"HTTP rules with port 0 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "0"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/api"}}},
+					}},
+				}),
+			},
+			err: config.ErrL7WithWildcardPort,
+		},
+		"DNS rules with port 0 and port 53 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "0"}, {Port: "53"}},
+						Rules: &config.L7Rules{DNS: []config.DNSRule{{MatchName: "example.com"}}},
+					}},
+				}),
+			},
+			err: config.ErrL7WithWildcardPort,
+		},
+		"HTTP rules with port 0 and port 80 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "0.0.0.0/0"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "0"}, {Port: "80"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/api"}}},
+					}},
+				}),
+			},
+			err: config.ErrL7WithWildcardPort,
+		},
 		"port 0 with endPort silently ignored": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
