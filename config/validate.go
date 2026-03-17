@@ -28,14 +28,17 @@ const maxRegexLen = 1000
 var (
 	// allowedMatchNameChars validates that a matchName contains only
 	// DNS-safe characters. Matches Cilium's allowedMatchNameChars
-	// (pkg/policy/api/fqdn.go) but uses only lowercase since
-	// normalizeEgressRule lowercases before validation.
-	allowedMatchNameChars = regexp.MustCompile(`^[-a-z0-9_.]+$`)
+	// (pkg/policy/api/fqdn.go:18). Includes uppercase letters to match
+	// Cilium's definition; normalizeEgressRule lowercases as a
+	// convenience, but these regexes do not depend on that ordering.
+	allowedMatchNameChars = regexp.MustCompile(`^[-a-zA-Z0-9_.]+$`)
 
 	// allowedMatchPatternChars validates that a matchPattern contains
 	// only DNS-safe characters plus the wildcard '*'. Matches Cilium's
-	// allowedPatternChars (pkg/fqdn/matchpattern/matchpattern.go).
-	allowedMatchPatternChars = regexp.MustCompile(`^[-a-z0-9_.*]+$`)
+	// allowedPatternChars (pkg/fqdn/matchpattern/matchpattern.go:33).
+	// Includes uppercase letters to match Cilium's definition;
+	// normalization lowercases as a convenience, not a prerequisite.
+	allowedMatchPatternChars = regexp.MustCompile(`^[-a-zA-Z0-9_.*]+$`)
 
 	// validProtocols lists the supported transport protocols. Cilium
 	// also supports ICMP, ICMPv6, VRRP, and IGMP, but these are

@@ -1360,6 +1360,22 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
+		"uppercase matchName accepted after normalization": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "Example.COM"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
+		"uppercase matchPattern accepted after normalization": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.Example.COM"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
 		"punycode IDN matchName valid": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{

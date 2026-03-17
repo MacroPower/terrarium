@@ -179,17 +179,18 @@ var (
 	)
 
 	// ErrFQDNNameInvalidChars is returned when a matchName contains
-	// characters outside the DNS allowlist [a-z0-9._-]. Matches
+	// characters outside the DNS allowlist [a-zA-Z0-9._-]. Matches
 	// Cilium's allowedMatchNameChars validation.
 	ErrFQDNNameInvalidChars = errors.New(
-		"matchName contains invalid characters: only a-z, 0-9, '.', '-', and '_' are allowed",
+		"matchName contains invalid characters: only a-z, A-Z, 0-9, '.', '-', and '_' are allowed",
 	)
 
 	// ErrFQDNPatternInvalidChars is returned when a matchPattern
-	// contains characters outside the pattern allowlist [a-z0-9._*-].
-	// Matches Cilium's allowedPatternChars validation.
+	// contains characters outside the pattern allowlist
+	// [a-zA-Z0-9._*-]. Matches Cilium's allowedPatternChars
+	// validation.
 	ErrFQDNPatternInvalidChars = errors.New(
-		"matchPattern contains invalid characters: only a-z, 0-9, '.', '-', '_', and '*' are allowed",
+		"matchPattern contains invalid characters: only a-z, A-Z, 0-9, '.', '-', '_', and '*' are allowed",
 	)
 
 	// ErrFQDNTooLong is returned when a matchName or matchPattern
