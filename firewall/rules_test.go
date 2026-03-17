@@ -8,6 +8,7 @@ import (
 	"github.com/google/nftables/expr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/firewall"
@@ -1193,4 +1194,277 @@ func ruleHasPayload(r *nftables.Rule) bool {
 	}
 
 	return false
+}
+
+// ruleMatchesL4Proto reports whether a rule contains a Meta L4PROTO
+// match followed by a Cmp with the given protocol number.
+func ruleMatchesL4Proto(r *nftables.Rule, proto byte) bool {
+	for i, e := range r.Exprs {
+		m, ok := e.(*expr.Meta)
+		if !ok || m.Key != expr.MetaKeyL4PROTO {
+			continue
+		}
+
+		if i+1 < len(r.Exprs) {
+			if c, ok := r.Exprs[i+1].(*expr.Cmp); ok && c.Op == expr.CmpOpEq && len(c.Data) == 1 && c.Data[0] == proto {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func TestApplyRules_SCTPOpenPort(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			// SCTP open port (no L3 selector).
+			config.EgressRule{
+				ToPorts: []config.PortRule{{Ports: []config.Port{
+					{Port: "5000", Protocol: "SCTP"},
+				}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// SCTP open ports get direct ACCEPT in terrarium_output
+	// (same as UDP, bypasses Envoy).
+	terrariumRules := rec.rulesForChain("terrarium_output")
+
+	var sctpAccepts int
+	for _, r := range terrariumRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictAccept && ruleMatchesL4Proto(r, unix.IPPROTO_SCTP) {
+			sctpAccepts++
+		}
+	}
+
+	assert.Equal(t, 1, sctpAccepts, "should have one SCTP open port ACCEPT")
+}
+
+func TestApplyRules_SCTPCIDRPort(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToCIDR: []string{"10.0.0.0/8"},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
+					{Port: "5000", Protocol: "SCTP"},
+				}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// CIDR chain should have an ACCEPT rule matching SCTP protocol.
+	cidrRules := rec.rulesForChain("cidr_0")
+	require.NotEmpty(t, cidrRules)
+
+	var sctpAccepts int
+	for _, r := range cidrRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictAccept && ruleMatchesL4Proto(r, unix.IPPROTO_SCTP) {
+			sctpAccepts++
+		}
+	}
+
+	assert.Equal(t, 1, sctpAccepts, "CIDR chain should have SCTP ACCEPT rule")
+}
+
+func TestApplyRules_SCTPFQDNPort(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
+					{Port: "5000", Protocol: "SCTP"},
+				}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// FQDN sets created (v4 + v6).
+	setNames := rec.setNames()
+	assert.Contains(t, setNames, "terrarium_fqdn4_0")
+	assert.Contains(t, setNames, "terrarium_fqdn6_0")
+
+	// terrarium_output should have SCTP rules with set lookups.
+	terrariumRules := rec.rulesForChain("terrarium_output")
+
+	var sctpLookups int
+	for _, r := range terrariumRules {
+		if ruleMatchesL4Proto(r, unix.IPPROTO_SCTP) && ruleHasLookup(r) {
+			sctpLookups++
+		}
+	}
+
+	assert.Equal(t, 2, sctpLookups, "should have v4 and v6 SCTP set lookup rules")
+
+	// SCTP ESTABLISHED rule should precede set lookups (zombie/CT).
+	var estIdx, lookupIdx int
+
+	estIdx = -1
+	lookupIdx = -1
+
+	for i, r := range terrariumRules {
+		if ruleMatchesL4Proto(r, unix.IPPROTO_SCTP) && ruleHasCtState(r) && estIdx == -1 {
+			estIdx = i
+		}
+
+		if ruleMatchesL4Proto(r, unix.IPPROTO_SCTP) && ruleHasLookup(r) && lookupIdx == -1 {
+			lookupIdx = i
+		}
+	}
+
+	require.NotEqual(t, -1, estIdx, "should have SCTP ESTABLISHED rule")
+	require.NotEqual(t, -1, lookupIdx, "should have SCTP lookup rule")
+	assert.Less(t, estIdx, lookupIdx,
+		"SCTP ESTABLISHED must come before set lookup (zombie/CT semantics)")
+}
+
+func TestApplyRules_SCTPDenyPort(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	denyRules := []config.EgressDenyRule{{
+		ToPorts: []config.PortRule{{Ports: []config.Port{
+			{Port: "5000", Protocol: "SCTP"},
+		}}},
+	}}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+		),
+		EgressDeny: &denyRules,
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// Deny SCTP port should produce a DROP rule on terrarium_output.
+	terrariumRules := rec.rulesForChain("terrarium_output")
+
+	var sctpDrops int
+	for _, r := range terrariumRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictDrop && ruleMatchesL4Proto(r, unix.IPPROTO_SCTP) {
+			sctpDrops++
+		}
+	}
+
+	assert.Equal(t, 1, sctpDrops, "should have SCTP deny DROP rule")
+}
+
+func TestApplyRules_SCTPNoNATRedirect(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
+					{Port: "5000", Protocol: "SCTP"},
+				}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// NAT REDIRECT rules are TCP-only. SCTP traffic should not
+	// appear in the NAT chain with any REDIRECT rules.
+	natRules := rec.rulesForChain("nat_output")
+	require.NotEmpty(t, natRules, "NAT chain should exist for catch-all TCP")
+
+	for _, r := range natRules {
+		if ruleHasRedir(r) {
+			assert.False(t, ruleMatchesL4Proto(r, unix.IPPROTO_SCTP),
+				"NAT REDIRECT must not match SCTP protocol")
+		}
+	}
+}
+
+func TestApplyRules_SCTPNoMangleMark(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
+					{Port: "5000", Protocol: "SCTP"},
+				}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// Mangle output marks UDP only for TPROXY. SCTP is not
+	// TPROXY'd because Envoy has no SCTP proxy filter.
+	mangleRules := rec.rulesForChain("mangle_output")
+	require.NotEmpty(t, mangleRules)
+
+	for _, r := range mangleRules {
+		assert.False(t, ruleMatchesL4Proto(r, unix.IPPROTO_SCTP),
+			"mangle_output must not mark SCTP packets")
+		assert.True(t, ruleMatchesL4Proto(r, unix.IPPROTO_UDP),
+			"mangle_output should mark UDP packets only")
+	}
+}
+
+func TestApplyRules_SCTPDenyCIDR(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	denyRules := []config.EgressDenyRule{{
+		ToCIDR: []string{"192.168.0.0/16"},
+		ToPorts: []config.PortRule{{Ports: []config.Port{
+			{Port: "5000", Protocol: "SCTP"},
+		}}},
+	}}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{ToCIDR: []string{"0.0.0.0/0"}},
+		),
+		EgressDeny: &denyRules,
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// Deny CIDR chain should have SCTP DROP matching the CIDR.
+	denyCIDRRules := rec.rulesForChain("deny_cidr_0")
+	require.NotEmpty(t, denyCIDRRules)
+
+	var sctpDrops int
+	for _, r := range denyCIDRRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictDrop && ruleMatchesL4Proto(r, unix.IPPROTO_SCTP) {
+			sctpDrops++
+		}
+	}
+
+	assert.Equal(t, 1, sctpDrops, "deny_cidr chain should have SCTP DROP")
 }
