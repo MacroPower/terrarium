@@ -1063,7 +1063,7 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrHeaderMatchNameEmpty,
 		},
-		"headerMatches mismatch action rejected": {
+		"headerMatches mismatch LOG accepted": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -1071,13 +1071,121 @@ func TestValidate(t *testing.T) {
 						Ports: []config.Port{{Port: "443"}},
 						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 							{HeaderMatches: []config.HeaderMatch{
-								{Name: "X-Token", Mismatch: config.MismatchLOG},
+								{Name: "X-Token", Value: "abc", Mismatch: config.MismatchLOG},
 							}},
 						}},
 					}},
 				}),
 			},
-			err: config.ErrHeaderMatchMismatchAction,
+		},
+		"headerMatches mismatch ADD accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Custom", Value: "default", Mismatch: config.MismatchADD},
+							}},
+						}},
+					}},
+				}),
+			},
+		},
+		"headerMatches mismatch DELETE accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Bad", Mismatch: config.MismatchDELETE},
+							}},
+						}},
+					}},
+				}),
+			},
+		},
+		"headerMatches mismatch REPLACE accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Version", Value: "v2", Mismatch: config.MismatchREPLACE},
+							}},
+						}},
+					}},
+				}),
+			},
+		},
+		"headerMatches mismatch invalid rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Token", Mismatch: "INVALID"},
+							}},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrHeaderMatchMismatchInvalid,
+		},
+		"headerMatches mismatch ADD without value rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Custom", Mismatch: config.MismatchADD},
+							}},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrHeaderMatchMismatchValue,
+		},
+		"headerMatches mismatch REPLACE without value rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Version", Mismatch: config.MismatchREPLACE},
+							}},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrHeaderMatchMismatchValue,
+		},
+		"headerMatches mismatch combined with header matching": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Required", Value: "yes"},
+								{Name: "X-Custom", Value: "default", Mismatch: config.MismatchADD},
+							}},
+						}},
+					}},
+				}),
+			},
 		},
 		"headerMatches secret rejected": {
 			cfg: &config.Config{

@@ -725,8 +725,21 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 			}
 
 			if hm.Mismatch != "" {
-				return fmt.Errorf("%w: rule %d headerMatches[%d] mismatch %q",
-					ErrHeaderMatchMismatchAction, ruleIdx, i, hm.Mismatch)
+				switch hm.Mismatch {
+				case MismatchLOG, MismatchADD, MismatchDELETE, MismatchREPLACE:
+				default:
+					return fmt.Errorf(
+						"%w: rule %d headerMatches[%d] mismatch %q",
+						ErrHeaderMatchMismatchInvalid, ruleIdx, i, hm.Mismatch,
+					)
+				}
+
+				if (hm.Mismatch == MismatchADD || hm.Mismatch == MismatchREPLACE) && hm.Value == "" {
+					return fmt.Errorf(
+						"%w: rule %d headerMatches[%d]",
+						ErrHeaderMatchMismatchValue, ruleIdx, i,
+					)
+				}
 			}
 
 			if hm.Secret != nil {

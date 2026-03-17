@@ -441,13 +441,11 @@ type HTTPRule struct {
 	HeaderMatches []HeaderMatch `yaml:"headerMatches,omitempty"`
 }
 
-// HeaderMatch specifies a header name/value constraint. The request
-// header must have the specified value or the request is denied.
-//
-// Cilium also supports a Mismatch field (LOG, ADD, DELETE, REPLACE)
-// for request modification instead of denial. Terrarium rejects
-// configs that set Mismatch since it cannot enforce modification
-// semantics.
+// HeaderMatch specifies a header name/value constraint. When Mismatch
+// is empty, the request header must have the specified value or the
+// request is denied. When Mismatch is set, a mismatch triggers the
+// specified action instead of denial: LOG logs via Envoy access log,
+// ADD adds the header, DELETE removes it, and REPLACE overwrites it.
 type HeaderMatch struct {
 	// Secret is a Cilium field for referencing Kubernetes Secrets
 	// to populate the header value. Terrarium does not run inside
@@ -458,7 +456,7 @@ type HeaderMatch struct {
 	Secret any `yaml:"secret,omitempty"`
 
 	// Mismatch defines the action when the header value does not
-	// match. Terrarium rejects any non-empty value.
+	// match. Valid values are LOG, ADD, DELETE, and REPLACE.
 	Mismatch MismatchAction `yaml:"mismatch,omitempty"`
 	// Name is the header field name to match.
 	Name string `yaml:"name"`
@@ -467,8 +465,8 @@ type HeaderMatch struct {
 }
 
 // MismatchAction defines what happens when a [HeaderMatch] value does
-// not match. Terrarium does not support mismatch actions and rejects
-// configs that set one.
+// not match. Supported actions are [MismatchLOG], [MismatchADD],
+// [MismatchDELETE], and [MismatchREPLACE].
 type MismatchAction string
 
 const (
@@ -502,7 +500,7 @@ type ResolvedHTTPRule struct {
 	Path          string        // empty = any path
 	Host          string        // empty = any host
 	Headers       []string      // presence-check header names
-	HeaderMatches []HeaderMatch // name/value constraints (deny on mismatch)
+	HeaderMatches []HeaderMatch // name/value constraints with optional mismatch actions
 }
 
 // ResolvedRule bridges between the Cilium-shaped config and Envoy-shaped

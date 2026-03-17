@@ -49,6 +49,8 @@ func httpRuleKey(hr ResolvedHTTPRule) string {
 			b.WriteString(hm.Name)
 			b.WriteByte('=')
 			b.WriteString(hm.Value)
+			b.WriteByte(':')
+			b.WriteString(string(hm.Mismatch))
 		}
 	}
 

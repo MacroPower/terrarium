@@ -26,6 +26,17 @@ func normalizeEgressRule(c *Config, ruleIdx int) error {
 	}
 
 	for j := range rule.ToPorts {
+		if rule.ToPorts[j].Rules != nil {
+			for k := range rule.ToPorts[j].Rules.HTTP {
+				for l := range rule.ToPorts[j].Rules.HTTP[k].HeaderMatches {
+					hm := &rule.ToPorts[j].Rules.HTTP[k].HeaderMatches[l]
+					hm.Mismatch = MismatchAction(strings.ToUpper(string(hm.Mismatch)))
+				}
+			}
+		}
+	}
+
+	for j := range rule.ToPorts {
 		// Check for empty server names before normalization so the
 		// error is specific (not a generic invalid-characters error
 		// from the regex check or silent filtering via isBareWildcard).

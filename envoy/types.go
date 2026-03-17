@@ -180,9 +180,12 @@ type virtualHost struct {
 }
 
 type route struct {
-	Route          *routeAction          `yaml:"route,omitempty"`
-	DirectResponse *directResponseAction `yaml:"direct_response,omitempty"`
-	Match          routeMatch            `yaml:"match"`
+	TypedPerFilterConfig   map[string]any        `yaml:"typed_per_filter_config,omitempty"`
+	Route                  *routeAction          `yaml:"route,omitempty"`
+	DirectResponse         *directResponseAction `yaml:"direct_response,omitempty"`
+	Match                  routeMatch            `yaml:"match"`
+	RequestHeadersToAdd    []headerValueOption   `yaml:"request_headers_to_add,omitempty"`
+	RequestHeadersToRemove []string              `yaml:"request_headers_to_remove,omitempty"`
 }
 
 // routeMatch models Envoy's route.RouteMatch message.
@@ -263,6 +266,28 @@ type rbacPermission struct {
 
 type rbacPrincipal struct {
 	Any bool `yaml:"any"`
+}
+
+// headerValueOption models Envoy's HeaderValueOption message used
+// by request_headers_to_add on routes. AppendAction controls whether
+// the header value is appended or overwrites an existing value.
+type headerValueOption struct {
+	Header       headerValue `yaml:"header"`
+	AppendAction string      `yaml:"append_action,omitempty"`
+}
+
+// headerValue models Envoy's HeaderValue message with a key/value pair.
+type headerValue struct {
+	Key   string `yaml:"key"`
+	Value string `yaml:"value,omitempty"`
+}
+
+// routerFilterConfig models the per-route override for Envoy's HTTP
+// router filter. UpstreamLog adds access logging for requests
+// forwarded to upstream clusters.
+type routerFilterConfig struct {
+	AtType      string      `yaml:"@type"`
+	UpstreamLog []AccessLog `yaml:"upstream_log,omitempty"`
 }
 
 type routeAction struct {
