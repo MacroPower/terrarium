@@ -1077,10 +1077,6 @@ func (c *Config) validateEgressDenyRules(ctx context.Context) error {
 				return err
 			}
 
-			if len(pr.Ports) == 0 {
-				return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRulePortsEmpty, i)
-			}
-
 			if len(pr.Ports) > maxPorts {
 				return fmt.Errorf("%w: egressDeny rule %d has %d ports",
 					ErrPortsTooMany, i, len(pr.Ports))
@@ -1097,10 +1093,6 @@ func (c *Config) validateEgressDenyRules(ctx context.Context) error {
 						"%w: egressDeny rule %d port %q",
 						ErrPortInvalid, i, p.Port,
 					)
-				}
-
-				if n == 0 {
-					return fmt.Errorf("%w: egressDeny rule %d", ErrDenyRuleWildcardPort, i)
 				}
 
 				if !validProtocols[p.Protocol] {

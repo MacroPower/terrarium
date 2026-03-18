@@ -140,7 +140,6 @@ egress:
 
 egressDeny:
   # Deny rules do not support toFQDNs, L7 rules, or serverNames.
-  # Wildcard port 0 and empty ports lists are also rejected.
   - toCIDR:
       - "192.168.0.0/16"
     toPorts:
@@ -273,16 +272,6 @@ limit.
 Deny rules are enforced in nftables before traffic reaches Envoy, so they
 require explicit port matches and cannot use features that depend on L7
 inspection.
-
-Port 0 in egressDeny toPorts entries is rejected. Cilium allows it.
-Terrarium's deny rules map to nftables drop rules with explicit port matches;
-port 0 has no clear mapping (block all ports, or block literal port 0?). Use
-toCIDR without toPorts for broad deny rules instead.
-
-toPorts entries with an empty Ports list are rejected in egressDeny rules. In
-allow rules, an empty Ports list implies "all ports" via L7 proxy redirection,
-but deny rules bypass the proxy entirely, so there is no mechanism to give
-"all ports" semantics. Cilium allows this.
 
 serverNames on egressDeny toPorts entries is rejected. SNI is a TLS-layer
 concept not visible at the nftables stage; serverNames on deny rules would be

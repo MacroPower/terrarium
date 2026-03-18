@@ -321,19 +321,6 @@ var (
 	// rules in toPorts. Cilium's egressDeny does not support L7.
 	ErrDenyRuleL7 = errors.New("egressDeny rules do not support L7 rules")
 
-	// ErrDenyRulePortsEmpty is returned when an [EgressDenyRule] has
-	// a toPorts entry with an empty Ports list. Unlike allow rules
-	// (where an empty Ports list can imply a wildcard via L7 rules),
-	// deny rules have no L7 layer, so an empty Ports list has no
-	// meaningful scope.
-	ErrDenyRulePortsEmpty = errors.New("egressDeny toPorts entry must have at least one port")
-
-	// ErrDenyRuleWildcardPort is returned when an [EgressDenyRule]
-	// uses port 0 (wildcard). The semantic intent of a wildcard deny
-	// port is ambiguous; use explicit port ranges or toCIDR without
-	// toPorts for broad deny rules.
-	ErrDenyRuleWildcardPort = errors.New("egressDeny rules do not support wildcard port 0")
-
 	// ErrDenyEntitiesMixedL3 is returned when an [EgressDenyRule]
 	// combines toEntities with another L3 selector (toCIDR or
 	// toCIDRSet). Use separate rules instead.

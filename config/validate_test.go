@@ -3103,7 +3103,7 @@ egressDeny:
       - world-ipv6
 `,
 		},
-		"deny toPorts with empty ports list rejected": {
+		"deny toPorts with empty ports list accepted": {
 			yaml: `
 egressDeny:
   - toCIDR:
@@ -3111,9 +3111,8 @@ egressDeny:
     toPorts:
       - {}
 `,
-			err: config.ErrDenyRulePortsEmpty,
 		},
-		"deny toPorts with wildcard port 0 rejected": {
+		"deny toPorts with wildcard port 0 accepted": {
 			yaml: `
 egressDeny:
   - toCIDR:
@@ -3122,7 +3121,6 @@ egressDeny:
       - ports:
           - port: "0"
 `,
-			err: config.ErrDenyRuleWildcardPort,
 		},
 		"deny toPorts exceeds maxPorts rejected": {
 			yaml: `
