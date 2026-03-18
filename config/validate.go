@@ -41,6 +41,13 @@ var (
 	// normalization lowercases as a convenience, not a prerequisite.
 	allowedMatchPatternChars = regexp.MustCompile(`^[-a-zA-Z0-9_.*]+$`)
 
+	// allowedServerNameChars validates serverNames entries against the
+	// Cilium CRD kubebuilder pattern for ServerName fields:
+	// ^([-a-zA-Z0-9_*]+[.]?)+$. This disallows leading dots and
+	// consecutive dots, unlike the more permissive
+	// allowedMatchPatternChars used for FQDN matchPattern.
+	allowedServerNameChars = regexp.MustCompile(`^([-a-zA-Z0-9_*]+\.?)+$`)
+
 	// validProtocols lists the supported transport protocols. Cilium
 	// also supports ICMP, ICMPv6, VRRP, and IGMP, but these are
 	// IP-layer protocols without ports and cannot be expressed in the
@@ -998,12 +1005,19 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 		}
 	}
 
-	// Validate hostname characters. All wildcard positions are valid;
-	// the RBAC regex approach handles arbitrary positions for SNI
-	// matching. Bare wildcards are already filtered during
-	// normalization (treated as omitting serverNames).
+	// Validate hostname length and characters. The Cilium CRD enforces
+	// a 255-character maximum and the pattern ^([-a-zA-Z0-9_*]+[.]?)+$,
+	// which disallows leading and consecutive dots. All wildcard
+	// positions are valid; the RBAC regex approach handles arbitrary
+	// positions for SNI matching. Bare wildcards are already filtered
+	// during normalization (treated as omitting serverNames).
 	for _, name := range pr.ServerNames {
-		if !allowedMatchPatternChars.MatchString(name) {
+		if len(name) > maxFQDNLength {
+			return fmt.Errorf("%w: rule %d name %q (%d chars)",
+				ErrServerNamesTooLong, ruleIdx, name, len(name))
+		}
+
+		if !allowedServerNameChars.MatchString(name) {
 			return fmt.Errorf("%w: rule %d name %q",
 				ErrServerNamesInvalidHostname, ruleIdx, name)
 		}

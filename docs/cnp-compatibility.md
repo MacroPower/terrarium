@@ -218,16 +218,6 @@ Terrarium rejects this combination unconditionally since terminatingTLS is not
 supported (see N/A section). A Cilium policy using L7 HTTP + serverNames +
 terminatingTLS will fail Terrarium validation.
 
-Terrarium validates serverNames entries against `^[-a-zA-Z0-9_.*]+$` (the same
-character set as FQDN matchPattern). Cilium's runtime validation
-(PortRule.sanitize) only checks for empty entries; character validation is
-enforced at the Kubernetes API server via the CRD kubebuilder pattern
-`^([-a-zA-Z0-9_*]+[.]?)+$` and a 255-character maximum. The CRD pattern is
-slightly stricter than Terrarium's in that it disallows leading or consecutive
-dots, but in practice valid hostnames satisfy both patterns. Terrarium has no
-explicit length limit on serverNames entries. A serverNames entry exceeding 255
-characters passes Terrarium but fails Cilium's CRD validation.
-
 ### L7 HTTP rule constraints
 
 Terrarium's L7 HTTP inspection is routed through Envoy, which requires

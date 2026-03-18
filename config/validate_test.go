@@ -3397,6 +3397,55 @@ egress:
           - "*.example.com"
 `,
 		},
+		"serverNames leading dot rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - ".example.com"
+`,
+			err: config.ErrServerNamesInvalidHostname,
+		},
+		"serverNames consecutive dots rejected": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "api..example.com"
+`,
+			err: config.ErrServerNamesInvalidHostname,
+		},
+		"serverNames exceeds 255 chars": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "` + strings.Repeat("a", 253) + `.co"`,
+			err: config.ErrServerNamesTooLong,
+		},
+		"serverNames at 255 chars accepted": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+    toPorts:
+      - ports:
+          - port: "443"
+        serverNames:
+          - "` + strings.Repeat("a", 252) + `.co"`,
+		},
 	}
 
 	for name, tt := range tests {

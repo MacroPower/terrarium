@@ -259,10 +259,18 @@ var (
 	// empty server names via [slices.Contains].
 	ErrServerNamesEmpty = errors.New("serverNames must not contain empty strings")
 
+	// ErrServerNamesTooLong is returned when a serverNames entry
+	// exceeds 255 characters, the maximum length enforced by the
+	// Cilium CRD kubebuilder maxLength constraint.
+	ErrServerNamesTooLong = errors.New("serverNames entry exceeds 255 characters")
+
 	// ErrServerNamesInvalidHostname is returned when a serverNames
-	// entry contains invalid hostname characters.
+	// entry contains invalid characters or structure. Matches the
+	// Cilium CRD kubebuilder pattern ^([-a-zA-Z0-9_*]+[.]?)+$,
+	// which allows DNS-safe characters and wildcards but disallows
+	// leading dots and consecutive dots.
 	ErrServerNamesInvalidHostname = errors.New(
-		"serverNames entry contains invalid characters: only a-z, 0-9, '.', '-', '_', and '*' are allowed",
+		"serverNames entry contains invalid characters or structure",
 	)
 
 	// ErrServerNamesInvalidWildcard is returned when a serverNames
