@@ -101,7 +101,6 @@ func (m *Tests) TestEgressAll(ctx context.Context) error {
 	g.Go(func() error { return m.TestEgressUdpFiltered(ctx) })
 	g.Go(func() error { return m.TestEgressUdpLogging(ctx) })
 	g.Go(func() error { return m.TestEgressDenyAllViaEgressDeny(ctx) })
-	g.Go(func() error { return m.TestEgressEndpointWildcard(ctx) })
 	g.Go(func() error { return m.TestEgressEntityWorldIpv4(ctx) })
 	g.Go(func() error { return m.TestEgressIcmpFqdn(ctx) })
 	g.Go(func() error { return m.TestEgressHeaderMatchMismatch(ctx) })
@@ -1806,32 +1805,6 @@ assert_network_denied "https://target-deny:443/" "egress-deny: HTTPS port 443 de
 `)
 
 	return runVariants(ctx, "egress-deny", config, script, bindings)
-}
-
-// TestEgressEndpointWildcard verifies that toEndpoints with an empty selector
-// expands to 0.0.0.0/0 + ::/0, acting like a broad CIDR rule with port
-// restriction. Port 80 is allowed; port 443 is not in toPorts and is blocked.
-//
-//	dagger call -m toolchains/terrarium/tests test-egress-endpoint-wildcard
-func (m *Tests) TestEgressEndpointWildcard(ctx context.Context) error {
-	config := `egress:
-  - toEndpoints:
-      - {}
-    toPorts:
-      - ports:
-          - port: "80"
-            protocol: TCP
-`
-	bindings := []serviceBinding{
-		targetService("target-allow", defaultNginxConf),
-	}
-
-	script := assertionScriptNoEnvoy(`
-assert_allowed "http://target-allow:80/" "endpoint-wildcard: HTTP port 80 allowed"
-assert_network_denied "https://target-allow:443/" "endpoint-wildcard: HTTPS port 443 denied"
-`)
-
-	return runVariants(ctx, "endpoint-wildcard", config, script, bindings)
 }
 
 // TestEgressEntityWorldIpv4 verifies that toEntities with world-ipv4 expands

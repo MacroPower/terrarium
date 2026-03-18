@@ -181,11 +181,9 @@ type EgressRule struct {
 	// Terrarium does not support authentication policy.
 	Authentication any `yaml:"authentication,omitempty"`
 	// ToEndpoints is a Cilium L3 selector matching endpoints by label.
-	// An empty endpoint selector ({}) is a wildcard matching all
-	// destinations (equivalent to toEntities: [world]), following
-	// standard Kubernetes LabelSelector semantics. Non-empty label
-	// selectors are rejected with [ErrUnsupportedSelector] since
-	// terrarium has no endpoint identity system.
+	// Terrarium has no endpoint identity system; all forms (including
+	// the wildcard empty selector {}) are rejected with
+	// [ErrUnsupportedSelector].
 	ToEndpoints []any `yaml:"toEndpoints,omitempty"`
 	// ToEntities is a Cilium L3 selector matching special entities.
 	// Only "world" is supported (expanded to 0.0.0.0/0 and ::/0
@@ -255,9 +253,9 @@ type EgressDenyRule struct {
 	// Terrarium does not support authentication policy.
 	Authentication any `yaml:"authentication,omitempty"`
 	// ToEndpoints is a Cilium L3 selector matching endpoints by label.
-	// An empty endpoint selector ({}) is a wildcard matching all
-	// destinations, expanded to dual-stack CIDRs. Non-empty label
-	// selectors are rejected with [ErrUnsupportedSelector].
+	// Terrarium has no endpoint identity system; all forms (including
+	// the wildcard empty selector {}) are rejected with
+	// [ErrUnsupportedSelector].
 	ToEndpoints []any `yaml:"toEndpoints,omitempty"`
 	// ToServices is a Cilium L3 selector matching Kubernetes services.
 	// Terrarium has no service discovery.

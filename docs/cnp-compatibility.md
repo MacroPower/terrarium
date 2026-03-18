@@ -24,7 +24,7 @@
 These Cilium features are intentionally unsupported because they depend on
 Kubernetes or cloud-provider APIs that do not exist in a standalone container:
 
-- toEndpoints with non-empty label selectors (pod identity matching)
+- toEndpoints (pod identity matching)
 - toServices (Kubernetes service discovery)
 - toNodes (node label matching)
 - toGroups (cloud provider security groups)

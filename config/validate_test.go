@@ -2219,13 +2219,13 @@ egress:
 `,
 			err: config.ErrUnsupportedSelector,
 		},
-		"toEndpoints wildcard expanded to CIDRs": {
+		"toEndpoints wildcard rejected": {
 			yaml: `
 egress:
   - toEndpoints:
       - {}
 `,
-			wantRules: 1,
+			err: config.ErrUnsupportedSelector,
 		},
 		"toEndpoints empty list selects nothing": {
 			yaml: `
@@ -2573,7 +2573,7 @@ egress:
 	}
 }
 
-func TestToEndpointsWildcardExpansion(t *testing.T) {
+func TestToEndpointsRejected(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
@@ -2581,15 +2581,15 @@ func TestToEndpointsWildcardExpansion(t *testing.T) {
 		err      error
 		wantCIDR []string
 	}{
-		"wildcard expands to dual-stack CIDRs": {
+		"wildcard rejected": {
 			yaml: `
 egress:
   - toEndpoints:
       - {}
 `,
-			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+			err: config.ErrUnsupportedSelector,
 		},
-		"wildcard with toPorts preserved": {
+		"wildcard with toPorts rejected": {
 			yaml: `
 egress:
   - toEndpoints:
@@ -2598,9 +2598,9 @@ egress:
       - ports:
           - port: "443"
 `,
-			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+			err: config.ErrUnsupportedSelector,
 		},
-		"wildcard with toCIDR rejected (mutual exclusivity)": {
+		"wildcard with toCIDR rejected": {
 			yaml: `
 egress:
   - toEndpoints:
@@ -2608,9 +2608,9 @@ egress:
     toCIDR:
       - 10.0.0.0/8
 `,
-			err: config.ErrEndpointsMixedL3,
+			err: config.ErrUnsupportedSelector,
 		},
-		"wildcard with toCIDRSet rejected (mutual exclusivity)": {
+		"wildcard with toCIDRSet rejected": {
 			yaml: `
 egress:
   - toEndpoints:
@@ -2618,9 +2618,9 @@ egress:
     toCIDRSet:
       - cidr: 10.0.0.0/8
 `,
-			err: config.ErrEndpointsMixedL3,
+			err: config.ErrUnsupportedSelector,
 		},
-		"wildcard with toFQDNs rejected (mutual exclusivity)": {
+		"wildcard with toFQDNs rejected": {
 			yaml: `
 egress:
   - toEndpoints:
@@ -2628,7 +2628,7 @@ egress:
     toFQDNs:
       - matchName: example.com
 `,
-			err: config.ErrEndpointsMixedL3,
+			err: config.ErrUnsupportedSelector,
 		},
 		"empty list treated as absent": {
 			yaml: `
@@ -3163,12 +3163,13 @@ egressDeny:
 `,
 			err: config.ErrUnsupportedFeature,
 		},
-		"deny toEndpoints wildcard expanded": {
+		"deny toEndpoints wildcard rejected": {
 			yaml: `
 egressDeny:
   - toEndpoints:
       - {}
 `,
+			err: config.ErrUnsupportedSelector,
 		},
 		"deny toEndpoints empty list not rejected": {
 			yaml: `
@@ -3186,7 +3187,7 @@ egressDeny:
     toCIDR:
       - 10.0.0.0/8
 `,
-			err: config.ErrEndpointsMixedL3,
+			err: config.ErrUnsupportedSelector,
 		},
 	}
 
