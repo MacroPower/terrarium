@@ -55,6 +55,18 @@ func TestIsDefaultDenyEnabled(t *testing.T) {
 			},
 			want: true,
 		},
+		"deny rules only": {
+			cfg: &config.Config{
+				EgressDeny: egressDenyRules(config.EgressDenyRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+				}),
+			},
+			want: true,
+		},
+		"empty deny list only": {
+			cfg:  &config.Config{EgressDeny: egressDenyRules()},
+			want: true,
+		},
 	}
 
 	for name, tt := range tests {
@@ -63,6 +75,20 @@ func TestIsDefaultDenyEnabled(t *testing.T) {
 			assert.Equal(t, tt.want, tt.cfg.IsDefaultDenyEnabled())
 		})
 	}
+}
+
+func TestDenyOnlySemantics(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		EgressDeny: egressDenyRules(config.EgressDenyRule{
+			ToCIDR: []string{"10.0.0.0/8"},
+		}),
+	}
+
+	assert.True(t, cfg.IsDefaultDenyEnabled(), "deny rules activate default-deny")
+	assert.False(t, cfg.IsEgressUnrestricted(), "deny rules are not unrestricted")
+	assert.True(t, cfg.IsEgressBlocked(), "deny-only config with no allow rules is blocked")
 }
 
 func TestEnvoyDefaults(t *testing.T) {

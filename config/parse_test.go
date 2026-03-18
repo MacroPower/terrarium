@@ -209,6 +209,18 @@ egress:
           - port: "443"
 `,
 		},
+		"egressDeny only activates default-deny": {
+			yaml: `
+egressDeny:
+  - toCIDR:
+      - 10.0.0.0/8
+`,
+			wantBlocked: true,
+		},
+		"empty egressDeny list is blocked": {
+			yaml:        `egressDeny: []`,
+			wantBlocked: true,
+		},
 	}
 
 	for name, tt := range tests {

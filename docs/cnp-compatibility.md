@@ -312,27 +312,6 @@ User-provided host patterns should not include trailing `$` anchors, as
 Terrarium wraps the pattern with `^` and `(:[0-9]+)?$` for Envoy's
 RE2 FullMatch semantics.
 
-### Default-deny activation scope
-
-In Cilium, EnableDefaultDeny.Egress is set to true when either Egress or
-EgressDeny rules are present on a Rule (pkg/policy/api/rule_validation.go).
-Having only egressDeny rules still activates default-deny for the egress
-direction, so all egress traffic not explicitly allowed is dropped.
-
-In Terrarium, default-deny is activated only when the egress field is
-non-nil. The egressDeny field alone does not activate default-deny. Deny
-rules are only enforced when egress contains actual rules (the filtered
-case); the unrestricted path (nil egress) has no nftables filter chain to
-attach drop rules to, and the blocked path (all-empty rules) already denies
-everything. A config with egressDeny but no egress field passes validation,
-but the deny rules have no effect.
-
-In practice this rarely matters: Cilium's Rule-level validation requires at
-least one of Ingress/IngressDeny/Egress/EgressDeny to be non-empty, and a
-CiliumNetworkPolicy with only egressDeny must coexist with another direction.
-When converting a CNP to Terrarium's config format, always include the egress
-field alongside egressDeny to preserve the intended default-deny posture.
-
 ## Terrarium Extensions
 
 ### tcpForwards
