@@ -19,10 +19,13 @@ import (
 //
 // The Egress field uses CiliumNetworkPolicy semantics:
 //
-//   - nil (absent from YAML): no egress enforcement (unrestricted).
+//   - nil (absent from YAML, or egress: null): no egress enforcement
+//     (unrestricted).
 //
-//   - empty slice (egress: []): no effect, equivalent to omitting the
-//     field (unrestricted); an empty list never activates enforcement.
+//   - empty slice (egress: []): deny-all. The non-nil pointer activates
+//     default-deny, and the empty list contains zero allow rules. This
+//     matches Cilium's behavior: applying any CNP to an endpoint activates
+//     default-deny for that direction, so egress: [] denies all egress.
 //
 //   - non-empty slice: rules apply; non-matching traffic is dropped
 //     (default-deny is always active when rules are present).
@@ -41,8 +44,8 @@ import (
 type Config struct {
 	// Egress lists egress rules with FQDN, port, and CIDR selectors.
 	// A nil pointer means the field was absent from YAML (unrestricted).
-	// An empty slice is equivalent to nil; Cilium infers default-deny
-	// from rule presence, so an empty list never activates enforcement.
+	// A non-nil pointer to an empty slice (egress: []) activates
+	// default-deny with zero allow rules, matching Cilium semantics.
 	Egress *[]EgressRule `yaml:"egress,omitempty"`
 	// EgressDeny lists egress deny rules with CIDR and port selectors.
 	// Deny rules take precedence over allow rules (evaluated first in
@@ -71,15 +74,15 @@ func (c *Config) EgressRules() []EgressRule {
 }
 
 // IsDefaultDenyEnabled reports whether default-deny is active for egress.
-// Returns true when egress rules are present (non-nil, non-empty list).
+// Returns true when Egress is non-nil, including an empty slice.
 func (c *Config) IsDefaultDenyEnabled() bool {
-	return c.Egress != nil && len(c.EgressRules()) > 0
+	return c.Egress != nil
 }
 
 // IsEgressUnrestricted reports whether egress is unrestricted,
 // meaning no egress filtering should be applied.
 func (c *Config) IsEgressUnrestricted() bool {
-	return c.Egress == nil || len(c.EgressRules()) == 0
+	return c.Egress == nil
 }
 
 // IsEgressBlocked reports whether all egress is blocked: default-deny

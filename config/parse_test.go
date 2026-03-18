@@ -137,7 +137,7 @@ egress:
 			yaml:      `logging: false`,
 			wantRules: 0,
 		},
-		"empty egress list parses as unrestricted": {
+		"empty egress list parses as blocked": {
 			yaml:      `egress: []`,
 			wantRules: 0,
 		},
@@ -188,9 +188,9 @@ func TestParseConfigEgressSemantics(t *testing.T) {
 			yaml:             `egress: null`,
 			wantUnrestricted: true,
 		},
-		"empty egress list is unrestricted": {
-			yaml:             `egress: []`,
-			wantUnrestricted: true,
+		"empty egress list is blocked": {
+			yaml:        `egress: []`,
+			wantBlocked: true,
 		},
 		"empty rule is deny-all": {
 			yaml: `
@@ -307,9 +307,9 @@ func TestMarshalConfigRoundtrip(t *testing.T) {
 			cfg:              &config.Config{},
 			wantUnrestricted: true,
 		},
-		"empty egress roundtrips as unrestricted": {
-			cfg:              &config.Config{Egress: egressRules()},
-			wantUnrestricted: true,
+		"empty egress roundtrips as blocked": {
+			cfg:         &config.Config{Egress: egressRules()},
+			wantBlocked: true,
 		},
 		"empty rule roundtrips as blocked": {
 			cfg: &config.Config{

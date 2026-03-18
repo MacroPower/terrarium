@@ -524,9 +524,12 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				"original_dst", "dynamic_forward_proxy_cluster",
 			},
 		},
-		"empty egress produces open listeners": {
+		"empty egress produces blocked output": {
 			cfg: &config.Config{Egress: egressRules()},
 			want: []string{
+				"listeners: []",
+			},
+			notWant: []string{
 				"tls_passthrough", "http_forward", "catch_all_tcp",
 				"original_dst", "dynamic_forward_proxy_cluster",
 			},

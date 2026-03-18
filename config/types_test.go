@@ -43,7 +43,8 @@ func TestIsDefaultDenyEnabled(t *testing.T) {
 			cfg: &config.Config{},
 		},
 		"empty egress": {
-			cfg: &config.Config{Egress: egressRules()},
+			cfg:  &config.Config{Egress: egressRules()},
+			want: true,
 		},
 		"rules present": {
 			cfg: &config.Config{
