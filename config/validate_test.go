@@ -1008,7 +1008,7 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"HTTP headers empty name rejected": {
+		"HTTP headers empty name accepted": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -1020,7 +1020,6 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrHTTPHeaderEmpty,
 		},
 		"headerMatches valid": {
 			cfg: &config.Config{

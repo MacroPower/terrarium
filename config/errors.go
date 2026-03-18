@@ -51,10 +51,6 @@ var (
 	// not a valid regular expression.
 	ErrMethodInvalidRegex = errors.New("method must be a valid regex")
 
-	// ErrHTTPHeaderEmpty is returned when an [HTTPRule] Headers entry
-	// is an empty string.
-	ErrHTTPHeaderEmpty = errors.New("HTTP header name must not be empty")
-
 	// ErrHeaderMatchNameEmpty is returned when a [HeaderMatch] has an
 	// empty Name field.
 	ErrHeaderMatchNameEmpty = errors.New("headerMatch name must not be empty")

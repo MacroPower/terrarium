@@ -696,12 +696,6 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 	}
 
 	for _, h := range pr.Rules.HTTP {
-		for i, hdr := range h.Headers {
-			if hdr == "" {
-				return fmt.Errorf("%w: rule %d headers[%d]", ErrHTTPHeaderEmpty, ruleIdx, i)
-			}
-		}
-
 		for i, hm := range h.HeaderMatches {
 			if hm.Name == "" {
 				return fmt.Errorf("%w: rule %d headerMatches[%d]", ErrHeaderMatchNameEmpty, ruleIdx, i)
