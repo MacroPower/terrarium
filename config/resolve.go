@@ -168,7 +168,7 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 			continue
 		}
 
-		matched, hasPlainL4, httpRules := matchRuleForPort(egressRules[i], port)
+		matched, hasPlainL4, httpRules, serverNames := matchRuleForPort(egressRules[i], port)
 		if !matched {
 			continue
 		}
@@ -189,16 +189,18 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 		}
 
 		if hasFQDNs {
-			for _, fqdn := range egressRules[i].ToFQDNs {
-				domain := fqdn.MatchName
-				if domain == "" {
-					domain = fqdn.MatchPattern
-					if domain == "**" {
-						domain = "*"
-					}
-				}
+			domains := fqdnDomains(egressRules[i].ToFQDNs)
 
-				addDomain(domain)
+			// serverNames replaces FQDN domains for SNI
+			// filtering: DNS resolution still uses FQDN
+			// matchName/matchPattern, but the Envoy SNI
+			// allowlist uses serverNames instead.
+			if len(serverNames) > 0 && !hasPlainL4 {
+				domains = serverNames
+			}
+
+			for _, d := range domains {
+				addDomain(d)
 			}
 		}
 
@@ -251,28 +253,54 @@ func ruleHasL7(rule EgressRule) bool {
 	return false
 }
 
+// fqdnDomains extracts the effective domain from each
+// [FQDNSelector], preferring matchName over matchPattern. Bare
+// double-star patterns ("**") are normalized to a single star.
+func fqdnDomains(fqdns []FQDNSelector) []string {
+	domains := make([]string, 0, len(fqdns))
+	for _, fqdn := range fqdns {
+		domain := fqdn.MatchName
+		if domain == "" {
+			domain = fqdn.MatchPattern
+			if domain == "**" {
+				domain = "*"
+			}
+		}
+
+		domains = append(domains, domain)
+	}
+
+	return domains
+}
+
 // matchRuleForPort determines whether an egress rule applies to the
-// given port and collects L7 rules from matching toPorts entries.
+// given port and collects L7 rules and serverNames from matching
+// toPorts entries.
 //
 // Two-way distinction for PortRule.Rules:
 //   - Rules == nil, Rules.HTTP == nil, or len(HTTP) == 0: plain L4, no L7
 //     inspection.
 //   - Rules.HTTP non-empty: L7 active with rules.
 //
+// A PortRule with serverNames but no L7 rules is TLS-restricted, not
+// plain L4. The collected serverNames are returned separately for the
+// caller to use as SNI allowlist domains.
+//
 // Cilium semantics: if ANY matching PortRule for this port has no L7
-// rules (plain L4), it nullifies sibling L7 rules on the same port
-// within this EgressRule.
-func matchRuleForPort(rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule) {
+// rules and no serverNames (plain L4), it nullifies sibling L7 rules
+// on the same port within this EgressRule.
+func matchRuleForPort(rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule, []string) {
 	if len(rule.ToPorts) == 0 {
 		// No toPorts: domain allowed on all ports, no L7
 		// restrictions from this rule.
-		return true, true, nil
+		return true, true, nil, nil
 	}
 
 	var (
-		matched    bool
-		hasPlainL4 bool
-		httpRules  []ResolvedHTTPRule
+		matched     bool
+		hasPlainL4  bool
+		httpRules   []ResolvedHTTPRule
+		serverNames []string
 	)
 
 	for _, pr := range rule.ToPorts {
@@ -283,12 +311,17 @@ func matchRuleForPort(rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule
 		matched = true
 
 		if pr.Rules == nil || pr.Rules.HTTP == nil || len(pr.Rules.HTTP) == 0 {
-			// Plain L4 rule on this port: nullifies all
-			// sibling L7 for this EgressRule. Only
-			// TCP-compatible entries can nullify L7 (HTTP
-			// inspection is TCP-only). A UDP/443 entry must
-			// not cancel TCP/443 L7 rules.
-			if portRuleHasTCPPort(pr, port) {
+			// PortRule with serverNames is TLS-restricted,
+			// not plain L4. Collect serverNames separately.
+			if len(pr.ServerNames) > 0 {
+				serverNames = append(serverNames, pr.ServerNames...)
+			} else if portRuleHasTCPPort(pr, port) {
+				// Plain L4 rule on this port: nullifies
+				// all sibling L7 for this EgressRule.
+				// Only TCP-compatible entries can nullify
+				// L7 (HTTP inspection is TCP-only). A
+				// UDP/443 entry must not cancel TCP/443
+				// L7 rules.
 				hasPlainL4 = true
 			}
 		} else {
@@ -298,7 +331,7 @@ func matchRuleForPort(rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule
 		}
 	}
 
-	return matched, hasPlainL4, httpRules
+	return matched, hasPlainL4, httpRules, serverNames
 }
 
 // portRuleMatchesPort reports whether a port rule matches a specific
@@ -935,7 +968,8 @@ func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 // rules that have serverNames on the given port. These are converted
 // into [ResolvedRule] entries so Envoy can create SNI filter chains
 // for them. ServerNames on CIDR rules are always passthrough (no L7
-// HTTP inspection).
+// HTTP inspection). FQDN rules with serverNames are handled by
+// [Config.ResolveRulesForPort] instead.
 func (c *Config) ResolveServerNameRulesForPort(port int) []ResolvedRule {
 	seen := make(map[string]bool)
 

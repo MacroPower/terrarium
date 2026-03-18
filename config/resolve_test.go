@@ -733,6 +733,63 @@ func TestResolveRulesForPort(t *testing.T) {
 				{Domain: "wildcard.example.com"},
 			},
 		},
+		"toFQDNs with serverNames replaces FQDN domains": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "backend.internal.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports:       []config.Port{{Port: "443", Protocol: "TCP"}},
+					ServerNames: []string{"db.internal.example.com"},
+				}},
+			})},
+			port: 443,
+			want: []config.ResolvedRule{{Domain: "db.internal.example.com"}},
+		},
+		"toFQDNs with serverNames wildcard pattern": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports:       []config.Port{{Port: "443", Protocol: "TCP"}},
+					ServerNames: []string{"*.internal.example.com"},
+				}},
+			})},
+			port: 443,
+			want: []config.ResolvedRule{{Domain: "*.internal.example.com"}},
+		},
+		"toFQDNs with serverNames and plain L4 on same port skips serverNames": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "backend.example.com"}},
+				ToPorts: []config.PortRule{
+					{
+						Ports:       []config.Port{{Port: "443", Protocol: "TCP"}},
+						ServerNames: []string{"db.example.com"},
+					},
+					{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}},
+				},
+			})},
+			port: 443,
+			want: []config.ResolvedRule{{Domain: "backend.example.com"}},
+		},
+		"toFQDNs with multiple serverNames on same port accumulates": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "backend.example.com"}},
+				ToPorts: []config.PortRule{
+					{
+						Ports:       []config.Port{{Port: "443", Protocol: "TCP"}},
+						ServerNames: []string{"db.example.com"},
+					},
+					{
+						Ports:       []config.Port{{Port: "443", Protocol: "TCP"}},
+						ServerNames: []string{"cache.example.com", "queue.example.com"},
+					},
+				},
+			})},
+			port: 443,
+			want: []config.ResolvedRule{
+				{Domain: "cache.example.com"},
+				{Domain: "db.example.com"},
+				{Domain: "queue.example.com"},
+			},
+		},
 	}
 
 	for name, tt := range tests {

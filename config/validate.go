@@ -975,9 +975,9 @@ func validateDNSWildcardPattern(_ string, _, _ int) error {
 
 // validateServerNames checks that serverNames entries are valid
 // hostnames and that the containing rule uses an L3 selector with
-// TCP protocol. ServerNames with toFQDNs is accepted for Cilium
-// policy portability but is a no-op: the FQDN SNI filter chain
-// already controls allowed domains.
+// TCP protocol. ServerNames with toFQDNs replaces FQDN domains as
+// the Envoy SNI allowlist while DNS resolution continues to use the
+// FQDN matchName/matchPattern values.
 func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 	if len(pr.ServerNames) == 0 {
 		return nil

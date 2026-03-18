@@ -364,10 +364,11 @@ type PortRule struct {
 	Rules *L7Rules `yaml:"rules,omitempty"`
 	// Ports lists allowed destination ports.
 	Ports []Port `yaml:"ports,omitempty"`
-	// ServerNames restricts TLS destinations by SNI. Requires
-	// toCIDR or toCIDRSet on the same rule and TCP protocol on all
-	// ports. CIDR rules with serverNames are routed through Envoy
-	// for SNI inspection instead of direct ACCEPT.
+	// ServerNames restricts TLS destinations by SNI. Requires an L3
+	// selector (toCIDR, toCIDRSet, or toFQDNs) and TCP protocol on
+	// all ports. With toCIDR/toCIDRSet, traffic is routed through
+	// Envoy for SNI inspection. With toFQDNs, serverNames replaces
+	// the FQDN domains as the Envoy SNI allowlist.
 	ServerNames []string `yaml:"serverNames,omitempty"`
 }
 

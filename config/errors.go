@@ -243,9 +243,9 @@ var (
 
 	// ErrServerNamesRequiresL3 is returned when serverNames is used on
 	// a toPorts entry without an L3 selector (toCIDR, toCIDRSet, or
-	// toFQDNs) on the same rule. With toFQDNs, serverNames is
-	// accepted but ignored since FQDN rules already control allowed
-	// domains via their own SNI filter chain.
+	// toFQDNs) on the same rule. With toFQDNs, serverNames replaces
+	// the FQDN domains as the Envoy SNI allowlist; DNS resolution
+	// still uses the FQDN matchName/matchPattern values.
 	ErrServerNamesRequiresL3 = errors.New(
 		"serverNames requires toCIDR, toCIDRSet, or toFQDNs on the same rule",
 	)
