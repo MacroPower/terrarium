@@ -1352,6 +1352,12 @@ func (c *Config) ResolveDenyPortOnlyRules(ctx context.Context) []ResolvedPortPro
 			continue
 		}
 
+		// An empty deny rule (no L3 or L4 selectors) is a no-op
+		// under Cilium semantics; skip it.
+		if len(denyRules[ri].ToPorts) == 0 {
+			continue
+		}
+
 		ports := resolvePortsFromDenyRule(ctx, denyRules[ri])
 		if ports == nil {
 			// nil means wildcard (all ports). Emit a single

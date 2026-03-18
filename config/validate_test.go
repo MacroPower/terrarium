@@ -2963,7 +2963,7 @@ egressDeny:
 `,
 			err: config.ErrDenyRuleToFQDNs,
 		},
-		"deny empty rule expanded to deny-all": {
+		"deny empty rule accepted as no-op": {
 			yaml: `
 egressDeny:
   - {}
@@ -2976,7 +2976,7 @@ egressDeny:
       - 10.0.0.0/8
 `,
 		},
-		"multiple deny rules one empty": {
+		"multiple deny rules with empty no-op": {
 			yaml: `
 egressDeny:
   - toCIDR:

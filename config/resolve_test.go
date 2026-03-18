@@ -2039,6 +2039,11 @@ func TestResolveDenyPortOnlyRules(t *testing.T) {
 				{},
 			},
 		},
+		"empty deny rule is no-op": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{}),
+			},
+		},
 	}
 
 	for name, tt := range tests {

@@ -1014,8 +1014,9 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 
 // validateEgressDenyRules checks that all egress deny rules are
 // well-formed: valid CIDRs, valid ports, and no L7 rules. Empty deny
-// rules (no selectors) are expanded to deny-all (0.0.0.0/0 + ::/0),
-// matching Cilium's acceptance of empty [EgressDenyRule].
+// rules (no selectors) are accepted and silently ignored during
+// resolution, matching Cilium where an empty [EgressDenyRule] is a
+// no-op.
 func (c *Config) validateEgressDenyRules(ctx context.Context) error {
 	denyRules := c.EgressDenyRules()
 	for i := range denyRules {
@@ -1036,15 +1037,6 @@ func (c *Config) validateEgressDenyRules(ctx context.Context) error {
 		normalizeEgressDenyRule(c, i)
 
 		rule := denyRules[i]
-
-		// An empty deny rule (no selectors) is interpreted as
-		// deny-all, matching Cilium's EgressDenyRule.sanitize()
-		// which accepts empty deny rules. Expand to dual-stack
-		// CIDRs covering all destinations.
-		if len(rule.ToCIDR) == 0 && len(rule.ToCIDRSet) == 0 && len(rule.ToPorts) == 0 && len(rule.ICMPs) == 0 {
-			(*c.EgressDeny)[i].ToCIDR = append((*c.EgressDeny)[i].ToCIDR, "0.0.0.0/0", "::/0")
-			rule = (*c.EgressDeny)[i]
-		}
 
 		if len(rule.ToCIDR) > 0 && len(rule.ToCIDRSet) > 0 {
 			return fmt.Errorf("%w: egressDeny rule %d", ErrCIDRAndCIDRSetMixed, i)
