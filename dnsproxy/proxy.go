@@ -60,6 +60,7 @@ type Proxy struct {
 	domains          []Domain
 	patterns         []config.FQDNPattern
 	catchAllPatterns []config.FQDNPattern
+	icmpFQDNPatterns []config.FQDNPattern
 	clientTimeout    time.Duration
 	filterMode       mode
 	logging          bool
@@ -147,6 +148,11 @@ func Start(
 	// Compile catch-all FQDN patterns (all-port ipset enforcement).
 	if cfg != nil && len(cfg.ResolveCatchAllFQDNRules()) > 0 {
 		p.catchAllPatterns = cfg.CompileCatchAllFQDNPatterns()
+	}
+
+	// Compile ICMP FQDN patterns (ICMP+toFQDNs ipset enforcement).
+	if cfg != nil && len(cfg.ResolveICMPFQDNRules()) > 0 {
+		p.icmpFQDNPatterns = cfg.CompileICMPFQDNPatterns()
 	}
 
 	if cfg != nil {
@@ -405,6 +411,10 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 
 		if indices := matchingFQDNRuleIndices(p.catchAllPatterns, qname); len(indices) > 0 {
 			p.populateFQDNSets(qname, resp, indices, config.CatchAllFQDNSetName)
+		}
+
+		if indices := matchingFQDNRuleIndices(p.icmpFQDNPatterns, qname); len(indices) > 0 {
+			p.populateFQDNSets(qname, resp, indices, config.ICMPFQDNSetName)
 		}
 	}
 

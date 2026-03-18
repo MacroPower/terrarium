@@ -3561,7 +3561,7 @@ egress:
           - type: "8"
 `,
 		},
-		"icmps with toFQDNs rejected": {
+		"icmps with toFQDNs valid": {
 			yaml: `
 egress:
   - icmps:
@@ -3570,7 +3570,6 @@ egress:
     toFQDNs:
       - matchName: example.com
 `,
-			err: config.ErrICMPWithFQDNs,
 		},
 		"deny rule with icmps valid": {
 			yaml: `

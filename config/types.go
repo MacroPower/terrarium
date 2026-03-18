@@ -306,9 +306,20 @@ type ResolvedICMP struct {
 	// CIDRs restricts the ICMP rule to specific destination
 	// ranges. Nil means all destinations (no L3 scope). Only
 	// CIDRs matching this entry's address family are included.
-	CIDRs     []CIDRRule
+	CIDRs []CIDRRule
+	// RuleIndex is the raw egress rule index, used for chain naming.
 	RuleIndex int
-	Type      uint8
+	// FQDNRuleIndex is the index into the ICMP-FQDN rule index
+	// space, used for set lookups. Only meaningful when UseFQDNSet
+	// is true.
+	FQDNRuleIndex int
+	// Type is the numeric ICMP type code (0-255), resolved from
+	// name or literal during normalization.
+	Type uint8
+	// UseFQDNSet indicates that the parent rule has toFQDNs and
+	// this ICMP entry should match destinations via FQDN ipset
+	// lookup instead of CIDR matching.
+	UseFQDNSet bool
 }
 
 // CIDRRule specifies an IP range to allow, with optional exceptions.

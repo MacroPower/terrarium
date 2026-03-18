@@ -688,34 +688,80 @@ func addDenyICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, uids UIDs,
 ) {
-	addICMPVerdictRules(conn, table, parentChain, icmps, uids, "deny_icmp", expr.VerdictDrop)
+	addICMPVerdictRules(conn, table, parentChain, icmps, nil, uids, "deny_icmp", expr.VerdictDrop)
 }
 
 // addICMPRules emits ACCEPT rules for allow ICMP entries. When an
 // entry has CIDRs (L3 scope from sibling selectors), a per-rule
 // chain is created with CIDR-scoped ACCEPTs and except RETURNs,
-// mirroring [addCIDRChains]. Standalone entries (nil CIDRs) are
-// emitted flat on the parent chain.
+// mirroring [addCIDRChains]. When an entry uses FQDN sets, an
+// ESTABLISHED rule and set lookup rules are emitted. Standalone
+// entries (nil CIDRs, no FQDN) are emitted flat on the parent chain.
 func addICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	icmps []config.ResolvedICMP, uids UIDs,
+	icmps []config.ResolvedICMP, icmpFQDNSets map[int]setRef, uids UIDs,
 ) {
-	addICMPVerdictRules(conn, table, parentChain, icmps, uids, "icmp", expr.VerdictAccept)
+	addICMPVerdictRules(conn, table, parentChain, icmps, icmpFQDNSets, uids, "icmp", expr.VerdictAccept)
 }
 
 // addICMPVerdictRules is the shared implementation for
 // [addDenyICMPRules] and [addICMPRules]. It emits per-entry rules
 // with the given verdict kind. The chainPrefix names per-entry
-// sub-chains for CIDR-scoped entries.
+// sub-chains for CIDR-scoped entries. When icmpFQDNSets is non-nil
+// and an entry has UseFQDNSet, ESTABLISHED and set lookup rules are
+// emitted instead of CIDR chain dispatch.
 func addICMPVerdictRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	icmps []config.ResolvedICMP, uids UIDs,
+	icmps []config.ResolvedICMP, icmpFQDNSets map[int]setRef, uids UIDs,
 	chainPrefix string, verdict expr.VerdictKind,
 ) {
 	chainIdx := 0
 
 	for _, icmp := range icmps {
 		nfProto, l4Proto := icmpProtos(icmp.Family)
+
+		// FQDN set branch: ESTABLISHED + set lookup.
+		if icmp.UseFQDNSet && icmpFQDNSets != nil {
+			ref, ok := icmpFQDNSets[icmp.FQDNRuleIndex]
+			if !ok {
+				continue
+			}
+
+			// ESTABLISHED scoped to ICMP proto + type.
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: parentChain,
+				Exprs: flatExprs(
+					matchUID(uids.Terrarium),
+					matchNFProto(nfProto),
+					matchL4Proto(l4Proto),
+					matchICMPType(icmp.Type),
+					matchCtState(expr.CtStateBitESTABLISHED),
+					verdictExprs(verdict),
+				),
+			})
+
+			// Set lookup for the correct address family.
+			var set *nftables.Set
+			if icmp.Family == config.FamilyIPv6 {
+				set = ref.set6
+			} else {
+				set = ref.set4
+			}
+
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: parentChain,
+				Exprs: flatExprs(
+					matchNFProto(nfProto),
+					matchUID(uids.Terrarium),
+					matchL4Proto(l4Proto),
+					matchICMPType(icmp.Type),
+					setLookupDst(set),
+					verdictExprs(verdict),
+				),
+			})
+
+			continue
+		}
 
 		if len(icmp.CIDRs) == 0 {
 			conn.AddRule(&nftables.Rule{

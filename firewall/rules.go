@@ -194,6 +194,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 	openPortRules := cfg.ResolveOpenPortRules()
 	fqdnRulePorts := cfg.ResolveFQDNNonTCPPorts()
 	catchAllFQDNRules := cfg.ResolveCatchAllFQDNRules()
+	icmpFQDNRules := cfg.ResolveICMPFQDNRules()
 	unrestricted := cfg.HasUnrestrictedOpenPorts()
 
 	// Create FQDN sets before rules reference them.
@@ -255,6 +256,37 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 		}
 
 		catchAllSets[ruleIdx] = setRef{set4: s4, set6: s6}
+	}
+
+	// Create ICMP FQDN sets (ICMP+toFQDNs rules).
+	icmpFQDNSets := make(map[int]setRef)
+
+	for _, ruleIdx := range icmpFQDNRules {
+		s4 := &nftables.Set{
+			Table:      table,
+			Name:       config.ICMPFQDNSetName(ruleIdx, false),
+			KeyType:    nftables.TypeIPAddr,
+			HasTimeout: true,
+		}
+
+		err := conn.AddSet(s4, nil)
+		if err != nil {
+			return fmt.Errorf("creating set %s: %w", s4.Name, err)
+		}
+
+		s6 := &nftables.Set{
+			Table:      table,
+			Name:       config.ICMPFQDNSetName(ruleIdx, true),
+			KeyType:    nftables.TypeIP6Addr,
+			HasTimeout: true,
+		}
+
+		err = conn.AddSet(s6, nil)
+		if err != nil {
+			return fmt.Errorf("creating set %s: %w", s6.Name, err)
+		}
+
+		icmpFQDNSets[ruleIdx] = setRef{set4: s4, set6: s6}
 	}
 
 	// OUTPUT chain (filter).
@@ -327,7 +359,7 @@ func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids U
 	}
 
 	// Allow ICMP rules (after deny, after CIDR).
-	addICMPRules(conn, table, terrariumChain, allowICMPs, uids)
+	addICMPRules(conn, table, terrariumChain, allowICMPs, icmpFQDNSets, uids)
 
 	if unrestricted {
 		// Unrestricted open ports: ACCEPT all user traffic.

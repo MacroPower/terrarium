@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -924,4 +925,67 @@ func TestProxyUpstreamConnectionRefusedSERVFAIL(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, dns.RcodeServerFailure, resp.Rcode, "non-timeout upstream error should produce SERVFAIL")
+}
+
+func TestProxyICMPFQDNPopulatesIPSet(t *testing.T) {
+	t.Parallel()
+
+	upstream := dnstest.StartServer(t, "10.0.0.1")
+
+	var (
+		mu       sync.Mutex
+		recorded []string
+	)
+
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchName: "ping.example.com"}},
+			ICMPs: []config.ICMPRule{{
+				Fields: []config.ICMPField{
+					{Family: "IPv4", Type: "8"},
+				},
+			}},
+		}),
+	}
+
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			recorded = append(recorded, fmt.Sprintf("%s %v %v", setName, ips, ttl))
+
+			return nil
+		}),
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
+
+	client := &dns.Client{Net: "udp"}
+	msg := new(dns.Msg)
+	msg.SetQuestion("ping.example.com.", dns.TypeA)
+
+	resp, _, err := client.Exchange(msg, proxy.Addr)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// The rule qualifies as both catch-all FQDN (no toPorts) and
+	// ICMP FQDN, so both sets are populated.
+	require.Len(t, recorded, 2)
+
+	var hasICMPSet bool
+	for _, entry := range recorded {
+		if strings.Contains(entry, "terrarium_fqdnicmp4_0") {
+			assert.Contains(t, entry, "10.0.0.1")
+
+			hasICMPSet = true
+		}
+	}
+
+	assert.True(t, hasICMPSet, "should populate ICMP FQDN set")
 }

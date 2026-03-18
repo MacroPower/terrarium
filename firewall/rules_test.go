@@ -1468,3 +1468,64 @@ func TestApplyRules_SCTPDenyCIDR(t *testing.T) {
 
 	assert.Equal(t, 1, sctpDrops, "deny_cidr chain should have SCTP DROP")
 }
+
+func TestApplyRules_ICMPWithFQDN(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+			ICMPs: []config.ICMPRule{{
+				Fields: []config.ICMPField{
+					{Family: "IPv4", Type: "8"},
+					{Family: "IPv6", Type: "128"},
+				},
+			}},
+		}),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	// ICMP FQDN sets should be created.
+	setNames := rec.setNames()
+	assert.Contains(t, setNames, "terrarium_fqdnicmp4_0")
+	assert.Contains(t, setNames, "terrarium_fqdnicmp6_0")
+
+	// terrarium_output should have ICMP ESTABLISHED and set lookup
+	// rules. The rule also qualifies as catch-all FQDN, so both
+	// ICMP FQDN and catch-all sets are created.
+	assert.Contains(t, setNames, "terrarium_fqdnca4_0")
+	assert.Contains(t, setNames, "terrarium_fqdnca6_0")
+
+	outputRules := rec.rulesForChain("terrarium_output")
+
+	// Count lookup rules that include ICMP type matching (Payload
+	// at ICMP offset). ICMP FQDN lookups have matchICMPType +
+	// setLookupDst, producing two Payload expressions per rule.
+	var icmpLookups int
+	for _, r := range outputRules {
+		payloadCount := 0
+		hasLookup := false
+
+		for _, e := range r.Exprs {
+			if _, ok := e.(*expr.Payload); ok {
+				payloadCount++
+			}
+
+			if _, ok := e.(*expr.Lookup); ok {
+				hasLookup = true
+			}
+		}
+
+		// ICMP FQDN lookup rules have 2 Payload expressions:
+		// one for ICMP type matching, one for dst IP set lookup.
+		if hasLookup && payloadCount >= 2 {
+			icmpLookups++
+		}
+	}
+
+	// One v4 lookup (IPv4 type 8) and one v6 lookup (IPv6 type 128).
+	assert.Equal(t, 2, icmpLookups, "should have ICMP FQDN set lookup rules")
+}

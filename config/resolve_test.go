@@ -2324,3 +2324,226 @@ func TestCompileCatchAllFQDNPatterns(t *testing.T) {
 	assert.False(t, patterns[0].Regex.MatchString("sub.example.com."))
 	assert.True(t, patterns[1].Regex.MatchString("foo.test.com."))
 }
+
+func TestResolveICMPFQDNRules(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		want []int
+	}{
+		"ICMP with toFQDNs": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: []int{0},
+		},
+		"ICMP without toFQDNs": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: nil,
+		},
+		"mixed ICMP+FQDN and ICMP-only": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "8"},
+							},
+						}},
+					},
+					config.EgressRule{
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "0"},
+							},
+						}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "other.com"}},
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv6", Type: "128"},
+							},
+						}},
+					},
+				),
+			},
+			want: []int{0, 1},
+		},
+		"unrestricted returns nil": {
+			cfg:  &config.Config{},
+			want: nil,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			require.NoError(t, tt.cfg.Validate())
+
+			got := tt.cfg.ResolveICMPFQDNRules()
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCompileICMPFQDNPatterns(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{
+					{MatchName: "example.com"},
+					{MatchPattern: "*.test.com"},
+				},
+				ICMPs: []config.ICMPRule{{
+					Fields: []config.ICMPField{
+						{Family: "IPv4", Type: "8"},
+					},
+				}},
+			},
+		),
+	}
+	require.NoError(t, cfg.Validate())
+
+	patterns := cfg.CompileICMPFQDNPatterns()
+	require.Len(t, patterns, 2)
+	assert.Equal(t, "example.com", patterns[0].Original)
+	assert.Equal(t, 0, patterns[0].RuleIndex)
+	assert.Equal(t, "*.test.com", patterns[1].Original)
+	assert.Equal(t, 0, patterns[1].RuleIndex)
+
+	// Verify regex matching.
+	assert.True(t, patterns[0].Regex.MatchString("example.com."))
+	assert.False(t, patterns[0].Regex.MatchString("sub.example.com."))
+	assert.True(t, patterns[1].Regex.MatchString("foo.test.com."))
+}
+
+func TestResolveICMPRules_FQDNFields(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		want []config.ResolvedICMP
+	}{
+		"ICMP with toFQDNs sets UseFQDNSet": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+							{Family: "IPv6", Type: "128"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{
+					Family:        "IPv4",
+					Type:          8,
+					RuleIndex:     0,
+					UseFQDNSet:    true,
+					FQDNRuleIndex: 0,
+				},
+				{
+					Family:        "IPv6",
+					Type:          128,
+					RuleIndex:     0,
+					UseFQDNSet:    true,
+					FQDNRuleIndex: 0,
+				},
+			},
+		},
+		"ICMP without toFQDNs has UseFQDNSet false": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{Family: "IPv4", Type: 8, RuleIndex: 0},
+			},
+		},
+		"FQDNRuleIndex increments per qualifying rule": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "a.com"}},
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "8"},
+							},
+						}},
+					},
+					config.EgressRule{
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "0"},
+							},
+						}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "b.com"}},
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "8"},
+							},
+						}},
+					},
+				),
+			},
+			want: []config.ResolvedICMP{
+				{
+					Family:        "IPv4",
+					Type:          8,
+					RuleIndex:     0,
+					UseFQDNSet:    true,
+					FQDNRuleIndex: 0,
+				},
+				{Family: "IPv4", Type: 0, RuleIndex: 1},
+				{
+					Family:        "IPv4",
+					Type:          8,
+					RuleIndex:     2,
+					UseFQDNSet:    true,
+					FQDNRuleIndex: 1,
+				},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			require.NoError(t, tt.cfg.Validate())
+
+			got := tt.cfg.ResolveICMPRules()
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

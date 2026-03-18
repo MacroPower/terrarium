@@ -88,6 +88,18 @@ func FQDNSetName(ruleIdx int, ipv6 bool) string {
 	return fmt.Sprintf("terrarium_fqdn4_%d", ruleIdx)
 }
 
+// ICMPFQDNSetName returns the nftables set name for an ICMP FQDN
+// rule index and address family. Names follow
+// terrarium_fqdnicmp{4,6}_R where R is the 0-indexed position among
+// ICMP+FQDN rules.
+func ICMPFQDNSetName(ruleIdx int, ipv6 bool) string {
+	if ipv6 {
+		return fmt.Sprintf("terrarium_fqdnicmp6_%d", ruleIdx)
+	}
+
+	return fmt.Sprintf("terrarium_fqdnicmp4_%d", ruleIdx)
+}
+
 // CatchAllFQDNSetName returns the nftables set name for a catch-all
 // FQDN rule index and address family. Names follow
 // terrarium_fqdnca{4,6}_R where R is the 0-indexed position among
@@ -1220,6 +1232,8 @@ func (c *Config) ResolveDenyICMPRules() []ResolvedICMP {
 // CIDRs from sibling toCIDR/toCIDRSet selectors on each rule are
 // attached to the resolved entries, filtered by address family, so
 // the firewall can scope ICMP rules to the correct L3 destinations.
+// When a rule has toFQDNs, UseFQDNSet and FQDNRuleIndex are set on
+// each emitted entry so the firewall can use FQDN ipset lookups.
 func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 	if len(rules) == 0 {
 		return nil
@@ -1227,7 +1241,11 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 
 	var result []ResolvedICMP
 
+	fqdnRuleIdx := 0
+
 	for ri := range rules {
+		hasFQDNs := len(rules[ri].ToFQDNs) > 0
+
 		// Collect CIDRs from sibling L3 selectors on this rule.
 		var allCIDRs []CIDRRule
 		if len(rules[ri].ToCIDR) > 0 || len(rules[ri].ToCIDRSet) > 0 {
@@ -1257,13 +1275,24 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 					}
 				}
 
-				result = append(result, ResolvedICMP{
+				entry := ResolvedICMP{
 					CIDRs:     cidrs,
 					Family:    f.Family,
 					Type:      uint8(code),
 					RuleIndex: ri,
-				})
+				}
+
+				if hasFQDNs {
+					entry.UseFQDNSet = true
+					entry.FQDNRuleIndex = fqdnRuleIdx
+				}
+
+				result = append(result, entry)
 			}
+		}
+
+		if hasFQDNs && len(rules[ri].ICMPs) > 0 {
+			fqdnRuleIdx++
 		}
 	}
 
@@ -1378,6 +1407,91 @@ func (c *Config) ResolveCatchAllFQDNRules() []int {
 	}
 
 	return result
+}
+
+// isICMPFQDNRule reports whether an egress rule has both ICMPs and
+// toFQDNs, qualifying it for ICMP FQDN set enforcement.
+func isICMPFQDNRule(rule EgressRule) bool {
+	return len(rule.ICMPs) > 0 && len(rule.ToFQDNs) > 0
+}
+
+// ResolveICMPFQDNRules returns rule indices for rules with both ICMPs
+// and toFQDNs. Each qualifying rule gets its own ipset pair for
+// destination matching. Returns nil when no rules qualify.
+func (c *Config) ResolveICMPFQDNRules() []int {
+	if c.IsEgressUnrestricted() {
+		return nil
+	}
+
+	rules := c.EgressRules()
+	if rules == nil {
+		return nil
+	}
+
+	var result []int
+
+	ruleIdx := 0
+
+	for ri := range rules {
+		if !isICMPFQDNRule(rules[ri]) {
+			continue
+		}
+
+		result = append(result, ruleIdx)
+		ruleIdx++
+	}
+
+	return result
+}
+
+// CompileICMPFQDNPatterns returns compiled regexes for all
+// [FQDNSelector] entries in ICMP+FQDN rules. Each pattern carries a
+// RuleIndex matching the index used by [Config.ResolveICMPFQDNRules]
+// and the FQDNRuleIndex in [ResolvedICMP], so DNS responses can
+// populate the correct per-rule ipset.
+func (c *Config) CompileICMPFQDNPatterns() []FQDNPattern {
+	var patterns []FQDNPattern
+
+	ruleIdx := 0
+
+	rules := c.EgressRules()
+	for ri := range rules {
+		if !isICMPFQDNRule(rules[ri]) {
+			continue
+		}
+
+		seen := make(map[string]bool)
+
+		for _, fqdn := range rules[ri].ToFQDNs {
+			var original string
+
+			var isMatchName bool
+
+			if fqdn.MatchName != "" {
+				original = fqdn.MatchName
+				isMatchName = true
+			} else {
+				original = fqdn.MatchPattern
+			}
+
+			if seen[original] {
+				continue
+			}
+
+			seen[original] = true
+
+			regex := patternToAnchoredRegex(original, isMatchName)
+			patterns = append(patterns, FQDNPattern{
+				Original:  original,
+				Regex:     regexp.MustCompile(regex),
+				RuleIndex: ruleIdx,
+			})
+		}
+
+		ruleIdx++
+	}
+
+	return patterns
 }
 
 // CompileCatchAllFQDNPatterns returns compiled regexes for all

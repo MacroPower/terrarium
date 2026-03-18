@@ -294,13 +294,6 @@ var (
 	// empty Type string.
 	ErrICMPTypeRequired = errors.New("ICMP type must not be empty")
 
-	// ErrICMPWithFQDNs is returned when an [EgressRule] combines icmps
-	// with toFQDNs. In Cilium's BPF datapath, ICMP would be AND'd with
-	// FQDN-resolved IPs, but terrarium cannot implement this because
-	// FQDN ipsets are designed for TCP/UDP port-based filtering and
-	// ICMP has no ports. Use separate rules instead.
-	ErrICMPWithFQDNs = errors.New("icmps and toFQDNs cannot be combined in the same rule")
-
 	// ErrDenyRuleToFQDNs is returned when an [EgressDenyRule] contains
 	// toFQDNs. Cilium's EgressDenyRule type structurally lacks a
 	// ToFQDNs field; deny rules cannot target FQDNs. The stub field
