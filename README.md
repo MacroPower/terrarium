@@ -6,16 +6,19 @@
   <a href="https://pkg.go.dev/go.jacobcolvin.com/terrarium"><img alt="Go Reference" src="https://pkg.go.dev/badge/go.jacobcolvin.com/terrarium.svg"></a>
   <a href="https://goreportcard.com/report/go.jacobcolvin.com/terrarium"><img alt="Go Report Card" src="https://goreportcard.com/badge/go.jacobcolvin.com/terrarium"></a>
   <a href="https://codecov.io/gh/macropower/terrarium"><img src="https://codecov.io/gh/macropower/terrarium/graph/badge.svg?token=4TNYTL2WXV"/></a>
-  <a href="#-installation"><img alt="Latest tag" src="https://img.shields.io/github/v/tag/macropower/terrarium?label=version&sort=semver"></a>
+  <a href="#installation"><img alt="Latest tag" src="https://img.shields.io/github/v/tag/macropower/terrarium?label=version&sort=semver"></a>
   <a href="https://github.com/macropower/terrarium/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/macropower/terrarium"></a>
 </p>
 
 Terrarium is a secure container environment that uses [Envoy](https://www.envoyproxy.io/) as an L7 egress gateway,
 configured via familiar [Cilium](https://cilium.io/) network policy semantics.
 
-It is particularly useful for running fully autonomous AI agents.
+> See [CiliumNetworkPolicy Compatibility](docs/cnp-compatibility.md).
+
 Terrarium allows you to declare policies that balance security and functionality,
 based on your risk tolerance, environment, and use cases.
+
+It is particularly useful for running fully autonomous AI agents.
 
 ## Examples
 
@@ -128,7 +131,7 @@ components.
 
 #### Capabilities
 
-`setpriv` launches the user command with `--inh-caps=-all` and
+`terrarium exec` launches the user command with `--inh-caps=-all` and
 `--bounding-set=-all`, which clears the entire Linux capability bounding set.
 This is the foundational constraint; everything else is defense in depth.
 
@@ -179,7 +182,7 @@ compromising multiple independent kernel subsystems simultaneously.
 The firewall, DNS proxy, and Envoy all derive their behavior from the same parsed
 policy. Three modes:
 
-- Unrestricted (nil/empty egress): all traffic allowed, routed through Envoy for
+- Unrestricted (nil egress): all traffic allowed, routed through Envoy for
   access logging via NAT REDIRECT (TCP) and TPROXY (UDP).
 - Blocked (`egress: [{}]`): all traffic denied, DNS returns REFUSED, no Envoy.
 - Filtered (rules with FQDN/CIDR/L7 matchers): per-rule chain isolation with
