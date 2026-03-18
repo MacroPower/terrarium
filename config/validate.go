@@ -790,13 +790,12 @@ func validateL7Rules(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 		return nil
 	}
 
-	// CIDR+L7 with serverNames is rejected: serverNames implies TLS,
-	// and MITM without domain names is not feasible.
-	if hasCIDR {
-		for _, pr := range rule.ToPorts {
-			if len(pr.ServerNames) > 0 {
-				return fmt.Errorf("%w: rule %d", ErrCIDRL7WithServerNames, ruleIdx)
-			}
+	// Cilium rejects serverNames with L7 rules unless terminatingTLS
+	// is set. Terrarium does not support terminatingTLS, so reject
+	// unconditionally.
+	for _, pr := range rule.ToPorts {
+		if len(pr.ServerNames) > 0 {
+			return fmt.Errorf("%w: rule %d", ErrL7WithServerNames, ruleIdx)
 		}
 	}
 

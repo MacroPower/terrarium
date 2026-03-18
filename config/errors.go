@@ -136,12 +136,12 @@ var (
 		"toFQDNs port range too large: endPort - port must not exceed 100 (terrarium constraint: each port needs an Envoy listener)",
 	)
 
-	// ErrCIDRL7WithServerNames is returned when L7 HTTP rules are
-	// combined with toCIDR/toCIDRSet and serverNames on the same rule.
-	// ServerNames implies TLS traffic, and MITM for CIDR destinations
-	// without known domain names is not feasible.
-	ErrCIDRL7WithServerNames = errors.New(
-		"L7 HTTP rules with toCIDR/toCIDRSet cannot use serverNames (implies TLS; use toFQDNs for TLS L7)",
+	// ErrL7WithServerNames is returned when L7 HTTP rules are combined
+	// with serverNames on the same port rule. Cilium rejects this
+	// combination unless terminatingTLS is set; terrarium does not
+	// support terminatingTLS, so the rejection is unconditional.
+	ErrL7WithServerNames = errors.New(
+		"L7 HTTP rules cannot use serverNames without TLS termination",
 	)
 
 	// ErrL7RequiresTCP is returned when L7 HTTP rules are paired with

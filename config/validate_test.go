@@ -776,7 +776,20 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrCIDRL7WithServerNames,
+			err: config.ErrL7WithServerNames,
+		},
+		"L7 with toFQDNs and serverNames rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports:       []config.Port{{Port: "443"}},
+						ServerNames: []string{"example.com"},
+						Rules:       &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
+					}},
+				}),
+			},
+			err: config.ErrL7WithServerNames,
 		},
 		"empty HTTP on toPorts-only valid": {
 			cfg: &config.Config{
@@ -2695,7 +2708,7 @@ egress:
 `,
 			err: config.ErrUnsupportedFeature,
 		},
-		"serverNames on FQDN accepted (no-op)": {
+		"serverNames on FQDN without L7 accepted": {
 			yaml: `
 egress:
   - toFQDNs:
