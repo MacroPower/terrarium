@@ -1840,7 +1840,7 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrDNSRuleSelectorEmpty,
 		},
-		"DNS rule ambiguous selector rejected": {
+		"DNS rule both matchName and matchPattern accepted": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "dns.example.com"}},
@@ -1852,7 +1852,6 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrDNSRuleSelectorAmbiguous,
 		},
 		"DNS rule invalid matchName chars rejected": {
 			cfg: &config.Config{

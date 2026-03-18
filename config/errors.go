@@ -410,10 +410,6 @@ var (
 	// matchName nor matchPattern set.
 	ErrDNSRuleSelectorEmpty = errors.New("DNS rule must have matchName or matchPattern")
 
-	// ErrDNSRuleSelectorAmbiguous is returned when a [DNSRule] has both
-	// matchName and matchPattern set. Exactly one must be specified.
-	ErrDNSRuleSelectorAmbiguous = errors.New("DNS rule must have exactly one of matchName or matchPattern, not both")
-
 	// ErrDNSPatternCompile is returned when a DNS L7 rule matchPattern
 	// or matchName produces an anchored regex that fails to compile.
 	// The restricted character allowlist makes this extremely unlikely,

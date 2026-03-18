@@ -888,9 +888,10 @@ func familyLabel(isV6 bool) string {
 }
 
 // validateDNSRules checks that DNS L7 rules are well-formed and appear
-// only on port-53 toPorts entries. Each DNS rule must have exactly one
+// only on port-53 toPorts entries. Each DNS rule must have at least one
 // of matchName or matchPattern, using the same character and wildcard
-// constraints as [FQDNSelector].
+// constraints as [FQDNSelector]. When both are set they are evaluated
+// with OR semantics.
 func validateDNSRules(rule EgressRule, ruleIdx int) error {
 	for _, pr := range rule.ToPorts {
 		if pr.Rules == nil || len(pr.Rules.DNS) == 0 {
@@ -925,10 +926,6 @@ func validateDNSRules(rule EgressRule, ruleIdx int) error {
 				return fmt.Errorf("%w: rule %d dns %d", ErrDNSRuleSelectorEmpty, ruleIdx, j)
 			}
 
-			if dns.MatchName != "" && dns.MatchPattern != "" {
-				return fmt.Errorf("%w: rule %d dns %d", ErrDNSRuleSelectorAmbiguous, ruleIdx, j)
-			}
-
 			if dns.MatchName != "" {
 				if len(dns.MatchName) > maxFQDNLength {
 					return fmt.Errorf("%w: rule %d dns %d name %q (%d chars)",
@@ -958,29 +955,30 @@ func validateDNSRules(rule EgressRule, ruleIdx int) error {
 				}
 			}
 
-			// Compile the anchored regex as defense-in-depth. The
+			// Compile anchored regexes as defense-in-depth. The
 			// character allowlist makes failure extremely unlikely, but
 			// catching it here avoids a downstream failure during
 			// resolution.
-			var (
-				value       string
-				isMatchName bool
-			)
-
 			if dns.MatchName != "" {
-				value = dns.MatchName
-				isMatchName = true
-			} else {
-				value = dns.MatchPattern
+				regex := patternToAnchoredRegex(dns.MatchName, true)
+				_, err := regexp.Compile(regex)
+				if err != nil {
+					return fmt.Errorf(
+						"%w: rule %d dns %d: %w",
+						ErrDNSPatternCompile, ruleIdx, j, err,
+					)
+				}
 			}
 
-			regex := patternToAnchoredRegex(value, isMatchName)
-			_, err := regexp.Compile(regex)
-			if err != nil {
-				return fmt.Errorf(
-					"%w: rule %d dns %d: %w",
-					ErrDNSPatternCompile, ruleIdx, j, err,
-				)
+			if dns.MatchPattern != "" {
+				regex := patternToAnchoredRegex(dns.MatchPattern, false)
+				_, err := regexp.Compile(regex)
+				if err != nil {
+					return fmt.Errorf(
+						"%w: rule %d dns %d: %w",
+						ErrDNSPatternCompile, ruleIdx, j, err,
+					)
+				}
 			}
 		}
 	}

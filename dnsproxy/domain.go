@@ -121,32 +121,39 @@ func CollectDomains(cfg *config.Config) []Domain {
 			}
 
 			for _, dns := range pr.Rules.DNS {
-				var d Domain
+				// Collect domains for each field independently.
+				// When both are set they are evaluated with OR
+				// semantics, matching Cilium's behavior.
+				var domains []Domain
 
 				if dns.MatchName != "" {
-					d = Domain{Name: dns.MatchName}
-				} else {
-					d = patternToDomain(dns.MatchPattern)
+					domains = append(domains, Domain{Name: dns.MatchName})
 				}
 
-				if d.Name == "*" {
-					if !seen["*"] {
-						seen["*"] = true
+				if dns.MatchPattern != "" {
+					domains = append(domains, patternToDomain(dns.MatchPattern))
+				}
 
-						result = append(result, Domain{Name: "*"})
+				for _, d := range domains {
+					if d.Name == "*" {
+						if !seen["*"] {
+							seen["*"] = true
+
+							result = append(result, Domain{Name: "*"})
+						}
+
+						continue
 					}
 
-					continue
+					if seen[d.Name] {
+						upgradeDomain(result, d)
+
+						continue
+					}
+
+					seen[d.Name] = true
+					result = append(result, d)
 				}
-
-				if seen[d.Name] {
-					upgradeDomain(result, d)
-
-					continue
-				}
-
-				seen[d.Name] = true
-				result = append(result, d)
 			}
 		}
 	}
