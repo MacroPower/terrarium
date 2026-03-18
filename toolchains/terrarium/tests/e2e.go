@@ -25,6 +25,16 @@ const (
         add_header Content-Type text/plain;
     }
 }`
+	headerEchoNginxConf = `server {
+    listen 80;
+    listen 443 ssl;
+    ssl_certificate /etc/nginx/cert.pem;
+    ssl_certificate_key /etc/nginx/key.pem;
+    location / {
+        return 200 "TOKEN=$http_x_token\n";
+        add_header Content-Type text/plain;
+    }
+}`
 	l7NginxConf = `server {
     listen 80;
     listen 443 ssl;
@@ -90,6 +100,12 @@ func (m *Tests) TestEgressAll(ctx context.Context) error {
 	g.Go(func() error { return m.TestEgressUdpDenyAll(ctx) })
 	g.Go(func() error { return m.TestEgressUdpFiltered(ctx) })
 	g.Go(func() error { return m.TestEgressUdpLogging(ctx) })
+	g.Go(func() error { return m.TestEgressDenyAllViaEgressDeny(ctx) })
+	g.Go(func() error { return m.TestEgressEndpointWildcard(ctx) })
+	g.Go(func() error { return m.TestEgressEntityWorldIpv4(ctx) })
+	g.Go(func() error { return m.TestEgressIcmpFqdn(ctx) })
+	g.Go(func() error { return m.TestEgressHeaderMatchMismatch(ctx) })
+	g.Go(func() error { return m.TestEgressServerNameBareWildcard(ctx) })
 
 	return g.Wait()
 }
@@ -1754,6 +1770,336 @@ assert_udp_allowed "target-udp" 5000 "UDP_ECHO_OK" "udp-logging: UDP to target-u
 	}
 
 	return g.Wait()
+}
+
+// TestEgressDenyAllViaEgressDeny verifies that egressDeny rules block a subset
+// of otherwise allowed traffic. Deny chains evaluate before allow chains in
+// nftables, so port 443 is denied even though a broad CIDR allow covers it.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-deny-all-via-egress-deny
+func (m *Tests) TestEgressDenyAllViaEgressDeny(ctx context.Context) error {
+	config := `egress:
+  - toCIDR:
+      - "0.0.0.0/0"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+          - port: "443"
+            protocol: TCP
+egressDeny:
+  - toCIDR:
+      - "0.0.0.0/0"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`
+	bindings := []serviceBinding{
+		targetService("target-allow", defaultNginxConf),
+		targetService("target-deny", defaultNginxConf),
+	}
+
+	script := assertionScriptNoEnvoy(`
+assert_allowed "http://target-allow:80/" "egress-deny: HTTP port 80 allowed"
+assert_network_denied "https://target-deny:443/" "egress-deny: HTTPS port 443 denied by egressDeny"
+`)
+
+	return runVariants(ctx, "egress-deny", config, script, bindings)
+}
+
+// TestEgressEndpointWildcard verifies that toEndpoints with an empty selector
+// expands to 0.0.0.0/0 + ::/0, acting like a broad CIDR rule with port
+// restriction. Port 80 is allowed; port 443 is not in toPorts and is blocked.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-endpoint-wildcard
+func (m *Tests) TestEgressEndpointWildcard(ctx context.Context) error {
+	config := `egress:
+  - toEndpoints:
+      - {}
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+`
+	bindings := []serviceBinding{
+		targetService("target-allow", defaultNginxConf),
+	}
+
+	script := assertionScriptNoEnvoy(`
+assert_allowed "http://target-allow:80/" "endpoint-wildcard: HTTP port 80 allowed"
+assert_network_denied "https://target-allow:443/" "endpoint-wildcard: HTTPS port 443 denied"
+`)
+
+	return runVariants(ctx, "endpoint-wildcard", config, script, bindings)
+}
+
+// TestEgressEntityWorldIpv4 verifies that toEntities with world-ipv4 expands
+// to 0.0.0.0/0. Port 80 is allowed; port 443 is not in toPorts and is blocked.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-entity-world-ipv4
+func (m *Tests) TestEgressEntityWorldIpv4(ctx context.Context) error {
+	config := `egress:
+  - toEntities:
+      - world-ipv4
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+`
+	bindings := []serviceBinding{
+		targetService("target-allow", defaultNginxConf),
+	}
+
+	script := assertionScriptNoEnvoy(`
+assert_allowed "http://target-allow:80/" "entity-world-ipv4: HTTP port 80 allowed"
+assert_network_denied "https://target-allow:443/" "entity-world-ipv4: HTTPS port 443 denied"
+`)
+
+	return runVariants(ctx, "entity-world-ipv4", config, script, bindings)
+}
+
+// TestEgressIcmpFqdn verifies that ICMP rules combined with toFQDNs create
+// dedicated FQDN ipsets for ICMP traffic. DNS resolution through the proxy
+// populates the ICMP ipset, enabling ping to allowed FQDNs while denying
+// ping to unlisted FQDNs.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-icmp-fqdn
+func (m *Tests) TestEgressIcmpFqdn(ctx context.Context) error {
+	config := `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+  - toFQDNs:
+      - matchName: "target-allow"
+    icmps:
+      - fields:
+          - type: 8
+            family: IPv4
+`
+	bindings := []serviceBinding{
+		targetService("target-allow", defaultNginxConf),
+		targetService("target-deny", defaultNginxConf),
+	}
+
+	// Install iputils-ping before terrarium init (firewall would block repos).
+	// Uses ready-file wait, then custom ICMP checks with UID switching.
+	script := `#!/bin/sh
+set -e
+
+PASS=0
+FAIL=0
+` + assertionPreamble + `
+# Install iputils-ping for debian (alpine has busybox ping).
+if command -v apt-get >/dev/null 2>&1; then
+    apt-get update >/dev/null 2>&1 && apt-get install -y iputils-ping >/dev/null 2>&1
+fi
+
+# Start terrarium init in background with a ready-file signal.
+terrarium init --config /etc/terrarium/config.yaml --ready-file /tmp/.terrarium-ready -- sleep infinity &
+TERRARIUM_PID=$!
+
+# Wait for the ready file to appear, indicating all infrastructure
+# (nftables, DNS proxy, Envoy) is fully operational.
+ready=0
+for i in $(seq 1 60); do
+    if [ -f /tmp/.terrarium-ready ]; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$ready" -ne 1 ]; then
+    echo "FAIL: terrarium did not become ready within 60 seconds"
+    kill $TERRARIUM_PID 2>/dev/null || true
+    exit 1
+fi
+
+# Verify HTTPS still works (combined rule).
+assert_passthrough "https://target-allow:443/" "OK" "icmp-fqdn: HTTPS passthrough"
+assert_network_denied "https://target-deny:443/" "icmp-fqdn: HTTPS to target-deny denied"
+
+# Ping allowed FQDN as UID 1000.
+# First resolve via DNS to populate ipset, then ping.
+attempt=1
+while [ "$attempt" -le 3 ]; do
+    if setpriv --reuid=1000 --regid=1000 --clear-groups -- ping -c 1 -W 5 target-allow >/dev/null 2>&1; then
+        echo "PASS: icmp-fqdn: ping to target-allow"
+        PASS=$((PASS + 1))
+        break
+    fi
+    if [ "$attempt" -lt 3 ]; then
+        echo "RETRY: icmp-fqdn: ping (attempt $attempt/3, retrying in 2s)"
+        sleep 2
+    else
+        echo "FAIL: icmp-fqdn: ping to target-allow"
+        FAIL=$((FAIL + 1))
+    fi
+    attempt=$((attempt + 1))
+done
+
+# Ping denied FQDN: DNS proxy returns REFUSED, ping fails.
+if setpriv --reuid=1000 --regid=1000 --clear-groups -- ping -c 1 -W 3 target-deny >/dev/null 2>&1; then
+    echo "FAIL: icmp-fqdn: ping to target-deny should be denied"
+    FAIL=$((FAIL + 1))
+else
+    echo "PASS: icmp-fqdn: ping to target-deny denied"
+    PASS=$((PASS + 1))
+fi
+` + scriptSuffix
+
+	return runVariants(ctx, "icmp-fqdn", config, script, bindings)
+}
+
+// TestEgressHeaderMatchMismatch verifies the headerMatch mismatch REPLACE
+// action. When a request header does not match the expected value, Envoy
+// overwrites it before forwarding. A custom nginx config echoes the X-Token
+// header value in the response body, allowing verification that REPLACE
+// normalizes all requests to carry the correct value.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-header-match-mismatch
+func (m *Tests) TestEgressHeaderMatchMismatch(ctx context.Context) error {
+	config := `egress:
+  - toFQDNs:
+      - matchName: "target-l7"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+        rules:
+          http:
+            - headerMatches:
+                - name: "X-Token"
+                  value: "secret"
+                  mismatch: REPLACE
+`
+	bindings := []serviceBinding{
+		targetService("target-l7", headerEchoNginxConf),
+	}
+
+	script := assertionScript(`
+# Correct header: match route fires, no transform, body contains TOKEN=secret.
+attempt=1
+while [ "$attempt" -le 3 ]; do
+    body=$(curl -sf -k --max-time 10 -H "X-Token: secret" "https://target-l7:443/" 2>/dev/null) && {
+        if echo "$body" | grep -q "TOKEN=secret"; then
+            echo "PASS: header-mismatch: correct header passed through"
+            PASS=$((PASS + 1))
+            break
+        else
+            if [ "$attempt" -lt 3 ]; then
+                echo "RETRY: header-mismatch: correct header (attempt $attempt/3, body=$body, retrying in 2s)"
+                sleep 2
+            else
+                echo "FAIL: header-mismatch: correct header (expected TOKEN=secret, got $body)"
+                FAIL=$((FAIL + 1))
+            fi
+        fi
+    } || {
+        if [ "$attempt" -lt 3 ]; then
+            echo "RETRY: header-mismatch: correct header (attempt $attempt/3 connection failed, retrying in 2s)"
+            sleep 2
+        else
+            echo "FAIL: header-mismatch: correct header (connection failed after 3 attempts)"
+            FAIL=$((FAIL + 1))
+        fi
+    }
+    attempt=$((attempt + 1))
+done
+
+# Wrong header: mismatch route fires, REPLACE overwrites, body contains TOKEN=secret.
+attempt=1
+while [ "$attempt" -le 3 ]; do
+    body=$(curl -sf -k --max-time 10 -H "X-Token: wrong" "https://target-l7:443/" 2>/dev/null) && {
+        if echo "$body" | grep -q "TOKEN=secret"; then
+            echo "PASS: header-mismatch: wrong header replaced with correct value"
+            PASS=$((PASS + 1))
+            break
+        else
+            if [ "$attempt" -lt 3 ]; then
+                echo "RETRY: header-mismatch: wrong header (attempt $attempt/3, body=$body, retrying in 2s)"
+                sleep 2
+            else
+                echo "FAIL: header-mismatch: wrong header (expected TOKEN=secret, got $body)"
+                FAIL=$((FAIL + 1))
+            fi
+        fi
+    } || {
+        if [ "$attempt" -lt 3 ]; then
+            echo "RETRY: header-mismatch: wrong header (attempt $attempt/3 connection failed, retrying in 2s)"
+            sleep 2
+        else
+            echo "FAIL: header-mismatch: wrong header (connection failed after 3 attempts)"
+            FAIL=$((FAIL + 1))
+        fi
+    }
+    attempt=$((attempt + 1))
+done
+
+# Missing header: mismatch route fires, REPLACE adds, body contains TOKEN=secret.
+attempt=1
+while [ "$attempt" -le 3 ]; do
+    body=$(curl -sf -k --max-time 10 "https://target-l7:443/" 2>/dev/null) && {
+        if echo "$body" | grep -q "TOKEN=secret"; then
+            echo "PASS: header-mismatch: missing header replaced with correct value"
+            PASS=$((PASS + 1))
+            break
+        else
+            if [ "$attempt" -lt 3 ]; then
+                echo "RETRY: header-mismatch: missing header (attempt $attempt/3, body=$body, retrying in 2s)"
+                sleep 2
+            else
+                echo "FAIL: header-mismatch: missing header (expected TOKEN=secret, got $body)"
+                FAIL=$((FAIL + 1))
+            fi
+        fi
+    } || {
+        if [ "$attempt" -lt 3 ]; then
+            echo "RETRY: header-mismatch: missing header (attempt $attempt/3 connection failed, retrying in 2s)"
+            sleep 2
+        else
+            echo "FAIL: header-mismatch: missing header (connection failed after 3 attempts)"
+            FAIL=$((FAIL + 1))
+        fi
+    }
+    attempt=$((attempt + 1))
+done
+`)
+
+	return runVariants(ctx, "header-match-mismatch", config, script, bindings)
+}
+
+// TestEgressServerNameBareWildcard verifies that serverNames: ["*"] normalizes
+// to nil, meaning no effective serverNames restriction. With no L7 rules and no
+// effective serverNames, TLS passes through without MITM interception.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-server-name-bare-wildcard
+func (m *Tests) TestEgressServerNameBareWildcard(ctx context.Context) error {
+	config := `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+        serverNames:
+          - "*"
+`
+	bindings := []serviceBinding{
+		targetService("target-allow", defaultNginxConf),
+		targetService("target-deny", defaultNginxConf),
+	}
+
+	script := assertionScript(`
+assert_passthrough "https://target-allow:443/" "OK" "server-name-bare-wildcard: HTTPS passthrough (no MITM)"
+assert_network_denied "https://target-deny:443/" "server-name-bare-wildcard: HTTPS to target-deny denied"
+`)
+
+	return runVariants(ctx, "server-name-bare-wildcard", config, script, bindings)
 }
 
 // runVariants runs the same test across all e2eVariants in parallel.
