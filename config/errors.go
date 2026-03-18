@@ -51,10 +51,6 @@ var (
 	// not a valid regular expression.
 	ErrMethodInvalidRegex = errors.New("method must be a valid regex")
 
-	// ErrHostInvalidRegex is returned when a host in an [HTTPRule] is
-	// not a valid regular expression.
-	ErrHostInvalidRegex = errors.New("host must be a valid regex")
-
 	// ErrHTTPHeaderEmpty is returned when an [HTTPRule] Headers entry
 	// is an empty string.
 	ErrHTTPHeaderEmpty = errors.New("HTTP header name must not be empty")

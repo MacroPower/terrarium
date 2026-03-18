@@ -696,23 +696,6 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 	}
 
 	for _, h := range pr.Rules.HTTP {
-		if h.Host != "" {
-			if len(h.Host) > maxRegexLen {
-				return fmt.Errorf(
-					"%w: rule %d host too long (%d > %d)",
-					ErrHostInvalidRegex,
-					ruleIdx,
-					len(h.Host),
-					maxRegexLen,
-				)
-			}
-
-			_, err := regexp.Compile(h.Host)
-			if err != nil {
-				return fmt.Errorf("%w: rule %d host %q", ErrHostInvalidRegex, ruleIdx, h.Host)
-			}
-		}
-
 		for i, hdr := range h.Headers {
 			if hdr == "" {
 				return fmt.Errorf("%w: rule %d headers[%d]", ErrHTTPHeaderEmpty, ruleIdx, i)

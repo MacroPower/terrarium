@@ -995,20 +995,6 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"host invalid regex rejected": {
-			cfg: &config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []config.PortRule{{
-						Ports: []config.Port{{Port: "443"}},
-						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
-							{Host: "["},
-						}},
-					}},
-				}),
-			},
-			err: config.ErrHostInvalidRegex,
-		},
 		"HTTP headers valid": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
