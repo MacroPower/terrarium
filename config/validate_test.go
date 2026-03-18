@@ -1175,7 +1175,7 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrHeaderMatchMismatchInvalid,
 		},
-		"headerMatches mismatch ADD without value rejected": {
+		"headerMatches mismatch ADD without value accepted": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -1189,9 +1189,8 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrHeaderMatchMismatchValue,
 		},
-		"headerMatches mismatch REPLACE without value rejected": {
+		"headerMatches mismatch REPLACE without value accepted": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -1205,7 +1204,6 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrHeaderMatchMismatchValue,
 		},
 		"headerMatches mismatch combined with header matching": {
 			cfg: &config.Config{

@@ -62,13 +62,6 @@ var (
 		"headerMatch mismatch must be one of LOG, ADD, DELETE, REPLACE",
 	)
 
-	// ErrHeaderMatchMismatchValue is returned when a [HeaderMatch]
-	// with a Mismatch action of ADD or REPLACE has an empty Value.
-	// ADD and REPLACE require a value to set on the header.
-	ErrHeaderMatchMismatchValue = errors.New(
-		"headerMatch with ADD or REPLACE mismatch action requires a non-empty value",
-	)
-
 	// ErrHeaderMatchSecret is returned when a [HeaderMatch] sets
 	// a Secret field. Cilium uses this to reference Kubernetes
 	// Secrets for populating header values. Terrarium does not run
