@@ -265,7 +265,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 
 	if needsEnvoy {
 		//nolint:gosec // G204: args from config.User populated via CLI flags.
-		envoyCmd = exec.CommandContext(ctx, "setpriv",
+		envoyCmd = exec.CommandContext(ctx, "/proc/self/exe", "exec",
 			"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups",
 			"--inh-caps=+cap_net_admin", "--ambient-caps=+cap_net_admin",
 			"--", "envoy", "-c", usr.EnvoyConfigPath, "--log-level", envoySettings.LogLevel)
@@ -321,11 +321,12 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	// privileges. It inherits PID 1's process group so terminal
 	// signals (SIGINT, SIGWINCH) reach it naturally.
 	userArgs := append([]string{
+		"exec",
 		"--reuid=" + usr.UID, "--regid=" + usr.GID, "--init-groups",
 		"--no-new-privs", "--inh-caps=-all", "--bounding-set=-all", "--",
 	}, args...)
 	//nolint:gosec // G204: args from CLI flags and user input.
-	userCmd := exec.CommandContext(ctx, "setpriv", userArgs...)
+	userCmd := exec.CommandContext(ctx, "/proc/self/exe", userArgs...)
 	userCmd.Stdin = os.Stdin
 	userCmd.Stdout = os.Stdout
 	userCmd.Stderr = os.Stderr

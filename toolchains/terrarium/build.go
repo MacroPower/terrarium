@@ -20,12 +20,12 @@ const (
 	// binary. This is the default variant and produces the smallest image.
 	VariantScratch Variant = "scratch"
 
-	// VariantDebian builds a debian:13-slim container with ca-certificates,
-	// util-linux (setpriv), and the Envoy proxy pre-installed.
+	// VariantDebian builds a debian:13-slim container with ca-certificates
+	// and the Envoy proxy pre-installed.
 	VariantDebian Variant = "debian"
 
-	// VariantAlpine builds an alpine container with ca-certificates,
-	// util-linux (setpriv), and the Envoy proxy pre-installed.
+	// VariantAlpine builds an alpine container with ca-certificates and
+	// the Envoy proxy pre-installed.
 	VariantAlpine Variant = "alpine"
 )
 
@@ -170,25 +170,25 @@ func runtimeBaseScratch(platform dagger.Platform) *dagger.Container {
 	return dag.Container(dagger.ContainerOpts{Platform: platform})
 }
 
-// runtimeBaseDebian returns a debian:13-slim container with ca-certificates,
-// util-linux (setpriv), and the Envoy proxy binary pre-installed.
+// runtimeBaseDebian returns a debian:13-slim container with ca-certificates
+// and the Envoy proxy binary pre-installed.
 func runtimeBaseDebian(platform dagger.Platform) *dagger.Container {
 	return dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("debian:13-slim").
 		WithExec([]string{"sh", "-c",
-			"apt-get update && apt-get install -y ca-certificates curl util-linux && rm -rf /var/lib/apt/lists/*"}).
+			"apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*"}).
 		WithExec([]string{"sh", "-c",
 			"useradd -u 1000 -m -s /bin/sh dev && " +
 				"useradd -u 1001 -M -s /usr/sbin/nologin envoy"}).
 		WithFile("/usr/local/bin/envoy", envoyBinary(platform))
 }
 
-// runtimeBaseAlpine returns an alpine container with ca-certificates,
-// util-linux (setpriv), and the Envoy proxy binary pre-installed.
+// runtimeBaseAlpine returns an alpine container with ca-certificates
+// and the Envoy proxy binary pre-installed.
 func runtimeBaseAlpine(platform dagger.Platform) *dagger.Container {
 	return dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("alpine:3.22").
-		WithExec([]string{"apk", "add", "--no-cache", "ca-certificates", "curl", "util-linux"}).
+		WithExec([]string{"apk", "add", "--no-cache", "ca-certificates", "curl"}).
 		WithExec([]string{"sh", "-c",
 			"adduser -u 1000 -D -s /bin/sh dev && " +
 				"adduser -u 1001 -H -D -s /sbin/nologin envoy"}).

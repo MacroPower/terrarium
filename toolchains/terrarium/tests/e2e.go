@@ -1900,7 +1900,7 @@ assert_network_denied "https://target-deny:443/" "icmp-fqdn: HTTPS to target-den
 # First resolve via DNS to populate ipset, then ping.
 attempt=1
 while [ "$attempt" -le 3 ]; do
-    if setpriv --reuid=1000 --regid=1000 --clear-groups -- ping -c 1 -W 5 target-allow >/dev/null 2>&1; then
+    if terrarium exec --reuid=1000 --regid=1000 --clear-groups -- ping -c 1 -W 5 target-allow >/dev/null 2>&1; then
         echo "PASS: icmp-fqdn: ping to target-allow"
         PASS=$((PASS + 1))
         break
@@ -1916,7 +1916,7 @@ while [ "$attempt" -le 3 ]; do
 done
 
 # Ping denied FQDN: DNS proxy returns REFUSED, ping fails.
-if setpriv --reuid=1000 --regid=1000 --clear-groups -- ping -c 1 -W 3 target-deny >/dev/null 2>&1; then
+if terrarium exec --reuid=1000 --regid=1000 --clear-groups -- ping -c 1 -W 3 target-deny >/dev/null 2>&1; then
     echo "FAIL: icmp-fqdn: ping to target-deny should be denied"
     FAIL=$((FAIL + 1))
 else

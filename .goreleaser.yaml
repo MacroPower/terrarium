@@ -79,4 +79,3 @@ nix:
     skip_upload: auto
     dependencies:
       - envoy-bin
-      - util-linux

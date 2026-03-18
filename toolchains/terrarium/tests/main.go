@@ -129,14 +129,14 @@ func (m *Tests) TestBuildImageMetadata(ctx context.Context) error {
 }
 
 // TestBuildVariantContents verifies that debian and alpine images contain
-// envoy and setpriv, while scratch does not. Only tests the first platform
-// container (linux/amd64) since dependency installation is platform-independent.
+// envoy, while scratch does not. Only tests the first platform container
+// (linux/amd64) since dependency installation is platform-independent.
 //
 // +check
 func (m *Tests) TestBuildVariantContents(ctx context.Context) error {
 	dist := dag.Terrarium().Build()
 
-	// Verify debian and alpine have envoy and setpriv.
+	// Verify debian and alpine have envoy.
 	for _, variant := range []string{"debian", "alpine"} {
 		containers, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
 			Version: "v0.0.0-test",
@@ -148,11 +148,9 @@ func (m *Tests) TestBuildVariantContents(ctx context.Context) error {
 		}
 
 		ctr := containers[0]
-		for _, bin := range []string{"envoy", "setpriv"} {
-			_, err := ctr.WithExec([]string{"which", bin}).Sync(ctx)
-			if err != nil {
-				return fmt.Errorf("%s: expected %s to be installed: %w", variant, bin, err)
-			}
+		_, err = ctr.WithExec([]string{"which", "envoy"}).Sync(ctx)
+		if err != nil {
+			return fmt.Errorf("%s: expected envoy to be installed: %w", variant, err)
 		}
 	}
 

@@ -497,7 +497,7 @@ func runE2ETest(
 	)
 
 	// Run the assertion script with root capabilities (needed for nftables,
-	// mount manipulation, and setpriv).
+	// mount manipulation, and privilege dropping).
 	return ctr.WithExec(
 		[]string{"/bin/sh", "/tmp/test.sh"},
 		dagger.ContainerWithExecOpts{
