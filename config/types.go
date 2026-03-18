@@ -284,8 +284,9 @@ type ICMPRule struct {
 // ICMPField specifies a single ICMP type with optional address family.
 // Matches Cilium's ICMPField in pkg/policy/api/icmp.go.
 type ICMPField struct {
-	// Family is the address family: "IPv4" (default) or "IPv6".
-	// Case-insensitive; normalized during validation.
+	// Family is the address family: [FamilyIPv4] (default) or
+	// [FamilyIPv6]. Must use canonical casing to match Cilium's
+	// strict CRD enum.
 	Family string `yaml:"family,omitempty"`
 	// Type is the ICMP type as a numeric string (0-255) or a
 	// CamelCase name (e.g. "EchoRequest"). Resolved to numeric

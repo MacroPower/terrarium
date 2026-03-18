@@ -9,29 +9,17 @@ import (
 )
 
 // normalizeEgressRule mutates an egress rule in place to normalize
-// protocol case, FQDN case, and trailing dots. Must be called before
-// validation so that normalized values pass the validators. Returns an
-// error if a serverNames entry is empty, since normalization would
-// otherwise silently filter it via [isBareWildcard].
+// FQDN case, service name port case, and trailing dots. Must be called
+// before validation so that normalized values pass the validators.
+// Returns an error if a serverNames entry is empty, since normalization
+// would otherwise silently filter it via [isBareWildcard].
 func normalizeEgressRule(c *Config, ruleIdx int) error {
 	rule := &(*c.Egress)[ruleIdx]
 
 	for j := range rule.ToPorts {
 		for k := range rule.ToPorts[j].Ports {
-			rule.ToPorts[j].Ports[k].Protocol = strings.ToUpper(rule.ToPorts[j].Ports[k].Protocol)
 			if isSvcName(rule.ToPorts[j].Ports[k].Port) {
 				rule.ToPorts[j].Ports[k].Port = strings.ToLower(rule.ToPorts[j].Ports[k].Port)
-			}
-		}
-	}
-
-	for j := range rule.ToPorts {
-		if rule.ToPorts[j].Rules != nil {
-			for k := range rule.ToPorts[j].Rules.HTTP {
-				for l := range rule.ToPorts[j].Rules.HTTP[k].HeaderMatches {
-					hm := &rule.ToPorts[j].Rules.HTTP[k].HeaderMatches[l]
-					hm.Mismatch = MismatchAction(strings.ToUpper(string(hm.Mismatch)))
-				}
 			}
 		}
 	}
@@ -113,13 +101,12 @@ func normalizeEgressRule(c *Config, ruleIdx int) error {
 }
 
 // normalizeEgressDenyRule mutates an egress deny rule in place to
-// normalize protocol case and CIDR notation.
+// normalize service name port case and CIDR notation.
 func normalizeEgressDenyRule(c *Config, i int) {
 	rule := &(*c.EgressDeny)[i]
 
 	for j := range rule.ToPorts {
 		for k := range rule.ToPorts[j].Ports {
-			rule.ToPorts[j].Ports[k].Protocol = strings.ToUpper(rule.ToPorts[j].Ports[k].Protocol)
 			if isSvcName(rule.ToPorts[j].Ports[k].Port) {
 				rule.ToPorts[j].Ports[k].Port = strings.ToLower(rule.ToPorts[j].Ports[k].Port)
 			}
@@ -140,8 +127,8 @@ func normalizeEgressDenyRule(c *Config, i int) {
 	normalizeICMPRules(rule.ICMPs)
 }
 
-// normalizeICMPRules normalizes ICMP rule fields in place: family
-// is case-normalized to "IPv4"/"IPv6", and CamelCase type names are
+// normalizeICMPRules normalizes ICMP rule fields in place: empty
+// family defaults to [FamilyIPv4], and CamelCase type names are
 // resolved to numeric strings for downstream consistency.
 func normalizeICMPRules(icmps []ICMPRule) {
 	for i := range icmps {

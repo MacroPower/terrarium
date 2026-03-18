@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"strconv"
-	"strings"
 )
 
 // ICMP address family constants used in [ICMPField.Family] and
@@ -97,14 +96,15 @@ func resolveICMPType(family, typeName string) (uint8, error) {
 	return code, nil
 }
 
-// normalizeICMPFamily converts a case-insensitive family string to the
-// canonical form ([FamilyIPv4] or [FamilyIPv6]). Empty input defaults
-// to [FamilyIPv4].
+// normalizeICMPFamily validates the family string against the canonical
+// values [FamilyIPv4] and [FamilyIPv6]. Empty input defaults to
+// [FamilyIPv4]. Non-canonical casing (e.g. "ipv6") is rejected to
+// align with Cilium's strict CRD enum validation.
 func normalizeICMPFamily(family string) (string, error) {
-	switch strings.ToLower(family) {
-	case "", "ipv4":
+	switch family {
+	case "", FamilyIPv4:
 		return FamilyIPv4, nil
-	case "ipv6":
+	case FamilyIPv6:
 		return FamilyIPv6, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrICMPInvalidFamily, family)

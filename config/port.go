@@ -30,14 +30,11 @@ const CatchAllProxyPort = 15001
 const CatchAllUDPProxyPort = 15002
 
 const (
-	// ProtoTCP is the canonical protocol string for TCP after YAML
-	// normalization (uppercase).
+	// ProtoTCP is the canonical protocol string for TCP.
 	ProtoTCP = "TCP"
-	// ProtoUDP is the canonical protocol string for UDP after YAML
-	// normalization (uppercase).
+	// ProtoUDP is the canonical protocol string for UDP.
 	ProtoUDP = "UDP"
-	// ProtoSCTP is the canonical protocol string for SCTP after YAML
-	// normalization (uppercase).
+	// ProtoSCTP is the canonical protocol string for SCTP.
 	ProtoSCTP = "SCTP"
 	// ProtoAny is the canonical protocol string for ANY (matches
 	// TCP, UDP, and SCTP). Empty protocol is normalized to this value.
@@ -123,11 +120,11 @@ func ResolvePort(ctx context.Context, s string) (uint16, error) {
 	return 0, fmt.Errorf("unknown service name %q", s)
 }
 
-// normalizeProtocol converts a protocol string to the canonical
-// uppercase form. Input is already uppercased by [normalizeEgressRule]
-// so this mainly handles empty strings (mapped to [ProtoAny]).
-// Under Cilium semantics, an omitted or ANY protocol means TCP, UDP,
-// and SCTP (per SupportedProtocols(), which returns all three
+// normalizeProtocol converts a protocol string to the canonical form.
+// Valid input is already uppercase (validated by [validProtocols]), so
+// this mainly handles empty strings (mapped to [ProtoAny]). Under
+// Cilium semantics, an omitted or ANY protocol means TCP, UDP, and
+// SCTP (per SupportedProtocols(), which returns all three
 // unconditionally).
 func normalizeProtocol(proto string) string {
 	switch proto {

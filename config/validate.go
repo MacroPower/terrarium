@@ -1137,7 +1137,7 @@ func expandAndValidateEntities(rule *EgressRule, ruleIdx int) error {
 	}
 
 	for _, entity := range rule.ToEntities {
-		cidrs, ok := entityCIDRs[strings.ToLower(entity)]
+		cidrs, ok := entityCIDRs[entity]
 		if !ok {
 			return fmt.Errorf("%w: rule %d has %q", ErrUnsupportedEntity, ruleIdx, entity)
 		}
@@ -1166,7 +1166,7 @@ func expandAndValidateDenyEntities(rule *EgressDenyRule, ruleIdx int) error {
 	}
 
 	for _, entity := range rule.ToEntities {
-		cidrs, ok := entityCIDRs[strings.ToLower(entity)]
+		cidrs, ok := entityCIDRs[entity]
 		if !ok {
 			return fmt.Errorf("%w: egressDeny rule %d has %q", ErrUnsupportedEntity, ruleIdx, entity)
 		}

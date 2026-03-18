@@ -977,7 +977,7 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"lowercase protocol tcp normalized": {
+		"canonical uppercase TCP accepted": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
@@ -985,13 +985,23 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"mixed case protocol Tcp normalized": {
+		"mixed case protocol Tcp rejected": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "Tcp"}}}},
 				}),
 			},
+			err: config.ErrProtocolInvalid,
+		},
+		"lowercase protocol tcp rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "tcp"}}}},
+				}),
+			},
+			err: config.ErrProtocolInvalid,
 		},
 		"matchName case normalized": {
 			cfg: &config.Config{
@@ -2479,13 +2489,13 @@ egress:
 `,
 			err: config.ErrEntitiesMixedL3,
 		},
-		"world case-insensitive": {
+		"mixed-case World rejected": {
 			yaml: `
 egress:
   - toEntities:
       - World
 `,
-			wantCIDR: []string{"0.0.0.0/0", "::/0"},
+			err: config.ErrUnsupportedEntity,
 		},
 		"toEntities all expanded to dual-stack CIDRs": {
 			yaml: `
@@ -2522,13 +2532,13 @@ egress:
 `,
 			wantCIDR: []string{"::/0"},
 		},
-		"world-ipv4 case-insensitive": {
+		"mixed-case World-IPv4 rejected": {
 			yaml: `
 egress:
   - toEntities:
       - World-IPv4
 `,
-			wantCIDR: []string{"0.0.0.0/0"},
+			err: config.ErrUnsupportedEntity,
 		},
 		"world-ipv6 with toPorts": {
 			yaml: `
@@ -3468,7 +3478,7 @@ egress:
             type: EchoRequest
 `,
 		},
-		"family case-insensitive": {
+		"lowercase family ipv6 rejected": {
 			yaml: `
 egress:
   - icmps:
@@ -3476,6 +3486,7 @@ egress:
           - family: ipv6
             type: "128"
 `,
+			err: config.ErrICMPInvalidFamily,
 		},
 		"empty type rejected": {
 			yaml: `
