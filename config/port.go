@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -41,28 +42,6 @@ const (
 	ProtoAny = "ANY"
 )
 
-// wellKnownPorts maps IANA service names to their standard port
-// numbers. Cilium resolves named ports dynamically from Kubernetes
-// pod specs (containerPort.name); terrarium uses this static map
-// instead since there are no pods to query.
-var wellKnownPorts = map[string]uint16{
-	"domain":     53,
-	"dns":        53,
-	"dns-tcp":    53, // Kubernetes naming convention, not IANA
-	"ftp":        21,
-	"ssh":        22,
-	"smtp":       25,
-	"http":       80,
-	"ntp":        123,
-	"ldap":       389,
-	"https":      443,
-	"ldaps":      636,
-	"mysql":      3306,
-	"postgresql": 5432,
-	"redis":      6379,
-	"syslog":     514,
-}
-
 // isSvcName reports whether s is a valid IANA service name per RFC
 // 6335: 1-15 characters, alphanumeric with non-consecutive hyphens,
 // containing at least one letter. Matches Cilium's pkg/iana.IsSvcName.
@@ -97,11 +76,22 @@ func isSvcName(s string) bool {
 	return hasLetter
 }
 
+// kubernetesPortAliases maps Kubernetes naming conventions to port
+// numbers for service names not present in the IANA registry
+// (/etc/services). These are checked as a fallback when
+// [net.LookupPort] finds no match.
+var kubernetesPortAliases = map[string]uint16{
+	"dns":     53, // IANA name is "domain"
+	"dns-tcp": 53, // Kubernetes convention for DNS over TCP
+}
+
 // ResolvePort converts a port string to a number. It accepts numeric
-// strings ("443") and well-known IANA service names ("https"). Cilium
-// resolves named ports dynamically from Kubernetes pod specs; the
-// terrarium uses a static [wellKnownPorts] map instead. Returns an error
-// for unknown names, invalid syntax, or values outside 0-65535.
+// strings ("443") and IANA service names ("https"). Named ports are
+// resolved via [net.LookupPort] using the system's /etc/services
+// file, which covers the full IANA registry. Names not found in
+// /etc/services fall back to [kubernetesPortAliases] for common
+// Kubernetes conventions. Container images without /etc/services
+// (e.g. scratch) must use numeric ports.
 //
 // Uses base 10 (not base 0) because terrarium reads YAML config
 // files, not Kubernetes API objects, so hex/octal/binary port literals
@@ -116,7 +106,14 @@ func ResolvePort(s string) (uint16, error) {
 		return 0, fmt.Errorf("invalid port name syntax %q", s)
 	}
 
-	if n, ok := wellKnownPorts[strings.ToLower(s)]; ok {
+	lower := strings.ToLower(s)
+
+	port, lookupErr := net.LookupPort("", lower)
+	if lookupErr == nil {
+		return uint16(port), nil
+	}
+
+	if n, ok := kubernetesPortAliases[lower]; ok {
 		return n, nil
 	}
 
