@@ -90,7 +90,7 @@ egress:
           # serverNames requires TCP protocol on all ports.
           - port: "443"
             protocol: TCP
-        # One of toCIDR/toCIDRSet/toFQDNs is required when serverNames is present.
+        # A CIDR or FQDN selector is required when serverNames is present.
         # serverNames on toFQDNs replaces FQDN domains as the Envoy SNI allowlist.
         # L7 HTTP + serverNames is rejected, since terminatingTLS is not supported.
         serverNames:
@@ -190,7 +190,7 @@ IPs, but only allow TLS connections matching the specified SNIs. If another
 PortRule on the same port has no restrictions (plain L4), serverNames is
 skipped and the FQDN domains are used as unrestricted entries.
 
-Terrarium requires toCIDR, toCIDRSet, or toFQDNs when serverNames is present.
+Terrarium requires a CIDR or FQDN selector when serverNames is present.
 Cilium allows serverNames without any L3 selector (the SNI filter applies to
 all destinations). Terrarium needs L3 context for Envoy filter chain routing.
 
