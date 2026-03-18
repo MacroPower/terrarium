@@ -248,10 +248,18 @@ func buildMethodHeaderMatcher(methods []string) []headerMatcher {
 // (e.g. "api.example.com:8443"), and Envoy preserves it in
 // :authority. Cilium's Go extension strips the port before matching,
 // but raw Envoy route matchers see the full value.
+//
+// Leading ^ and trailing $ anchors in the user-provided pattern are
+// stripped before wrapping, since Terrarium adds its own anchors.
+// Without this, a user-provided trailing $ would land before the port
+// suffix and prevent it from matching.
 func buildHostHeaderMatcher(host string) []headerMatcher {
 	if host == "" {
 		return nil
 	}
+
+	host = strings.TrimLeft(host, "^")
+	host = strings.TrimRight(host, "$")
 
 	return []headerMatcher{{
 		Name:        ":authority",

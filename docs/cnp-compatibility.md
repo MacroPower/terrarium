@@ -299,19 +299,6 @@ ports. As a fallback, `dns` and `dns-tcp` are recognized as Kubernetes
 conventions for port 53 even when /etc/services is absent (the IANA name
 is `domain`).
 
-### HTTP host header port handling
-
-Cilium's Go proxy extension strips the port from the HTTP Host header before
-matching the host regex. Terrarium routes HTTP L7 traffic through Envoy,
-where the `:authority` pseudo-header preserves the port (e.g.
-`api.example.com:8443`). To compensate, Terrarium appends an optional port
-suffix `(:[0-9]+)?` to the user-provided host regex before passing it to
-Envoy's route matcher. Both systems match `host: "api\\.example\\.com"`
-against a request to `api.example.com:443`, but through different mechanisms.
-User-provided host patterns should not include trailing `$` anchors, as
-Terrarium wraps the pattern with `^` and `(:[0-9]+)?$` for Envoy's
-RE2 FullMatch semantics.
-
 ## Terrarium Extensions
 
 ### tcpForwards

@@ -11,6 +11,52 @@ import (
 	"go.jacobcolvin.com/terrarium/envoy"
 )
 
+func TestHostHeaderMatcherStripsAnchors(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		host string
+		want string
+	}{
+		"no anchors": {
+			host: `api\.example\.com`,
+			want: `^api\\.example\\.com(:[0-9]+)?$`,
+		},
+		"trailing dollar": {
+			host: `api\.example\.com$`,
+			want: `^api\\.example\\.com(:[0-9]+)?$`,
+		},
+		"leading caret": {
+			host: `^api\.example\.com`,
+			want: `^api\\.example\\.com(:[0-9]+)?$`,
+		},
+		"both anchors": {
+			host: `^api\.example\.com$`,
+			want: `^api\\.example\\.com(:[0-9]+)?$`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rules := []config.ResolvedRule{{
+				Domain: "api.example.com",
+				HTTPRules: []config.ResolvedHTTPRule{{
+					Host: tt.host,
+				}},
+			}}
+
+			listener := envoy.BuildHTTPForwardListener(rules, false, nil)
+
+			out, err := yaml.Marshal(listener)
+			require.NoError(t, err)
+
+			assert.Contains(t, string(out), tt.want)
+		})
+	}
+}
+
 func TestMismatchActions(t *testing.T) {
 	t.Parallel()
 
