@@ -527,6 +527,44 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrCIDRInvalid,
 		},
+		"bare IPv4 in toCIDRSet rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "10.0.0.1"}},
+				}),
+			},
+			err: config.ErrCIDRInvalid,
+		},
+		"bare IPv6 in toCIDRSet rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "fd00::1"}},
+				}),
+			},
+			err: config.ErrCIDRInvalid,
+		},
+		"bare IPv4 in toCIDRSet except rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{
+						CIDR:   "10.0.0.0/8",
+						Except: []string{"10.0.0.1"},
+					}},
+				}),
+			},
+			err: config.ErrCIDRInvalid,
+		},
+		"bare IPv6 in toCIDRSet except rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{
+						CIDR:   "fd00::/64",
+						Except: []string{"fd00::1"},
+					}},
+				}),
+			},
+			err: config.ErrCIDRInvalid,
+		},
 		"valid protocol TCP/UDP/ANY": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{

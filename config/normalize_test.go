@@ -65,7 +65,7 @@ func TestNormalizeCIDRSetEntries(t *testing.T) {
 			ToCIDRSet: []config.CIDRRule{
 				{
 					CIDR:   "10.0.1.5/16",
-					Except: []string{"10.0.1.0/24", "10.0.2.5"},
+					Except: []string{"10.0.1.0/24"},
 				},
 			},
 		}),
@@ -77,5 +77,44 @@ func TestNormalizeCIDRSetEntries(t *testing.T) {
 	rule := cfg.EgressRules()[0].ToCIDRSet[0]
 	assert.Equal(t, "10.0.0.0/16", rule.CIDR)
 	assert.Equal(t, "10.0.1.0/24", rule.Except[0])
-	assert.Equal(t, "10.0.2.5/32", rule.Except[1])
+}
+
+func TestNormalizeCIDRStrictMasksHostBits(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		before string
+		after  string
+	}{
+		"host bits masked": {
+			before: "10.0.1.5/16",
+			after:  "10.0.0.0/16",
+		},
+		"already normalized": {
+			before: "10.0.0.0/16",
+			after:  "10.0.0.0/16",
+		},
+		"IPv6 host bits masked": {
+			before: "fd00::1/64",
+			after:  "fd00::/64",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: tt.before}},
+				}),
+			}
+
+			err := cfg.Validate()
+			require.NoError(t, err)
+
+			got := cfg.EgressRules()[0].ToCIDRSet[0].CIDR
+			assert.Equal(t, tt.after, got)
+		})
+	}
 }

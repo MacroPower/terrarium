@@ -101,9 +101,9 @@ func normalizeEgressRule(c *Config, ruleIdx int) error {
 	}
 
 	for j := range rule.ToCIDRSet {
-		rule.ToCIDRSet[j].CIDR = normalizeCIDR(rule.ToCIDRSet[j].CIDR)
+		rule.ToCIDRSet[j].CIDR = normalizeCIDRStrict(rule.ToCIDRSet[j].CIDR)
 		for k := range rule.ToCIDRSet[j].Except {
-			rule.ToCIDRSet[j].Except[k] = normalizeCIDR(rule.ToCIDRSet[j].Except[k])
+			rule.ToCIDRSet[j].Except[k] = normalizeCIDRStrict(rule.ToCIDRSet[j].Except[k])
 		}
 	}
 
@@ -131,9 +131,9 @@ func normalizeEgressDenyRule(c *Config, i int) {
 	}
 
 	for j := range rule.ToCIDRSet {
-		rule.ToCIDRSet[j].CIDR = normalizeCIDR(rule.ToCIDRSet[j].CIDR)
+		rule.ToCIDRSet[j].CIDR = normalizeCIDRStrict(rule.ToCIDRSet[j].CIDR)
 		for k := range rule.ToCIDRSet[j].Except {
-			rule.ToCIDRSet[j].Except[k] = normalizeCIDR(rule.ToCIDRSet[j].Except[k])
+			rule.ToCIDRSet[j].Except[k] = normalizeCIDRStrict(rule.ToCIDRSet[j].Except[k])
 		}
 	}
 
@@ -185,6 +185,19 @@ func normalizeCIDR(s string) string {
 	}
 
 	return s + "/32"
+}
+
+// normalizeCIDRStrict normalizes valid CIDR prefixes by masking host
+// bits, but returns bare IP addresses unchanged. This allows downstream
+// validation to reject bare IPs in contexts that require CIDR notation
+// (e.g. toCIDRSet), matching Cilium's CIDRRule.sanitize() behavior.
+func normalizeCIDRStrict(s string) string {
+	_, network, err := net.ParseCIDR(s)
+	if err == nil {
+		return network.String()
+	}
+
+	return s
 }
 
 // cidrIsIPv6 reports whether a CIDR string represents an IPv6 address,
