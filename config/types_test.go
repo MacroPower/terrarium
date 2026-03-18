@@ -28,8 +28,8 @@ func TestEmptyRuleWithFQDNSemantics(t *testing.T) {
 
 	assert.False(t, cfg.IsEgressUnrestricted(), "empty rule triggers default-deny, not unrestricted")
 	assert.False(t, cfg.IsEgressBlocked(), "FQDN sibling prevents blocked state")
-	assert.Equal(t, []int{443}, cfg.ResolvePorts(), "FQDN rule contributes ports")
-	assert.Equal(t, []string{"api.example.com"}, cfg.ResolveDomains(), "FQDN rule contributes domains")
+	assert.Equal(t, []int{443}, cfg.ResolvePorts(t.Context()), "FQDN rule contributes ports")
+	assert.Equal(t, []string{"api.example.com"}, cfg.ResolveDomains(t.Context()), "FQDN rule contributes domains")
 }
 
 func TestIsDefaultDenyEnabled(t *testing.T) {

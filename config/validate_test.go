@@ -2014,7 +2014,7 @@ func TestValidate(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			err := tt.cfg.Validate()
+			err := tt.cfg.Validate(t.Context())
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 				return
@@ -2189,7 +2189,7 @@ func TestNamedPortValidation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			err := tt.cfg.Validate()
+			err := tt.cfg.Validate(t.Context())
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 			} else {

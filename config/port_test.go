@@ -58,7 +58,7 @@ func TestResolvePort(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := config.ResolvePort(tt.input)
+			got, err := config.ResolvePort(t.Context(), tt.input)
 			if tt.err {
 				require.Error(t, err)
 			} else {
@@ -81,8 +81,8 @@ func TestNamedPortResolution(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "https"}}}},
 			}),
 		}
-		require.NoError(t, cfg.Validate())
-		assert.Equal(t, []int{443}, cfg.ResolvePorts())
+		require.NoError(t, cfg.Validate(t.Context()))
+		assert.Equal(t, []int{443}, cfg.ResolvePorts(t.Context()))
 	})
 
 	t.Run("ResolveOpenPorts with named port", func(t *testing.T) {
@@ -93,8 +93,8 @@ func TestNamedPortResolution(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "http"}}}},
 			}),
 		}
-		require.NoError(t, cfg.Validate())
-		assert.Equal(t, []int{80}, cfg.ResolveOpenPorts())
+		require.NoError(t, cfg.Validate(t.Context()))
+		assert.Equal(t, []int{80}, cfg.ResolveOpenPorts(t.Context()))
 	})
 
 	t.Run("ResolveRulesForPort with named port", func(t *testing.T) {
@@ -106,9 +106,9 @@ func TestNamedPortResolution(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "https"}}}},
 			}),
 		}
-		require.NoError(t, cfg.Validate())
+		require.NoError(t, cfg.Validate(t.Context()))
 
-		rules := cfg.ResolveRulesForPort(443)
+		rules := cfg.ResolveRulesForPort(t.Context(), 443)
 		require.Len(t, rules, 1)
 		assert.Equal(t, "example.com", rules[0].Domain)
 	})
@@ -122,7 +122,7 @@ func TestNamedPortResolution(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "HTTPS"}}}},
 			}),
 		}
-		require.NoError(t, cfg.Validate())
-		assert.Equal(t, []int{443}, cfg.ResolvePorts())
+		require.NoError(t, cfg.Validate(t.Context()))
+		assert.Equal(t, []int{443}, cfg.ResolvePorts(t.Context()))
 	})
 }

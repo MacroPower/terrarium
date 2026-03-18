@@ -63,7 +63,7 @@ func TestResolveDomains(t *testing.T) {
 		),
 	}
 
-	domains := cfg.ResolveDomains()
+	domains := cfg.ResolveDomains(t.Context())
 
 	// Github.com appears in both rules but should be deduplicated.
 	count := 0
@@ -377,7 +377,7 @@ func TestResolveRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			rules := tt.cfg.ResolveRules()
+			rules := tt.cfg.ResolveRules(t.Context())
 			if tt.wantNone {
 				assert.Empty(t, rules)
 			} else {
@@ -796,7 +796,7 @@ func TestResolveRulesForPort(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			rules := tt.cfg.ResolveRulesForPort(tt.port)
+			rules := tt.cfg.ResolveRulesForPort(t.Context(), tt.port)
 			if tt.wantNone {
 				assert.Empty(t, rules)
 			} else {
@@ -865,7 +865,7 @@ func TestResolveOpenPorts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got := tt.cfg.ResolveOpenPorts()
+			got := tt.cfg.ResolveOpenPorts(t.Context())
 			if tt.want == nil {
 				assert.Empty(t, got)
 			} else {
@@ -1005,7 +1005,7 @@ func TestResolveOpenPortRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got := tt.cfg.ResolveOpenPortRules()
+			got := tt.cfg.ResolveOpenPortRules(t.Context())
 			if tt.want == nil {
 				assert.Empty(t, got)
 			} else {
@@ -1053,7 +1053,7 @@ func TestHasUnrestrictedOpenPorts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, tt.cfg.HasUnrestrictedOpenPorts())
+			assert.Equal(t, tt.want, tt.cfg.HasUnrestrictedOpenPorts(t.Context()))
 		})
 	}
 }
@@ -1132,7 +1132,7 @@ func TestResolveFQDNNonTCPPorts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got := tt.cfg.ResolveFQDNNonTCPPorts()
+			got := tt.cfg.ResolveFQDNNonTCPPorts(t.Context())
 			if tt.want == nil {
 				assert.Empty(t, got)
 			} else {
@@ -1350,7 +1350,7 @@ func TestResolvePorts(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, tt.cfg.ResolvePorts())
+			assert.Equal(t, tt.want, tt.cfg.ResolvePorts(t.Context()))
 		})
 	}
 }
@@ -1391,7 +1391,7 @@ func TestExtraPorts(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, tt.cfg.ExtraPorts())
+			assert.Equal(t, tt.want, tt.cfg.ExtraPorts(t.Context()))
 		})
 	}
 }
@@ -1665,10 +1665,10 @@ func TestResolveCIDRRules(t *testing.T) {
 			t.Parallel()
 
 			if tt.validate {
-				require.NoError(t, tt.cfg.Validate())
+				require.NoError(t, tt.cfg.Validate(t.Context()))
 			}
 
-			ipv4, ipv6 := tt.cfg.ResolveCIDRRules()
+			ipv4, ipv6 := tt.cfg.ResolveCIDRRules(t.Context())
 			assert.Equal(t, tt.wantIPv4, ipv4)
 			assert.Equal(t, tt.wantIPv6, ipv6)
 		})
@@ -1891,7 +1891,7 @@ func TestResolveCIDRRulesWithServerNames(t *testing.T) {
 		}),
 	}
 
-	v4, _ := cfg.ResolveCIDRRules()
+	v4, _ := cfg.ResolveCIDRRules(t.Context())
 	require.Len(t, v4, 1)
 	assert.Equal(t, []string{"api.internal.example.com"}, v4[0].ServerNames)
 }
@@ -1909,14 +1909,14 @@ func TestResolveServerNameRulesForPort(t *testing.T) {
 		}),
 	}
 
-	rules := cfg.ResolveServerNameRulesForPort(443)
+	rules := cfg.ResolveServerNameRulesForPort(t.Context(), 443)
 	require.Len(t, rules, 2)
 	assert.Equal(t, "api.internal.example.com", rules[0].Domain)
 	assert.Equal(t, "db.internal.example.com", rules[1].Domain)
 	assert.False(t, rules[0].IsRestricted())
 
 	// Port 80 should not match.
-	rules80 := cfg.ResolveServerNameRulesForPort(80)
+	rules80 := cfg.ResolveServerNameRulesForPort(t.Context(), 80)
 	assert.Empty(t, rules80)
 }
 
@@ -1978,7 +1978,7 @@ func TestResolveDenyCIDRRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			v4, v6 := tt.cfg.ResolveDenyCIDRRules()
+			v4, v6 := tt.cfg.ResolveDenyCIDRRules(t.Context())
 			assert.Equal(t, tt.wantV4, v4)
 			assert.Equal(t, tt.wantV6, v6)
 		})
@@ -2045,7 +2045,7 @@ func TestResolveDenyPortOnlyRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got := tt.cfg.ResolveDenyPortOnlyRules()
+			got := tt.cfg.ResolveDenyPortOnlyRules(t.Context())
 			if tt.want == nil {
 				assert.Empty(t, got)
 			} else {
@@ -2346,7 +2346,7 @@ func TestResolveCatchAllFQDNRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			require.NoError(t, tt.cfg.Validate())
+			require.NoError(t, tt.cfg.Validate(t.Context()))
 
 			got := tt.cfg.ResolveCatchAllFQDNRules()
 			assert.Equal(t, tt.want, got)
@@ -2367,7 +2367,7 @@ func TestCompileCatchAllFQDNPatterns(t *testing.T) {
 			},
 		),
 	}
-	require.NoError(t, cfg.Validate())
+	require.NoError(t, cfg.Validate(t.Context()))
 
 	patterns := cfg.CompileCatchAllFQDNPatterns()
 	require.Len(t, patterns, 2)
@@ -2454,7 +2454,7 @@ func TestResolveICMPFQDNRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			require.NoError(t, tt.cfg.Validate())
+			require.NoError(t, tt.cfg.Validate(t.Context()))
 
 			got := tt.cfg.ResolveICMPFQDNRules()
 			assert.Equal(t, tt.want, got)
@@ -2480,7 +2480,7 @@ func TestCompileICMPFQDNPatterns(t *testing.T) {
 			},
 		),
 	}
-	require.NoError(t, cfg.Validate())
+	require.NoError(t, cfg.Validate(t.Context()))
 
 	patterns := cfg.CompileICMPFQDNPatterns()
 	require.Len(t, patterns, 2)
@@ -2597,7 +2597,7 @@ func TestResolveICMPRules_FQDNFields(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			require.NoError(t, tt.cfg.Validate())
+			require.NoError(t, tt.cfg.Validate(t.Context()))
 
 			got := tt.cfg.ResolveICMPRules()
 			assert.Equal(t, tt.want, got)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"regexp"
@@ -144,7 +145,7 @@ func (c *Config) TCPForwardHosts() []string {
 // network filter (see buildWildcardRBACFilter) is prepended to
 // wildcard filter chains to enforce the correct depth (single-label
 // for *, multi-label for **), matching CiliumNetworkPolicy semantics.
-func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
+func (c *Config) ResolveRulesForPort(ctx context.Context, port int) []ResolvedRule {
 	type merged struct {
 		httpRules    []ResolvedHTTPRule
 		unrestricted bool
@@ -168,7 +169,7 @@ func (c *Config) ResolveRulesForPort(port int) []ResolvedRule {
 			continue
 		}
 
-		matched, hasPlainL4, httpRules, serverNames := matchRuleForPort(egressRules[i], port)
+		matched, hasPlainL4, httpRules, serverNames := matchRuleForPort(ctx, egressRules[i], port)
 		if !matched {
 			continue
 		}
@@ -289,7 +290,7 @@ func fqdnDomains(fqdns []FQDNSelector) []string {
 // Cilium semantics: if ANY matching PortRule for this port has no L7
 // rules and no serverNames (plain L4), it nullifies sibling L7 rules
 // on the same port within this EgressRule.
-func matchRuleForPort(rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule, []string) {
+func matchRuleForPort(ctx context.Context, rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule, []string) {
 	if len(rule.ToPorts) == 0 {
 		// No toPorts: domain allowed on all ports, no L7
 		// restrictions from this rule.
@@ -304,7 +305,7 @@ func matchRuleForPort(rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule
 	)
 
 	for _, pr := range rule.ToPorts {
-		if !portRuleMatchesPort(pr, port) {
+		if !portRuleMatchesPort(ctx, pr, port) {
 			continue
 		}
 
@@ -315,7 +316,7 @@ func matchRuleForPort(rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule
 			// not plain L4. Collect serverNames separately.
 			if len(pr.ServerNames) > 0 {
 				serverNames = append(serverNames, pr.ServerNames...)
-			} else if portRuleHasTCPPort(pr, port) {
+			} else if portRuleHasTCPPort(ctx, pr, port) {
 				// Plain L4 rule on this port: nullifies
 				// all sibling L7 for this EgressRule.
 				// Only TCP-compatible entries can nullify
@@ -338,13 +339,13 @@ func matchRuleForPort(rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule
 // port number. An empty Ports list matches all ports (Cilium semantics
 // for L7-only toPorts). When EndPort is set, the rule matches any port
 // in the range [Port, EndPort] inclusive.
-func portRuleMatchesPort(pr PortRule, port int) bool {
+func portRuleMatchesPort(ctx context.Context, pr PortRule, port int) bool {
 	if len(pr.Ports) == 0 {
 		return true
 	}
 
 	for _, p := range pr.Ports {
-		resolved, err := ResolvePort(p.Port)
+		resolved, err := ResolvePort(ctx, p.Port)
 		if err != nil {
 			continue
 		}
@@ -374,7 +375,7 @@ func portRuleMatchesPort(pr PortRule, port int) bool {
 // This prevents non-TCP entries (UDP, SCTP) from nullifying TCP L7
 // rules during intra-rule L7 resolution, matching Cilium's per-(port,
 // protocol) L4Filter semantics.
-func portRuleHasTCPPort(pr PortRule, port int) bool {
+func portRuleHasTCPPort(ctx context.Context, pr PortRule, port int) bool {
 	if len(pr.Ports) == 0 {
 		// No ports list means L7-only toPorts entry, which is
 		// implicitly TCP (HTTP inspection requires TCP).
@@ -387,7 +388,7 @@ func portRuleHasTCPPort(pr PortRule, port int) bool {
 			continue // UDP, SCTP -- skip
 		}
 
-		resolved, err := ResolvePort(p.Port)
+		resolved, err := ResolvePort(ctx, p.Port)
 		if err != nil {
 			continue
 		}
@@ -415,8 +416,8 @@ func portRuleHasTCPPort(pr PortRule, port int) bool {
 // [Config.ResolveRulesForPort] for each port from
 // [Config.ResolvePorts] and unions the results. When a domain
 // appears unrestricted on any port, the global result is unrestricted.
-func (c *Config) ResolveRules() []ResolvedRule {
-	ports := c.ResolvePorts()
+func (c *Config) ResolveRules(ctx context.Context) []ResolvedRule {
+	ports := c.ResolvePorts(ctx)
 
 	type merged struct {
 		httpRules    map[string]ResolvedHTTPRule
@@ -428,7 +429,7 @@ func (c *Config) ResolveRules() []ResolvedRule {
 	var order []string
 
 	for _, port := range ports {
-		portRules := c.ResolveRulesForPort(port)
+		portRules := c.ResolveRulesForPort(ctx, port)
 
 		for _, r := range portRules {
 			m, exists := byDomain[r.Domain]
@@ -474,8 +475,8 @@ func (c *Config) ResolveRules() []ResolvedRule {
 
 // ResolveDomains resolves all egress rules into a flat, deduplicated,
 // sorted domain list.
-func (c *Config) ResolveDomains() []string {
-	rules := c.ResolveRules()
+func (c *Config) ResolveDomains(ctx context.Context) []string {
+	rules := c.ResolveRules(ctx)
 
 	domains := make([]string, len(rules))
 	for i, r := range rules {
@@ -499,7 +500,7 @@ func (c *Config) ResolveDomains() []string {
 //
 // Non-TCP ports from FQDN rules are handled separately by
 // [Config.ResolveFQDNNonTCPPorts] and enforced via ipset-backed iptables rules.
-func (c *Config) ResolvePorts() []int {
+func (c *Config) ResolvePorts(ctx context.Context) []int {
 	if c.IsEgressUnrestricted() {
 		return nil
 	}
@@ -550,7 +551,7 @@ func (c *Config) ResolvePorts() []int {
 					continue
 				}
 
-				resolved, err := ResolvePort(p.Port)
+				resolved, err := ResolvePort(ctx, p.Port)
 				if err == nil && resolved > 0 {
 					seen[int(resolved)] = true
 
@@ -582,9 +583,9 @@ func (c *Config) ResolvePorts() []int {
 
 // ExtraPorts returns resolved ports that are not in DefaultPorts
 // (80 and 443), since those have dedicated redirect rules.
-func (c *Config) ExtraPorts() []int {
+func (c *Config) ExtraPorts(ctx context.Context) []int {
 	var extra []int
-	for _, p := range c.ResolvePorts() {
+	for _, p := range c.ResolvePorts(ctx) {
 		if p != 80 && p != 443 {
 			extra = append(extra, p)
 		}
@@ -601,7 +602,7 @@ func (c *Config) ExtraPorts() []int {
 // unrestricted ACCEPT for the user UID in iptables, which subsumes
 // CIDR except DROPs and CIDR ACCEPTs from other rules (Cilium OR
 // semantics across rules).
-func (c *Config) HasUnrestrictedOpenPorts() bool {
+func (c *Config) HasUnrestrictedOpenPorts(ctx context.Context) bool {
 	eRules := c.EgressRules()
 	for ri := range eRules {
 		if len(eRules[ri].ToFQDNs) > 0 || len(eRules[ri].ToCIDR) > 0 || len(eRules[ri].ToCIDRSet) > 0 {
@@ -614,7 +615,7 @@ func (c *Config) HasUnrestrictedOpenPorts() bool {
 			}
 
 			for _, p := range pr.Ports {
-				n, err := ResolvePort(p.Port)
+				n, err := ResolvePort(ctx, p.Port)
 				if err != nil || n == 0 {
 					return true
 				}
@@ -629,7 +630,7 @@ func (c *Config) HasUnrestrictedOpenPorts() bool {
 // that have toPorts but neither toFQDNs nor toCIDRSet. These ports
 // allow all destinations (passthrough without domain filtering). ANY
 // protocol is expanded into separate TCP, UDP, and SCTP entries.
-func (c *Config) ResolveOpenPortRules() []ResolvedOpenPort {
+func (c *Config) ResolveOpenPortRules(ctx context.Context) []ResolvedOpenPort {
 	seen := make(map[string]bool)
 
 	var result []ResolvedOpenPort
@@ -642,7 +643,7 @@ func (c *Config) ResolveOpenPortRules() []ResolvedOpenPort {
 
 		for _, pr := range openRules[ri].ToPorts {
 			for _, p := range pr.Ports {
-				resolved, err := ResolvePort(p.Port)
+				resolved, err := ResolvePort(ctx, p.Port)
 				if err != nil || resolved == 0 {
 					continue
 				}
@@ -684,8 +685,8 @@ func (c *Config) ResolveOpenPortRules() []ResolvedOpenPort {
 // ResolveOpenPorts returns sorted, deduplicated port numbers from open
 // port rules. This is a convenience wrapper over [Config.ResolveOpenPortRules]
 // used by Envoy listener creation where only port numbers matter.
-func (c *Config) ResolveOpenPorts() []int {
-	openRules := c.ResolveOpenPortRules()
+func (c *Config) ResolveOpenPorts(ctx context.Context) []int {
+	openRules := c.ResolveOpenPortRules(ctx)
 	seen := make(map[int]bool, len(openRules))
 
 	var result []int
@@ -725,7 +726,7 @@ func ruleHasNonTCPPorts(rule EgressRule) bool {
 // expanded into UDP and SCTP entries (TCP is handled by
 // [Config.ResolvePorts] + Envoy). Returns nil when egress is
 // unrestricted, blocked, or has no FQDN rules with non-TCP ports.
-func (c *Config) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
+func (c *Config) ResolveFQDNNonTCPPorts(ctx context.Context) []FQDNRulePorts {
 	if c.IsEgressUnrestricted() {
 		return nil
 	}
@@ -750,7 +751,7 @@ func (c *Config) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
 
 		for _, pr := range rules[ri].ToPorts {
 			for _, p := range pr.Ports {
-				resolved, err := ResolvePort(p.Port)
+				resolved, err := ResolvePort(ctx, p.Port)
 				if err != nil || resolved == 0 {
 					continue
 				}
@@ -806,8 +807,8 @@ func (c *Config) ResolveFQDNNonTCPPorts() []FQDNRulePorts {
 
 // HasFQDNNonTCPPorts reports whether the config contains any FQDN
 // rules with non-TCP ports that need ipset-backed iptables rules.
-func (c *Config) HasFQDNNonTCPPorts() bool {
-	return len(c.ResolveFQDNNonTCPPorts()) > 0
+func (c *Config) HasFQDNNonTCPPorts(ctx context.Context) bool {
+	return len(c.ResolveFQDNNonTCPPorts(ctx)) > 0
 }
 
 // CompileFQDNPatterns returns compiled regexes for all [FQDNSelector]
@@ -917,7 +918,7 @@ func isBareWildcard(pattern string) bool {
 // rules are direct L3 allow selectors that bypass the Envoy proxy. If
 // the parent rule has toPorts, the CIDR is port-scoped (L3 AND L4);
 // otherwise the CIDR allows any port.
-func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
+func (c *Config) ResolveCIDRRules(ctx context.Context) ([]ResolvedCIDR, []ResolvedCIDR) {
 	var ipv4, ipv6 []ResolvedCIDR
 
 	ruleIdx := 0
@@ -928,12 +929,12 @@ func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 			continue
 		}
 
-		ports := resolvePortsFromRule(cidrRules[ri])
+		ports := resolvePortsFromRule(ctx, cidrRules[ri])
 		serverNames := collectServerNames(cidrRules[ri])
 
 		// Collect ports that have L7 rules so the firewall can
 		// redirect those to Envoy instead of issuing RETURN.
-		l7Ports := resolveL7Ports(cidrRules[ri])
+		l7Ports := resolveL7Ports(ctx, cidrRules[ri])
 
 		// Combine toCIDR and toCIDRSet into a unified list.
 		allCIDRs := make([]CIDRRule, 0, len(cidrRules[ri].ToCIDR)+len(cidrRules[ri].ToCIDRSet))
@@ -970,7 +971,7 @@ func (c *Config) ResolveCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 // for them. ServerNames on CIDR rules are always passthrough (no L7
 // HTTP inspection). FQDN rules with serverNames are handled by
 // [Config.ResolveRulesForPort] instead.
-func (c *Config) ResolveServerNameRulesForPort(port int) []ResolvedRule {
+func (c *Config) ResolveServerNameRulesForPort(ctx context.Context, port int) []ResolvedRule {
 	seen := make(map[string]bool)
 
 	var result []ResolvedRule
@@ -986,7 +987,7 @@ func (c *Config) ResolveServerNameRulesForPort(port int) []ResolvedRule {
 				continue
 			}
 
-			if !portRuleMatchesPort(PortRule{Ports: pr.Ports}, port) {
+			if !portRuleMatchesPort(ctx, PortRule{Ports: pr.Ports}, port) {
 				continue
 			}
 
@@ -1008,7 +1009,7 @@ func (c *Config) ResolveServerNameRulesForPort(port int) []ResolvedRule {
 
 // resolveL7Ports returns the set of port numbers from toPorts entries
 // that have L7 HTTP rules. Returns nil when no L7 rules are present.
-func resolveL7Ports(rule EgressRule) map[int]bool {
+func resolveL7Ports(ctx context.Context, rule EgressRule) map[int]bool {
 	var result map[int]bool
 
 	for _, pr := range rule.ToPorts {
@@ -1017,7 +1018,7 @@ func resolveL7Ports(rule EgressRule) map[int]bool {
 		}
 
 		for _, p := range pr.Ports {
-			resolved, err := ResolvePort(p.Port)
+			resolved, err := ResolvePort(ctx, p.Port)
 			if err != nil || resolved == 0 {
 				continue
 			}
@@ -1074,8 +1075,8 @@ func collectServerNames(rule EgressRule) []string {
 // port-protocol pairs from a rule's toPorts. Returns nil when the rule
 // has no toPorts or when any PortRule has an empty Ports list (meaning
 // all ports).
-func resolvePortsFromRule(rule EgressRule) []ResolvedPortProto {
-	return resolvePortsFromPortRules(rule.ToPorts)
+func resolvePortsFromRule(ctx context.Context, rule EgressRule) []ResolvedPortProto {
+	return resolvePortsFromPortRules(ctx, rule.ToPorts)
 }
 
 // resolvePortsFromPortRules extracts a sorted, deduplicated list of
@@ -1083,7 +1084,7 @@ func resolvePortsFromRule(rule EgressRule) []ResolvedPortProto {
 // nil when the list is empty or when any PortRule has an empty Ports
 // list (meaning all ports). Used by both allow and deny rule
 // resolution.
-func resolvePortsFromPortRules(portRules []PortRule) []ResolvedPortProto {
+func resolvePortsFromPortRules(ctx context.Context, portRules []PortRule) []ResolvedPortProto {
 	if len(portRules) == 0 {
 		return nil
 	}
@@ -1099,7 +1100,7 @@ func resolvePortsFromPortRules(portRules []PortRule) []ResolvedPortProto {
 		}
 
 		for _, p := range pr.Ports {
-			resolved, err := ResolvePort(p.Port)
+			resolved, err := ResolvePort(ctx, p.Port)
 			if err != nil {
 				continue
 			}
@@ -1196,7 +1197,7 @@ func classifyCIDR(cidr CIDRRule, ports []ResolvedPortProto, ruleIndex int) (*Res
 // egress deny rules, preserving port associations, and separates them
 // by address family. Same shape as [Config.ResolveCIDRRules] but for
 // deny rules.
-func (c *Config) ResolveDenyCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
+func (c *Config) ResolveDenyCIDRRules(ctx context.Context) ([]ResolvedCIDR, []ResolvedCIDR) {
 	var ipv4, ipv6 []ResolvedCIDR
 
 	denyRules := c.EgressDenyRules()
@@ -1205,7 +1206,7 @@ func (c *Config) ResolveDenyCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 			continue
 		}
 
-		ports := resolvePortsFromDenyRule(denyRules[ri])
+		ports := resolvePortsFromDenyRule(ctx, denyRules[ri])
 
 		allCIDRs := make([]CIDRRule, 0, len(denyRules[ri].ToCIDR)+len(denyRules[ri].ToCIDRSet))
 		for _, cidr := range denyRules[ri].ToCIDR {
@@ -1231,8 +1232,8 @@ func (c *Config) ResolveDenyCIDRRules() ([]ResolvedCIDR, []ResolvedCIDR) {
 
 // resolvePortsFromDenyRule extracts resolved port-protocol pairs from
 // a deny rule's toPorts. Delegates to [resolvePortsFromPortRules].
-func resolvePortsFromDenyRule(rule EgressDenyRule) []ResolvedPortProto {
-	return resolvePortsFromPortRules(rule.ToPorts)
+func resolvePortsFromDenyRule(ctx context.Context, rule EgressDenyRule) []ResolvedPortProto {
+	return resolvePortsFromPortRules(ctx, rule.ToPorts)
 }
 
 // ResolveICMPRules flattens all ICMPRule entries across egress allow
@@ -1339,7 +1340,7 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 // means "deny traffic to any destination on these ports." These are
 // separate from [Config.ResolveDenyCIDRRules], which handles deny
 // rules with CIDR selectors.
-func (c *Config) ResolveDenyPortOnlyRules() []ResolvedPortProto {
+func (c *Config) ResolveDenyPortOnlyRules(ctx context.Context) []ResolvedPortProto {
 	denyRules := c.EgressDenyRules()
 
 	seen := make(map[string]bool)
@@ -1351,7 +1352,7 @@ func (c *Config) ResolveDenyPortOnlyRules() []ResolvedPortProto {
 			continue
 		}
 
-		ports := resolvePortsFromDenyRule(denyRules[ri])
+		ports := resolvePortsFromDenyRule(ctx, denyRules[ri])
 		if ports == nil {
 			// nil means wildcard (all ports). Emit a single
 			// zero-port entry so the firewall can generate a

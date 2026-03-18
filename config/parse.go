@@ -70,7 +70,7 @@ func ParseConfig(ctx context.Context, data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	err = cfg.Validate()
+	err = cfg.Validate(ctx)
 	if err != nil {
 		return nil, err
 	}

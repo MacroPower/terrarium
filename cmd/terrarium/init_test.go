@@ -125,7 +125,7 @@ func TestFirstListenerPort(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, firstListenerPort(tt.cfg))
+			assert.Equal(t, tt.want, firstListenerPort(t.Context(), tt.cfg))
 		})
 	}
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"regexp"
@@ -62,7 +63,7 @@ var (
 )
 
 // Validate checks that the config is internally consistent.
-func (c *Config) Validate() error {
+func (c *Config) Validate(ctx context.Context) error {
 	for i := range c.EgressRules() {
 		// Expand supported entities (e.g. "world" -> dual-stack
 		// CIDRs) before rejecting unsupported selectors.
@@ -100,7 +101,7 @@ func (c *Config) Validate() error {
 
 		hasFQDNs := len(rule.ToFQDNs) > 0
 
-		err = validateFQDNConstraints(rule, i, hasFQDNs)
+		err = validateFQDNConstraints(ctx, rule, i, hasFQDNs)
 		if err != nil {
 			return err
 		}
@@ -114,7 +115,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%w: rule %d", ErrCIDRAndCIDRSetMixed, i)
 		}
 
-		err = validatePorts(rule, i)
+		err = validatePorts(ctx, rule, i)
 		if err != nil {
 			return err
 		}
@@ -131,7 +132,7 @@ func (c *Config) Validate() error {
 			return err
 		}
 
-		err = validateDNSRules(rule, i)
+		err = validateDNSRules(ctx, rule, i)
 		if err != nil {
 			return err
 		}
@@ -148,7 +149,7 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate egressDeny rules.
-	err := c.validateEgressDenyRules()
+	err := c.validateEgressDenyRules(ctx)
 	if err != nil {
 		return err
 	}
@@ -159,7 +160,7 @@ func (c *Config) Validate() error {
 		return ErrTCPForwardRequiresEgress
 	}
 
-	resolvedPorts := c.ResolvePorts()
+	resolvedPorts := c.ResolvePorts(ctx)
 
 	portsSet := make(map[int]bool, len(resolvedPorts))
 	for _, p := range resolvedPorts {
@@ -503,7 +504,7 @@ func validateFQDNSelectors(rule EgressRule, ruleIdx int) error {
 // enforcement via ipsets, matching Cilium's default behavior).
 // FQDN rules with L7 HTTP rules still require explicit ports because
 // Envoy needs per-port listeners for HTTP inspection.
-func validateFQDNConstraints(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
+func validateFQDNConstraints(ctx context.Context, rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 	if !hasFQDNs {
 		return nil
 	}
@@ -550,7 +551,7 @@ func validateFQDNConstraints(rule EgressRule, ruleIdx int, hasFQDNs bool) error 
 			// Limit FQDN port ranges to prevent creating thousands
 			// of Envoy listeners and exhausting proxy port space.
 			if p.EndPort > 0 {
-				n, err := ResolvePort(p.Port)
+				n, err := ResolvePort(ctx, p.Port)
 				if err == nil && p.EndPort-int(n) > maxFQDNEndPortRange {
 					return fmt.Errorf(
 						"%w: rule %d port %s endPort %d (range %d)",
@@ -567,7 +568,7 @@ func validateFQDNConstraints(rule EgressRule, ruleIdx int, hasFQDNs bool) error 
 
 // validatePorts checks that each port entry has a valid port number,
 // protocol, and endPort configuration.
-func validatePorts(rule EgressRule, ruleIdx int) error {
+func validatePorts(ctx context.Context, rule EgressRule, ruleIdx int) error {
 	for _, pr := range rule.ToPorts {
 		err := validateUnsupportedPortRuleFeatures(pr, ruleIdx)
 		if err != nil {
@@ -596,7 +597,7 @@ func validatePorts(rule EgressRule, ruleIdx int) error {
 				return fmt.Errorf("%w: rule %d", ErrPortEmpty, ruleIdx)
 			}
 
-			n, err := ResolvePort(p.Port)
+			n, err := ResolvePort(ctx, p.Port)
 			if err != nil {
 				return fmt.Errorf("%w: rule %d port %q", ErrPortInvalid, ruleIdx, p.Port)
 			}
@@ -871,14 +872,14 @@ func familyLabel(isV6 bool) string {
 // of matchName or matchPattern, using the same character and wildcard
 // constraints as [FQDNSelector]. When both are set they are evaluated
 // with OR semantics.
-func validateDNSRules(rule EgressRule, ruleIdx int) error {
+func validateDNSRules(ctx context.Context, rule EgressRule, ruleIdx int) error {
 	for _, pr := range rule.ToPorts {
 		if pr.Rules == nil || len(pr.Rules.DNS) == 0 {
 			continue
 		}
 
 		// DNS rules must be on a toPorts entry that includes port 53.
-		if !portRuleIncludesPort53(pr) {
+		if !portRuleIncludesPort53(ctx, pr) {
 			return fmt.Errorf("%w: rule %d", ErrDNSRuleRequiresPort53, ruleIdx)
 		}
 
@@ -889,7 +890,7 @@ func validateDNSRules(rule EgressRule, ruleIdx int) error {
 				continue
 			}
 
-			n, err := ResolvePort(p.Port)
+			n, err := ResolvePort(ctx, p.Port)
 			if err != nil {
 				continue
 			}
@@ -1015,7 +1016,7 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 // well-formed: valid CIDRs, valid ports, and no L7 rules. Empty deny
 // rules (no selectors) are expanded to deny-all (0.0.0.0/0 + ::/0),
 // matching Cilium's acceptance of empty [EgressDenyRule].
-func (c *Config) validateEgressDenyRules() error {
+func (c *Config) validateEgressDenyRules(ctx context.Context) error {
 	denyRules := c.EgressDenyRules()
 	for i := range denyRules {
 		// Reject unsupported Cilium selectors before any other
@@ -1084,7 +1085,7 @@ func (c *Config) validateEgressDenyRules() error {
 					return fmt.Errorf("%w: egressDeny rule %d", ErrPortEmpty, i)
 				}
 
-				n, err := ResolvePort(p.Port)
+				n, err := ResolvePort(ctx, p.Port)
 				if err != nil {
 					return fmt.Errorf(
 						"%w: egressDeny rule %d port %q",
@@ -1205,9 +1206,9 @@ func isL7IncompatibleWildcard(pattern string) bool {
 // portRuleIncludesPort53 reports whether a [PortRule] includes port 53.
 // An empty Ports list does not match; Cilium requires an explicit port
 // 53 entry for DNS rules.
-func portRuleIncludesPort53(pr PortRule) bool {
+func portRuleIncludesPort53(ctx context.Context, pr PortRule) bool {
 	for _, p := range pr.Ports {
-		resolved, err := ResolvePort(p.Port)
+		resolved, err := ResolvePort(ctx, p.Port)
 		if err != nil {
 			continue
 		}

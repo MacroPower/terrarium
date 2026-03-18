@@ -40,7 +40,7 @@ func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) e
 	case cfg.IsEgressBlocked():
 		addBlockedRules(conn, table, cfg, uids)
 	default:
-		err := addFilterRules(conn, table, cfg, uids)
+		err := addFilterRules(ctx, conn, table, cfg, uids)
 		if err != nil {
 			return err
 		}
@@ -182,20 +182,20 @@ type setRef struct {
 	set4, set6 *nftables.Set
 }
 
-func addFilterRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) error {
+func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) error {
 	addInputChain(conn, table)
 
-	resolvedPorts := cfg.ResolvePorts()
-	cidr4, cidr6 := cfg.ResolveCIDRRules()
+	resolvedPorts := cfg.ResolvePorts(ctx)
+	cidr4, cidr6 := cfg.ResolveCIDRRules(ctx)
 	allCIDRs := slices.Concat(cidr4, cidr6)
-	deny4, deny6 := cfg.ResolveDenyCIDRRules()
+	deny4, deny6 := cfg.ResolveDenyCIDRRules(ctx)
 	allDenyCIDRs := slices.Concat(deny4, deny6)
-	denyPortOnly := cfg.ResolveDenyPortOnlyRules()
-	openPortRules := cfg.ResolveOpenPortRules()
-	fqdnRulePorts := cfg.ResolveFQDNNonTCPPorts()
+	denyPortOnly := cfg.ResolveDenyPortOnlyRules(ctx)
+	openPortRules := cfg.ResolveOpenPortRules(ctx)
+	fqdnRulePorts := cfg.ResolveFQDNNonTCPPorts(ctx)
 	catchAllFQDNRules := cfg.ResolveCatchAllFQDNRules()
 	icmpFQDNRules := cfg.ResolveICMPFQDNRules()
-	unrestricted := cfg.HasUnrestrictedOpenPorts()
+	unrestricted := cfg.HasUnrestrictedOpenPorts(ctx)
 
 	// Create FQDN sets before rules reference them.
 	fqdnSets := make(map[int]setRef)

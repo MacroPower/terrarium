@@ -159,7 +159,7 @@ egress:
 				assert.Len(t, cfg.EgressRules(), tt.wantRules)
 			}
 
-			domains := cfg.ResolveDomains()
+			domains := cfg.ResolveDomains(t.Context())
 
 			for _, d := range tt.wantDomains {
 				assert.Contains(t, domains, d)
@@ -286,7 +286,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.NotEmpty(t, rules[0].ToFQDNs)
 
 	// Check some expected domains.
-	domains := cfg.ResolveDomains()
+	domains := cfg.ResolveDomains(t.Context())
 
 	for _, want := range []string{"github.com", "golang.org", "anthropic.com"} {
 		assert.Contains(t, domains, want)

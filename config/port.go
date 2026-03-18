@@ -1,7 +1,9 @@
 package config
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -96,7 +98,7 @@ var kubernetesPortAliases = map[string]uint16{
 // Uses base 10 (not base 0) because terrarium reads YAML config
 // files, not Kubernetes API objects, so hex/octal/binary port literals
 // are not meaningful.
-func ResolvePort(s string) (uint16, error) {
+func ResolvePort(ctx context.Context, s string) (uint16, error) {
 	n, err := strconv.ParseUint(s, 10, 16)
 	if err == nil {
 		return uint16(n), nil
@@ -108,8 +110,9 @@ func ResolvePort(s string) (uint16, error) {
 
 	lower := strings.ToLower(s)
 
-	port, lookupErr := net.LookupPort("", lower)
-	if lookupErr == nil {
+	port, lookupErr := net.DefaultResolver.LookupPort(ctx, "", lower)
+	if lookupErr == nil && port >= 0 && port <= math.MaxUint16 {
+		//nolint:gosec // G115: port is bounds-checked above.
 		return uint16(port), nil
 	}
 

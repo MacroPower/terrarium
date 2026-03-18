@@ -278,7 +278,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		}
 
 		// Wait on the first available listener port.
-		waitPort := firstListenerPort(cfg)
+		waitPort := firstListenerPort(ctx, cfg)
 
 		err = waitForListener(ctx, fmt.Sprintf("127.0.0.1:%d", waitPort), envoySettings.StartupTimeout.Duration)
 		if err != nil {
@@ -502,8 +502,8 @@ func verifyIPv6State(ctx context.Context, sys *sysctl.Sysctl) bool {
 // firstListenerPort returns the first Envoy listener port to wait on.
 // In non-blocked modes, 15443 is always present (TLS passthrough).
 // Falls back to [config.CatchAllProxyPort] as a final safety net.
-func firstListenerPort(cfg *config.Config) int {
-	ports := cfg.ResolvePorts()
+func firstListenerPort(ctx context.Context, cfg *config.Config) int {
+	ports := cfg.ResolvePorts(ctx)
 	if slices.Contains(ports, 443) || cfg.IsEgressUnrestricted() {
 		return 15443
 	}

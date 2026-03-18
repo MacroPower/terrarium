@@ -33,12 +33,12 @@ func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
 
 	// Collect domains that need MITM certs (restricted on any TLS port).
 	tlsPorts := []int{443}
-	tlsPorts = append(tlsPorts, cfg.ExtraPorts()...)
+	tlsPorts = append(tlsPorts, cfg.ExtraPorts(ctx)...)
 	mitmSeen := make(map[string]bool)
 
 	var mitmRules []config.ResolvedRule
 	for _, port := range tlsPorts {
-		portRules := cfg.ResolveRulesForPort(port)
+		portRules := cfg.ResolveRulesForPort(ctx, port)
 
 		for _, r := range portRules {
 			if r.IsRestricted() && !mitmSeen[r.Domain] {
@@ -59,7 +59,7 @@ func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
 	}
 
 	caBundlePath := certs.FindCABundle()
-	envoyConf, err := GenerateEnvoyFromConfig(cfg, certsDir, caBundlePath)
+	envoyConf, err := GenerateEnvoyFromConfig(ctx, cfg, certsDir, caBundlePath)
 	if err != nil {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
 	}
@@ -84,17 +84,17 @@ func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
 // [config.TCPForward] entry creates a plain TCP proxy listener with a
 // STRICT_DNS cluster. Open ports (from toPorts-only rules) get
 // catch-all passthrough chains.
-func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) (string, error) {
+func GenerateEnvoyFromConfig(ctx context.Context, cfg *config.Config, certsDir, caBundlePath string) (string, error) {
 	accessLog := envoy.BuildAccessLog(cfg.Logging)
 
-	resolvedPorts := cfg.ResolvePorts()
+	resolvedPorts := cfg.ResolvePorts(ctx)
 
 	resolvedPortSet := make(map[int]bool, len(resolvedPorts))
 	for _, p := range resolvedPorts {
 		resolvedPortSet[p] = true
 	}
 
-	openPorts := cfg.ResolveOpenPorts()
+	openPorts := cfg.ResolveOpenPorts(ctx)
 
 	openPortSet := make(map[int]bool, len(openPorts))
 	for _, p := range openPorts {
@@ -107,8 +107,8 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 	// catch-all TCP listener for centralized access logging.
 	if !cfg.IsEgressBlocked() {
 		listeners = append(listeners,
-			buildTLSPassthroughListener(cfg, resolvedPortSet, openPortSet, accessLog, certsDir),
-			buildHTTPForwardListener(cfg, resolvedPortSet, openPortSet, accessLog),
+			buildTLSPassthroughListener(ctx, cfg, resolvedPortSet, openPortSet, accessLog, certsDir),
+			buildHTTPForwardListener(ctx, cfg, resolvedPortSet, openPortSet, accessLog),
 		)
 	}
 
@@ -124,9 +124,9 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 	// rules with path/method restrictions are present and certsDir is set).
 	// ServerName rules from CIDR rules are merged so Envoy creates
 	// SNI filter chains for them.
-	for _, p := range cfg.ExtraPorts() {
-		rulesP := cfg.ResolveRulesForPort(p)
-		rulesP = append(rulesP, cfg.ResolveServerNameRulesForPort(p)...)
+	for _, p := range cfg.ExtraPorts(ctx) {
+		rulesP := cfg.ResolveRulesForPort(ctx, p)
+		rulesP = append(rulesP, cfg.ResolveServerNameRulesForPort(ctx, p)...)
 
 		if openPortSet[p] {
 			rulesP = envoy.StripL7Restrictions(rulesP)
@@ -152,7 +152,7 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 	}
 
 	// Use global rules for cluster determination.
-	allRules := cfg.ResolveRules()
+	allRules := cfg.ResolveRules(ctx)
 
 	bs := envoy.Bootstrap{
 		OverloadManager: envoy.OverloadManager{
@@ -184,13 +184,14 @@ func GenerateEnvoyFromConfig(cfg *config.Config, certsDir, caBundlePath string) 
 // FQDN rules resolve port 443, their rules drive the listener; otherwise
 // an open passthrough listener is created for unrestricted auditing.
 func buildTLSPassthroughListener(
+	ctx context.Context,
 	cfg *config.Config,
 	resolvedPortSet, openPortSet map[int]bool,
 	accessLog []envoy.AccessLog,
 	certsDir string,
 ) envoy.Listener {
-	rules := cfg.ResolveRulesForPort(443)
-	rules = append(rules, cfg.ResolveServerNameRulesForPort(443)...)
+	rules := cfg.ResolveRulesForPort(ctx, 443)
+	rules = append(rules, cfg.ResolveServerNameRulesForPort(ctx, 443)...)
 	open := openPortSet[443]
 
 	if !resolvedPortSet[443] {
@@ -210,11 +211,12 @@ func buildTLSPassthroughListener(
 // FQDN rules resolve port 80, their rules drive the listener; otherwise
 // an open HTTP forward listener is created for unrestricted auditing.
 func buildHTTPForwardListener(
+	ctx context.Context,
 	cfg *config.Config,
 	resolvedPortSet, openPortSet map[int]bool,
 	accessLog []envoy.AccessLog,
 ) envoy.Listener {
-	rules := cfg.ResolveRulesForPort(80)
+	rules := cfg.ResolveRulesForPort(ctx, 80)
 	open := openPortSet[80]
 
 	if !resolvedPortSet[80] {

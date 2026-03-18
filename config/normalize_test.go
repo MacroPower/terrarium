@@ -48,7 +48,7 @@ func TestNormalizeCIDRHostBits(t *testing.T) {
 				}),
 			}
 
-			err := cfg.Validate()
+			err := cfg.Validate(t.Context())
 			require.NoError(t, err)
 
 			got := cfg.EgressRules()[0].ToCIDR[0]
@@ -71,7 +71,7 @@ func TestNormalizeCIDRSetEntries(t *testing.T) {
 		}),
 	}
 
-	err := cfg.Validate()
+	err := cfg.Validate(t.Context())
 	require.NoError(t, err)
 
 	rule := cfg.EgressRules()[0].ToCIDRSet[0]
@@ -110,7 +110,7 @@ func TestNormalizeCIDRStrictMasksHostBits(t *testing.T) {
 				}),
 			}
 
-			err := cfg.Validate()
+			err := cfg.Validate(t.Context())
 			require.NoError(t, err)
 
 			got := cfg.EgressRules()[0].ToCIDRSet[0].CIDR

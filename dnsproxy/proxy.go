@@ -141,7 +141,7 @@ func Start(
 	}
 
 	// Compile FQDN patterns for set population (non-TCP ports only).
-	if cfg != nil && cfg.HasFQDNNonTCPPorts() {
+	if cfg != nil && cfg.HasFQDNNonTCPPorts(ctx) {
 		p.patterns = cfg.CompileFQDNPatterns()
 	}
 
