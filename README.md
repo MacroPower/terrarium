@@ -20,9 +20,59 @@ based on your risk tolerance, environment, and use cases.
 
 It is particularly useful for running fully autonomous AI agents.
 
+## Usage
+
+Published images include the terrarium binary and Envoy but not
+language runtimes, package managers, or other tools your workload
+needs. Use the image as a base layer or copy the binary into your own
+image.
+
+### Use as a base image
+
+The `:alpine` and `:debian` variants ship with ca-certificates and
+Envoy pre-installed:
+
+```dockerfile
+FROM ghcr.io/macropower/terrarium:alpine
+RUN apk add --no-cache python3
+COPY config.yaml /home/dev/.config/terrarium/config.yaml
+ENTRYPOINT ["terrarium", "init", "--"]
+CMD ["python3", "app.py"]
+```
+
+### Copy the binary into your own image
+
+The `:latest` (scratch) variant contains only the terrarium binary,
+which makes it useful as a copy source in a multi-stage build:
+
+```dockerfile
+FROM ghcr.io/macropower/terrarium:latest AS terrarium
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates envoy && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=terrarium /usr/local/bin/terrarium /usr/local/bin/terrarium
+COPY config.yaml /home/dev/.config/terrarium/config.yaml
+ENTRYPOINT ["terrarium", "init", "--"]
+CMD ["/bin/bash"]
+```
+
+### Running
+
+However you build your image, `terrarium init` is the main entry point.
+It sets up the firewall, DNS proxy, and Envoy, then drops privileges and
+execs your command:
+
+```sh
+docker run --cap-add=NET_ADMIN my-terrarium-image
+```
+
+`--cap-add=NET_ADMIN` is required for nftables. The default config path is `~/.config/terrarium/config.yaml` (following XDG conventions); override it with `--config`. Use `--ready-file` to create a file once all infrastructure is up, useful for orchestration. See `terrarium init --help` for the full flag reference.
+
 ## Examples
 
-Allow GET requests to repos in your own GitHub organization, deny all other traffic:
+Allow GET requests to repos in your GitHub organization, injecting an API key header:
 
 ```yaml
 egress:
@@ -37,21 +87,47 @@ egress:
           http:
             - method: "GET"
               path: "/my-org/.*"
+              headerMatches:
+                - name: "Authorization"
+                  mismatch: ADD
+                  value: "Bearer ghp_xxxxxxxxxxxx"
 ```
 
-Allow access to your package registry, deny access to public registries:
+Allow DNS resolution for internal domains, plus HTTPS access:
 
 ```yaml
 egress:
   - toFQDNs:
-      - matchName: "registry.internal.com"
-      - matchPattern: "*.registry.internal.com"
+      - matchName: "internal.example.com"
+      - matchPattern: "*.internal.example.com"
+    toPorts:
+      - ports:
+          - port: "53"
+            protocol: UDP
+          - port: "53"
+            protocol: TCP
+        rules:
+          dns:
+            - matchName: "internal.example.com"
+            - matchPattern: "*.internal.example.com"
+      - ports:
+          - port: "443"
+            protocol: TCP
+```
+
+Allow TLS connections to specific SNIs within a CIDR range:
+
+```yaml
+egress:
+  - toCIDR:
+      - "10.0.0.0/8"
     toPorts:
       - ports:
           - port: "443"
             protocol: TCP
-          - port: "80"
-            protocol: TCP
+        serverNames:
+          - "db.internal.example.com"
+          - "*.internal.example.com"
 ```
 
 Allow access to the internet, deny access to your internal network:
@@ -66,14 +142,32 @@ egress:
           - "192.168.0.0/16"
 ```
 
-Or vice versa -- allow internal, deny internet:
+Block specific ports to private subnets:
 
 ```yaml
-egress:
+egressDeny:
   - toCIDR:
-      - "10.0.0.0/8"
-      - "172.16.0.0/12"
       - "192.168.0.0/16"
+    toPorts:
+      - ports:
+          - port: "22"
+            protocol: TCP
+  - toCIDRSet:
+      - cidr: "172.16.0.0/12"
+        except:
+          - "172.16.1.0/24"
+    toPorts:
+      - ports:
+          - port: "3306"
+            protocol: TCP
+```
+
+Forward non-TLS TCP services (like SSH) through Envoy to a named host:
+
+```yaml
+tcpForwards:
+  - port: 22
+    host: "github.com"
 ```
 
 ## Design
@@ -83,17 +177,24 @@ egress:
 All processes share the same network namespace. Communication happens through
 kernel data structures (nftables sets via netlink) and loopback sockets.
 
-```
-terrarium init (PID 1, root)
-  |
-  |-- DNS proxy (root, 127.0.0.1:53 + [::1]:53)
-  |     Updates nftables FQDN IP sets via netlink on resolution
-  |
-  |-- Envoy (UID 1001, CAP_NET_ADMIN)
-  |     TCP via NAT REDIRECT, UDP via TPROXY
-  |
-  \-- exec user command (UID 1000, all caps dropped)
-        Subject to full nftables rule enforcement
+```mermaid
+graph TD
+    init["terrarium init\n(PID 1, root)"]
+    dns["DNS proxy\n(root, 127.0.0.1:53 + [::1]:53)"]
+    envoy["Envoy\n(UID 1001, CAP_NET_ADMIN)"]
+    user["User command\n(UID 1000, all caps dropped)"]
+    nft[("nftables\nFQDN IP sets")]
+    upstream(("Upstream"))
+
+    init --> dns
+    init --> envoy
+    init --> user
+
+    dns -- "updates via netlink\non resolution" --> nft
+    user -- "TCP: NAT REDIRECT\nUDP: TPROXY" --> nft
+    nft -- "FQDN traffic" --> envoy
+    nft -- "CIDR-only traffic" --> upstream
+    envoy --> upstream
 ```
 
 ### Single-container architecture
@@ -195,6 +296,38 @@ policy. Three modes:
 In non-blocked modes, all terrarium traffic passes through Envoy for access logging
 and policy enforcement. TCP and UDP use different interception mechanisms because
 of how the kernel recovers original destination addresses.
+
+```mermaid
+graph TD
+    user["User process\n(UID 1000)"]
+    tcp{"TCP"}
+    udp{"UDP"}
+    filter["nftables\nOUTPUT filter\n(per-rule allow/deny)"]
+    drop["DROP"]
+    nat["nftables\nNAT OUTPUT"]
+    mangle_out["nftables\nmangle OUTPUT\n(fwmark 0x1)"]
+    policy["Policy routing\n(table 100, loopback)"]
+    mangle_pre["nftables\nmangle PREROUTING\n(TPROXY)"]
+    cidr_ret["CIDR traffic\n(RETURN, bypass Envoy)"]
+    envoy_tcp["Envoy TCP listeners\n(:15443 for 443\n:15080 for 80\n:15001 catch-all)"]
+    envoy_udp["Envoy UDP listener\n(:15002)"]
+    dns["DNS proxy\n(:53)"]
+    upstream(("Upstream"))
+
+    user --> tcp
+    user --> udp
+
+    tcp --> filter
+    udp -- "port 53" --> dns
+    udp -- "other ports" --> filter
+    filter -- "denied" --> drop
+    filter -- "TCP allowed" --> nat
+    filter -- "UDP allowed" --> mangle_out
+    nat -- "CIDR-only\ndestination" --> cidr_ret --> upstream
+    nat -- "REDIRECT" --> envoy_tcp --> upstream
+
+    mangle_out --> policy --> mangle_pre --> envoy_udp --> upstream
+```
 
 #### TCP (NAT REDIRECT)
 
