@@ -50,23 +50,25 @@ jobs:
             echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Capture OIDC request URL
+        id: oidc
+        run: echo "request-url=$ACTIONS_ID_TOKEN_REQUEST_URL" >> "$GITHUB_OUTPUT"
+
       - name: Release via Dagger
         uses: ./.github/actions/dagger-call
         with:
           function: >-
-            release
+            terrarium-ci release
             --github-token=env://GITHUB_TOKEN
             --registry-username="${{ github.actor }}"
             --registry-password=env://REGISTRY_PASSWORD
             --tag="${{ steps.tag.outputs.value }}"
-            --cosign-key=env://COSIGN_KEY
-            --cosign-password=env://COSIGN_PASSWORD
+            --oidc-request-url="${{ steps.oidc.outputs.request-url }}"
+            --oidc-request-token=env://ACTIONS_ID_TOKEN_REQUEST_TOKEN
             --output=./dist
         env:
           GITHUB_TOKEN: "${{ steps.app-token.outputs.token }}"
           REGISTRY_PASSWORD: "${{ secrets.GITHUB_TOKEN }}"
-          COSIGN_KEY: "${{ secrets.COSIGN_KEY }}"
-          COSIGN_PASSWORD: "${{ secrets.COSIGN_PASSWORD }}"
 
       - name: Attest Build Provenance (checksums.txt)
         uses: actions/attest-build-provenance@v3

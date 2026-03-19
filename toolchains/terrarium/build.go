@@ -287,6 +287,15 @@ func (m *Terrarium) releaserBase(ctx context.Context) (*dagger.Container, error)
 		WithFile("/usr/local/bin/syft",
 			dag.Container().From("ghcr.io/anchore/syft:"+syftVersion).
 				File("/syft")).
+		WithNewFile("/usr/local/bin/nix-hash", `#!/bin/sh
+# nix-hash shim -- supports: nix-hash --type sha256 --flat --sri <file>
+file=""
+for arg in "$@"; do
+  case "$arg" in --*) ;; *) file="$arg" ;; esac
+done
+printf 'sha256-%s\n' "$(openssl dgst -sha256 -binary "$file" | base64 -w0)"
+`,
+			dagger.ContainerWithNewFileOpts{Permissions: 0o755}).
 		// Env vars used by GoReleaser ldflags and templates.
 		WithEnvVariable("HOSTNAME", "dagger").
 		WithEnvVariable("USER", "dagger").

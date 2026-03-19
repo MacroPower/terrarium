@@ -68,6 +68,23 @@ func optSecretVariable(name string, secret *dagger.Secret) dagger.WithContainerF
 	}
 }
 
+// dockerConfigFile generates a Docker config.json file containing registry
+// credentials. The file is built in a helper container so that the password
+// remains a [dagger.Secret] throughout. The resulting file can be mounted
+// into containers that need to authenticate to the registry (e.g. cosign).
+func dockerConfigFile(host, username string, password *dagger.Secret) *dagger.File {
+	return dag.Container().
+		From("alpine:3").
+		WithSecretVariable("REG_PASS", password).
+		WithExec([]string{"sh", "-c",
+			fmt.Sprintf(
+				`printf '{"auths":{"%s":{"auth":"%%s"}}}' "$(printf '%s:%%s' "$REG_PASS" | base64 -w0)" > /tmp/config.json`,
+				host, username,
+			),
+		}).
+		File("/tmp/config.json")
+}
+
 // isPrerelease reports whether the version tag contains a pre-release
 // identifier (e.g. "v1.0.0-rc.1", "v2.0.0-beta.1"). Detection checks for
 // a hyphen in any of the first three dot-separated version components after
@@ -207,12 +224,16 @@ func (m *Terrarium) PublishImages(
 	// Registry password or token for authentication.
 	// +optional
 	registryPassword *dagger.Secret,
-	// Cosign private key for signing published images.
+	// OIDC token request URL for keyless Sigstore signing. In GitHub Actions
+	// this is the ACTIONS_ID_TOKEN_REQUEST_URL environment variable. When
+	// provided along with oidcRequestToken, published images are signed
+	// using Sigstore keyless verification (Fulcio + Rekor).
 	// +optional
-	cosignKey *dagger.Secret,
-	// Password for the cosign private key. Required when the key is encrypted.
+	oidcRequestURL string,
+	// Bearer token for the OIDC token request. In GitHub Actions this is the
+	// ACTIONS_ID_TOKEN_REQUEST_TOKEN environment variable.
 	// +optional
-	cosignPassword *dagger.Secret,
+	oidcRequestToken *dagger.Secret,
 	// Pre-built GoReleaser dist directory. If not provided, runs a snapshot build.
 	// +optional
 	dist *dagger.Directory,
@@ -239,16 +260,13 @@ func (m *Terrarium) PublishImages(
 		return "", err
 	}
 
-	var allDigests []string
-	var totalTags int
-	for _, s := range sets {
-		varTags := variantTags(tags, s.variant)
-		totalTags += len(varTags)
-		digests, err := m.publishImages(ctx, s.containers, varTags, registryUsername, registryPassword, cosignKey, cosignPassword)
-		if err != nil {
-			return "", fmt.Errorf("publish %s: %w", s.variant, err)
-		}
-		allDigests = append(allDigests, digests...)
+	allDigests, totalTags, err := m.publishAllVariants(ctx, sets, tags, registryUsername, registryPassword)
+	if err != nil {
+		return "", err
+	}
+
+	if err := m.signImages(ctx, allDigests, registryUsername, registryPassword, oidcRequestURL, oidcRequestToken); err != nil {
+		return "", err
 	}
 
 	unique := m.DeduplicateDigests(allDigests)
@@ -258,6 +276,11 @@ func (m *Terrarium) PublishImages(
 // Release runs GoReleaser for binaries/archives/signing, then builds and
 // publishes container images using Dagger-native Container.Publish().
 // GoReleaser's Docker support is skipped entirely to avoid Docker-in-Docker.
+//
+// Both binary archives and container images are signed using Sigstore keyless
+// verification when OIDC request credentials are provided. Cosign's built-in
+// GitHub Actions provider fetches fresh tokens on demand, avoiding expiry
+// issues with pre-fetched tokens.
 //
 // Returns a [ReleaseReport] containing the dist/ directory (with checksums.txt
 // and digests.txt for attestation), published image digests, and a Markdown
@@ -274,12 +297,14 @@ func (m *Terrarium) Release(
 	registryPassword *dagger.Secret,
 	// Version tag to release (e.g. "v1.2.3").
 	tag string,
-	// Cosign private key for signing published images.
+	// OIDC token request URL for keyless Sigstore signing. In GitHub Actions
+	// this is the ACTIONS_ID_TOKEN_REQUEST_URL environment variable.
 	// +optional
-	cosignKey *dagger.Secret,
-	// Password for the cosign private key. Required when the key is encrypted.
+	oidcRequestURL string,
+	// Bearer token for the OIDC token request. In GitHub Actions this is the
+	// ACTIONS_ID_TOKEN_REQUEST_TOKEN environment variable.
 	// +optional
-	cosignPassword *dagger.Secret,
+	oidcRequestToken *dagger.Secret,
 ) (*ReleaseReport, error) {
 	ctr, err := m.releaserBase(ctx)
 	if err != nil {
@@ -287,18 +312,21 @@ func (m *Terrarium) Release(
 	}
 	ctr = ctr.WithSecretVariable("GITHUB_TOKEN", githubToken)
 
-	// Conditionally add cosign secrets for GoReleaser binary signing.
+	// Conditionally forward OIDC credentials for GoReleaser blob signing.
+	// Cosign (invoked by GoReleaser's signs section) detects
+	// ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN and fetches fresh OIDC tokens
+	// on demand via its built-in GitHub Actions provider.
 	skipFlags := "docker"
-	if cosignKey == nil {
+	if oidcRequestToken == nil {
 		skipFlags = "docker,sign"
 	}
 	ctr = ctr.
-		With(optSecretVariable("COSIGN_KEY", cosignKey)).
-		With(optSecretVariable("COSIGN_PASSWORD", cosignPassword))
+		WithEnvVariable("ACTIONS_ID_TOKEN_REQUEST_URL", oidcRequestURL).
+		With(optSecretVariable("ACTIONS_ID_TOKEN_REQUEST_TOKEN", oidcRequestToken))
 
 	// Run GoReleaser for binaries, archives, Homebrew, Nix (and signing
-	// when cosignKey is provided). Docker is always skipped -- images are
-	// published natively via Dagger below.
+	// when identityToken is provided). Docker is always skipped -- images
+	// are published natively via Dagger below.
 	dist := ctr.
 		WithExec([]string{"goreleaser", "release", "--clean", "--skip=" + skipFlags}).
 		Directory("/src/dist")
@@ -312,16 +340,13 @@ func (m *Terrarium) Release(
 		return nil, fmt.Errorf("build runtime images: %w", err)
 	}
 
-	var allDigests []string
-	var totalTags int
-	for _, s := range sets {
-		varTags := variantTags(baseTags, s.variant)
-		totalTags += len(varTags)
-		digests, err := m.publishImages(ctx, s.containers, varTags, registryUsername, registryPassword, cosignKey, cosignPassword)
-		if err != nil {
-			return nil, fmt.Errorf("publish %s images: %w", s.variant, err)
-		}
-		allDigests = append(allDigests, digests...)
+	allDigests, totalTags, err := m.publishAllVariants(ctx, sets, baseTags, registryUsername, registryPassword)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := m.signImages(ctx, allDigests, registryUsername, registryPassword, oidcRequestURL, oidcRequestToken); err != nil {
+		return nil, err
 	}
 
 	// Write digests in checksums format for attest-build-provenance.
@@ -340,19 +365,56 @@ func (m *Terrarium) Release(
 	}, nil
 }
 
-// publishImages publishes pre-built container image variants to the registry,
-// optionally signing them with cosign. Returns the list of published digest
-// references (one per tag, e.g. "registry/image:tag@sha256:hex").
+// publishAllVariants publishes all variant sets concurrently. Returns the
+// combined digest list and total tag count across all variants.
+func (m *Terrarium) publishAllVariants(
+	ctx context.Context,
+	sets []variantSet,
+	baseTags []string,
+	registryUsername string,
+	registryPassword *dagger.Secret,
+) ([]string, int, error) {
+	type result struct {
+		digests []string
+		tagCount int
+	}
+
+	results := make([]result, len(sets))
+	g, gCtx := errgroup.WithContext(ctx)
+	for i, s := range sets {
+		varTags := variantTags(baseTags, s.variant)
+		g.Go(func() error {
+			digests, err := m.publishImages(gCtx, s.containers, varTags, registryUsername, registryPassword)
+			if err != nil {
+				return fmt.Errorf("publish %s: %w", s.variant, err)
+			}
+			results[i] = result{digests: digests, tagCount: len(varTags)}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, 0, err
+	}
+
+	var allDigests []string
+	var totalTags int
+	for _, r := range results {
+		allDigests = append(allDigests, r.digests...)
+		totalTags += r.tagCount
+	}
+	return allDigests, totalTags, nil
+}
+
+// publishImages publishes pre-built container image variants to the registry.
+// Returns the list of published digest references (one per tag,
+// e.g. "registry/image:tag@sha256:hex").
 func (m *Terrarium) publishImages(
 	ctx context.Context,
 	variants []*dagger.Container,
 	tags []string,
 	registryUsername string,
 	registryPassword *dagger.Secret,
-	cosignKey *dagger.Secret,
-	cosignPassword *dagger.Secret,
 ) ([]string, error) {
-	// Publish multi-arch manifest for each tag concurrently.
 	publisher := dag.Container()
 	if registryPassword != nil {
 		publisher = publisher.WithRegistryAuth(m.RegistryHost(m.Registry), registryUsername, registryPassword)
@@ -377,35 +439,54 @@ func (m *Terrarium) publishImages(
 		return nil, err
 	}
 
-	// Sign each published image with cosign (key-based signing).
-	// Deduplicate first -- multiple tags often share one manifest digest.
-	if cosignKey != nil {
-		toSign := m.DeduplicateDigests(digests)
+	return digests, nil
+}
 
-		cosignCtr := dag.Container().
-			From("gcr.io/projectsigstore/cosign:"+cosignVersion).
-			With(optSecretVariable("COSIGN_KEY", cosignKey)).
-			With(optSecretVariable("COSIGN_PASSWORD", cosignPassword))
-		if registryPassword != nil {
-			cosignCtr = cosignCtr.WithRegistryAuth(m.RegistryHost(m.Registry), registryUsername, registryPassword)
-		}
-
-		g, gCtx := errgroup.WithContext(ctx)
-		for _, digest := range toSign {
-			g.Go(func() error {
-				_, err := cosignCtr.
-					WithExec([]string{"cosign", "sign", "--key", "env://COSIGN_KEY", digest, "--yes"}).
-					Sync(gCtx)
-				if err != nil {
-					return fmt.Errorf("sign image %s: %w", digest, err)
-				}
-				return nil
-			})
-		}
-		if err := g.Wait(); err != nil {
-			return nil, err
-		}
+// signImages signs published image digests using cosign keyless signing
+// (Fulcio + Rekor). Cosign's built-in GitHub Actions provider uses the
+// request URL and token to fetch fresh OIDC tokens on demand, avoiding
+// expiry issues. Digests are deduplicated before signing since multiple
+// tags often share one manifest. Does nothing when oidcRequestToken is nil.
+func (m *Terrarium) signImages(
+	ctx context.Context,
+	digests []string,
+	registryUsername string,
+	registryPassword *dagger.Secret,
+	oidcRequestURL string,
+	oidcRequestToken *dagger.Secret,
+) error {
+	if oidcRequestToken == nil {
+		return nil
 	}
 
-	return digests, nil
+	toSign := m.DeduplicateDigests(digests)
+
+	cosignCtr := dag.Container().
+		From("gcr.io/projectsigstore/cosign:" + cosignVersion).
+		WithEnvVariable("ACTIONS_ID_TOKEN_REQUEST_URL", oidcRequestURL).
+		WithSecretVariable("ACTIONS_ID_TOKEN_REQUEST_TOKEN", oidcRequestToken)
+	if registryPassword != nil {
+		// Mount a Docker config.json so cosign can authenticate to the
+		// registry. WithRegistryAuth only covers Dagger/BuildKit operations;
+		// cosign makes its own HTTP requests and reads credentials from the
+		// Docker config.
+		cfg := dockerConfigFile(m.RegistryHost(m.Registry), registryUsername, registryPassword)
+		cosignCtr = cosignCtr.
+			WithMountedFile("/tmp/docker/config.json", cfg).
+			WithEnvVariable("DOCKER_CONFIG", "/tmp/docker")
+	}
+
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, digest := range toSign {
+		g.Go(func() error {
+			_, err := cosignCtr.
+				WithExec([]string{"cosign", "sign", digest, "--yes"}).
+				Sync(gCtx)
+			if err != nil {
+				return fmt.Errorf("sign image %s: %w", digest, err)
+			}
+			return nil
+		})
+	}
+	return g.Wait()
 }
