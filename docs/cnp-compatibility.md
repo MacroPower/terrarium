@@ -204,18 +204,11 @@ preprocessing. A bare wildcard matches every SNI, which is identical to having
 no SNI restriction at all; keeping it would generate a no-op Envoy filter
 chain. Cilium accepts bare wildcards and they match all SNIs.
 
-Cilium rejects serverNames combined with any L7 rule type (HTTP, DNS, or
-L7Proto) unless terminatingTLS is also set. Terrarium only enforces this
-restriction for L7 HTTP rules; serverNames with DNS L7 rules passes
-validation. In practice, the combination is unlikely: DNS rules require port
-53, and SNI filtering has no meaningful effect on unencrypted DNS traffic.
-A DNS rule with serverNames on port 53/TCP would pass Terrarium but fail
-Cilium.
-
-Cilium allows L7 HTTP rules with serverNames when terminatingTLS is set.
-Terrarium rejects this combination unconditionally since terminatingTLS is not
-supported (see N/A section). A Cilium policy using L7 HTTP + serverNames +
-terminatingTLS will fail Terrarium validation.
+Terrarium rejects serverNames combined with any L7 rule type (HTTP or DNS),
+matching Cilium. Cilium allows the combination when terminatingTLS is set;
+Terrarium rejects unconditionally since terminatingTLS is not supported (see
+N/A section). A Cilium policy using L7 + serverNames + terminatingTLS will
+fail Terrarium validation.
 
 ### L7 HTTP rule constraints
 

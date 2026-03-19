@@ -791,6 +791,19 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrL7WithServerNames,
 		},
+		"DNS L7 with serverNames rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+					ToPorts: []config.PortRule{{
+						Ports:       []config.Port{{Port: "53", Protocol: "TCP"}},
+						ServerNames: []string{"dns.example.com"},
+						Rules:       &config.L7Rules{DNS: []config.DNSRule{{MatchName: "example.com"}}},
+					}},
+				}),
+			},
+			err: config.ErrL7WithServerNames,
+		},
 		"empty HTTP on toPorts-only valid": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{

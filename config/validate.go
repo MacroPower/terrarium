@@ -781,6 +781,7 @@ func validateL7Rules(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 	// Cilium rejects serverNames with L7 rules unless terminatingTLS
 	// is set. Terrarium does not support terminatingTLS, so reject
 	// unconditionally.
+	// DNS+serverNames is rejected in validateServerNames.
 	for _, pr := range rule.ToPorts {
 		if len(pr.ServerNames) > 0 {
 			return fmt.Errorf("%w: rule %d", ErrL7WithServerNames, ruleIdx)
@@ -1003,6 +1004,14 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 			return fmt.Errorf("%w: rule %d port %s protocol %s",
 				ErrServerNamesRequiresTCP, ruleIdx, p.Port, p.Protocol)
 		}
+	}
+
+	// Reject serverNames with DNS L7 rules. SNI filtering has no
+	// effect on unencrypted DNS traffic. Cilium rejects serverNames
+	// with any L7 rule type unless terminatingTLS is set.
+	// HTTP+serverNames is rejected in validateL7Rules.
+	if pr.Rules != nil && len(pr.Rules.DNS) > 0 {
+		return fmt.Errorf("%w: rule %d", ErrL7WithServerNames, ruleIdx)
 	}
 
 	// Validate hostname length and characters. The Cilium CRD enforces

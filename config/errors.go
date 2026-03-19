@@ -129,12 +129,12 @@ var (
 		"toFQDNs port range too large: endPort - port must not exceed 100 (terrarium constraint: each port needs an Envoy listener)",
 	)
 
-	// ErrL7WithServerNames is returned when L7 HTTP rules are combined
-	// with serverNames on the same port rule. Cilium rejects this
-	// combination unless terminatingTLS is set; terrarium does not
+	// ErrL7WithServerNames is returned when L7 rules (HTTP or DNS) are
+	// combined with serverNames on the same port rule. Cilium rejects
+	// this combination unless terminatingTLS is set; terrarium does not
 	// support terminatingTLS, so the rejection is unconditional.
 	ErrL7WithServerNames = errors.New(
-		"L7 HTTP rules cannot use serverNames without TLS termination",
+		"L7 rules cannot use serverNames without TLS termination",
 	)
 
 	// ErrL7RequiresTCP is returned when L7 HTTP rules are paired with
