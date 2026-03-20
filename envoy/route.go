@@ -351,7 +351,9 @@ func mismatchLogConfig(matches []config.HeaderMatch) map[string]any {
 				TypedConfig: stderrAccessLogConfig{
 					AtType: "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StderrAccessLog",
 					LogFormat: &substitutionFormatString{
-						TextFormat: format,
+						TextFormatSource: dataSource{
+							InlineString: format,
+						},
 					},
 				},
 			}},

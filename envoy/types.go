@@ -145,9 +145,9 @@ type stderrAccessLogConfig struct {
 }
 
 // substitutionFormatString models Envoy's SubstitutionFormatString
-// with a text_format field for command-operator log formatting.
+// with a text_format_source field for command-operator log formatting.
 type substitutionFormatString struct {
-	TextFormat string `yaml:"text_format"`
+	TextFormatSource dataSource `yaml:"text_format_source"`
 }
 
 type httpConnManagerConfig struct {
@@ -377,12 +377,12 @@ type downstreamSocketConfig struct {
 
 // udpProxyConfig models the Envoy UDP proxy filter typed config.
 type udpProxyConfig struct {
-	AtType                    string         `yaml:"@type"`
-	StatPrefix                string         `yaml:"stat_prefix"`
+	AtType                    string          `yaml:"@type"`
+	StatPrefix                string          `yaml:"stat_prefix"`
 	Matcher                   udpRouteMatcher `yaml:"matcher"`
-	IdleTimeout               string         `yaml:"idle_timeout"`
-	AccessLog                 []AccessLog    `yaml:"access_log,omitempty"`
-	UsePerPacketLoadBalancing bool           `yaml:"use_per_packet_load_balancing,omitempty"`
+	IdleTimeout               string          `yaml:"idle_timeout"`
+	AccessLog                 []AccessLog     `yaml:"access_log,omitempty"`
+	UsePerPacketLoadBalancing bool            `yaml:"use_per_packet_load_balancing,omitempty"`
 }
 
 // udpRouteMatcher models a minimal xds.type.matcher.v3.Matcher that

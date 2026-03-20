@@ -255,7 +255,9 @@ func buildDefaultRejectFilterChain(statPrefix string) filterChain {
 					TypedConfig: stderrAccessLogConfig{
 						AtType: "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StderrAccessLog",
 						LogFormat: &substitutionFormatString{
-							TextFormat: "missing_sni src=%DOWNSTREAM_REMOTE_ADDRESS% dst=%DOWNSTREAM_LOCAL_ADDRESS% %RESPONSE_FLAGS%\n",
+							TextFormatSource: dataSource{
+								InlineString: "missing_sni src=%DOWNSTREAM_REMOTE_ADDRESS% dst=%DOWNSTREAM_LOCAL_ADDRESS% %RESPONSE_FLAGS%\n",
+							},
 						},
 					},
 				}},
