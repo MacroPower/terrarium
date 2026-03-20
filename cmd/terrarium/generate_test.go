@@ -595,6 +595,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			})},
 			want: []string{
 				"envoy.filters.network.rbac",
+				"stat_prefix: wildcard_depth",
 				"ALLOW",
 				`^[-a-zA-Z0-9_]+\\.example\\.com$`,
 			},

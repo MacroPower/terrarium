@@ -415,6 +415,16 @@ set -e
 PASS=0
 FAIL=0
 ` + assertionPreamble + `
+# Validate the generated Envoy config against the proto schema before
+# starting the full init sequence. This catches missing required fields
+# and type errors that Envoy's serve mode silently accepts. Skipped on
+# Alpine where the glibc-linked envoy binary cannot be invoked directly.
+if /usr/local/bin/envoy --version >/dev/null 2>&1; then
+    terrarium generate --config /etc/terrarium/config.yaml --envoy-config /tmp/envoy-validate.yaml
+    /usr/local/bin/envoy --mode validate -c /tmp/envoy-validate.yaml
+    rm /tmp/envoy-validate.yaml
+fi
+
 # Start terrarium init in background with a ready-file signal.
 terrarium init --config /etc/terrarium/config.yaml --ready-file /tmp/.terrarium-ready -- sleep infinity &
 TERRARIUM_PID=$!

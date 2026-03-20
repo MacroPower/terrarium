@@ -243,8 +243,9 @@ type safeRegex struct {
 }
 
 type rbacConfig struct {
-	Rules  rbacRules `yaml:"rules"`
-	AtType string    `yaml:"@type"`
+	StatPrefix string    `yaml:"stat_prefix,omitempty"`
+	Rules      rbacRules `yaml:"rules"`
+	AtType     string    `yaml:"@type"`
 }
 
 type rbacRules struct {

@@ -42,7 +42,8 @@ func buildWildcardRBACFilter(wildcardDomains []string) filter {
 	return filter{
 		Name: "envoy.filters.network.rbac",
 		TypedConfig: rbacConfig{
-			AtType: "type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC",
+			AtType:     "type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC",
+			StatPrefix: "wildcard_depth",
 			Rules: rbacRules{
 				Action: "ALLOW",
 				Policies: map[string]rbacPolicy{
