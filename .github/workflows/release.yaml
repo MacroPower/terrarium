@@ -65,7 +65,7 @@ jobs:
             --tag="${{ steps.tag.outputs.value }}"
             --oidc-request-url="${{ steps.oidc.outputs.request-url }}"
             --oidc-request-token=env://ACTIONS_ID_TOKEN_REQUEST_TOKEN
-            --output=./dist
+            dist --output=./dist
         env:
           GITHUB_TOKEN: "${{ steps.app-token.outputs.token }}"
           REGISTRY_PASSWORD: "${{ secrets.GITHUB_TOKEN }}"
