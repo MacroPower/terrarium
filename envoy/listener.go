@@ -280,9 +280,19 @@ func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []A
 		ListenerFilters: []NamedTyped{{
 			Name: "envoy.filters.udp_listener.udp_proxy",
 			TypedConfig: udpProxyConfig{
-				AtType:                    "type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.UdpProxyConfig",
-				StatPrefix:                "catch_all_udp",
-				Cluster:                   "original_dst",
+				AtType:     "type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.UdpProxyConfig",
+				StatPrefix: "catch_all_udp",
+				Matcher: udpRouteMatcher{
+					OnNoMatch: udpRouteAction{
+						Action: NamedTyped{
+							Name: "route",
+							TypedConfig: udpRoute{
+								AtType:  "type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.Route",
+								Cluster: "original_dst",
+							},
+						},
+					},
+				},
 				IdleTimeout:               fmt.Sprintf("%.0fs", idleTimeout.Seconds()),
 				AccessLog:                 accessLog,
 				UsePerPacketLoadBalancing: true,

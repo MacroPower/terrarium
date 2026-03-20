@@ -52,7 +52,7 @@ func TestBuildCatchAllUDPListener(t *testing.T) {
 	assert.Equal(t, "envoy.filters.udp_listener.udp_proxy", l.ListenerFilters[0].Name)
 
 	// Verify the full YAML output contains the expected Envoy config
-	// fields: @type, cluster, idle_timeout format, and
+	// fields: @type, matcher/route, idle_timeout format, and
 	// use_per_packet_load_balancing.
 	out, err := yaml.Marshal(l)
 	require.NoError(t, err)
@@ -64,6 +64,8 @@ func TestBuildCatchAllUDPListener(t *testing.T) {
 	assert.Contains(t, y, "prefer_gro: true")
 	assert.Contains(t, y, `"@type": type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.UdpProxyConfig`)
 	assert.Contains(t, y, "cluster: original_dst")
+	assert.Contains(t, y, `"@type": type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.Route`)
+	assert.Contains(t, y, "on_no_match:")
 	assert.Contains(t, y, "idle_timeout: 60s")
 	assert.Contains(t, y, "use_per_packet_load_balancing: true")
 	assert.Contains(t, y, "stat_prefix: catch_all_udp")

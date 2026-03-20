@@ -377,12 +377,29 @@ type downstreamSocketConfig struct {
 
 // udpProxyConfig models the Envoy UDP proxy filter typed config.
 type udpProxyConfig struct {
-	AtType                    string      `yaml:"@type"`
-	StatPrefix                string      `yaml:"stat_prefix"`
-	Cluster                   string      `yaml:"cluster"`
-	IdleTimeout               string      `yaml:"idle_timeout"`
-	AccessLog                 []AccessLog `yaml:"access_log,omitempty"`
-	UsePerPacketLoadBalancing bool        `yaml:"use_per_packet_load_balancing,omitempty"`
+	AtType                    string         `yaml:"@type"`
+	StatPrefix                string         `yaml:"stat_prefix"`
+	Matcher                   udpRouteMatcher `yaml:"matcher"`
+	IdleTimeout               string         `yaml:"idle_timeout"`
+	AccessLog                 []AccessLog    `yaml:"access_log,omitempty"`
+	UsePerPacketLoadBalancing bool           `yaml:"use_per_packet_load_balancing,omitempty"`
+}
+
+// udpRouteMatcher models a minimal xds.type.matcher.v3.Matcher that
+// routes all traffic to a single cluster via on_no_match.
+type udpRouteMatcher struct {
+	OnNoMatch udpRouteAction `yaml:"on_no_match"`
+}
+
+// udpRouteAction wraps a named typed action for the matcher on_no_match field.
+type udpRouteAction struct {
+	Action NamedTyped `yaml:"action"`
+}
+
+// udpRoute models envoy.extensions.filters.udp.udp_proxy.v3.Route.
+type udpRoute struct {
+	AtType  string `yaml:"@type"`
+	Cluster string `yaml:"cluster"`
 }
 
 func boolPtr(v bool) *bool {
