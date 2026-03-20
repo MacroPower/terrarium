@@ -11,8 +11,8 @@ import (
 )
 
 // Variant identifies a container image variant. Each variant uses a different
-// base image and set of pre-installed dependencies. See [VariantScratch],
-// [VariantDebian], and [VariantAlpine] for the available variants.
+// base image and set of pre-installed dependencies. See [VariantScratch] and
+// [VariantDebian] for the available variants.
 type Variant string
 
 const (
@@ -23,14 +23,10 @@ const (
 	// VariantDebian builds a debian:13-slim container with ca-certificates
 	// and the Envoy proxy pre-installed.
 	VariantDebian Variant = "debian"
-
-	// VariantAlpine builds an alpine container with ca-certificates and
-	// the Envoy proxy pre-installed.
-	VariantAlpine Variant = "alpine"
 )
 
 // allVariants lists every supported image variant in publishing order.
-var allVariants = []Variant{VariantScratch, VariantDebian, VariantAlpine}
+var allVariants = []Variant{VariantScratch, VariantDebian}
 
 // variantSet groups multi-arch platform containers for a single image
 // variant. Used internally by [buildAllImages] to keep variant metadata
@@ -68,7 +64,7 @@ func (m *Terrarium) BuildImages(
 	// Pre-built GoReleaser dist directory. If not provided, runs a snapshot build.
 	// +optional
 	dist *dagger.Directory,
-	// Image variant to build. One of "scratch", "debian", "alpine".
+	// Image variant to build. One of "scratch", "debian".
 	// When empty, all variants are built.
 	// +optional
 	variant string,
@@ -155,8 +151,6 @@ func runtimeBase(platform dagger.Platform, variant Variant) *dagger.Container {
 	switch variant {
 	case VariantDebian:
 		ctr = runtimeBaseDebian(platform)
-	case VariantAlpine:
-		ctr = runtimeBaseAlpine(platform)
 	default:
 		ctr = runtimeBaseScratch(platform)
 	}
@@ -180,18 +174,6 @@ func runtimeBaseDebian(platform dagger.Platform) *dagger.Container {
 		WithExec([]string{"sh", "-c",
 			"useradd -u 1000 -m -s /bin/sh dev && " +
 				"useradd -u 1001 -M -s /usr/sbin/nologin envoy"}).
-		WithFile("/usr/local/bin/envoy", envoyBinary(platform))
-}
-
-// runtimeBaseAlpine returns an alpine container with ca-certificates
-// and the Envoy proxy binary pre-installed.
-func runtimeBaseAlpine(platform dagger.Platform) *dagger.Container {
-	return dag.Container(dagger.ContainerOpts{Platform: platform}).
-		From("alpine:3.22").
-		WithExec([]string{"apk", "add", "--no-cache", "ca-certificates", "curl"}).
-		WithExec([]string{"sh", "-c",
-			"adduser -u 1000 -D -s /bin/sh dev && " +
-				"adduser -u 1001 -H -D -s /sbin/nologin envoy"}).
 		WithFile("/usr/local/bin/envoy", envoyBinary(platform))
 }
 

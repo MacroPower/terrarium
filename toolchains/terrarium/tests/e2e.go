@@ -12,7 +12,7 @@ import (
 )
 
 // e2eVariants lists the image variants to test.
-var e2eVariants = []string{"debian", "alpine"}
+var e2eVariants = []string{"debian"}
 
 const (
 	defaultNginxConf = `server {
@@ -56,7 +56,7 @@ const (
 }`
 )
 
-// TestEgressAll runs all egress E2E tests across debian and alpine variants.
+// TestEgressAll runs all egress E2E tests across all e2e variants.
 //
 // Not annotated with +check because E2E tests require InsecureRootCapabilities,
 // take significant time, and depend on external network conditions within the
@@ -789,7 +789,7 @@ func (m *Tests) TestEgressCidrExcept(ctx context.Context) error {
 	// Resolve target-deny's IP from a helper container so we can
 	// template it into the except list.
 	ip, err := dag.Container().
-		From("alpine:3.22").
+		From("debian:13-slim").
 		WithServiceBinding("target-deny", svcDeny.service).
 		WithExec([]string{"sh", "-c", "getent hosts target-deny | awk '{print $1}'"}).
 		Stdout(ctx)
@@ -836,7 +836,7 @@ func (m *Tests) TestEgressCidrMultiExcept(ctx context.Context) error {
 	// Resolve both denied services' IPs so we can template them into the
 	// except list.
 	ip1, err := dag.Container().
-		From("alpine:3.22").
+		From("debian:13-slim").
 		WithServiceBinding("target-deny-1", svcDeny1.service).
 		WithExec([]string{"sh", "-c", "getent hosts target-deny-1 | awk '{print $1}'"}).
 		Stdout(ctx)
@@ -846,7 +846,7 @@ func (m *Tests) TestEgressCidrMultiExcept(ctx context.Context) error {
 	ip1 = strings.TrimSpace(ip1)
 
 	ip2, err := dag.Container().
-		From("alpine:3.22").
+		From("debian:13-slim").
 		WithServiceBinding("target-deny-2", svcDeny2.service).
 		WithExec([]string{"sh", "-c", "getent hosts target-deny-2 | awk '{print $1}'"}).
 		Stdout(ctx)
@@ -1002,11 +1002,7 @@ PASS=0
 FAIL=0
 ` + assertionPreamble + `
 # Install dig before starting terrarium (firewall would block package repos).
-if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache bind-tools >/dev/null 2>&1
-else
-    apt-get update >/dev/null 2>&1 && apt-get install -y dnsutils >/dev/null 2>&1
-fi
+apt-get update >/dev/null 2>&1 && apt-get install -y dnsutils >/dev/null 2>&1
 
 # Start terrarium init in background.
 terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
@@ -1523,11 +1519,7 @@ PASS=0
 FAIL=0
 ` + assertionPreamble + `
 # Install socat before starting terrarium (firewall would block package repos).
-if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache socat >/dev/null 2>&1
-else
-    apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
-fi
+apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
 
 # Start terrarium init in background.
 terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
@@ -1577,11 +1569,7 @@ PASS=0
 FAIL=0
 ` + assertionPreamble + `
 # Install socat before starting terrarium (firewall would block package repos).
-if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache socat >/dev/null 2>&1
-else
-    apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
-fi
+apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
 
 # Start terrarium init in background.
 terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
@@ -1646,11 +1634,7 @@ PASS=0
 FAIL=0
 ` + assertionPreamble + `
 # Install socat before starting terrarium (firewall would block package repos).
-if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache socat >/dev/null 2>&1
-else
-    apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
-fi
+apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
 
 # Start terrarium init in background.
 terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
@@ -1702,11 +1686,7 @@ PASS=0
 FAIL=0
 ` + assertionPreamble + `
 # Install socat before starting terrarium (firewall would block package repos).
-if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache socat >/dev/null 2>&1
-else
-    apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
-fi
+apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1
 
 # Start terrarium init in background.
 terrarium init --config /etc/terrarium/config.yaml -- sleep infinity &
@@ -1866,10 +1846,8 @@ set -e
 PASS=0
 FAIL=0
 ` + assertionPreamble + `
-# Install iputils-ping for debian (alpine has busybox ping).
-if command -v apt-get >/dev/null 2>&1; then
-    apt-get update >/dev/null 2>&1 && apt-get install -y iputils-ping >/dev/null 2>&1
-fi
+# Install iputils-ping before starting terrarium (firewall would block package repos).
+apt-get update >/dev/null 2>&1 && apt-get install -y iputils-ping >/dev/null 2>&1
 
 # Start terrarium init in background with a ready-file signal.
 terrarium init --config /etc/terrarium/config.yaml --ready-file /tmp/.terrarium-ready -- sleep infinity &

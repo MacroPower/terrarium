@@ -80,8 +80,8 @@ func targetServiceOnPort(hostname string, port int) serviceBinding {
 // through Envoy.
 func udpEchoService(hostname string, port int) serviceBinding {
 	svc := dag.Container().
-		From("alpine:3.22").
-		WithExec([]string{"apk", "add", "--no-cache", "socat"}).
+		From("debian:13-slim").
+		WithExec([]string{"sh", "-c", "apt-get update && apt-get install -y socat && rm -rf /var/lib/apt/lists/*"}).
 		WithExposedPort(port, dagger.ContainerWithExposedPortOpts{
 			Protocol: dagger.NetworkProtocolUdp,
 		}).
@@ -102,8 +102,8 @@ func udpEchoService(hostname string, port int) serviceBinding {
 // without HTTP/TLS.
 func tcpEchoService(hostname string, port int) serviceBinding {
 	svc := dag.Container().
-		From("alpine:3.22").
-		WithExec([]string{"apk", "add", "--no-cache", "socat"}).
+		From("debian:13-slim").
+		WithExec([]string{"sh", "-c", "apt-get update && apt-get install -y socat && rm -rf /var/lib/apt/lists/*"}).
 		WithExposedPort(port).
 		AsService(dagger.ContainerAsServiceOpts{
 			Args: []string{
@@ -417,13 +417,10 @@ FAIL=0
 ` + assertionPreamble + `
 # Validate the generated Envoy config against the proto schema before
 # starting the full init sequence. This catches missing required fields
-# and type errors that Envoy's serve mode silently accepts. Skipped on
-# Alpine where the glibc-linked envoy binary cannot be invoked directly.
-if /usr/local/bin/envoy --version >/dev/null 2>&1; then
-    terrarium generate --config /etc/terrarium/config.yaml --envoy-config /tmp/envoy-validate.yaml
-    /usr/local/bin/envoy --mode validate -c /tmp/envoy-validate.yaml
-    rm /tmp/envoy-validate.yaml
-fi
+# and type errors that Envoy's serve mode silently accepts.
+terrarium generate --config /etc/terrarium/config.yaml --envoy-config /tmp/envoy-validate.yaml
+/usr/local/bin/envoy --mode validate -c /tmp/envoy-validate.yaml
+rm /tmp/envoy-validate.yaml
 
 # Start terrarium init in background with a ready-file signal.
 terrarium init --config /etc/terrarium/config.yaml --ready-file /tmp/.terrarium-ready -- sleep infinity &

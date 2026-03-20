@@ -29,12 +29,12 @@ image.
 
 ### Use as a base image
 
-The `:alpine` and `:debian` variants ship with ca-certificates and
-Envoy pre-installed:
+The `:debian` variant ships with ca-certificates and Envoy
+pre-installed:
 
 ```dockerfile
-FROM ghcr.io/macropower/terrarium:alpine
-RUN apk add --no-cache python3
+FROM ghcr.io/macropower/terrarium:debian
+RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
 COPY config.yaml /home/dev/.config/terrarium/config.yaml
 ENTRYPOINT ["terrarium", "init", "--"]
 CMD ["python3", "app.py"]

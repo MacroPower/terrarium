@@ -74,7 +74,7 @@ func optSecretVariable(name string, secret *dagger.Secret) dagger.WithContainerF
 // into containers that need to authenticate to the registry (e.g. cosign).
 func dockerConfigFile(host, username string, password *dagger.Secret) *dagger.File {
 	return dag.Container().
-		From("alpine:3").
+		From("debian:13-slim").
 		WithSecretVariable("REG_PASS", password).
 		WithExec([]string{"sh", "-c",
 			fmt.Sprintf(
@@ -137,7 +137,7 @@ func variantTags(baseTags []string, variant Variant) []string {
 // variantTag returns the tag with a variant suffix appended. The default
 // variant ([VariantScratch]) returns the tag unchanged. For other variants,
 // "latest" becomes the variant name (e.g. "debian") and versioned tags
-// gain a suffix (e.g. "v1.2.3-alpine").
+// gain a suffix (e.g. "v1.2.3-debian").
 func variantTag(tag string, variant Variant) string {
 	if variant == VariantScratch {
 		return tag
@@ -204,12 +204,12 @@ func (m *Terrarium) RegistryHost(
 }
 
 // PublishImages builds multi-arch container images for all variants
-// (scratch, debian, alpine) and publishes them to the registry. Each
-// variant gets its own set of tags via [variantTag].
+// (scratch, debian) and publishes them to the registry. Each variant
+// gets its own set of tags via [variantTag].
 //
 // Stable releases are published with multiple tags per variant. For
-// scratch (default): :latest, :vX.Y.Z, :vX, :vX.Y. For debian/alpine
-// the variant name is appended: :debian, :vX.Y.Z-debian, etc.
+// scratch (default): :latest, :vX.Y.Z, :vX, :vX.Y. For debian the
+// variant name is appended: :debian, :vX.Y.Z-debian, etc.
 // Pre-release versions are published with only their exact tag per variant.
 //
 // +cache="never"

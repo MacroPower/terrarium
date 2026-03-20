@@ -73,7 +73,7 @@ func (m *Tests) TestBuildDist(ctx context.Context) error {
 func (m *Tests) TestBuildImageMetadata(ctx context.Context) error {
 	dist := dag.Terrarium().Build()
 
-	for _, variant := range []string{"scratch", "debian", "alpine"} {
+	for _, variant := range []string{"scratch", "debian"} {
 		containers, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
 			Version: "v0.0.0-test",
 			Dist:    dist,
@@ -124,16 +124,16 @@ func (m *Tests) TestBuildImageMetadata(ctx context.Context) error {
 	return nil
 }
 
-// TestBuildVariantContents verifies that debian and alpine images contain
-// envoy, while scratch does not. Only tests the first platform container
+// TestBuildVariantContents verifies that the debian image contains envoy,
+// while scratch does not. Only tests the first platform container
 // (linux/amd64) since dependency installation is platform-independent.
 //
 // +check
 func (m *Tests) TestBuildVariantContents(ctx context.Context) error {
 	dist := dag.Terrarium().Build()
 
-	// Verify debian and alpine have envoy.
-	for _, variant := range []string{"debian", "alpine"} {
+	// Verify debian has envoy.
+	for _, variant := range []string{"debian"} {
 		containers, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
 			Version: "v0.0.0-test",
 			Dist:    dist,
@@ -184,30 +184,28 @@ func (m *Tests) TestPublishImages(ctx context.Context) error {
 		return fmt.Errorf("expected sha256 digest in result, got: %s", result)
 	}
 
-	// Verify 6 tags were published (2 base tags x 3 variants).
-	if !strings.Contains(result, "published 6 tags") {
-		return fmt.Errorf("expected 'published 6 tags' in result, got: %s", result)
+	// Verify 4 tags were published (2 base tags x 2 variants).
+	if !strings.Contains(result, "published 4 tags") {
+		return fmt.Errorf("expected 'published 4 tags' in result, got: %s", result)
 	}
 
-	// Verify deduplication: 3 unique digests (one per variant, each with
+	// Verify deduplication: 2 unique digests (one per variant, each with
 	// 2 tags sharing a manifest).
-	if !strings.Contains(result, "3 unique digests") {
-		return fmt.Errorf("expected '3 unique digests' in result, got: %s", result)
+	if !strings.Contains(result, "2 unique digests") {
+		return fmt.Errorf("expected '2 unique digests' in result, got: %s", result)
 	}
 
-	// Verify all three variants were published by checking for variant-specific
+	// Verify both variants were published by checking for variant-specific
 	// tag references in the digest output. The scratch variant uses base tags
-	// directly, while debian and alpine get suffixed tags.
+	// directly, while debian gets suffixed tags.
 	lines := strings.Split(strings.TrimSpace(result), "\n")
 	digestLines := lines[1:] // skip summary line
 
-	var hasScratch, hasDebian, hasAlpine bool
+	var hasScratch, hasDebian bool
 	for _, line := range digestLines {
 		switch {
 		case strings.Contains(line, ":debian@") || strings.Contains(line, "-debian@"):
 			hasDebian = true
-		case strings.Contains(line, ":alpine@") || strings.Contains(line, "-alpine@"):
-			hasAlpine = true
 		case strings.Contains(line, "@sha256:"):
 			// Any digest line without a variant suffix is scratch.
 			hasScratch = true
@@ -219,11 +217,8 @@ func (m *Tests) TestPublishImages(ctx context.Context) error {
 	if !hasDebian {
 		return fmt.Errorf("missing debian variant in digests: %s", result)
 	}
-	if !hasAlpine {
-		return fmt.Errorf("missing alpine variant in digests: %s", result)
-	}
 
-	// Verify that all 3 unique digests are distinct (each variant produces
+	// Verify that all 2 unique digests are distinct (each variant produces
 	// its own manifest).
 	seen := make(map[string]bool)
 	for _, line := range digestLines {
@@ -232,8 +227,8 @@ func (m *Tests) TestPublishImages(ctx context.Context) error {
 			seen[parts[1]] = true
 		}
 	}
-	if len(seen) != 3 {
-		return fmt.Errorf("expected 3 distinct digests across variants, got %d: %s", len(seen), result)
+	if len(seen) != 2 {
+		return fmt.Errorf("expected 2 distinct digests across variants, got %d: %s", len(seen), result)
 	}
 
 	return nil
