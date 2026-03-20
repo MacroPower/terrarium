@@ -92,6 +92,15 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		if err != nil {
 			return fmt.Errorf("generating configs: %w", err)
 		}
+
+		// Ensure every directory in the config path is world-executable
+		// so the envoy user (which runs as a different UID) can traverse
+		// to the config file. This is needed because home directories
+		// like /root are typically 0700.
+		err = ensurePathTraversable(usr.EnvoyConfigPath)
+		if err != nil {
+			return fmt.Errorf("making envoy config path traversable: %w", err)
+		}
 	}
 
 	// Install CA cert into trust store if MITM certs were generated.
@@ -260,15 +269,27 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		return fmt.Errorf("renaming resolv.conf: %w", err)
 	}
 
+	// os.CreateTemp creates files with 0o600. Make resolv.conf world-readable
+	// so Envoy's getaddrinfo resolver (running as the envoy user) can read it.
+	err = os.Chmod("/etc/resolv.conf", 0o644)
+	if err != nil {
+		return fmt.Errorf("chmod resolv.conf: %w", err)
+	}
+
 	// Start Envoy only when listeners are needed.
 	var envoyCmd *exec.Cmd
 
 	if needsEnvoy {
 		//nolint:gosec // G204: args from config.User populated via CLI flags.
+		// Envoy v1.37 added cgroup-aware CPU detection that uses
+		// conservative floor rounding. In constrained containers
+		// this can reduce worker threads to 1. Pin to 2 for
+		// stable listener handling.
 		envoyCmd = exec.CommandContext(ctx, "/proc/self/exe", "exec",
 			"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups",
 			"--inh-caps=+cap_net_admin", "--ambient-caps=+cap_net_admin",
-			"--", "envoy", "-c", usr.EnvoyConfigPath, "--log-level", envoySettings.LogLevel)
+			"--", "envoy", "-c", usr.EnvoyConfigPath, "--log-level", envoySettings.LogLevel,
+			"--concurrency", "2")
 		envoyCmd.Stdout = os.Stdout
 		envoyCmd.Stderr = os.Stderr
 
@@ -554,6 +575,41 @@ func mustAtoi(s string) int {
 	}
 
 	return n
+}
+
+// ensurePathTraversable walks up from the given file path and sets the
+// world-execute bit on each parent directory that lacks it. This allows
+// unprivileged users (like the envoy process) to traverse into
+// directories that may be restricted (e.g., /root with mode 0700).
+// Only the execute bit is added; read and write permissions are not
+// modified.
+func ensurePathTraversable(path string) error {
+	dir := filepath.Dir(path)
+
+	// Collect directories from the file's parent up to /.
+	var dirs []string
+	for dir != "/" && dir != "." {
+		dirs = append(dirs, dir)
+		dir = filepath.Dir(dir)
+	}
+
+	for _, d := range dirs {
+		info, err := os.Stat(d)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", d, err)
+		}
+
+		perm := info.Mode().Perm()
+		if perm&0o001 == 0 {
+			//nolint:gosec // G302: intentionally adding world-execute for path traversal.
+			err := os.Chmod(d, perm|0o001)
+			if err != nil {
+				return fmt.Errorf("chmod %s: %w", d, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // copyFile copies a file from src to dst, creating parent directories.

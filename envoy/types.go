@@ -119,8 +119,16 @@ type sniFilterConfig struct {
 }
 
 type dnsCacheConfig struct {
-	Name            string `yaml:"name"`
-	DNSLookupFamily string `yaml:"dns_lookup_family"`
+	TypedDNSResolverConfig *typedExtensionConfig `yaml:"typed_dns_resolver_config,omitempty"`
+	Name                   string                `yaml:"name"`
+	DNSLookupFamily        string                `yaml:"dns_lookup_family"`
+}
+
+// typedExtensionConfig models a minimal Envoy TypedExtensionConfig
+// with a name and a typed_config that only carries the @type URL.
+type typedExtensionConfig struct {
+	Name        string   `yaml:"name"`
+	TypedConfig typeOnly `yaml:"typed_config"`
 }
 
 type tcpProxyConfig struct {
@@ -337,8 +345,17 @@ type clusterDFPConfig struct {
 }
 
 type httpProtocolOptions struct {
-	UseDownstreamProtocolConfig useDownstreamProtocolConfig `yaml:"use_downstream_protocol_config"`
-	AtType                      string                      `yaml:"@type"`
+	UpstreamHTTPProtocolOptions *upstreamHTTPProtocolOptions `yaml:"upstream_http_protocol_options,omitempty"`
+	UseDownstreamProtocolConfig useDownstreamProtocolConfig  `yaml:"use_downstream_protocol_config"`
+	AtType                      string                       `yaml:"@type"`
+}
+
+// upstreamHTTPProtocolOptions models Envoy's UpstreamHttpProtocolOptions.
+// auto_sni sets the upstream TLS SNI from the Host header; auto_san_validation
+// validates the upstream cert SAN against the SNI.
+type upstreamHTTPProtocolOptions struct {
+	AutoSNI           bool `yaml:"auto_sni"`
+	AutoSANValidation bool `yaml:"auto_san_validation"`
 }
 
 type useDownstreamProtocolConfig struct{}
@@ -363,6 +380,12 @@ type endpointAddress struct {
 var sharedDNSCacheConfig = dnsCacheConfig{
 	Name:            "dynamic_forward_proxy_cache",
 	DNSLookupFamily: "ALL",
+	TypedDNSResolverConfig: &typedExtensionConfig{
+		Name: "envoy.network.dns_resolver.getaddrinfo",
+		TypedConfig: typeOnly{
+			AtType: "type.googleapis.com/envoy.extensions.network.dns_resolver.getaddrinfo.v3.GetAddrInfoDnsResolverConfig",
+		},
+	},
 }
 
 // udpListenerConfig models Envoy's UdpListenerConfig message.

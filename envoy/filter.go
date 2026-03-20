@@ -108,7 +108,8 @@ func buildWildcardHTTPRBACFilter(wildcardDomains, exactDomains []string) filter 
 	return filter{
 		Name: "envoy.filters.http.rbac",
 		TypedConfig: rbacConfig{
-			AtType: "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
+			AtType:     "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
+			StatPrefix: "wildcard_depth",
 			Rules: rbacRules{
 				Action: "ALLOW",
 				Policies: map[string]rbacPolicy{

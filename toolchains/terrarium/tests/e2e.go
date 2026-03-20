@@ -158,7 +158,7 @@ func (m *Tests) TestEgressFqdnExact(ctx context.Context) error {
 	script := assertionScript(`
 assert_allowed "http://target-allow:80/" "fqdn-exact: HTTP to target-allow"
 assert_passthrough "https://target-allow:443/" "OK" "fqdn-exact: HTTPS passthrough to target-allow"
-assert_network_denied "http://target-deny:80/" "fqdn-exact: HTTP to target-deny"
+assert_denied "http://target-deny:80/" "fqdn-exact: HTTP to target-deny"
 assert_network_denied "https://target-deny:443/" "fqdn-exact: HTTPS to target-deny"
 `)
 

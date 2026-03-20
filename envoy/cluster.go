@@ -78,38 +78,15 @@ func BuildClusters(
 			}
 		}
 
-		// Upstream SNI handling: auto_sni and auto_san_validation are
-		// intentionally omitted here. Envoy's dynamic forward proxy
-		// (DFP) cluster factory auto-enables both when
-		// upstream_http_protocol_options is absent. Specifically,
-		// createClusterImpl in the DFP cluster factory checks whether
-		// auto_sni is already set and enables it if not, then does
-		// the same for auto_san_validation. If
-		// upstream_http_protocol_options IS present, the factory
-		// rejects configs that lack auto_sni/auto_san_validation
-		// unless allow_insecure_cluster_options is set. Since this
-		// cluster omits upstream_http_protocol_options entirely, the
-		// factory unconditionally enables both options. The upstream
-		// TLS handshake uses SNI derived from the HTTP Host header
-		// via auto_sni.
-		//
-		// See Envoy source:
-		//   source/extensions/clusters/dynamic_forward_proxy/cluster.cc
-		//   (createClusterImpl method)
-		//
-		// Cilium achieves correct upstream SNI through a different
-		// mechanism. Rather than auto_sni, Cilium uses its custom
-		// cilium.tls_wrapper transport socket, which reads the sni_
-		// field from Cilium policy filter state and passes it to
-		// getClientTlsContext() in the proxylib layer. Cilium
-		// explicitly avoids setting auto_sni because it would
-		// conflict with (and crash Envoy when combined with) the
-		// Cilium Network filter's own SNI injection -- the two
-		// mechanisms would race to set the SNI on the upstream
-		// connection.
-		//
-		// Both approaches produce the same result: correct SNI on
-		// the upstream TLS handshake.
+		// Upstream SNI handling: Envoy v1.37+ requires explicit
+		// auto_sni and auto_san_validation on DFP clusters that
+		// set typed_extension_protocol_options. Earlier versions
+		// auto-enabled both via the DFP cluster factory, but
+		// v1.37 validates their presence at config time. Setting
+		// them in upstream_http_protocol_options ensures the
+		// upstream TLS handshake uses the correct SNI (derived
+		// from the HTTP Host header) and validates the upstream
+		// cert SAN against it.
 		clusters = append(clusters, cluster{
 			Name:           "mitm_forward_proxy_cluster",
 			ConnectTimeout: "5s",
@@ -127,7 +104,11 @@ func BuildClusters(
 			},
 			TypedExtensionProtocolOptions: map[string]any{
 				"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": httpProtocolOptions{
-					AtType:                      "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+					AtType: "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+					UpstreamHTTPProtocolOptions: &upstreamHTTPProtocolOptions{
+						AutoSNI:           true,
+						AutoSANValidation: true,
+					},
 					UseDownstreamProtocolConfig: useDownstreamProtocolConfig{},
 				},
 			},

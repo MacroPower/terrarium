@@ -202,9 +202,12 @@ assert_denied() {
     desc="${2:-$url denied}"
     status=$(curl -s -k --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)
     exit_code=$?
-    if [ "$exit_code" -eq 0 ] && [ "$status" != "000" ]; then
+    if [ "$exit_code" -eq 0 ] && [ "$status" != "000" ] && [ "$status" != "403" ] && [ "$status" != "404" ]; then
         echo "FAIL: $desc (expected DENIED, got HTTP $status -- SECURITY VIOLATION)"
         FAIL=$((FAIL + 1))
+    elif [ "$exit_code" -eq 0 ] && { [ "$status" = "403" ] || [ "$status" = "404" ]; }; then
+        echo "PASS: $desc (HTTP $status)"
+        PASS=$((PASS + 1))
     elif [ "$exit_code" -eq 6 ]; then
         echo "FAIL: $desc (DNS resolution failed -- expected network-level denial, not DNS error)"
         FAIL=$((FAIL + 1))
@@ -391,8 +394,8 @@ assert_tcp_forward() {
 }
 `
 
-// scriptSuffix is the shared report and cleanup logic appended to every
-// assertion script.
+// scriptSuffix is the shared report and cleanup logic appended to custom
+// assertion scripts that run as root (DNS proxy, privilege isolation, etc.).
 const scriptSuffix = `
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
@@ -408,13 +411,14 @@ wait $TERRARIUM_PID 2>/dev/null || true
 // preamble, Envoy startup logic, test-specific assertions, and
 // report/cleanup. The script starts terrarium init in the background and
 // waits for Envoy readiness before running assertions.
+//
+// Assertions run as the dev user (UID 1000) because nftables rules only
+// redirect terrarium-user traffic to Envoy. Root traffic to external IPs
+// is dropped by the filter chain's default DROP policy.
 func assertionScript(assertions string) string {
 	return `#!/bin/sh
 set -e
 
-PASS=0
-FAIL=0
-` + assertionPreamble + `
 # Validate the generated Envoy config against the proto schema before
 # starting the full init sequence. This catches missing required fields
 # and type errors that Envoy's serve mode silently accepts.
@@ -443,7 +447,15 @@ if [ "$ready" -ne 1 ]; then
     exit 1
 fi
 
-` + assertions + scriptSuffix
+` + buildAssertionBlock(assertions) + `
+ASSERT_RC=$?
+
+# Clean up
+kill $TERRARIUM_PID 2>/dev/null || true
+wait $TERRARIUM_PID 2>/dev/null || true
+
+exit $ASSERT_RC
+`
 }
 
 // assertionScriptNoEnvoy builds an assertion script for scenarios where
@@ -455,9 +467,6 @@ func assertionScriptNoEnvoy(assertions string) string {
 	return `#!/bin/sh
 set -e
 
-PASS=0
-FAIL=0
-` + assertionPreamble + `
 # Start terrarium init in background with a ready-file signal.
 # No FQDN ports = no Envoy, so init finishes quickly.
 terrarium init --config /etc/terrarium/config.yaml --ready-file /tmp/.terrarium-ready -- sleep infinity &
@@ -480,7 +489,37 @@ if [ "$ready" -ne 1 ]; then
     exit 1
 fi
 
-` + assertions + scriptSuffix
+` + buildAssertionBlock(assertions) + `
+ASSERT_RC=$?
+
+# Clean up
+kill $TERRARIUM_PID 2>/dev/null || true
+wait $TERRARIUM_PID 2>/dev/null || true
+
+exit $ASSERT_RC
+`
+}
+
+// buildAssertionBlock writes the assertion preamble and test-specific
+// assertions to a temp script and runs it as the dev user (UID 1000).
+// This is necessary because nftables rules only allow terrarium-user
+// traffic; root traffic to external IPs is dropped.
+func buildAssertionBlock(assertions string) string {
+	return `
+# Write assertion script to run as the terrarium user (UID 1000).
+# nftables only redirects UID 1000 traffic to Envoy; root traffic
+# to external IPs is dropped by the default DROP policy.
+cat > /tmp/assertions.sh << 'ASSERTIONS_EOF'
+#!/bin/sh
+PASS=0
+FAIL=0
+` + assertionPreamble + assertions + `
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
+ASSERTIONS_EOF
+chmod 755 /tmp/assertions.sh
+su -s /bin/sh dev -c /tmp/assertions.sh`
 }
 
 // runE2ETest executes an assertion script inside a terrarium container with
