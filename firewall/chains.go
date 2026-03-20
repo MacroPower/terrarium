@@ -456,7 +456,10 @@ func addFQDNPortRules(
 
 // addNATRules creates the NAT output chain with CIDR RETURN,
 // per-port REDIRECT, TCPForward REDIRECT, and catch-all TCP
-// REDIRECT rules.
+// REDIRECT rules. The catch-all sends non-policy-port traffic to
+// Envoy's catch-all TCP listener for access logging; that listener
+// immediately resets the connection (via the missing_sni_blackhole
+// cluster) rather than forwarding it.
 func addNATRules(
 	conn Conn, table *nftables.Table, cfg *config.Config,
 	resolvedPorts []int, cidr4, cidr6 []config.ResolvedCIDR,
@@ -500,7 +503,8 @@ func addNATRules(
 		})
 	}
 
-	// 4. Catch-all TCP REDIRECT -> ORIGINAL_DST listener.
+	// 4. Catch-all TCP REDIRECT -> catch-all TCP listener.
+	// Traffic is logged and then rejected by Envoy (not forwarded).
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(

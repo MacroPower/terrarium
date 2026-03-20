@@ -145,7 +145,7 @@ func GenerateEnvoyFromConfig(ctx context.Context, cfg *config.Config, certsDir, 
 	// Catch-all TCP and UDP listeners for non-blocked modes.
 	if !cfg.IsEgressBlocked() {
 		listeners = append(listeners,
-			envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, accessLog),
+			envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, cfg.IsEgressUnrestricted(), accessLog),
 			envoy.BuildCatchAllUDPListener(
 				config.CatchAllUDPProxyPort, envoySettings.UDPIdleTimeout.Duration, accessLog),
 		)

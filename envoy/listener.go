@@ -227,10 +227,23 @@ func BuildTCPForwardListener(
 }
 
 // BuildCatchAllTCPListener creates a TCP proxy [Listener] that handles
-// traffic not matched by specialized per-port listeners. The listener
-// uses ORIGINAL_DST to recover the real destination from conntrack
-// after nftables REDIRECT.
-func BuildCatchAllTCPListener(listenPort int, accessLog []AccessLog) Listener {
+// traffic not matched by specialized per-port listeners. The
+// original_dst listener filter recovers the real destination from
+// conntrack for accurate access log output.
+//
+// When open is true (unrestricted mode), the listener forwards traffic
+// to the original destination via the original_dst cluster. When false
+// (filtered mode), it routes to missing_sni_blackhole which has no
+// endpoints, immediately resetting the connection after logging. This
+// prevents the catch-all from bypassing policy: NAT fires before the
+// filter chain, so without Envoy-level rejection, non-policy-port
+// traffic would be silently forwarded.
+func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog) Listener {
+	cluster := "missing_sni_blackhole"
+	if open {
+		cluster = "original_dst"
+	}
+
 	return Listener{
 		Name: "catch_all_tcp",
 		Address: address{SocketAddress: socketAddress{
@@ -248,7 +261,7 @@ func BuildCatchAllTCPListener(listenPort int, accessLog []AccessLog) Listener {
 				TypedConfig: tcpProxyConfig{
 					AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
 					StatPrefix: "catch_all_tcp",
-					Cluster:    "original_dst",
+					Cluster:    cluster,
 					AccessLog:  accessLog,
 				},
 			}},
