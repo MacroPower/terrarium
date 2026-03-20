@@ -105,6 +105,7 @@ func (m *Tests) TestEgressAll(ctx context.Context) error {
 	g.Go(func() error { return m.TestEgressIcmpFqdn(ctx) })
 	g.Go(func() error { return m.TestEgressHeaderMatchMismatch(ctx) })
 	g.Go(func() error { return m.TestEgressServerNameBareWildcard(ctx) })
+	g.Go(func() error { return m.TestEgressFqdnWildcardHttpRbac(ctx) })
 
 	return g.Wait()
 }
@@ -249,6 +250,38 @@ assert_network_denied "https://denied.other-zone:443/" "multi-label-wildcard: wr
 `)
 
 	return runVariants(ctx, "fqdn-wildcard-multi-label", config, script, bindings)
+}
+
+// TestEgressFqdnWildcardHttpRbac verifies that the HTTP RBAC filter enforces
+// single-label wildcard depth on plain HTTP (port 80). This exercises
+// [envoy.buildWildcardHTTPRBACFilter] on the http_forward listener, which
+// validates the :authority header against the wildcard pattern. Without this
+// filter, multi-label subdomains could bypass the wildcard restriction over
+// plain HTTP.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-wildcard-http-rbac
+func (m *Tests) TestEgressFqdnWildcardHttpRbac(ctx context.Context) error {
+	config := `egress:
+  - toFQDNs:
+      - matchPattern: "*.target-zone"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+`
+	bindings := []serviceBinding{
+		targetService("one.target-zone", defaultNginxConf),
+		targetService("deep.sub.target-zone", defaultNginxConf),
+		targetService("denied.other-zone", defaultNginxConf),
+	}
+
+	script := assertionScript(`
+assert_allowed "http://one.target-zone:80/" "wildcard-http-rbac: single-label match allowed"
+assert_l7_denied "http://deep.sub.target-zone:80/" "GET" "wildcard-http-rbac: multi-label rejected by HTTP RBAC"
+assert_denied "http://denied.other-zone:80/" "wildcard-http-rbac: wrong zone denied"
+`)
+
+	return runVariants(ctx, "fqdn-wildcard-http-rbac", config, script, bindings)
 }
 
 // TestEgressFqdnBareWildcard verifies that matchPattern: "*" allows all FQDNs
