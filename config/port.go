@@ -41,10 +41,8 @@ const (
 	ProtoTCP = "TCP"
 	// ProtoUDP is the canonical protocol string for UDP.
 	ProtoUDP = "UDP"
-	// ProtoSCTP is the canonical protocol string for SCTP.
-	ProtoSCTP = "SCTP"
 	// ProtoAny is the canonical protocol string for ANY (matches
-	// TCP, UDP, and SCTP). Empty protocol is normalized to this value.
+	// TCP and UDP). Empty protocol is normalized to this value.
 	ProtoAny = "ANY"
 )
 
@@ -129,18 +127,13 @@ func ResolvePort(ctx context.Context, s string) (uint16, error) {
 
 // normalizeProtocol converts a protocol string to the canonical form.
 // Valid input is already uppercase (validated by [validProtocols]), so
-// this mainly handles empty strings (mapped to [ProtoAny]). Under
-// Cilium semantics, an omitted or ANY protocol means TCP, UDP, and
-// SCTP (per SupportedProtocols(), which returns all three
-// unconditionally).
+// this mainly handles empty strings (mapped to [ProtoAny]).
 func normalizeProtocol(proto string) string {
 	switch proto {
 	case ProtoTCP:
 		return ProtoTCP
 	case ProtoUDP:
 		return ProtoUDP
-	case ProtoSCTP:
-		return ProtoSCTP
 	case "", ProtoAny:
 		return ProtoAny
 	default:

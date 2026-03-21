@@ -53,7 +53,7 @@ var (
 	// IP-layer protocols without ports and cannot be expressed in the
 	// terrarium's port-based model.
 	validProtocols = map[string]bool{
-		"": true, ProtoTCP: true, ProtoUDP: true, ProtoSCTP: true, ProtoAny: true,
+		"": true, ProtoTCP: true, ProtoUDP: true, ProtoAny: true,
 	}
 
 	// entityCIDRs maps each supported toEntities value to the CIDRs

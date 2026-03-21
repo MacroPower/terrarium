@@ -894,18 +894,11 @@ func TestResolveOpenPortRules(t *testing.T) {
 			})},
 			want: []config.ResolvedOpenPort{{Port: 5353, Protocol: "UDP"}},
 		},
-		"SCTP open port": {
-			cfg: &config.Config{Egress: egressRules(config.EgressRule{
-				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "3868", Protocol: "SCTP"}}}},
-			})},
-			want: []config.ResolvedOpenPort{{Port: 3868, Protocol: "SCTP"}},
-		},
 		"ANY protocol open port expands": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080", Protocol: "ANY"}}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 8080, Protocol: "SCTP"},
 				{Port: 8080, Protocol: "TCP"},
 				{Port: 8080, Protocol: "UDP"},
 			},
@@ -915,7 +908,6 @@ func TestResolveOpenPortRules(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080"}}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 8080, Protocol: "SCTP"},
 				{Port: 8080, Protocol: "TCP"},
 				{Port: 8080, Protocol: "UDP"},
 			},
@@ -951,7 +943,6 @@ func TestResolveOpenPortRules(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8000", EndPort: 9000}}}},
 			})},
 			want: []config.ResolvedOpenPort{
-				{Port: 8000, EndPort: 9000, Protocol: "SCTP"},
 				{Port: 8000, EndPort: 9000, Protocol: "TCP"},
 				{Port: 8000, EndPort: 9000, Protocol: "UDP"},
 			},
@@ -1074,23 +1065,13 @@ func TestResolveFQDNNonTCPPorts(t *testing.T) {
 				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 443, Protocol: "UDP"}}},
 			},
 		},
-		"FQDN SCTP port": {
-			cfg: &config.Config{Egress: egressRules(config.EgressRule{
-				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "3868", Protocol: "SCTP"}}}},
-			})},
-			want: []config.FQDNRulePorts{
-				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 3868, Protocol: "SCTP"}}},
-			},
-		},
-		"FQDN ANY port expands to udp and sctp": {
+		"FQDN ANY port expands to udp": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 			})},
 			want: []config.FQDNRulePorts{
 				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{
-					{Port: 443, Protocol: "SCTP"},
 					{Port: 443, Protocol: "UDP"},
 				}},
 			},
@@ -1241,18 +1222,6 @@ func TestResolvePorts(t *testing.T) {
 					ToPorts: []config.PortRule{{Ports: []config.Port{
 						{Port: "443", Protocol: "TCP"},
 						{Port: "5353", Protocol: "UDP"},
-					}}},
-				}),
-			},
-			want: []int{443},
-		},
-		"SCTP-only port excluded": {
-			cfg: &config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-					ToPorts: []config.PortRule{{Ports: []config.Port{
-						{Port: "443", Protocol: "TCP"},
-						{Port: "3868", Protocol: "SCTP"},
 					}}},
 				}),
 			},
@@ -1438,10 +1407,8 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 80, Protocol: "SCTP"},
 					{Port: 80, Protocol: "TCP"},
 					{Port: 80, Protocol: "UDP"},
-					{Port: 443, Protocol: "SCTP"},
 					{Port: 443, Protocol: "TCP"},
 					{Port: 443, Protocol: "UDP"},
 				}},
@@ -1485,12 +1452,10 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 53, Protocol: "SCTP"},
 					{Port: 53, Protocol: "TCP"},
 					{Port: 53, Protocol: "UDP"},
 				}, RuleIndex: 0},
 				{CIDR: "1.1.1.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 443, Protocol: "SCTP"},
 					{Port: 443, Protocol: "TCP"},
 					{Port: 443, Protocol: "UDP"},
 				}, RuleIndex: 1},
@@ -1552,7 +1517,6 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 53, Protocol: "SCTP"},
 					{Port: 53, Protocol: "TCP"},
 					{Port: 53, Protocol: "UDP"},
 				}},
@@ -1567,7 +1531,6 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 8000, EndPort: 9000, Protocol: "SCTP"},
 					{Port: 8000, EndPort: 9000, Protocol: "TCP"},
 					{Port: 8000, EndPort: 9000, Protocol: "UDP"},
 				}},
@@ -1591,7 +1554,6 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "10.0.0.0/8", Ports: []config.ResolvedPortProto{
-					{Port: 443, Protocol: "SCTP"},
 					{Port: 443, Protocol: "TCP"},
 					{Port: 443, Protocol: "UDP"},
 				}, RuleIndex: 0},
@@ -1608,7 +1570,7 @@ func TestResolveCIDRRules(t *testing.T) {
 				{CIDR: "10.0.0.0/8"},
 			},
 		},
-		"ANY expands to TCP UDP SCTP": {
+		"ANY expands to TCP UDP": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToCIDRSet: []config.CIDRRule{{CIDR: "8.8.8.0/24"}},
@@ -1617,22 +1579,8 @@ func TestResolveCIDRRules(t *testing.T) {
 			},
 			wantIPv4: []config.ResolvedCIDR{
 				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 53, Protocol: "SCTP"},
 					{Port: 53, Protocol: "TCP"},
 					{Port: 53, Protocol: "UDP"},
-				}},
-			},
-		},
-		"explicit SCTP preserved": {
-			cfg: &config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToCIDRSet: []config.CIDRRule{{CIDR: "8.8.8.0/24"}},
-					ToPorts:   []config.PortRule{{Ports: []config.Port{{Port: "3868", Protocol: "SCTP"}}}},
-				}),
-			},
-			wantIPv4: []config.ResolvedCIDR{
-				{CIDR: "8.8.8.0/24", Ports: []config.ResolvedPortProto{
-					{Port: 3868, Protocol: "SCTP"},
 				}},
 			},
 		},
@@ -2024,7 +1972,6 @@ func TestResolveDenyPortOnlyRules(t *testing.T) {
 				}),
 			},
 			want: []config.ResolvedPortProto{
-				{Port: 53, Protocol: "SCTP"},
 				{Port: 53, Protocol: "TCP"},
 				{Port: 53, Protocol: "UDP"},
 			},

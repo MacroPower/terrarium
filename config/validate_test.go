@@ -577,13 +577,14 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
-		"SCTP protocol": {
+		"SCTP protocol rejected": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToCIDRSet: []config.CIDRRule{{CIDR: "0.0.0.0/0"}},
 					ToPorts:   []config.PortRule{{Ports: []config.Port{{Port: "80", Protocol: "SCTP"}}}},
 				}),
 			},
+			err: config.ErrProtocolInvalid,
 		},
 		"invalid protocol": {
 			cfg: &config.Config{
@@ -1321,18 +1322,6 @@ func TestValidate(t *testing.T) {
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
 					ToPorts: []config.PortRule{{
 						Ports: []config.Port{{Port: "443", Protocol: "UDP"}},
-						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
-					}},
-				}),
-			},
-			err: config.ErrL7RequiresTCP,
-		},
-		"L7 with SCTP protocol rejected": {
-			cfg: &config.Config{
-				Egress: egressRules(config.EgressRule{
-					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
-					ToPorts: []config.PortRule{{
-						Ports: []config.Port{{Port: "80", Protocol: "SCTP"}},
 						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 					}},
 				}),

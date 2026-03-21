@@ -195,7 +195,6 @@ graph TD
     nft -- "FQDN traffic" --> envoy
     nft -- "CIDR TCP traffic" --> envoy
     nft -- "CIDR UDP traffic" --> envoy
-    nft -- "SCTP traffic" --> upstream
     envoy --> upstream
 ```
 
@@ -292,7 +291,7 @@ policy. Three modes:
   OR semantics, FQDN IP sets with per-element TTLs, Envoy MITM for L7 inspection.
   All TCP (FQDN and CIDR) is routed through Envoy; CIDR TCP uses a dedicated
   catch-all listener forwarding via original_dst. UDP is routed through Envoy
-  via TPROXY. SCTP bypasses Envoy (no TPROXY or NAT REDIRECT).
+  via TPROXY.
 
 ### Traffic routing
 

@@ -19,11 +19,9 @@ var (
 	ErrPortInvalid = errors.New("port must be 0-65535 or a known service name")
 
 	// ErrProtocolInvalid is returned when a [Port] has an unrecognized
-	// protocol. Valid values are TCP, UDP, SCTP, ANY, or empty (defaults
-	// to ANY). Under Cilium semantics, ANY expands to TCP, UDP, and
-	// SCTP (per SupportedProtocols(), which returns all three
-	// unconditionally).
-	ErrProtocolInvalid = errors.New("invalid protocol: must be TCP, UDP, SCTP, ANY, or empty")
+	// protocol. Valid values are TCP, UDP, ANY, or empty (defaults
+	// to ANY).
+	ErrProtocolInvalid = errors.New("invalid protocol: must be TCP, UDP, ANY, or empty")
 
 	// ErrEndPortInvalid is returned when a [Port] has an endPort that
 	// exceeds 65535 or is less than the port.
@@ -139,7 +137,7 @@ var (
 
 	// ErrL7RequiresTCP is returned when L7 HTTP rules are paired with
 	// a non-TCP protocol. Envoy's HTTP connection manager requires TCP
-	// streams; UDP, SCTP, and ANY are invalid with L7 HTTP rules.
+	// streams; UDP and ANY are invalid with L7 HTTP rules.
 	// Empty protocol is allowed (implies TCP). Cilium's
 	// PortRule.sanitize() rejects empty too (it normalizes to ANY
 	// first), but terrarium intentionally permits it to reduce

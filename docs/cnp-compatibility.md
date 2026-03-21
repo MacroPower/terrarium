@@ -271,6 +271,16 @@ concept not visible at the nftables stage; serverNames on deny rules would be
 silently ignored. Cilium's EgressDenyRule does not structurally have
 serverNames, so the scenario does not arise there.
 
+### SCTP not supported
+
+Cilium's ANY protocol expands to TCP, UDP, and SCTP. Terrarium only supports
+TCP and UDP; ANY expands to those two protocols. Specifying `protocol: SCTP`
+is a validation error. Envoy has no SCTP proxy filter, so SCTP traffic cannot
+be intercepted for access logging or L7 inspection. Rather than silently
+passing SCTP through the firewall without Envoy visibility, Terrarium rejects
+it outright. Policies that rely on SCTP must remove those entries before use
+with Terrarium.
+
 ### Port resolution
 
 Cilium resolves named ports dynamically from Kubernetes pod specs

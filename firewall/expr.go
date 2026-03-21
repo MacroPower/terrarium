@@ -332,8 +332,6 @@ func protoNum(proto string) byte {
 		return unix.IPPROTO_TCP
 	case config.ProtoUDP:
 		return unix.IPPROTO_UDP
-	case config.ProtoSCTP:
-		return unix.IPPROTO_SCTP
 	default:
 		return 0
 	}

@@ -403,9 +403,9 @@ type PortRule struct {
 type Port struct {
 	// Port is the port number or IANA service name (e.g. "443", "https").
 	Port string `yaml:"port"`
-	// Protocol is the transport protocol: "TCP", "UDP", "SCTP", "ANY",
-	// or empty (defaults to ANY when omitted). "ANY" matches TCP, UDP,
-	// and SCTP.
+	// Protocol is the transport protocol: "TCP", "UDP", "ANY",
+	// or empty (defaults to ANY when omitted). "ANY" matches TCP
+	// and UDP.
 	Protocol string `yaml:"protocol,omitempty"`
 	// EndPort specifies the upper bound of a port range. When set, the
 	// rule matches ports from Port to EndPort inclusive. Valid with CIDR
@@ -557,7 +557,7 @@ func (r ResolvedRule) IsRestricted() bool {
 
 // ResolvedPortProto is a resolved port with protocol and optional range.
 type ResolvedPortProto struct {
-	Protocol string // "TCP", "UDP", "SCTP", or "ANY"
+	Protocol string // "TCP", "UDP", or "ANY"
 	Port     int
 	EndPort  int // 0 = no range
 }

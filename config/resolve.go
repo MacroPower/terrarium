@@ -372,7 +372,7 @@ func portRuleMatchesPort(ctx context.Context, pr PortRule, port int) bool {
 // portRuleHasTCPPort reports whether a [PortRule] contains a
 // TCP-compatible port entry matching the given port number. An entry is
 // TCP-compatible when its protocol is TCP, ANY, or empty (the default).
-// This prevents non-TCP entries (UDP, SCTP) from nullifying TCP L7
+// This prevents non-TCP entries (UDP) from nullifying TCP L7
 // rules during intra-rule L7 resolution, matching Cilium's per-(port,
 // protocol) L4Filter semantics.
 func portRuleHasTCPPort(ctx context.Context, pr PortRule, port int) bool {
@@ -385,7 +385,7 @@ func portRuleHasTCPPort(ctx context.Context, pr PortRule, port int) bool {
 	for _, p := range pr.Ports {
 		proto := normalizeProtocol(p.Protocol)
 		if proto != ProtoAny && proto != ProtoTCP {
-			continue // UDP, SCTP -- skip
+			continue // UDP -- skip
 		}
 
 		resolved, err := ResolvePort(ctx, p.Port)
@@ -490,7 +490,7 @@ func (c *Config) ResolveDomains(ctx context.Context) []string {
 // rules. Returns nil when egress is unrestricted or blocked, since
 // neither mode needs Envoy FQDN listeners. CIDR-only rules
 // (toCIDRSet without toFQDNs) are skipped because they bypass Envoy.
-// Ports that are exclusively non-TCP (e.g. UDP-only or SCTP-only) are
+// Ports that are exclusively non-TCP (e.g. UDP-only) are
 // excluded since Envoy only creates TCP listeners. Ports from
 // FQDN-bearing rules and single-port toPorts-only rules (no L3
 // selectors) both contribute to the resolved set. Open-port ranges
@@ -537,7 +537,7 @@ func (c *Config) ResolvePorts(ctx context.Context) []int {
 		// FQDN rules without toPorts (catch-all) are handled by
 		// [Config.ResolveCatchAllFQDNRules] and don't need Envoy
 		// listeners. Skip ports that are exclusively non-TCP (e.g.
-		// UDP-only or SCTP-only), since Envoy only handles TCP
+		// UDP-only), since Envoy only handles TCP
 		// listeners. Open-port ranges bypass Envoy via direct
 		// iptables ACCEPT; they don't need REDIRECT listeners.
 		for _, pr := range rules[ri].ToPorts {
@@ -629,7 +629,7 @@ func (c *Config) HasUnrestrictedOpenPorts(ctx context.Context) bool {
 // ResolveOpenPortRules returns resolved open port entries from rules
 // that have toPorts but neither toFQDNs nor toCIDRSet. These ports
 // allow all destinations (passthrough without domain filtering). ANY
-// protocol is expanded into separate TCP, UDP, and SCTP entries.
+// protocol is expanded into separate TCP and UDP entries.
 func (c *Config) ResolveOpenPortRules(ctx context.Context) []ResolvedOpenPort {
 	seen := make(map[string]bool)
 
@@ -652,7 +652,7 @@ func (c *Config) ResolveOpenPortRules(ctx context.Context) []ResolvedOpenPort {
 				proto := normalizeProtocol(p.Protocol)
 				protos := []string{proto}
 				if proto == ProtoAny {
-					protos = []string{ProtoTCP, ProtoUDP, ProtoSCTP}
+					protos = []string{ProtoTCP, ProtoUDP}
 				}
 
 				for _, pr := range protos {
@@ -701,7 +701,7 @@ func (c *Config) ResolveOpenPorts(ctx context.Context) []int {
 }
 
 // ruleHasNonTCPPorts reports whether an egress rule has any ports with
-// a non-TCP protocol (UDP, SCTP, or ANY which expands to UDP).
+// a non-TCP protocol (UDP or ANY which expands to UDP).
 func ruleHasNonTCPPorts(rule EgressRule) bool {
 	for _, pr := range rule.ToPorts {
 		for _, p := range pr.Ports {
@@ -723,7 +723,7 @@ func ruleHasNonTCPPorts(rule EgressRule) bool {
 // IPs (the security decision). TPROXY independently routes all
 // terrarium UDP through Envoy for access logging, but the filter
 // chain ACCEPT here is what permits the traffic. ANY protocol is
-// expanded into UDP and SCTP entries (TCP is handled by
+// expanded into UDP entries (TCP is handled by
 // [Config.ResolvePorts] + Envoy). Returns nil when egress is
 // unrestricted, blocked, or has no FQDN rules with non-TCP ports.
 func (c *Config) ResolveFQDNNonTCPPorts(ctx context.Context) []FQDNRulePorts {
@@ -765,11 +765,11 @@ func (c *Config) ResolveFQDNNonTCPPorts(ctx context.Context) []FQDNRulePorts {
 				switch proto {
 				case ProtoTCP:
 					continue
-				case ProtoUDP, ProtoSCTP:
+				case ProtoUDP:
 					protos = []string{proto}
 				case ProtoAny:
 					// ANY: expand to non-TCP protocols only.
-					protos = []string{ProtoUDP, ProtoSCTP}
+					protos = []string{ProtoUDP}
 				}
 
 				for _, pr := range protos {
@@ -1112,11 +1112,11 @@ func resolvePortsFromPortRules(ctx context.Context, portRules []PortRule) []Reso
 
 			n := int(resolved)
 			proto := normalizeProtocol(p.Protocol)
-			// Expand ANY protocol into separate TCP, UDP, and SCTP
-			// entries so port matching always has a concrete protocol.
+			// Expand ANY protocol into separate TCP and UDP entries
+			// so port matching always has a concrete protocol.
 			protos := []string{proto}
 			if proto == ProtoAny {
-				protos = []string{ProtoTCP, ProtoUDP, ProtoSCTP}
+				protos = []string{ProtoTCP, ProtoUDP}
 			}
 
 			for _, expandedProto := range protos {
