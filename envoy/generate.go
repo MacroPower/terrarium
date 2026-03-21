@@ -2,26 +2,34 @@ package envoy
 
 import "go.jacobcolvin.com/terrarium/config"
 
-// accessLogFormat extends Envoy's default access log format with
-// %REQUESTED_SERVER_NAME% so that the TLS SNI is visible for TCP
-// proxy and TLS passthrough connections, where standard HTTP fields
-// (method, path, authority) are empty.
-const accessLogFormat = `[%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" ` +
-	`%RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% ` +
-	`%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" ` +
-	`"%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%" "%REQUESTED_SERVER_NAME%"` + "\n"
+// accessLogFormat uses logfmt key=value pairs for structured, grep-friendly
+// access logs. Values that may contain spaces are quoted. The format includes
+// %REQUESTED_SERVER_NAME% so that the TLS SNI is visible for TCP proxy and
+// TLS passthrough connections, where standard HTTP fields are empty.
+const accessLogFormat = `time=%START_TIME% method=%REQ(:METHOD)% ` +
+	`path="%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%" protocol=%PROTOCOL% ` +
+	`status=%RESPONSE_CODE% flags=%RESPONSE_FLAGS% ` +
+	`rx_bytes=%BYTES_RECEIVED% tx_bytes=%BYTES_SENT% duration=%DURATION% ` +
+	`upstream_time=%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% ` +
+	`forwarded_for="%REQ(X-FORWARDED-FOR)%" ` +
+	`user_agent="%REQ(USER-AGENT)%" ` +
+	`request_id="%REQ(X-REQUEST-ID)%" ` +
+	`authority="%REQ(:AUTHORITY)%" ` +
+	`upstream=%UPSTREAM_HOST% sni="%REQUESTED_SERVER_NAME%"` + "\n"
 
-// BuildAccessLog returns Envoy stderr access log config when logging is
-// enabled, or nil when disabled.
-func BuildAccessLog(logging bool) []AccessLog {
+// BuildAccessLog returns Envoy file access log config when logging is
+// enabled, or nil when disabled. The path specifies the output file
+// for access log entries.
+func BuildAccessLog(logging bool, path string) []AccessLog {
 	if !logging {
 		return nil
 	}
 
 	return []AccessLog{{
-		Name: "envoy.access_loggers.stderr",
-		TypedConfig: stderrAccessLogConfig{
-			AtType: "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StderrAccessLog",
+		Name: "envoy.access_loggers.file",
+		TypedConfig: fileAccessLogConfig{
+			AtType: "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+			Path:   path,
 			LogFormat: &substitutionFormatString{
 				TextFormatSource: dataSource{
 					InlineString: accessLogFormat,

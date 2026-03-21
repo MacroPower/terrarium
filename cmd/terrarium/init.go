@@ -280,35 +280,9 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	var envoyCmd *exec.Cmd
 
 	if needsEnvoy {
-		//nolint:gosec // G204: args from config.User populated via CLI flags.
-		// Envoy v1.37 added cgroup-aware CPU detection that uses
-		// conservative floor rounding. In constrained containers
-		// this can reduce worker threads to 1. Pin to 2 for
-		// stable listener handling.
-		envoyCmd = exec.CommandContext(ctx, "/proc/self/exe", "exec",
-			"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups",
-			"--inh-caps=+cap_net_admin", "--ambient-caps=+cap_net_admin",
-			"--", "envoy", "-c", usr.EnvoyConfigPath, "--log-level", envoySettings.LogLevel,
-			"--concurrency", "2")
-		envoyCmd.Stdout = os.Stdout
-		envoyCmd.Stderr = os.Stderr
-
-		err := envoyCmd.Start()
+		envoyCmd, err = startEnvoy(ctx, usr, envoySettings, cfg)
 		if err != nil {
-			return fmt.Errorf("starting envoy: %w", err)
-		}
-
-		// Wait on the first available listener port.
-		waitPort := firstListenerPort(ctx, cfg)
-
-		err = waitForListener(ctx, fmt.Sprintf("127.0.0.1:%d", waitPort), envoySettings.StartupTimeout.Duration)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
-		}
-
-		err = envoyCmd.Process.Signal(syscall.Signal(0))
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
+			return err
 		}
 	}
 
@@ -566,6 +540,92 @@ func waitForListener(ctx context.Context, addr string, timeout time.Duration) er
 
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// startEnvoy prepares the log files, starts the Envoy process, and
+// waits for the first listener to become ready.
+func startEnvoy(
+	ctx context.Context, usr *config.User,
+	settings config.EnvoySettings, cfg *config.Config,
+) (*exec.Cmd, error) {
+	envoyUID := mustAtoi(usr.EnvoyUID)
+
+	err := prepareEnvoyLogFile(usr.EnvoyLogPath, envoyUID)
+	if err != nil {
+		return nil, err
+	}
+
+	err = prepareEnvoyLogFile(usr.EnvoyAccessLogPath, envoyUID)
+	if err != nil {
+		return nil, err
+	}
+
+	//nolint:gosec // G204: args from config.User populated via CLI flags.
+	// Envoy v1.37 added cgroup-aware CPU detection that uses
+	// conservative floor rounding. In constrained containers
+	// this can reduce worker threads to 1. Pin to 2 for
+	// stable listener handling.
+	cmd := exec.CommandContext(ctx, "/proc/self/exe", "exec",
+		"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups",
+		"--inh-caps=+cap_net_admin", "--ambient-caps=+cap_net_admin",
+		"--", "envoy", "-c", usr.EnvoyConfigPath,
+		"--log-level", settings.LogLevel,
+		"--log-path", usr.EnvoyLogPath,
+		"--concurrency", "2")
+
+	err = cmd.Start()
+	if err != nil {
+		return nil, fmt.Errorf("starting envoy: %w", err)
+	}
+
+	// Wait on the first available listener port.
+	waitPort := firstListenerPort(ctx, cfg)
+
+	err = waitForListener(ctx, fmt.Sprintf("127.0.0.1:%d", waitPort), settings.StartupTimeout.Duration)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
+	}
+
+	err = cmd.Process.Signal(syscall.Signal(0))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
+	}
+
+	return cmd, nil
+}
+
+// prepareEnvoyLogFile creates the log file's parent directory, ensures
+// the path is traversable by unprivileged users, and pre-creates the
+// file owned by the Envoy UID with world-readable permissions so the
+// terrarium user can read it.
+func prepareEnvoyLogFile(path string, ownerUID int) error {
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
+	if err != nil {
+		return fmt.Errorf("creating log directory: %w", err)
+	}
+
+	//nolint:gosec // G302: world-readable so the terrarium user can read envoy logs.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("creating log file: %w", err)
+	}
+
+	closeErr := f.Close()
+	if closeErr != nil {
+		return fmt.Errorf("closing log file: %w", closeErr)
+	}
+
+	err = os.Chown(path, ownerUID, ownerUID)
+	if err != nil {
+		return fmt.Errorf("chown log file: %w", err)
+	}
+
+	err = ensurePathTraversable(path)
+	if err != nil {
+		return fmt.Errorf("making log path traversable: %w", err)
+	}
+
+	return nil
 }
 
 func mustAtoi(s string) int {

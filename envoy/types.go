@@ -152,6 +152,14 @@ type stderrAccessLogConfig struct {
 	AtType    string                    `yaml:"@type"`
 }
 
+// fileAccessLogConfig models the FileAccessLog typed config that writes
+// access log entries to a file on disk.
+type fileAccessLogConfig struct {
+	LogFormat *substitutionFormatString `yaml:"log_format,omitempty"`
+	AtType    string                    `yaml:"@type"`
+	Path      string                    `yaml:"path"`
+}
+
 // substitutionFormatString models Envoy's SubstitutionFormatString
 // with a text_format_source field for command-operator log formatting.
 type substitutionFormatString struct {

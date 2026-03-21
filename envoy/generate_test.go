@@ -20,14 +20,14 @@ func TestBuildAccessLog(t *testing.T) {
 		wantName string
 	}{
 		"disabled": {logging: false},
-		"enabled":  {logging: true, wantLen: 1, wantName: "envoy.access_loggers.stderr"},
+		"enabled":  {logging: true, wantLen: 1, wantName: "envoy.access_loggers.file"},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			logs := envoy.BuildAccessLog(tt.logging)
+			logs := envoy.BuildAccessLog(tt.logging, "/tmp/access.log")
 			if tt.wantLen == 0 {
 				assert.Nil(t, logs)
 				return
@@ -75,7 +75,7 @@ func TestBuildCatchAllUDPListener(t *testing.T) {
 func TestBuildCatchAllUDPListener_WithAccessLog(t *testing.T) {
 	t.Parallel()
 
-	accessLog := envoy.BuildAccessLog(true)
+	accessLog := envoy.BuildAccessLog(true, "/tmp/access.log")
 	l := envoy.BuildCatchAllUDPListener(15002, 120*time.Second, accessLog)
 
 	require.Len(t, l.ListenerFilters, 1)
@@ -86,5 +86,5 @@ func TestBuildCatchAllUDPListener_WithAccessLog(t *testing.T) {
 
 	y := string(out)
 	assert.Contains(t, y, "idle_timeout: 120s")
-	assert.Contains(t, y, "envoy.access_loggers.stderr")
+	assert.Contains(t, y, "envoy.access_loggers.file")
 }

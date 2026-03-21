@@ -57,3 +57,25 @@ func envoyConfigDefault() string {
 
 	return filepath.Join(userStateDir(), "terrarium", "envoy.yaml")
 }
+
+// envoyLogDefault returns the default Envoy process log file path.
+// It prefers $XDG_RUNTIME_DIR/terrarium/envoy.log, falling back to
+// the state directory.
+func envoyLogDefault() string {
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+		return filepath.Join(d, "terrarium", "envoy.log")
+	}
+
+	return filepath.Join(userStateDir(), "terrarium", "envoy.log")
+}
+
+// envoyAccessLogDefault returns the default Envoy access log file path.
+// It prefers $XDG_RUNTIME_DIR/terrarium/envoy-access.log, falling back
+// to the state directory.
+func envoyAccessLogDefault() string {
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+		return filepath.Join(d, "terrarium", "envoy-access.log")
+	}
+
+	return filepath.Join(userStateDir(), "terrarium", "envoy-access.log")
+}

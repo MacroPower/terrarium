@@ -599,49 +599,55 @@ type FQDNRulePorts struct {
 // individual names before calling [User.RegisterFlags] to customize
 // the flag interface. Create instances with [NewUser].
 type UserFlags struct {
-	UID             string
-	GID             string
-	EnvoyUID        string
-	Username        string
-	HomeDir         string
-	ConfigPath      string
-	CertsDir        string
-	CADir           string
-	EnvoyConfigPath string
-	ReadyFile       string
+	UID                string
+	GID                string
+	EnvoyUID           string
+	Username           string
+	HomeDir            string
+	ConfigPath         string
+	CertsDir           string
+	CADir              string
+	EnvoyConfigPath    string
+	EnvoyLogPath       string
+	EnvoyAccessLogPath string
+	ReadyFile          string
 }
 
 // User holds identity and path values for the terrarium container user.
 // These values are passed from the CLI entrypoint so library packages
 // have no baked-in assumptions. Create instances with [NewUser].
 type User struct {
-	UID             string
-	GID             string
-	EnvoyUID        string
-	Username        string
-	HomeDir         string
-	ConfigPath      string
-	CertsDir        string
-	CADir           string
-	EnvoyConfigPath string
-	ReadyFile       string
-	Flags           UserFlags
+	UID                string
+	GID                string
+	EnvoyUID           string
+	Username           string
+	HomeDir            string
+	ConfigPath         string
+	CertsDir           string
+	CADir              string
+	EnvoyConfigPath    string
+	EnvoyLogPath       string
+	EnvoyAccessLogPath string
+	ReadyFile          string
+	Flags              UserFlags
 }
 
 // NewUser creates a new [*User] with default flag names.
 func NewUser() *User {
 	return &User{
 		Flags: UserFlags{
-			UID:             "uid",
-			GID:             "gid",
-			EnvoyUID:        "envoy-uid",
-			Username:        "username",
-			HomeDir:         "home-dir",
-			ConfigPath:      "config",
-			CertsDir:        "certs-dir",
-			CADir:           "ca-dir",
-			EnvoyConfigPath: "envoy-config",
-			ReadyFile:       "ready-file",
+			UID:                "uid",
+			GID:                "gid",
+			EnvoyUID:           "envoy-uid",
+			Username:           "username",
+			HomeDir:            "home-dir",
+			ConfigPath:         "config",
+			CertsDir:           "certs-dir",
+			CADir:              "ca-dir",
+			EnvoyConfigPath:    "envoy-config",
+			EnvoyLogPath:       "envoy-log",
+			EnvoyAccessLogPath: "envoy-access-log",
+			ReadyFile:          "ready-file",
 		},
 	}
 }
@@ -664,6 +670,10 @@ func (u *User) RegisterFlags(flags *pflag.FlagSet) {
 		filepath.Join(userDataDir(), "terrarium", "ca"), "CA cert and key directory")
 	flags.StringVar(&u.EnvoyConfigPath, u.Flags.EnvoyConfigPath,
 		envoyConfigDefault(), "Envoy config output path")
+	flags.StringVar(&u.EnvoyLogPath, u.Flags.EnvoyLogPath,
+		envoyLogDefault(), "Envoy process log file path")
+	flags.StringVar(&u.EnvoyAccessLogPath, u.Flags.EnvoyAccessLogPath,
+		envoyAccessLogDefault(), "Envoy access log file path")
 	flags.StringVar(&u.ReadyFile, u.Flags.ReadyFile,
 		"", "path to create when init is ready")
 }

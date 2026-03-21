@@ -114,7 +114,7 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 	envoyResults := make([]string, iterations)
 
 	for i := range iterations {
-		envoy, err := GenerateEnvoyFromConfig(t.Context(), cfg, "", "")
+		envoy, err := GenerateEnvoyFromConfig(t.Context(), cfg, "", "", "")
 		require.NoError(t, err)
 
 		envoyResults[i] = envoy
@@ -1030,7 +1030,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			conf, err := GenerateEnvoyFromConfig(t.Context(), tt.cfg, tt.certsDir, "")
+			conf, err := GenerateEnvoyFromConfig(t.Context(), tt.cfg, tt.certsDir, "", "")
 			require.NoError(t, err)
 
 			for _, s := range tt.want {

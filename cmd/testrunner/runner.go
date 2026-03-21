@@ -166,14 +166,29 @@ func run(s spec) int {
 func validateEnvoy(configPath string) error {
 	ctx := context.Background()
 
+	// Create a temporary access log file so Envoy validation can open
+	// the path referenced in the generated config.
+	accessLog := "/tmp/envoy-validate-access.log"
+
+	f, err := os.Create(accessLog)
+	if err != nil {
+		return fmt.Errorf("creating access log for validation: %w", err)
+	}
+
+	closeErr := f.Close()
+	if closeErr != nil {
+		slog.Debug("closing access log for validation", slog.Any("err", closeErr))
+	}
+
 	genCmd := exec.CommandContext(ctx, "terrarium", "generate",
 		"--config", configPath,
 		"--envoy-config", "/tmp/envoy-validate.yaml",
+		"--envoy-access-log", accessLog,
 	)
 	genCmd.Stdout = os.Stdout
 	genCmd.Stderr = os.Stderr
 
-	err := genCmd.Run()
+	err = genCmd.Run()
 	if err != nil {
 		return fmt.Errorf("terrarium generate: %w", err)
 	}
@@ -193,6 +208,11 @@ func validateEnvoy(configPath string) error {
 	rmErr := os.Remove("/tmp/envoy-validate.yaml")
 	if rmErr != nil {
 		slog.Debug("removing envoy config", slog.Any("err", rmErr))
+	}
+
+	rmErr = os.Remove(accessLog)
+	if rmErr != nil {
+		slog.Debug("removing access log for validation", slog.Any("err", rmErr))
 	}
 
 	return nil

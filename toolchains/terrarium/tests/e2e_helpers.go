@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"dagger/tests/internal/dagger"
 
@@ -18,6 +19,15 @@ const (
 	// container. The testrunner appends it to the system CA bundle at
 	// runtime before terrarium init reads it.
 	testCAPath = "/tmp/test-ca.pem"
+
+	// envoyLogPath is the default Envoy process log file path inside
+	// the container. With HOME=/root and no XDG_RUNTIME_DIR, the XDG
+	// state fallback resolves to this path.
+	envoyLogPath = "/root/.local/state/terrarium/envoy.log"
+
+	// envoyAccessLogPath is the default Envoy access log file path
+	// inside the container.
+	envoyAccessLogPath = "/root/.local/state/terrarium/envoy-access.log"
 )
 
 // testCACert and testCAKey are a static CA used to sign upstream
@@ -181,7 +191,7 @@ func tcpEchoService(hostname string, port int) serviceBinding {
 			Args: []string{
 				"socat",
 				fmt.Sprintf("TCP-LISTEN:%d,fork,reuseaddr", port),
-				"EXEC:echo TCP_FORWARD_OK",
+				`SYSTEM:echo TCP_FORWARD_OK; sleep 1`,
 			},
 		}).
 		WithHostname(hostname)
@@ -413,11 +423,42 @@ func withConfigReplacements(replacements map[string]string) testOption {
 
 // withPostExec returns a [testOption] that registers a callback invoked
 // after the testrunner completes successfully. The callback receives the
-// executed container for stdout/stderr inspection.
+// executed container for file and output inspection.
 func withPostExec(fn func(ctx context.Context, variant string, ctr *dagger.Container) error) testOption {
 	return funcOption(func(tc *testCase) {
 		tc.postExec = fn
 	})
+}
+
+// accessLogContains returns a [withPostExec] callback that reads the
+// Envoy access log file from the container and checks that it contains
+// the given substring.
+func accessLogContains(substr, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return fileContains(envoyAccessLogPath, substr, msg)
+}
+
+// envoyLogContains returns a [withPostExec] callback that reads the
+// Envoy process log file from the container and checks that it
+// contains the given substring.
+func envoyLogContains(substr, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return fileContains(envoyLogPath, substr, msg)
+}
+
+// fileContains returns a [withPostExec] callback that reads a file from
+// the container and checks that it contains the given substring.
+func fileContains(path, substr, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		contents, err := ctr.File(path).Contents(ctx)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", path, err)
+		}
+
+		if !strings.Contains(contents, substr) {
+			return fmt.Errorf("%s\n%s:\n%s", msg, path, contents)
+		}
+
+		return nil
+	}
 }
 
 // run executes the test across all [e2eVariants] in parallel. For each

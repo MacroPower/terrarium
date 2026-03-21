@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"dagger/tests/internal/dagger"
 
@@ -340,9 +339,9 @@ func (m *Tests) TestEgressCidrAllow(ctx context.Context) error {
 }
 
 // TestEgressCidrLogging verifies that CIDR TCP traffic routed through
-// Envoy's CIDR catch-all listener produces access log entries on stderr.
-// The test enables logging and makes an HTTP request to a CIDR-allowed
-// target, then checks stderr for the target hostname in the access log.
+// Envoy's CIDR catch-all listener produces access log entries. The test
+// enables logging and makes an HTTP request to a CIDR-allowed target,
+// then checks the access log file for the upstream host:port.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-cidr-logging
 func (m *Tests) TestEgressCidrLogging(ctx context.Context) error {
@@ -359,21 +358,13 @@ egress:
 		withAssertions(
 			httpAllowed("http://target-cidr:80/", "cidr-logging: HTTP to target-cidr"),
 		),
-		withPostExec(func(ctx context.Context, variant string, ctr *dagger.Container) error {
-			stderr, err := ctr.Stderr(ctx)
-			if err != nil {
-				return fmt.Errorf("capturing stderr: %w", err)
-			}
-			// CIDR TCP goes through the CIDR catch-all listener
-			// (TCP proxy with original_dst). The access log line
-			// contains the upstream host IP:port in
-			// %UPSTREAM_HOST%. Since the request goes to port 80,
-			// the log entry will contain ":80" in the upstream.
-			if !strings.Contains(stderr, ":80") {
-				return fmt.Errorf("stderr does not contain access log entries for CIDR TCP traffic\nstderr:\n%s", stderr)
-			}
-			return nil
-		}),
+		// CIDR TCP goes through the CIDR catch-all listener
+		// (TCP proxy with original_dst). The access log line
+		// contains the upstream host IP:port in the upstream=
+		// field. Since the request goes to port 80, the log
+		// entry will contain ":80" in the upstream.
+		withPostExec(accessLogContains(":80",
+			"access log does not contain entries for CIDR TCP traffic")),
 	).run(ctx)
 }
 
@@ -998,7 +989,7 @@ func (m *Tests) TestEgressExitCodePropagation(ctx context.Context) error {
 }
 
 // TestEgressLogging verifies that logging: true produces Envoy access log
-// entries on stderr for proxied traffic.
+// entries in the access log file for proxied traffic.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-logging
 func (m *Tests) TestEgressLogging(ctx context.Context) error {
@@ -1017,16 +1008,8 @@ egress:
 			httpAllowed("https://target-allow:443/", "logging: HTTPS to target-allow"),
 			networkDenied("https://target-deny:443/", "logging: HTTPS to target-deny"),
 		),
-		withPostExec(func(ctx context.Context, variant string, ctr *dagger.Container) error {
-			stderr, err := ctr.Stderr(ctx)
-			if err != nil {
-				return fmt.Errorf("capturing stderr: %w", err)
-			}
-			if !strings.Contains(stderr, "target-allow") {
-				return fmt.Errorf("stderr does not contain Envoy access log entries for target-allow\nstderr:\n%s", stderr)
-			}
-			return nil
-		}),
+		withPostExec(accessLogContains("target-allow",
+			"access log does not contain entries for target-allow")),
 	).run(ctx)
 }
 
@@ -1095,12 +1078,12 @@ func (m *Tests) TestEgressUdpFiltered(ctx context.Context) error {
 	).run(ctx)
 }
 
-// TestEgressUdpLogging verifies that Envoy access logs on stderr contain
-// evidence of UDP traffic when logging is enabled. The UDP datagram is
-// sent as UID 1000 so it goes through the mangle/TPROXY path and reaches
-// Envoy. Envoy logs the connection attempt even though the ORIGINAL_DST
-// cluster cannot recover the destination from the transparent socket
-// (upstream Envoy issue with TPROXY'd UDP).
+// TestEgressUdpLogging verifies that Envoy access logs contain evidence
+// of UDP traffic when logging is enabled. The UDP datagram is sent as
+// UID 1000 so it goes through the mangle/TPROXY path and reaches Envoy.
+// Envoy logs the connection attempt even though the ORIGINAL_DST cluster
+// cannot recover the destination from the transparent socket (upstream
+// Envoy issue with TPROXY'd UDP).
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-udp-logging
 func (m *Tests) TestEgressUdpLogging(ctx context.Context) error {
@@ -1111,16 +1094,8 @@ func (m *Tests) TestEgressUdpLogging(ctx context.Context) error {
 		withAssertions(
 			udpSend("target-udp", 5000, "udp-logging: send UDP datagram"),
 		),
-		withPostExec(func(ctx context.Context, variant string, ctr *dagger.Container) error {
-			stderr, err := ctr.Stderr(ctx)
-			if err != nil {
-				return fmt.Errorf("capturing stderr: %w", err)
-			}
-			if !strings.Contains(stderr, "original_dst") {
-				return fmt.Errorf("stderr does not contain Envoy log entries for UDP traffic\nstderr:\n%s", stderr)
-			}
-			return nil
-		}),
+		withPostExec(envoyLogContains("original_dst",
+			"envoy log does not contain entries for UDP traffic")),
 	).run(ctx)
 }
 
