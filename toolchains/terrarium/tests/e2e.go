@@ -67,6 +67,7 @@ var e2eTestFuncs = []struct {
 	{"fqdn-wildcard", (*Tests).TestEgressFqdnWildcard},
 	{"fqdn-port-restrict", (*Tests).TestEgressFqdnPortRestrict},
 	{"cidr-allow", (*Tests).TestEgressCidrAllow},
+	{"cidr-logging", (*Tests).TestEgressCidrLogging},
 	{"l7-http-path", (*Tests).TestEgressL7HttpPath},
 	{"l7-http-method", (*Tests).TestEgressL7HttpMethod},
 	{"multiple-rules", (*Tests).TestEgressMultipleRules},
@@ -315,8 +316,8 @@ func (m *Tests) TestEgressFqdnPortRestrict(ctx context.Context) error {
 }
 
 // TestEgressCidrAllow verifies CIDR-based allowlisting. Any IP is reachable
-// on port 80 (broad CIDR), but other ports should be blocked. CIDR rules
-// bypass Envoy and are enforced directly by nftables.
+// on port 80 (broad CIDR), but other ports should be blocked. CIDR TCP
+// traffic is routed through Envoy's CIDR catch-all listener (original_dst).
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-cidr-allow
 func (m *Tests) TestEgressCidrAllow(ctx context.Context) error {
@@ -330,12 +331,49 @@ func (m *Tests) TestEgressCidrAllow(ctx context.Context) error {
 `,
 		targetService("target-allow", defaultNginxConf),
 		targetService("target-deny", defaultNginxConf),
-		withoutEnvoy(),
 		withAssertions(
 			httpAllowed("http://target-allow:80/", "cidr-allow: HTTP to target-allow"),
 			httpAllowed("http://target-deny:80/", "cidr-allow: HTTP to target-deny"),
 			networkDenied("https://target-allow:443/", "cidr-allow: HTTPS port 443 denied"),
 		),
+	).run(ctx)
+}
+
+// TestEgressCidrLogging verifies that CIDR TCP traffic routed through
+// Envoy's CIDR catch-all listener produces access log entries on stderr.
+// The test enables logging and makes an HTTP request to a CIDR-allowed
+// target, then checks stderr for the target hostname in the access log.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-cidr-logging
+func (m *Tests) TestEgressCidrLogging(ctx context.Context) error {
+	return newTestCase("cidr-logging", `logging: true
+egress:
+  - toCIDR:
+      - "0.0.0.0/0"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+`,
+		targetService("target-cidr", defaultNginxConf),
+		withAssertions(
+			httpAllowed("http://target-cidr:80/", "cidr-logging: HTTP to target-cidr"),
+		),
+		withPostExec(func(ctx context.Context, variant string, ctr *dagger.Container) error {
+			stderr, err := ctr.Stderr(ctx)
+			if err != nil {
+				return fmt.Errorf("capturing stderr: %w", err)
+			}
+			// CIDR TCP goes through the CIDR catch-all listener
+			// (TCP proxy with original_dst). The access log line
+			// contains the upstream host IP:port in
+			// %UPSTREAM_HOST%. Since the request goes to port 80,
+			// the log entry will contain ":80" in the upstream.
+			if !strings.Contains(stderr, ":80") {
+				return fmt.Errorf("stderr does not contain access log entries for CIDR TCP traffic\nstderr:\n%s", stderr)
+			}
+			return nil
+		}),
 	).run(ctx)
 }
 
@@ -665,7 +703,6 @@ func (m *Tests) TestEgressCidrExcept(ctx context.Context) error {
 `,
 		targetService("target-allow", defaultNginxConf),
 		targetService("target-deny", defaultNginxConf),
-		withoutEnvoy(),
 		withConfigReplacements(map[string]string{
 			"__TARGET_DENY_IP__": "target-deny",
 		}),
@@ -699,7 +736,6 @@ func (m *Tests) TestEgressCidrMultiExcept(ctx context.Context) error {
 		targetService("target-allow", defaultNginxConf),
 		targetService("target-deny-1", defaultNginxConf),
 		targetService("target-deny-2", defaultNginxConf),
-		withoutEnvoy(),
 		withConfigReplacements(map[string]string{
 			"__TARGET_DENY_1_IP__": "target-deny-1",
 			"__TARGET_DENY_2_IP__": "target-deny-2",
@@ -1086,8 +1122,10 @@ func (m *Tests) TestEgressUdpLogging(ctx context.Context) error {
 }
 
 // TestEgressDenyAllViaEgressDeny verifies that egressDeny rules block a subset
-// of otherwise allowed traffic. Deny chains evaluate before allow chains in
-// nftables, so port 443 is denied even though a broad CIDR allow covers it.
+// of otherwise allowed traffic. Deny CIDR NAT chains ACCEPT (skip redirect)
+// before allow CIDR chains REDIRECT, so port 443 is denied even though a
+// broad CIDR allow covers it. The filter chain's deny rules DROP the
+// non-redirected traffic.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-deny-all-via-egress-deny
 func (m *Tests) TestEgressDenyAllViaEgressDeny(ctx context.Context) error {
@@ -1110,7 +1148,6 @@ egressDeny:
 `,
 		targetService("target-allow", defaultNginxConf),
 		targetService("target-deny", defaultNginxConf),
-		withoutEnvoy(),
 		withAssertions(
 			httpAllowed("http://target-allow:80/", "egress-deny: HTTP port 80 allowed"),
 			networkDenied("https://target-deny:443/", "egress-deny: HTTPS port 443 denied by egressDeny"),

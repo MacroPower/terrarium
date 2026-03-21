@@ -270,6 +270,47 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog) 
 	}
 }
 
+// BuildCIDRCatchAllListener creates a TCP proxy [Listener] that
+// handles CIDR-allowed traffic redirected by nftables. Unlike
+// [BuildCatchAllTCPListener] (which rejects non-policy traffic via a
+// blackhole cluster), this listener always forwards to the original
+// destination via the original_dst cluster. The original_dst listener
+// filter recovers the real destination from conntrack; the tls_inspector
+// extracts SNI for access log visibility on TLS connections.
+func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog) Listener {
+	return Listener{
+		Name: "cidr_catch_all",
+		Address: address{SocketAddress: socketAddress{
+			Address: "127.0.0.1", PortValue: listenPort,
+		}},
+		ListenerFilters: []NamedTyped{
+			{
+				Name: "envoy.filters.listener.original_dst",
+				TypedConfig: typeOnly{
+					AtType: "type.googleapis.com/envoy.extensions.filters.listener.original_dst.v3.OriginalDst",
+				},
+			},
+			{
+				Name: "envoy.filters.listener.tls_inspector",
+				TypedConfig: typeOnly{
+					AtType: "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector",
+				},
+			},
+		},
+		FilterChains: []filterChain{{
+			Filters: []filter{{
+				Name: "envoy.filters.network.tcp_proxy",
+				TypedConfig: tcpProxyConfig{
+					AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+					StatPrefix: "cidr_catch_all",
+					Cluster:    "original_dst",
+					AccessLog:  accessLog,
+				},
+			}},
+		}},
+	}
+}
+
 // BuildCatchAllUDPListener creates a transparent UDP proxy [Listener]
 // that handles UDP traffic intercepted via TPROXY. The listener binds
 // to 0.0.0.0 (not 127.0.0.1) because TPROXY preserves the original

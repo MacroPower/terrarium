@@ -140,6 +140,14 @@ func GenerateEnvoyFromConfig(ctx context.Context, cfg *config.Config, certsDir, 
 		))
 	}
 
+	// CIDR catch-all listener for forwarding CIDR TCP traffic via
+	// original_dst. Only needed when CIDR allow rules exist; the
+	// NAT chain redirects matching TCP to this listener.
+	if cfg.HasCIDRRules() {
+		listeners = append(listeners,
+			envoy.BuildCIDRCatchAllListener(config.CIDRCatchAllPort, accessLog))
+	}
+
 	envoySettings := cfg.EnvoyDefaults()
 
 	// Catch-all TCP and UDP listeners for non-blocked modes.

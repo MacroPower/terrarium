@@ -193,7 +193,8 @@ graph TD
     dns -- "updates via netlink\non resolution" --> nft
     user -- "TCP: NAT REDIRECT\nUDP: TPROXY" --> nft
     nft -- "FQDN traffic" --> envoy
-    nft -- "CIDR-only traffic" --> upstream
+    nft -- "CIDR TCP traffic" --> envoy
+    nft -- "CIDR non-TCP traffic" --> upstream
     envoy --> upstream
 ```
 
@@ -288,8 +289,9 @@ policy. Three modes:
 - Blocked (`egress: [{}]`): all traffic denied, DNS returns REFUSED, no Envoy.
 - Filtered (rules with FQDN/CIDR/L7 matchers): per-rule chain isolation with
   OR semantics, FQDN IP sets with per-element TTLs, Envoy MITM for L7 inspection.
-  CIDR-destined traffic bypasses Envoy; FQDN traffic is intercepted. UDP uses
-  TPROXY alongside TCP NAT REDIRECT.
+  All TCP (FQDN and CIDR) is routed through Envoy; CIDR TCP uses a dedicated
+  catch-all listener forwarding via original_dst. Non-TCP CIDR traffic bypasses
+  Envoy. UDP uses TPROXY alongside TCP NAT REDIRECT.
 
 ### Traffic routing
 
@@ -302,14 +304,14 @@ graph TD
     user["User process\n(UID 1000)"]
     tcp{"TCP"}
     udp{"UDP"}
+    nat["nftables\nNAT OUTPUT\n(deny CIDR ACCEPT,\nallow CIDR REDIRECT,\nFQDN REDIRECT)"]
     filter["nftables\nOUTPUT filter\n(per-rule allow/deny)"]
     drop["DROP"]
-    nat["nftables\nNAT OUTPUT"]
     mangle_out["nftables\nmangle OUTPUT\n(fwmark 0x1)"]
     policy["Policy routing\n(table 100, loopback)"]
     mangle_pre["nftables\nmangle PREROUTING\n(TPROXY)"]
-    cidr_ret["CIDR traffic\n(RETURN, bypass Envoy)"]
-    envoy_tcp["Envoy TCP listeners\n(:15443 for 443\n:15080 for 80\n:15001 catch-all)"]
+    envoy_fqdn["Envoy per-port listeners\n(:15443 for 443\n:15080 for 80\n:15001 catch-all)"]
+    envoy_cidr["Envoy CIDR catch-all\n(:15003, original_dst)"]
     envoy_udp["Envoy UDP listener\n(:15002)"]
     dns["DNS proxy\n(:53)"]
     upstream(("Upstream"))
@@ -317,27 +319,32 @@ graph TD
     user --> tcp
     user --> udp
 
-    tcp --> filter
+    tcp --> nat
     udp -- "port 53" --> dns
     udp -- "other ports" --> filter
+    nat -- "deny CIDR\n(ACCEPT, no redirect)" --> filter
+    nat -- "CIDR TCP" --> envoy_cidr --> upstream
+    nat -- "FQDN TCP" --> envoy_fqdn --> upstream
+    nat -- "non-policy TCP" --> envoy_fqdn
     filter -- "denied" --> drop
-    filter -- "TCP allowed" --> nat
     filter -- "UDP allowed" --> mangle_out
-    nat -- "CIDR-only\ndestination" --> cidr_ret --> upstream
-    nat -- "REDIRECT" --> envoy_tcp --> upstream
 
     mangle_out --> policy --> mangle_pre --> envoy_udp --> upstream
 ```
 
 #### TCP (NAT REDIRECT)
 
-nftables NAT output rules REDIRECT all terrarium-UID TCP to Envoy. Specialized
+nftables NAT output rules REDIRECT all terrarium-UID TCP to Envoy. The NAT
+chain evaluates rules in order: deny CIDR chains ACCEPT (skip redirect so the
+filter chain drops the traffic), allow CIDR chains REDIRECT to the CIDR
+catch-all listener (port 15003), then per-port FQDN REDIRECT rules. Specialized
 listeners handle ports 443 (TLS passthrough, port 15443) and 80 (HTTP forward,
 port 15080). Per-rule port restrictions get dedicated listeners at ProxyPortBase
-(15000) + port. Everything else hits a catch-all TCP proxy on port 15001. Envoy
-uses the `original_dst` listener filter to recover the real destination from
-conntrack (SO_ORIGINAL_DST). In filtered mode, CIDR-destined traffic RETURNs
-before the catch-all redirect, bypassing Envoy entirely.
+(15000) + port. Non-policy traffic hits a catch-all TCP proxy on port 15001
+that rejects via a blackhole cluster. CIDR-allowed TCP is forwarded by the CIDR
+catch-all listener via the `original_dst` cluster; it also runs a TLS inspector
+for SNI visibility in access logs. Envoy uses the `original_dst` listener
+filter to recover the real destination from conntrack (SO_ORIGINAL_DST).
 
 #### UDP (TPROXY)
 

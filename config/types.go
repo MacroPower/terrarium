@@ -143,6 +143,20 @@ func (c *Config) IsEgressBlocked() bool {
 	return true
 }
 
+// HasCIDRRules reports whether any non-deny egress rule has CIDR
+// selectors (toCIDR or toCIDRSet). When true, the CIDR catch-all
+// Envoy listener and its NAT redirect rules are needed.
+func (c *Config) HasCIDRRules() bool {
+	rules := c.EgressRules()
+	for i := range rules {
+		if len(rules[i].ToCIDR) > 0 || len(rules[i].ToCIDRSet) > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
 // EgressRule defines an egress policy with optional FQDN, port, and CIDR
 // selectors. Under CiliumNetworkPolicy semantics, ToFQDNs is mutually
 // exclusive with ToCIDR and ToCIDRSet within a single rule; split them

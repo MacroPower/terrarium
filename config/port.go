@@ -29,6 +29,13 @@ const CatchAllProxyPort = 15001
 // destination address in the socket itself.
 const CatchAllUDPProxyPort = 15002
 
+// CIDRCatchAllPort is the Envoy listener port that handles CIDR TCP
+// traffic. Unlike the main catch-all ([CatchAllProxyPort]) which
+// rejects non-policy traffic via a blackhole cluster, this listener
+// forwards to the original destination via the ORIGINAL_DST cluster.
+// The TLS inspector extracts SNI for access log visibility.
+const CIDRCatchAllPort = 15003
+
 const (
 	// ProtoTCP is the canonical protocol string for TCP.
 	ProtoTCP = "TCP"

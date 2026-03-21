@@ -802,49 +802,43 @@ func TestApplyRules_CIDROnlyFilteredMode(t *testing.T) {
 	// NAT chain exists even with zero resolved ports.
 	assert.Contains(t, rec.chainNames(), "nat_output")
 
+	// CIDR NAT redirect chains exist (one per rule group).
+	assert.Contains(t, rec.chainNames(), "cidr_nat_0")
+	assert.Contains(t, rec.chainNames(), "cidr_nat_1")
+
+	// CIDR NAT chains have TCP REDIRECT rules to CIDR catch-all.
+	for _, chainName := range []string{"cidr_nat_0", "cidr_nat_1"} {
+		cidrNATRules := rec.rulesForChain(chainName)
+		require.NotEmpty(t, cidrNATRules, "chain %s should have rules", chainName)
+
+		var hasRedir bool
+		for _, r := range cidrNATRules {
+			if ruleHasRedir(r) {
+				hasRedir = true
+			}
+		}
+
+		assert.True(t, hasRedir, "chain %s should have REDIRECT rules", chainName)
+	}
+
+	// nat_output should have jumps to CIDR NAT chains and catch-all REDIRECT.
 	natRules := rec.rulesForChain("nat_output")
 	require.NotEmpty(t, natRules)
 
-	// CIDR RETURN rules appear before the catch-all REDIRECT.
-	var hasReturn, hasRedir bool
-
-	firstReturn, firstRedir := -1, -1
-	for i, r := range natRules {
-		v, _ := ruleVerdict(r)
-		if v == expr.VerdictReturn {
-			hasReturn = true
-
-			if firstReturn == -1 {
-				firstReturn = i
-			}
+	var hasJump, hasRedir bool
+	for _, r := range natRules {
+		v, chain := ruleVerdict(r)
+		if v == expr.VerdictJump && (chain == "cidr_nat_0" || chain == "cidr_nat_1") {
+			hasJump = true
 		}
 
 		if ruleHasRedir(r) {
 			hasRedir = true
-
-			if firstRedir == -1 {
-				firstRedir = i
-			}
 		}
 	}
 
-	assert.True(t, hasReturn, "should have CIDR NAT RETURN rules")
+	assert.True(t, hasJump, "should have jumps to CIDR NAT chains")
 	assert.True(t, hasRedir, "should have catch-all REDIRECT")
-
-	if firstReturn >= 0 && firstRedir >= 0 {
-		assert.Less(t, firstReturn, firstRedir,
-			"CIDR RETURN must precede catch-all REDIRECT")
-	}
-
-	// Exactly one REDIRECT (the catch-all; no per-port REDIRECTs).
-	var redirCount int
-	for _, r := range natRules {
-		if ruleHasRedir(r) {
-			redirCount++
-		}
-	}
-
-	assert.Equal(t, 1, redirCount, "should have only the catch-all REDIRECT")
 }
 
 // ruleHasTProxy reports whether a rule contains a TProxy expression.

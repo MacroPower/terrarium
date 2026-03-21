@@ -402,7 +402,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 	})
 
 	// NAT chain.
-	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, uids)
+	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, allDenyCIDRs, uids)
 
 	// Mangle chains for UDP TPROXY.
 	addMangleOutputChain(conn, table, uids)

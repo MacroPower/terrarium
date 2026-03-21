@@ -3,6 +3,7 @@ package firewall
 import (
 	"fmt"
 	"net"
+	"slices"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
@@ -151,10 +152,22 @@ func addDenyCIDRChains(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs,
 ) {
+	addDenyCIDRChainsWithVerdict(conn, table, parentChain, cidrs, uids, "deny_cidr", expr.VerdictDrop)
+}
+
+// addDenyCIDRChainsWithVerdict is the shared implementation for deny
+// CIDR chain construction. The chainPrefix names the chains (e.g.
+// "deny_cidr" or "deny_cidr_nat") and verdict is the action for
+// matching traffic (DROP in filter, ACCEPT in NAT to skip redirect).
+func addDenyCIDRChainsWithVerdict(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR, uids UIDs,
+	chainPrefix string, verdict expr.VerdictKind,
+) {
 	groups := groupCIDRsByRule(cidrs)
 
 	for i, group := range groups {
-		chainName := fmt.Sprintf("deny_cidr_%d", i)
+		chainName := fmt.Sprintf("%s_%d", chainPrefix, i)
 		chain := conn.AddChain(&nftables.Chain{
 			Name:  chainName,
 			Table: table,
@@ -193,7 +206,7 @@ func addDenyCIDRChains(
 			}
 		}
 
-		// CIDR DROPs: deny matching traffic.
+		// CIDR verdict rules: deny matching traffic.
 		for _, rule := range group {
 			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
 			if err != nil {
@@ -206,7 +219,7 @@ func addDenyCIDRChains(
 					Exprs: flatExprs(
 						matchUID(uids.Terrarium),
 						matchDstCIDR(cidrNet),
-						verdictExprs(expr.VerdictDrop),
+						verdictExprs(verdict),
 					),
 				})
 			} else {
@@ -217,7 +230,7 @@ func addDenyCIDRChains(
 							matchUID(uids.Terrarium),
 							matchPortProto(pp),
 							matchDstCIDR(cidrNet),
-							verdictExprs(expr.VerdictDrop),
+							verdictExprs(verdict),
 						),
 					})
 				}
@@ -454,15 +467,17 @@ func addFQDNPortRules(
 	}
 }
 
-// addNATRules creates the NAT output chain with CIDR RETURN,
-// per-port REDIRECT, TCPForward REDIRECT, and catch-all TCP
-// REDIRECT rules. The catch-all sends non-policy-port traffic to
-// Envoy's catch-all TCP listener for access logging; that listener
-// immediately resets the connection (via the missing_sni_blackhole
-// cluster) rather than forwarding it.
+// addNATRules creates the NAT output chain with deny CIDR ACCEPT,
+// allow CIDR REDIRECT, per-port REDIRECT, TCPForward REDIRECT, and
+// catch-all TCP REDIRECT rules. The deny CIDR chains prevent denied
+// traffic from being redirected to Envoy (ACCEPT in NAT skips
+// modification; the filter chain's deny rules DROP the traffic). The
+// allow CIDR chains redirect matching TCP to the CIDR catch-all
+// listener for forwarding via original_dst. The catch-all sends
+// remaining non-policy-port traffic to Envoy's blackhole listener.
 func addNATRules(
 	conn Conn, table *nftables.Table, cfg *config.Config,
-	resolvedPorts []int, cidr4, cidr6 []config.ResolvedCIDR,
+	resolvedPorts []int, cidr4, cidr6, denyCIDRs []config.ResolvedCIDR,
 	uids UIDs,
 ) {
 	natChain := conn.AddChain(&nftables.Chain{
@@ -473,11 +488,15 @@ func addNATRules(
 		Priority: nftables.ChainPriorityNATDest,
 	})
 
-	// 1. CIDR RETURN rules (allowed CIDRs bypass Envoy).
-	addCIDRNATReturn(conn, table, natChain, cidr4, uids)
-	addCIDRNATReturn(conn, table, natChain, cidr6, uids)
+	allCIDRs := slices.Concat(cidr4, cidr6)
 
-	// 2. Per-port FQDN REDIRECT rules.
+	// 1. Deny CIDR NAT ACCEPT (prevent redirect for denied CIDRs).
+	addDenyCIDRNATAccept(conn, table, natChain, denyCIDRs, uids)
+
+	// 2. Allow CIDR NAT REDIRECT (redirect TCP to CIDR catch-all).
+	addCIDRNATRedirect(conn, table, natChain, allCIDRs, uids)
+
+	// 3. Per-port FQDN REDIRECT rules.
 	for _, p := range resolvedPorts {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
@@ -490,7 +509,7 @@ func addNATRules(
 		})
 	}
 
-	// 3. TCPForward REDIRECT rules.
+	// 4. TCPForward REDIRECT rules.
 	for _, fwd := range cfg.TCPForwards {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
@@ -503,7 +522,7 @@ func addNATRules(
 		})
 	}
 
-	// 4. Catch-all TCP REDIRECT -> catch-all TCP listener.
+	// 5. Catch-all TCP REDIRECT -> catch-all TCP listener.
 	// Traffic is logged and then rejected by Envoy (not forwarded).
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
@@ -573,49 +592,152 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 	})
 }
 
-func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, cidrs []config.ResolvedCIDR, uids UIDs) {
-	for _, rule := range cidrs {
-		// CIDR rules with serverNames need NAT REDIRECT to Envoy
-		// for SNI inspection; skip the RETURN so they fall through
-		// to the per-port REDIRECT rules.
-		if len(rule.ServerNames) > 0 {
+// addDenyCIDRNATAccept creates per-rule deny CIDR chains in the NAT
+// context. Each chain uses ACCEPT (instead of DROP) to skip NAT
+// modification so the filter chain's deny rules DROP the traffic.
+// ACCEPT in a jumped-to chain terminates the base chain, preventing
+// subsequent allow REDIRECT rules from firing.
+//
+// This mirrors [addDenyCIDRChains] (filter) but in the NAT context.
+// Because NAT fires before filter in the OUTPUT hook (priority -100
+// vs 0), deny CIDRs must be enforced here to prevent denied traffic
+// from being redirected to Envoy and forwarded via original_dst.
+func addDenyCIDRNATAccept(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR, uids UIDs,
+) {
+	addDenyCIDRChainsWithVerdict(conn, table, parentChain, cidrs, uids, "deny_cidr_nat", expr.VerdictAccept)
+}
+
+// addCIDRNATRedirect creates per-rule CIDR chains in the NAT context
+// and adds jumps from the parent chain. Each chain evaluates one
+// rule's CIDRs: RETURN for except hits (excepted subnets skip this
+// rule's redirect), REDIRECT for TCP CIDR hits (redirect to the CIDR
+// catch-all listener for forwarding via original_dst). Non-TCP traffic
+// has no matching rules and implicitly returns from the chain.
+//
+// Rules with serverNames are skipped entirely (they already fall to
+// per-port REDIRECT for SNI inspection). Individual L7 port entries
+// are also skipped (they fall to per-port REDIRECT for HTTP filtering).
+// Only TCP protocol entries emit REDIRECT rules; UDP and SCTP entries
+// are skipped since Envoy only handles TCP.
+func addCIDRNATRedirect(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR, uids UIDs,
+) {
+	groups := groupCIDRsByRule(cidrs)
+
+	for i, group := range groups {
+		if !slices.ContainsFunc(group, cidrNeedsTCPRedirect) {
 			continue
 		}
 
-		_, cidrNet, err := net.ParseCIDR(rule.CIDR)
-		if err != nil {
-			continue
-		}
+		chainName := fmt.Sprintf("cidr_nat_%d", i)
+		chain := conn.AddChain(&nftables.Chain{
+			Name:  chainName,
+			Table: table,
+		})
 
-		if len(rule.Ports) == 0 {
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: chain,
-				Exprs: flatExprs(
-					matchUID(uids.Terrarium),
-					matchDstCIDR(cidrNet),
-					verdictExprs(expr.VerdictReturn),
-				),
-			})
-		} else {
-			for _, pp := range rule.Ports {
-				// CIDR+L7 ports need REDIRECT to Envoy for HTTP
-				// filtering; skip RETURN so they fall through to
-				// the per-port REDIRECT rules.
-				if rule.L7Ports[pp.Port] {
+		// Except RETURNs: excepted subnets skip this rule's
+		// redirect. TCP-only matching mirrors the redirect rules
+		// below so non-TCP traffic passes through unaffected.
+		for _, rule := range group {
+			if !cidrNeedsTCPRedirect(rule) {
+				continue
+			}
+
+			for _, exc := range rule.Except {
+				_, excNet, err := net.ParseCIDR(exc)
+				if err != nil {
 					continue
 				}
 
-				conn.AddRule(&nftables.Rule{
-					Table: table, Chain: chain,
-					Exprs: flatExprs(
-						matchUID(uids.Terrarium),
-						matchPortProto(pp),
-						matchDstCIDR(cidrNet),
-						verdictExprs(expr.VerdictReturn),
-					),
-				})
+				addCIDRNATTCPRules(conn, table, chain, rule, uids, excNet, verdictExprs(expr.VerdictReturn))
 			}
 		}
+
+		// CIDR REDIRECTs: redirect matching TCP to CIDR catch-all.
+		for _, rule := range group {
+			if !cidrNeedsTCPRedirect(rule) {
+				continue
+			}
+
+			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
+			if err != nil {
+				continue
+			}
+
+			addCIDRNATTCPRules(conn, table, chain, rule, uids, cidrNet, redirectToPort(port16(config.CIDRCatchAllPort)))
+		}
+
+		// Jump from parent chain.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: parentChain,
+			Exprs: flatExprs(verdictExprs(expr.VerdictJump, chainName)),
+		})
+	}
+}
+
+// cidrNeedsTCPRedirect reports whether a resolved CIDR rule has TCP
+// ports eligible for NAT redirect. Rules with serverNames are handled
+// by per-port SNI redirect. L7 ports are handled by per-port HTTP
+// redirect. A portless rule (all-port) always needs redirect.
+func cidrNeedsTCPRedirect(rule config.ResolvedCIDR) bool {
+	if len(rule.ServerNames) > 0 {
+		return false
+	}
+
+	if len(rule.Ports) == 0 {
+		return true
+	}
+
+	for _, pp := range rule.Ports {
+		if !rule.L7Ports[pp.Port] && pp.Protocol == config.ProtoTCP {
+			return true
+		}
+	}
+
+	return false
+}
+
+// addCIDRNATTCPRules emits nftables rules for a single CIDR rule's
+// TCP ports, matching the given cidrNet and applying the terminal
+// expression (verdict or redirect). Portless rules emit a single
+// all-TCP rule; port-scoped rules emit one rule per eligible TCP port.
+func addCIDRNATTCPRules(
+	conn Conn, table *nftables.Table, chain *nftables.Chain,
+	rule config.ResolvedCIDR, uids UIDs, cidrNet *net.IPNet,
+	terminal []expr.Any,
+) {
+	if len(rule.Ports) == 0 {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchUID(uids.Terrarium),
+				matchL4Proto(unix.IPPROTO_TCP),
+				matchDstCIDR(cidrNet),
+				terminal,
+			),
+		})
+
+		return
+	}
+
+	for _, pp := range rule.Ports {
+		if rule.L7Ports[pp.Port] || pp.Protocol != config.ProtoTCP {
+			continue
+		}
+
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchUID(uids.Terrarium),
+				matchL4Proto(unix.IPPROTO_TCP),
+				matchDstPortOrRange(port16(pp.Port), port16(pp.EndPort)),
+				matchDstCIDR(cidrNet),
+				terminal,
+			),
+		})
 	}
 }
 
