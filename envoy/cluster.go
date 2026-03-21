@@ -2,6 +2,7 @@ package envoy
 
 import (
 	"fmt"
+	"net"
 
 	"go.jacobcolvin.com/terrarium/config"
 )
@@ -117,10 +118,16 @@ func BuildClusters(
 
 	for _, fwd := range tcpForwards {
 		name := fmt.Sprintf("tcp_forward_%d", fwd.Port)
+
+		clusterType := "STRICT_DNS"
+		if net.ParseIP(fwd.Host) != nil {
+			clusterType = "STATIC"
+		}
+
 		clusters = append(clusters, cluster{
 			Name:           name,
 			ConnectTimeout: "5s",
-			Type:           "STRICT_DNS",
+			Type:           clusterType,
 			LBPolicy:       "ROUND_ROBIN",
 			LoadAssignment: &loadAssignment{
 				ClusterName: name,

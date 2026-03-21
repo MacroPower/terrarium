@@ -762,16 +762,19 @@ func (m *Tests) TestEgressTcpForward(ctx context.Context) error {
           - port: "443"
             protocol: TCP
 tcpForwards:
-  - host: "target-tcp"
-    port: 22
+  - host: "PLACEHOLDER_TARGET_TCP"
+    port: 8080
 `,
 		targetService("target-allow", defaultNginxConf),
 		targetService("target-deny", defaultNginxConf),
-		tcpEchoService("target-tcp", 22),
+		targetServiceOnPort("target-tcp", 8080),
+		withConfigReplacements(map[string]string{
+			"PLACEHOLDER_TARGET_TCP": "target-tcp",
+		}),
 		withAssertions(
 			httpAllowed("https://target-allow:443/", "tcp-forward: HTTPS to target-allow via FQDN rule"),
 			networkDenied("https://target-deny:443/", "tcp-forward: HTTPS to target-deny denied"),
-			tcpForward("127.0.0.1:15022", "TCP_FORWARD_OK", "tcp-forward: TCP forward to target-tcp:22 via localhost:15022"),
+			httpAllowed("http://127.0.0.1:23080/", "tcp-forward: HTTP via TCP forward to target-tcp:8080"),
 		),
 	).run(ctx)
 }
