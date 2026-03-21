@@ -100,11 +100,13 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 	assert.Equal(t, "terrarium", rec.tables[0].Name)
 	assert.Equal(t, nftables.TableFamilyINet, rec.tables[0].Family)
 
-	// Chains: input, output, nat_output (no terrarium_output).
+	// Chains: input, output, nat_output, mangle, postrouting_guard
+	// (no terrarium_output).
 	names := rec.chainNames()
 	assert.Contains(t, names, "input")
 	assert.Contains(t, names, "output")
 	assert.Contains(t, names, "nat_output")
+	assert.Contains(t, names, "postrouting_guard")
 	assert.NotContains(t, names, "terrarium_output")
 
 	// No FQDN sets.
@@ -922,6 +924,7 @@ func TestApplyRules_MangleChains_Filtered(t *testing.T) {
 	names := rec.chainNames()
 	assert.Contains(t, names, "mangle_output")
 	assert.Contains(t, names, "mangle_prerouting")
+	assert.Contains(t, names, "postrouting_guard")
 
 	// Filtered mode: loopback accept in output should exclude
 	// TPROXY-marked packets (fwmark != 0x1).
@@ -1248,4 +1251,120 @@ func TestApplyRules_ICMPWithFQDN(t *testing.T) {
 
 	// One v4 lookup (IPv4 type 8) and one v6 lookup (IPv6 type 128).
 	assert.Equal(t, 2, icmpLookups, "should have ICMP FQDN set lookup rules")
+}
+
+func TestApplyRules_PostroutingGuard(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg       *config.Config
+		wantChain bool
+		wantLog   bool
+	}{
+		"unrestricted": {
+			cfg:       &config.Config{},
+			wantChain: true,
+		},
+		"unrestricted with logging": {
+			cfg:       &config.Config{Logging: true},
+			wantChain: true,
+			wantLog:   true,
+		},
+		"filtered": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+					},
+				),
+			},
+			wantChain: true,
+		},
+		"filtered with logging": {
+			cfg: &config.Config{
+				Logging: true,
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+					},
+				),
+			},
+			wantChain: true,
+			wantLog:   true,
+		},
+		"blocked": {
+			cfg:       &config.Config{Egress: egressRules(config.EgressRule{})},
+			wantChain: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tt.cfg, testUIDs)
+			require.NoError(t, err)
+
+			// Find the postrouting_guard chain.
+			var guardChain *nftables.Chain
+			for _, c := range rec.chains {
+				if c.Name == "postrouting_guard" {
+					guardChain = c
+					break
+				}
+			}
+
+			if !tt.wantChain {
+				assert.Nil(t, guardChain, "blocked mode should not have postrouting_guard")
+				return
+			}
+
+			require.NotNil(t, guardChain, "postrouting_guard chain should exist")
+			assert.Equal(t, nftables.ChainHookPostrouting, guardChain.Hooknum)
+			assert.Equal(t, nftables.ChainPolicyAccept, *guardChain.Policy)
+
+			rules := rec.rulesForChain("postrouting_guard")
+			require.NotEmpty(t, rules)
+
+			// Last rule should be DROP with oifname != "lo" and UID match.
+			lastRule := rules[len(rules)-1]
+			v, _ := ruleVerdict(lastRule)
+			assert.Equal(t, expr.VerdictDrop, v)
+			assert.True(t, ruleHasMetaKey(lastRule, expr.MetaKeyOIFNAME),
+				"DROP rule should match oifname")
+			assert.True(t, ruleHasMetaKey(lastRule, expr.MetaKeySKUID),
+				"DROP rule should match UID")
+
+			// Verify oifname comparison is CmpOpNeq (not equal to "lo").
+			var foundOIFNeq bool
+			for _, e := range lastRule.Exprs {
+				c, ok := e.(*expr.Cmp)
+				if !ok || c.Op != expr.CmpOpNeq {
+					continue
+				}
+
+				// "lo" padded to IFNAMSIZ (16 bytes).
+				if len(c.Data) == 16 && c.Data[0] == 'l' && c.Data[1] == 'o' && c.Data[2] == 0 {
+					foundOIFNeq = true
+				}
+			}
+
+			assert.True(t, foundOIFNeq, "DROP rule must use CmpOpNeq for oifname != lo")
+
+			// LOG rule presence.
+			var hasLog bool
+			for _, r := range rules {
+				if ruleHasLog(r) {
+					hasLog = true
+				}
+			}
+
+			assert.Equal(t, tt.wantLog, hasLog,
+				"LOG rule presence should match logging config")
+		})
+	}
 }

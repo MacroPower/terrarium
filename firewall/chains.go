@@ -1044,6 +1044,47 @@ func addCatchAllFQDNRules(
 
 // groupCIDRsByRule groups resolved CIDRs by their RuleIndex,
 // preserving order of first appearance.
+// addPostroutingGuard creates a filter-type POSTROUTING chain that
+// drops all terrarium-UID traffic leaving on non-loopback interfaces.
+// NAT REDIRECT (TCP) and TPROXY (UDP) route traffic to Envoy on
+// loopback; this chain catches any traffic that escapes those
+// mechanisms, providing belt-and-suspenders enforcement that all
+// terrarium egress flows through Envoy.
+//
+// The chain uses policy ACCEPT so non-terrarium traffic (Envoy UID,
+// root DNS proxy, kernel ICMP) passes through unaffected.
+func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UIDs) {
+	policy := nftables.ChainPolicyAccept
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "postrouting_guard",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookPostrouting,
+		Priority: nftables.ChainPriorityFilter,
+		Policy:   &policy,
+	})
+
+	if logging {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchUID(uids.Terrarium),
+				notMatchOIFName("lo"),
+				logPrefix("TERRARIUM_EGRESS_LEAK: "),
+			),
+		})
+	}
+
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchUID(uids.Terrarium),
+			notMatchOIFName("lo"),
+			verdictExprs(expr.VerdictDrop),
+		),
+	})
+}
+
 func groupCIDRsByRule(cidrs []config.ResolvedCIDR) [][]config.ResolvedCIDR {
 	if len(cidrs) == 0 {
 		return nil

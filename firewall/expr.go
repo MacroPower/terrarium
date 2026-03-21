@@ -44,6 +44,15 @@ func matchOIFName(name string) []expr.Any {
 	}
 }
 
+// notMatchOIFName matches packets whose output interface name is NOT
+// the given name.
+func notMatchOIFName(name string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: ifname(name)},
+	}
+}
+
 func matchNFProto(proto byte) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},

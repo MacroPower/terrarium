@@ -146,6 +146,10 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	// Mangle chains for UDP TPROXY.
 	addMangleOutputChain(conn, table, uids)
 	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort))
+
+	// Belt-and-suspenders: drop terrarium traffic that escapes
+	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
+	addPostroutingGuard(conn, table, cfg.Logging, uids)
 }
 
 func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
@@ -407,6 +411,10 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 	// Mangle chains for UDP TPROXY.
 	addMangleOutputChain(conn, table, uids)
 	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort))
+
+	// Belt-and-suspenders: drop terrarium traffic that escapes
+	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
+	addPostroutingGuard(conn, table, cfg.Logging, uids)
 
 	return nil
 }
