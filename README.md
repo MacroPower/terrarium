@@ -194,7 +194,8 @@ graph TD
     user -- "TCP: NAT REDIRECT\nUDP: TPROXY" --> nft
     nft -- "FQDN traffic" --> envoy
     nft -- "CIDR TCP traffic" --> envoy
-    nft -- "CIDR non-TCP traffic" --> upstream
+    nft -- "CIDR UDP traffic" --> envoy
+    nft -- "SCTP traffic" --> upstream
     envoy --> upstream
 ```
 
@@ -290,8 +291,8 @@ policy. Three modes:
 - Filtered (rules with FQDN/CIDR/L7 matchers): per-rule chain isolation with
   OR semantics, FQDN IP sets with per-element TTLs, Envoy MITM for L7 inspection.
   All TCP (FQDN and CIDR) is routed through Envoy; CIDR TCP uses a dedicated
-  catch-all listener forwarding via original_dst. Non-TCP CIDR traffic bypasses
-  Envoy. UDP uses TPROXY alongside TCP NAT REDIRECT.
+  catch-all listener forwarding via original_dst. UDP is routed through Envoy
+  via TPROXY. SCTP bypasses Envoy (no TPROXY or NAT REDIRECT).
 
 ### Traffic routing
 

@@ -382,8 +382,9 @@ func addCIDRChains(
 }
 
 // addOpenPortRule adds ACCEPT rules for open port protocols. UDP/SCTP
-// ports get direct ACCEPT (security decision); TPROXY routes them
-// through Envoy independently for access logging. TCP port ranges get
+// ports get direct ACCEPT (security decision); TPROXY routes UDP
+// through Envoy independently for access logging. SCTP has no
+// Envoy interception path (no TPROXY or NAT REDIRECT). TCP port ranges get
 // direct ACCEPT (Envoy cannot create listeners for arbitrary ranges);
 // TCP single ports are handled by Envoy via NAT REDIRECT.
 func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op config.ResolvedOpenPort, uids UIDs) {
@@ -614,13 +615,14 @@ func addDenyCIDRNATAccept(
 // rule's CIDRs: RETURN for except hits (excepted subnets skip this
 // rule's redirect), REDIRECT for TCP CIDR hits (redirect to the CIDR
 // catch-all listener for forwarding via original_dst). Non-TCP traffic
-// has no matching rules and implicitly returns from the chain.
+// has no NAT rules and implicitly returns from the chain (UDP is
+// handled by TPROXY in the mangle chain instead).
 //
 // Rules with serverNames are skipped entirely (they already fall to
 // per-port REDIRECT for SNI inspection). Individual L7 port entries
 // are also skipped (they fall to per-port REDIRECT for HTTP filtering).
-// Only TCP protocol entries emit REDIRECT rules; UDP and SCTP entries
-// are skipped since Envoy only handles TCP.
+// Only TCP protocol entries emit REDIRECT rules; UDP uses TPROXY
+// (not NAT REDIRECT) and SCTP has no Envoy interception path.
 func addCIDRNATRedirect(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs,
@@ -640,7 +642,8 @@ func addCIDRNATRedirect(
 
 		// Except RETURNs: excepted subnets skip this rule's
 		// redirect. TCP-only matching mirrors the redirect rules
-		// below so non-TCP traffic passes through unaffected.
+		// below so non-TCP traffic returns from the chain unaffected
+		// (UDP uses TPROXY instead of NAT REDIRECT).
 		for _, rule := range group {
 			if !cidrNeedsTCPRedirect(rule) {
 				continue

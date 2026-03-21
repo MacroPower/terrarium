@@ -1228,8 +1228,9 @@ func TestApplyRules_SCTPOpenPort(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
-	// SCTP open ports get direct ACCEPT in terrarium_output
-	// (same as UDP, bypasses Envoy).
+	// SCTP open ports get direct ACCEPT in terrarium_output.
+	// Unlike UDP (which reaches Envoy via TPROXY), SCTP
+	// bypasses Envoy entirely.
 	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	var sctpAccepts int
