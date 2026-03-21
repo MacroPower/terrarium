@@ -171,6 +171,7 @@ type httpConnManagerConfig struct {
 	HTTPFilters                  []filter        `yaml:"http_filters"`
 	UpgradeConfigs               []upgradeConfig `yaml:"upgrade_configs,omitempty"`
 	MergeSlashes                 bool            `yaml:"merge_slashes,omitempty"`
+	StripAnyHostPort             bool            `yaml:"strip_any_host_port,omitempty"`
 }
 
 type upgradeConfig struct {
@@ -350,6 +351,7 @@ type httpProtocolOptions struct {
 	AtType                      string                       `yaml:"@type"`
 }
 
+// upstreamHTTPProtocolOptions models Envoy's UpstreamHttpProtocolOptions.
 // upstreamHTTPProtocolOptions models Envoy's UpstreamHttpProtocolOptions.
 // auto_sni sets the upstream TLS SNI from the Host header; auto_san_validation
 // validates the upstream cert SAN against the SNI.

@@ -186,6 +186,7 @@ func BuildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog 
 					UseRemoteAddress:             boolPtr(true),
 					SkipXffAppend:                boolPtr(true),
 					MergeSlashes:                 true,
+					StripAnyHostPort:             true,
 					PathWithEscapedSlashesAction: "UNESCAPE_AND_REDIRECT",
 					RouteConfig: routeConfig{
 						VirtualHosts: vhosts,

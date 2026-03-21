@@ -86,6 +86,20 @@ func (m *Terrarium) Binary(
 	})
 }
 
+// TestRunner compiles the testrunner binary for the given platform.
+// Used by e2e tests to run assertions inside terrarium containers.
+func (m *Terrarium) TestRunner(
+	// Target build platform.
+	// +optional
+	platform dagger.Platform,
+) *dagger.File {
+	return m.Go.Binary("./cmd/testrunner", dagger.GoBinaryOpts{
+		NoSymbols: true,
+		NoDwarf:   true,
+		Platform:  platform,
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Base containers (private)
 // ---------------------------------------------------------------------------

@@ -625,6 +625,13 @@ func addCIDRNATReturn(conn Conn, table *nftables.Table, chain *nftables.Chain, c
 // lookup after marking, sending packets through loopback via policy
 // routing. Port 53 is excluded because DNS must reach the DNS proxy
 // directly.
+//
+// Although this chain fires at mangle priority (-150) before the
+// filter output chain at priority 0, the route chain type only
+// triggers a re-route lookup -- it does not bypass subsequent OUTPUT
+// hook chains. The filter chain still evaluates and DROPs non-policy
+// UDP ports before packets reach loopback and TPROXY. Only traffic
+// ACCEPTed by the filter chain reaches the catch-all UDP listener.
 func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "mangle_output",

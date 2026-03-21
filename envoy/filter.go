@@ -226,6 +226,7 @@ func buildMITMFilterChain(
 				UseRemoteAddress:             boolPtr(true),
 				SkipXffAppend:                boolPtr(true),
 				MergeSlashes:                 true,
+				StripAnyHostPort:             true,
 				PathWithEscapedSlashesAction: "UNESCAPE_AND_REDIRECT",
 				RouteConfig: routeConfig{
 					VirtualHosts: vhosts,
