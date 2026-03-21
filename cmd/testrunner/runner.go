@@ -38,26 +38,10 @@ func run(s spec) int {
 	// upstream TLS config. The child terrarium process inherits the
 	// environment variable.
 	if s.ExtraCACertPath != "" {
-		caData, err := os.ReadFile(s.ExtraCACertPath)
-		if err == nil {
-			systemBundle, readErr := os.ReadFile("/etc/ssl/certs/ca-certificates.crt")
-			if readErr != nil {
-				fmt.Printf("Infrastructure error: reading system CA bundle: %v\n", readErr)
-				return 2
-			}
-
-			combined := append(systemBundle, append([]byte("\n"), caData...)...)
-			combinedPath := "/tmp/ca-bundle-with-test-ca.pem"
-
-			if writeErr := os.WriteFile(combinedPath, combined, 0o644); writeErr != nil {
-				fmt.Printf("Infrastructure error: writing combined CA bundle: %v\n", writeErr)
-				return 2
-			}
-
-			if envErr := os.Setenv("SSL_CERT_FILE", combinedPath); envErr != nil {
-				fmt.Printf("Infrastructure error: setting SSL_CERT_FILE: %v\n", envErr)
-				return 2
-			}
+		err := installExtraCACert(s.ExtraCACertPath)
+		if err != nil {
+			fmt.Printf("Infrastructure error: %v\n", err)
+			return 2
 		}
 	}
 
@@ -403,6 +387,39 @@ func startLoopbackListener(port int) {
 		"Warning: loopback listener on port %d did not start within 10 seconds\n",
 		port,
 	)
+}
+
+// installExtraCACert appends the given CA certificate to the system
+// bundle and sets SSL_CERT_FILE to the combined path.
+func installExtraCACert(path string) error {
+	caData, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading extra CA cert: %w", err)
+	}
+
+	systemBundle, err := os.ReadFile("/etc/ssl/certs/ca-certificates.crt")
+	if err != nil {
+		return fmt.Errorf("reading system CA bundle: %w", err)
+	}
+
+	combined := make([]byte, 0, len(systemBundle)+1+len(caData))
+	combined = append(combined, systemBundle...)
+	combined = append(combined, '\n')
+	combined = append(combined, caData...)
+
+	combinedPath := "/tmp/ca-bundle-with-test-ca.pem"
+
+	err = os.WriteFile(combinedPath, combined, 0o644)
+	if err != nil {
+		return fmt.Errorf("writing combined CA bundle: %w", err)
+	}
+
+	err = os.Setenv("SSL_CERT_FILE", combinedPath)
+	if err != nil {
+		return fmt.Errorf("setting SSL_CERT_FILE: %w", err)
+	}
+
+	return nil
 }
 
 // printResult prints a single assertion result to stdout.

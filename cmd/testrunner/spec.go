@@ -5,9 +5,9 @@ package main
 type spec struct {
 	ConfigPath      string      `json:"configPath"`
 	InitCommand     string      `json:"initCommand"`
+	ExtraCACertPath string      `json:"extraCACertPath,omitempty"`
 	Assertions      []assertion `json:"assertions"`
 	RootAssertions  []assertion `json:"rootAssertions"`
-	ExtraCACertPath string      `json:"extraCACertPath,omitempty"`
 	LoopbackPort    int         `json:"loopbackPort,omitempty"`
 	ValidateEnvoy   bool        `json:"validateEnvoy"`
 }
