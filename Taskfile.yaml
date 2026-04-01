@@ -16,7 +16,7 @@ tasks:
   lint:
     desc: Runs all lint checks via Dagger
     cmds:
-      - dagger check go:lint terrarium-ci:lint-prettier terrarium-ci:lint-actions terrarium-ci:lint-releaser
+      - dagger check go:lint go:goreleaser-check go:lint-prettier security:lint-actions
 
   lint:go:
     desc: Lints Go code via Dagger
@@ -26,22 +26,22 @@ tasks:
   lint:prettier:
     desc: Checks formatting of YAML, JSON, and Markdown via Dagger
     cmds:
-      - dagger check terrarium-ci:lint-prettier
+      - dagger check go:lint-prettier
 
   lint:actions:
     desc: Lints GitHub Actions workflows via Dagger
     cmds:
-      - dagger check terrarium-ci:lint-actions
+      - dagger check security:lint-actions
 
   lint:releaser:
     desc: Validates GoReleaser configuration via Dagger
     cmds:
-      - dagger check terrarium-ci:lint-releaser
+      - dagger check go:goreleaser-check
 
   lint:deadcode:
     desc: Reports unreachable functions via Dagger
     cmds:
-      - dagger call terrarium-ci lint-deadcode
+      - dagger call go lint-deadcode
 
   test:
     desc: Runs Go tests via Dagger
@@ -61,7 +61,7 @@ tasks:
   build:
     desc: Builds all binaries via Dagger
     cmds:
-      - dagger call terrarium-ci build --output=./dist
+      - dagger call go goreleaser-build --remote-url=https://github.com/macropower/terrarium.git --output=./dist
 
   cover:
     desc: Runs Go tests with coverage via Dagger
@@ -81,12 +81,12 @@ tasks:
   benchmark:
     desc: Measures pipeline stage timings via Dagger
     cmds:
-      - dagger call terrarium-ci benchmark-summary
+      - dagger call go benchmark-summary
 
   benchmark:parallel:
     desc: Measures full-pipeline wall-clock time via Dagger (parallel)
     cmds:
-      - dagger call terrarium-ci benchmark-summary --parallel
+      - dagger call go benchmark-summary --parallel
 
   release:
     desc: Runs full release via Dagger

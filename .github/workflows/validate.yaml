@@ -27,7 +27,7 @@ jobs:
         uses: ./.github/actions/dagger-call
         with:
           verb: check
-          function: test lint lint-prettier lint-actions lint-releaser
+          function: test lint goreleaser-check go:lint-prettier security:lint-actions
 
       - name: Export coverage profile
         uses: ./.github/actions/dagger-call

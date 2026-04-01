@@ -31,4 +31,4 @@ jobs:
       - name: Build via Dagger
         uses: ./.github/actions/dagger-call
         with:
-          function: terrarium-ci build --output=./dist
+          function: go goreleaser-build --remote-url=https://github.com/macropower/terrarium.git --output=./dist

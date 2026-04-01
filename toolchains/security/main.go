@@ -1,5 +1,6 @@
-// Security scans source dependencies and container images for known
-// vulnerabilities using Trivy.
+// Security provides security and compliance checks: vulnerability scanning
+// of source dependencies and container images via Trivy, and GitHub Actions
+// workflow linting via zizmor.
 package main
 
 import (
@@ -9,10 +10,11 @@ import (
 
 const (
 	defaultTrivyImage = "aquasec/trivy:0.68.2" // renovate: datasource=docker depName=aquasec/trivy
+	zizmorVersion     = "1.22.0"               // renovate: datasource=github-releases depName=zizmorcore/zizmor
 )
 
-// Security scans source dependencies and container images for known
-// vulnerabilities using Trivy. Create instances with [New].
+// Security provides security and compliance checks for the project.
+// Create instances with [New].
 type Security struct {
 	// Source directory to scan for dependency vulnerabilities.
 	Source *dagger.Directory
@@ -88,6 +90,21 @@ func (m *Security) ScanImage(
 			"--exit-code=1",
 			"--severity=CRITICAL,HIGH",
 			"--input=target.tar",
+		}).
+		Sync(ctx)
+	return err
+}
+
+// LintActions runs zizmor to lint GitHub Actions workflows.
+//
+// +check
+func (m *Security) LintActions(ctx context.Context) error {
+	_, err := dag.Container().
+		From("ghcr.io/zizmorcore/zizmor:"+zizmorVersion).
+		WithMountedDirectory("/src", m.Source).
+		WithWorkdir("/src").
+		WithExec([]string{
+			"zizmor", ".github/workflows", "--config", ".github/zizmor.yaml",
 		}).
 		Sync(ctx)
 	return err

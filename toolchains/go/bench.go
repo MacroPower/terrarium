@@ -135,6 +135,9 @@ func (m *Go) benchmarkStages() []benchmarkStage {
 				Sync(ctx)
 			return err
 		}},
+		{"lint-prettier", func(ctx context.Context) error {
+			return m.LintPrettier(ctx, "", nil)
+		}},
 	}
 }
 

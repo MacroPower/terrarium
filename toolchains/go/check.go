@@ -215,3 +215,48 @@ func (m *Go) LintModule(ctx context.Context,
 		Sync(ctx)
 	return err
 }
+
+// LintDeadcode reports unreachable functions in the codebase using the
+// golang.org/x/tools deadcode analyzer. This is an advisory lint that
+// is not included in standard checks; invoke via dagger call go lint-deadcode.
+func (m *Go) LintDeadcode(ctx context.Context) error {
+	_, err := m.Env("").
+		WithExec([]string{
+			"go", "install",
+			"golang.org/x/tools/cmd/deadcode@" + deadcodeVersion,
+		}).
+		WithExec([]string{"deadcode", "./..."}).
+		Sync(ctx)
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Prettier
+// ---------------------------------------------------------------------------
+
+// LintPrettier checks YAML, JSON, and Markdown formatting.
+//
+// +check
+func (m *Go) LintPrettier(
+	ctx context.Context,
+	// Prettier config file path relative to source root.
+	// +optional
+	configPath string,
+	// File patterns to check.
+	// +optional
+	patterns []string,
+) error {
+	if configPath == "" {
+		configPath = "./.prettierrc.yaml"
+	}
+	if len(patterns) == 0 {
+		patterns = defaultPrettierPatterns()
+	}
+	args := append([]string{"prettier", "--config", configPath, "--check"}, patterns...)
+	_, err := m.prettierBase().
+		WithMountedDirectory("/src", m.Source).
+		WithWorkdir("/src").
+		WithExec(args).
+		Sync(ctx)
+	return err
+}

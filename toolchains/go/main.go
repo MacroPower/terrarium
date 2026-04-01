@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	defaultGoVersion    = "1.26" // renovate: datasource=golang-version depName=go
-	golangciLintVersion = "v2.9" // renovate: datasource=github-releases depName=golangci/golangci-lint
+	defaultGoVersion    = "1.26"   // renovate: datasource=golang-version depName=go
+	golangciLintVersion = "v2.9"   // renovate: datasource=github-releases depName=golangci/golangci-lint
+	deadcodeVersion     = "v0.42.0" // renovate: datasource=go depName=golang.org/x/tools
+	prettierVersion     = "3.5.3"   // renovate: datasource=npm depName=prettier
 
 	// defaultCacheNamespace is the default prefix for cache volume names.
 	// Override via the cacheNamespace constructor parameter when consuming
@@ -559,4 +561,20 @@ func (m *Go) lintBase(mod string) *dagger.Container {
 	return ctr
 }
 
+// prettierBase returns a Node container with prettier pre-installed.
+// Callers must mount their source directory and set the workdir.
+func (m *Go) prettierBase() *dagger.Container {
+	return dag.Container().
+		From("node:lts-slim").
+		WithMountedCache("/root/.npm", dag.CacheVolume(m.CacheNamespace+":npm")).
+		WithExec([]string{"npm", "install", "-g", "prettier@" + prettierVersion})
+}
 
+// defaultPrettierPatterns returns the default file patterns for prettier
+// formatting and linting.
+func defaultPrettierPatterns() []string {
+	return []string{
+		"*.yaml", "*.md", "*.json",
+		"**/*.yaml", "**/*.md", "**/*.json",
+	}
+}

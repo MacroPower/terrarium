@@ -558,7 +558,7 @@ func terrariumContainer(
 	configContent string,
 	bindings []serviceBinding,
 ) (*dagger.Container, error) {
-	dist := dag.Terrarium().Build()
+	dist := dag.Go().GoreleaserBuild("https://github.com/macropower/terrarium.git")
 
 	containers, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
 		Version: "v0.0.0-e2e",
