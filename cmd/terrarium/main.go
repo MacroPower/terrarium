@@ -76,6 +76,14 @@ func main() {
 				return Init(cmd.Context(), usr, args)
 			},
 		},
+		&cobra.Command{
+			Use:   "daemon",
+			Short: "Run as a VM-wide network filter daemon",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return Daemon(cmd.Context(), usr)
+			},
+		},
 	)
 
 	err = fang.Execute(context.Background(), rootCmd,

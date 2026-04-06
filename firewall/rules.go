@@ -166,6 +166,19 @@ func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids 
 	})
 
 	addOutputBaseRules(conn, table, outputChain, 0)
+
+	// VM mode: accept Envoy UID before terminal DROP so Envoy
+	// can drain connections during shutdown.
+	if uids.VMMode {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: outputChain,
+			Exprs: flatExprs(
+				matchUID(uids.Envoy),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
+
 	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
 	if cfg.Logging {
@@ -306,26 +319,13 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 
 	addOutputBaseRules(conn, table, outputChain, tproxyMark)
 
-	// Dispatch UID 1000 to terrarium_output before ESTABLISHED.
-	// This avoids the `! --uid-owner` negation pattern and its
-	// ownerless-packet problem with meta skuid.
 	terrariumChain := conn.AddChain(&nftables.Chain{
 		Name:  "terrarium_output",
 		Table: table,
 	})
 
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: outputChain,
-		Exprs: flatExprs(
-			matchUID(uids.Terrarium),
-			verdictExprs(expr.VerdictJump, "terrarium_output"),
-		),
-	})
-
 	// Envoy ACCEPT: Envoy can reach any IP (domain allowlist
-	// in Envoy config provides security). Placed in the output
-	// chain (not terrarium_output) because only UID 1000 is
-	// dispatched to terrarium_output.
+	// in Envoy config provides security).
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: outputChain,
 		Exprs: flatExprs(
@@ -334,7 +334,34 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 		),
 	})
 
-	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
+	if uids.VMMode {
+		// VM mode: established connections, ICMP, and root DNS must
+		// be accepted before the unconditional jump into policy
+		// evaluation, otherwise the jump catches all traffic and
+		// these rules become unreachable.
+		addOutputEstablishedAndICMP(conn, table, outputChain, uids)
+
+		// All remaining non-Envoy traffic enters policy evaluation.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: outputChain,
+			Exprs: flatExprs(
+				verdictExprs(expr.VerdictJump, "terrarium_output"),
+			),
+		})
+	} else {
+		// Container mode: only the Terrarium UID is dispatched.
+		// This avoids the `! --uid-owner` negation pattern and its
+		// ownerless-packet problem with meta skuid.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: outputChain,
+			Exprs: flatExprs(
+				matchUID(uids.Terrarium),
+				verdictExprs(expr.VerdictJump, "terrarium_output"),
+			),
+		})
+
+		addOutputEstablishedAndICMP(conn, table, outputChain, uids)
+	}
 
 	if cfg.Logging {
 		conn.AddRule(&nftables.Rule{
@@ -372,7 +399,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: terrariumChain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				verdictExprs(expr.VerdictAccept),
 			),
 		})

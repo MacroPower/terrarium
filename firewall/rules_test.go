@@ -13,7 +13,10 @@ import (
 	"go.jacobcolvin.com/terrarium/firewall"
 )
 
-var testUIDs = firewall.UIDs{Terrarium: 1000, Envoy: 999, Root: 0}
+var (
+	testUIDs   = firewall.UIDs{Terrarium: 1000, Envoy: 999, Root: 0}
+	testVMUIDs = firewall.UIDs{Envoy: 999, Root: 0, VMMode: true}
+)
 
 func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
 	return &rules
@@ -393,10 +396,10 @@ func TestApplyRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 	outputRules := rec.rulesForChain("output")
 
 	// Envoy ACCEPT (UID 999) must be in the output chain, placed
-	// after the UID 1000 dispatch and before ESTABLISHED. Only UID
-	// 1000 enters terrarium_output, so the Envoy rule must live in
-	// the output chain for Envoy's outbound connections to pass.
-	terrariumJumpIdx, envoyIdx, estIdx := -1, -1, -1
+	// before the UID 1000 dispatch and before ESTABLISHED. Envoy
+	// is excluded first so its traffic never enters policy
+	// evaluation. Only UID 1000 enters terrarium_output.
+	envoyIdx, terrariumJumpIdx, estIdx := -1, -1, -1
 	for i, r := range outputRules {
 		vk, chain := ruleVerdict(r)
 		if vk == expr.VerdictJump && chain == "terrarium_output" {
@@ -413,12 +416,12 @@ func TestApplyRules_RulesMode_EnvoyAcceptPlacement(t *testing.T) {
 		}
 	}
 
-	require.NotEqual(t, -1, terrariumJumpIdx, "terrarium_output jump must exist")
 	require.NotEqual(t, -1, envoyIdx, "Envoy ACCEPT must exist in output chain")
+	require.NotEqual(t, -1, terrariumJumpIdx, "terrarium_output jump must exist")
 	require.NotEqual(t, -1, estIdx, "ESTABLISHED ACCEPT must exist")
 
-	assert.Greater(t, envoyIdx, terrariumJumpIdx,
-		"Envoy ACCEPT must come after UID 1000 dispatch")
+	assert.Less(t, envoyIdx, terrariumJumpIdx,
+		"Envoy ACCEPT must come before UID 1000 dispatch")
 	assert.Less(t, envoyIdx, estIdx,
 		"Envoy ACCEPT must come before ESTABLISHED")
 }
@@ -1180,6 +1183,30 @@ func TestApplyRules_ICMPWithoutCIDR(t *testing.T) {
 	assert.Equal(t, 1, icmpAccepts)
 }
 
+// ruleMatchesUID reports whether a rule matches a specific UID value
+// by checking for a Meta SKUID load followed by a Cmp with the UID
+// value in native endian.
+func ruleMatchesUID(r *nftables.Rule, uid uint32) bool {
+	hasMetaSKUID := false
+
+	for _, e := range r.Exprs {
+		if m, ok := e.(*expr.Meta); ok && m.Key == expr.MetaKeySKUID {
+			hasMetaSKUID = true
+		}
+
+		if hasMetaSKUID {
+			if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpEq {
+				expected := binaryutil.NativeEndian.PutUint32(uid)
+				if assert.ObjectsAreEqual(expected, c.Data) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // ruleHasPayload reports whether a rule contains a Payload expression
 // (used by ICMP type matching).
 func ruleHasPayload(r *nftables.Rule) bool {
@@ -1367,4 +1394,270 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 				"LOG rule presence should match logging config")
 		})
 	}
+}
+
+func TestApplyRules_VMMode_Filtered(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.Contains(t, names, "terrarium_output")
+	assert.Contains(t, names, "nat_output")
+
+	outputRules := rec.rulesForChain("output")
+
+	// Envoy ACCEPT must appear before the jump to terrarium_output.
+	envoyIdx, jumpIdx := -1, -1
+	for i, r := range outputRules {
+		v, chain := ruleVerdict(r)
+		if envoyIdx == -1 && v == expr.VerdictAccept && ruleMatchesUID(r, testVMUIDs.Envoy) {
+			envoyIdx = i
+		}
+
+		if v == expr.VerdictJump && chain == "terrarium_output" {
+			jumpIdx = i
+		}
+	}
+
+	require.NotEqual(t, -1, envoyIdx, "Envoy ACCEPT must exist")
+	require.NotEqual(t, -1, jumpIdx, "terrarium_output jump must exist")
+	assert.Less(t, envoyIdx, jumpIdx,
+		"Envoy ACCEPT must come before terrarium_output jump")
+
+	// Root DNS accept and CT established must appear before the
+	// unconditional jump to terrarium_output, otherwise the jump
+	// intercepts root DNS queries and established connections.
+	rootDNSIdx, ctEstabIdx := -1, -1
+	for i, r := range outputRules {
+		if rootDNSIdx == -1 && ruleMatchesUID(r, testVMUIDs.Root) {
+			v, _ := ruleVerdict(r)
+			if v == expr.VerdictAccept {
+				rootDNSIdx = i
+			}
+		}
+
+		if ctEstabIdx == -1 && ruleHasCtState(r) {
+			v, _ := ruleVerdict(r)
+			if v == expr.VerdictAccept {
+				ctEstabIdx = i
+			}
+		}
+	}
+
+	require.NotEqual(t, -1, rootDNSIdx, "root DNS ACCEPT must exist")
+	require.NotEqual(t, -1, ctEstabIdx, "CT established ACCEPT must exist")
+	assert.Less(t, rootDNSIdx, jumpIdx,
+		"root DNS ACCEPT must come before terrarium_output jump")
+	assert.Less(t, ctEstabIdx, jumpIdx,
+		"CT established ACCEPT must come before terrarium_output jump")
+
+	// The jump to terrarium_output must NOT have a UID match
+	// (all non-Envoy traffic enters the policy chain in VM mode).
+	jumpRule := outputRules[jumpIdx]
+	assert.False(t, ruleHasMetaKey(jumpRule, expr.MetaKeySKUID),
+		"VM mode jump to terrarium_output should not match UID")
+
+	// terrarium_output ends with DROP.
+	terrariumRules := rec.rulesForChain("terrarium_output")
+	require.NotEmpty(t, terrariumRules)
+
+	v, _ := ruleVerdict(terrariumRules[len(terrariumRules)-1])
+	assert.Equal(t, expr.VerdictDrop, v)
+
+	// Rules inside terrarium_output should NOT have UID matching
+	// (matchFilteredTraffic returns nil in VM mode).
+	for _, r := range terrariumRules {
+		assert.False(t, ruleHasMetaKey(r, expr.MetaKeySKUID),
+			"VM mode terrarium_output rules should not match UID")
+	}
+}
+
+func TestApplyRules_VMMode_NATExclusions(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	natRules := rec.rulesForChain("nat_output")
+	require.NotEmpty(t, natRules)
+
+	// First two rules should be Envoy and root UID ACCEPTs.
+	require.GreaterOrEqual(t, len(natRules), 2)
+
+	v0, _ := ruleVerdict(natRules[0])
+	assert.Equal(t, expr.VerdictAccept, v0)
+	assert.True(t, ruleMatchesUID(natRules[0], testVMUIDs.Envoy),
+		"first NAT rule should accept Envoy UID")
+
+	v1, _ := ruleVerdict(natRules[1])
+	assert.Equal(t, expr.VerdictAccept, v1)
+	assert.True(t, ruleMatchesUID(natRules[1], testVMUIDs.Root),
+		"second NAT rule should accept root UID")
+
+	// REDIRECT rules should NOT have UID matching.
+	for _, r := range natRules[2:] {
+		if ruleHasRedir(r) {
+			assert.False(t, ruleHasMetaKey(r, expr.MetaKeySKUID),
+				"VM mode NAT REDIRECT rules should not match UID")
+		}
+	}
+}
+
+func TestApplyRules_VMMode_MangleExclusions(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	mangleRules := rec.rulesForChain("mangle_output")
+	require.NotEmpty(t, mangleRules)
+
+	// First two rules should ACCEPT Envoy and root UIDs.
+	require.GreaterOrEqual(t, len(mangleRules), 3)
+
+	v0, _ := ruleVerdict(mangleRules[0])
+	assert.Equal(t, expr.VerdictAccept, v0)
+	assert.True(t, ruleMatchesUID(mangleRules[0], testVMUIDs.Envoy),
+		"first mangle rule should accept Envoy UID")
+
+	v1, _ := ruleVerdict(mangleRules[1])
+	assert.Equal(t, expr.VerdictAccept, v1)
+	assert.True(t, ruleMatchesUID(mangleRules[1], testVMUIDs.Root),
+		"second mangle rule should accept root UID")
+
+	// The mark rule should NOT have UID matching.
+	markRule := mangleRules[2]
+	assert.True(t, ruleHasMark(markRule), "third mangle rule should set mark")
+	assert.False(t, ruleHasMetaKey(markRule, expr.MetaKeySKUID),
+		"VM mode mark rule should not match UID")
+}
+
+func TestApplyRules_VMMode_PostroutingGuard(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("postrouting_guard")
+	require.NotEmpty(t, rules)
+
+	// First two rules should ACCEPT Envoy and root UIDs.
+	require.GreaterOrEqual(t, len(rules), 3)
+
+	v0, _ := ruleVerdict(rules[0])
+	assert.Equal(t, expr.VerdictAccept, v0)
+	assert.True(t, ruleMatchesUID(rules[0], testVMUIDs.Envoy),
+		"first postrouting rule should accept Envoy UID")
+
+	v1, _ := ruleVerdict(rules[1])
+	assert.Equal(t, expr.VerdictAccept, v1)
+	assert.True(t, ruleMatchesUID(rules[1], testVMUIDs.Root),
+		"second postrouting rule should accept root UID")
+
+	// Last rule should be DROP without UID matching (all remaining
+	// traffic on non-loopback).
+	lastRule := rules[len(rules)-1]
+	v, _ := ruleVerdict(lastRule)
+	assert.Equal(t, expr.VerdictDrop, v)
+	assert.False(t, ruleHasMetaKey(lastRule, expr.MetaKeySKUID),
+		"VM mode postrouting DROP should not match specific UID")
+}
+
+func TestApplyRules_VMMode_Unrestricted(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	// NAT chain should have Envoy and root exclusions.
+	natRules := rec.rulesForChain("nat_output")
+	require.GreaterOrEqual(t, len(natRules), 2)
+	assert.True(t, ruleMatchesUID(natRules[0], testVMUIDs.Envoy))
+	assert.True(t, ruleMatchesUID(natRules[1], testVMUIDs.Root))
+
+	// REDIRECT rules should not have UID matching.
+	for _, r := range natRules[2:] {
+		if ruleHasRedir(r) {
+			assert.False(t, ruleHasMetaKey(r, expr.MetaKeySKUID),
+				"VM mode NAT REDIRECT should not match UID")
+		}
+	}
+}
+
+func TestApplyRules_VMMode_Blocked(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{}),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	outputRules := rec.rulesForChain("output")
+	require.NotEmpty(t, outputRules)
+
+	// Should have Envoy ACCEPT before terminal DROP.
+	var envoyAcceptIdx, dropIdx int
+
+	for i, r := range outputRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictAccept && ruleMatchesUID(r, testVMUIDs.Envoy) {
+			envoyAcceptIdx = i
+		}
+
+		if v == expr.VerdictDrop {
+			dropIdx = i
+		}
+	}
+
+	assert.Less(t, envoyAcceptIdx, dropIdx,
+		"Envoy ACCEPT must come before terminal DROP in VM blocked mode")
 }

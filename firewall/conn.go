@@ -4,12 +4,17 @@ import "github.com/google/nftables"
 
 const tableName = "terrarium"
 
-// UIDs holds the numeric user IDs used in nftables UID match
-// expressions. Values are passed from the CLI entrypoint.
+// UIDs holds the numeric user IDs that nftables rules use to
+// distinguish infrastructure traffic from policy-evaluated traffic.
 type UIDs struct {
 	Terrarium uint32
 	Envoy     uint32
 	Root      uint32
+
+	// VMMode switches from container-style filtering, where only
+	// the Terrarium UID is policy-evaluated, to VM-wide filtering,
+	// where all UIDs except Envoy and Root are policy-evaluated.
+	VMMode bool
 }
 
 const (
@@ -23,9 +28,10 @@ const (
 	tproxyTable = 100
 )
 
-// Conn abstracts the nftables.Conn methods used by rule building.
-// [*nftables.Conn] satisfies this interface. Tests provide a
-// recording implementation.
+// Conn abstracts the [nftables.Conn] methods used by rule building.
+// Tests provide a recording implementation.
+//
+// See [*nftables.Conn] for an implementation.
 type Conn interface {
 	AddTable(t *nftables.Table) *nftables.Table
 	AddChain(c *nftables.Chain) *nftables.Chain

@@ -12,6 +12,19 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 )
 
+// matchFilteredTraffic returns UID-match expressions that scope a
+// rule to policy-evaluated traffic. In container mode this matches
+// the single Terrarium UID; in VM mode it returns nil so the
+// calling rule applies to all UIDs (Envoy and Root are excluded by
+// dedicated ACCEPT rules earlier in the chain).
+func matchFilteredTraffic(uids UIDs) []expr.Any {
+	if uids.VMMode {
+		return nil
+	}
+
+	return matchUID(uids.Terrarium)
+}
+
 func addInputChain(conn Conn, table *nftables.Table) {
 	policy := nftables.ChainPolicyDrop
 	chain := conn.AddChain(&nftables.Chain{
@@ -185,7 +198,7 @@ func addDenyCIDRChainsWithVerdict(
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
-							matchUID(uids.Terrarium),
+							matchFilteredTraffic(uids),
 							matchDstCIDR(excNet),
 							verdictExprs(expr.VerdictReturn),
 						),
@@ -195,7 +208,7 @@ func addDenyCIDRChainsWithVerdict(
 						conn.AddRule(&nftables.Rule{
 							Table: table, Chain: chain,
 							Exprs: flatExprs(
-								matchUID(uids.Terrarium),
+								matchFilteredTraffic(uids),
 								matchPortProto(pp),
 								matchDstCIDR(excNet),
 								verdictExprs(expr.VerdictReturn),
@@ -217,7 +230,7 @@ func addDenyCIDRChainsWithVerdict(
 				conn.AddRule(&nftables.Rule{
 					Table: table, Chain: chain,
 					Exprs: flatExprs(
-						matchUID(uids.Terrarium),
+						matchFilteredTraffic(uids),
 						matchDstCIDR(cidrNet),
 						verdictExprs(verdict),
 					),
@@ -227,7 +240,7 @@ func addDenyCIDRChainsWithVerdict(
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
-							matchUID(uids.Terrarium),
+							matchFilteredTraffic(uids),
 							matchPortProto(pp),
 							matchDstCIDR(cidrNet),
 							verdictExprs(verdict),
@@ -260,7 +273,7 @@ func addDenyPortRules(
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: parentChain,
 				Exprs: flatExprs(
-					matchUID(uids.Terrarium),
+					matchFilteredTraffic(uids),
 					verdictExprs(expr.VerdictDrop),
 				),
 			})
@@ -268,7 +281,7 @@ func addDenyPortRules(
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: parentChain,
 				Exprs: flatExprs(
-					matchUID(uids.Terrarium),
+					matchFilteredTraffic(uids),
 					matchPortProto(pp),
 					verdictExprs(expr.VerdictDrop),
 				),
@@ -308,7 +321,7 @@ func addCIDRChains(
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
-							matchUID(uids.Terrarium),
+							matchFilteredTraffic(uids),
 							matchDstCIDR(excNet),
 							verdictExprs(expr.VerdictReturn),
 						),
@@ -318,7 +331,7 @@ func addCIDRChains(
 						conn.AddRule(&nftables.Rule{
 							Table: table, Chain: chain,
 							Exprs: flatExprs(
-								matchUID(uids.Terrarium),
+								matchFilteredTraffic(uids),
 								matchPortProto(pp),
 								matchDstCIDR(excNet),
 								verdictExprs(expr.VerdictReturn),
@@ -348,7 +361,7 @@ func addCIDRChains(
 				conn.AddRule(&nftables.Rule{
 					Table: table, Chain: chain,
 					Exprs: flatExprs(
-						matchUID(uids.Terrarium),
+						matchFilteredTraffic(uids),
 						matchDstCIDR(cidrNet),
 						verdictExprs(expr.VerdictAccept),
 					),
@@ -363,7 +376,7 @@ func addCIDRChains(
 					conn.AddRule(&nftables.Rule{
 						Table: table, Chain: chain,
 						Exprs: flatExprs(
-							matchUID(uids.Terrarium),
+							matchFilteredTraffic(uids),
 							matchPortProto(pp),
 							matchDstCIDR(cidrNet),
 							verdictExprs(expr.VerdictAccept),
@@ -391,7 +404,7 @@ func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(protoNum(op.Protocol)),
 				matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
 				verdictExprs(expr.VerdictAccept),
@@ -403,7 +416,7 @@ func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
 				verdictExprs(expr.VerdictAccept),
@@ -431,7 +444,7 @@ func addFQDNPortRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				matchCtState(expr.CtStateBitESTABLISHED),
@@ -444,7 +457,7 @@ func addFQDNPortRules(
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNFProto(unix.NFPROTO_IPV4),
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				setLookupDst(ref.set4),
@@ -457,7 +470,7 @@ func addFQDNPortRules(
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNFProto(unix.NFPROTO_IPV6),
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(proto),
 				matchDstPort(port16(fp.Port)),
 				setLookupDst(ref.set6),
@@ -488,6 +501,20 @@ func addNATRules(
 		Priority: nftables.ChainPriorityNATDest,
 	})
 
+	// VM mode: skip Envoy and root traffic to prevent redirect
+	// loops (Envoy) and allow DNS proxy upstream queries (root).
+	if uids.VMMode {
+		for _, uid := range []uint32{uids.Envoy, uids.Root} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: natChain,
+				Exprs: flatExprs(
+					matchUID(uid),
+					verdictExprs(expr.VerdictAccept),
+				),
+			})
+		}
+	}
+
 	allCIDRs := slices.Concat(cidr4, cidr6)
 
 	// 1. Deny CIDR NAT ACCEPT (prevent redirect for denied CIDRs).
@@ -501,7 +528,7 @@ func addNATRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(p)),
 				redirectToPort(port16(config.ProxyPortBase+p)),
@@ -514,7 +541,7 @@ func addNATRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(fwd.Port)),
 				redirectToPort(port16(config.ProxyPortBase+fwd.Port)),
@@ -527,7 +554,7 @@ func addNATRules(
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(
-			matchUID(uids.Terrarium),
+			matchFilteredTraffic(uids),
 			matchL4Proto(unix.IPPROTO_TCP),
 			redirectToPort(port16(config.CatchAllProxyPort)),
 		),
@@ -546,11 +573,25 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 		Priority: nftables.ChainPriorityNATDest,
 	})
 
+	// VM mode: skip Envoy and root traffic to prevent redirect
+	// loops (Envoy) and allow DNS proxy upstream queries (root).
+	if uids.VMMode {
+		for _, uid := range []uint32{uids.Envoy, uids.Root} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: natChain,
+				Exprs: flatExprs(
+					matchUID(uid),
+					verdictExprs(expr.VerdictAccept),
+				),
+			})
+		}
+	}
+
 	// 1. Port 80 -> HTTP forward proxy.
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(
-			matchUID(uids.Terrarium),
+			matchFilteredTraffic(uids),
 			matchL4Proto(unix.IPPROTO_TCP),
 			matchDstPort(80),
 			redirectToPort(15080),
@@ -561,7 +602,7 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(
-			matchUID(uids.Terrarium),
+			matchFilteredTraffic(uids),
 			matchL4Proto(unix.IPPROTO_TCP),
 			matchDstPort(443),
 			redirectToPort(15443),
@@ -573,7 +614,7 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(port16(fwd.Port)),
 				redirectToPort(port16(config.ProxyPortBase+fwd.Port)),
@@ -585,7 +626,7 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
 		Exprs: flatExprs(
-			matchUID(uids.Terrarium),
+			matchFilteredTraffic(uids),
 			matchL4Proto(unix.IPPROTO_TCP),
 			redirectToPort(port16(config.CatchAllProxyPort)),
 		),
@@ -715,7 +756,7 @@ func addCIDRNATTCPRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstCIDR(cidrNet),
 				terminal,
@@ -733,7 +774,7 @@ func addCIDRNATTCPRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPortOrRange(port16(pp.Port), port16(pp.EndPort)),
 				matchDstCIDR(cidrNet),
@@ -765,11 +806,25 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 		Priority: nftables.ChainPriorityMangle,
 	})
 
-	// Mark terrarium UDP (except port 53) with tproxyMark.
+	// VM mode: skip Envoy and root UDP so their traffic is not
+	// rerouted through TPROXY.
+	if uids.VMMode {
+		for _, uid := range []uint32{uids.Envoy, uids.Root} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchUID(uid),
+					verdictExprs(expr.VerdictAccept),
+				),
+			})
+		}
+	}
+
+	// Mark filtered UDP (except port 53) with tproxyMark.
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(
-			matchUID(uids.Terrarium),
+			matchFilteredTraffic(uids),
 			matchL4Proto(unix.IPPROTO_UDP),
 			notMatchDstPort(53),
 			markPacket(tproxyMark),
@@ -866,7 +921,7 @@ func addICMPVerdictRules(
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: parentChain,
 				Exprs: flatExprs(
-					matchUID(uids.Terrarium),
+					matchFilteredTraffic(uids),
 					matchNFProto(nfProto),
 					matchL4Proto(l4Proto),
 					matchICMPType(icmp.Type),
@@ -887,7 +942,7 @@ func addICMPVerdictRules(
 				Table: table, Chain: parentChain,
 				Exprs: flatExprs(
 					matchNFProto(nfProto),
-					matchUID(uids.Terrarium),
+					matchFilteredTraffic(uids),
 					matchL4Proto(l4Proto),
 					matchICMPType(icmp.Type),
 					setLookupDst(set),
@@ -902,7 +957,7 @@ func addICMPVerdictRules(
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: parentChain,
 				Exprs: flatExprs(
-					matchUID(uids.Terrarium),
+					matchFilteredTraffic(uids),
 					matchNFProto(nfProto),
 					matchL4Proto(l4Proto),
 					matchICMPType(icmp.Type),
@@ -949,7 +1004,7 @@ func addICMPCIDRRules(
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: chain,
 				Exprs: flatExprs(
-					matchUID(uids.Terrarium),
+					matchFilteredTraffic(uids),
 					matchNFProto(nfProto),
 					matchL4Proto(l4Proto),
 					matchICMPType(icmp.Type),
@@ -970,7 +1025,7 @@ func addICMPCIDRRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchNFProto(nfProto),
 				matchL4Proto(l4Proto),
 				matchICMPType(icmp.Type),
@@ -1012,7 +1067,7 @@ func addCatchAllFQDNRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				matchCtState(expr.CtStateBitESTABLISHED),
 				verdictExprs(expr.VerdictAccept),
 			),
@@ -1023,7 +1078,7 @@ func addCatchAllFQDNRules(
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNFProto(unix.NFPROTO_IPV4),
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				setLookupDst(ref.set4),
 				verdictExprs(expr.VerdictAccept),
 			),
@@ -1034,7 +1089,7 @@ func addCatchAllFQDNRules(
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNFProto(unix.NFPROTO_IPV6),
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				setLookupDst(ref.set6),
 				verdictExprs(expr.VerdictAccept),
 			),
@@ -1042,17 +1097,17 @@ func addCatchAllFQDNRules(
 	}
 }
 
-// groupCIDRsByRule groups resolved CIDRs by their RuleIndex,
-// preserving order of first appearance.
 // addPostroutingGuard creates a filter-type POSTROUTING chain that
-// drops all terrarium-UID traffic leaving on non-loopback interfaces.
+// drops filtered traffic leaving on non-loopback interfaces.
 // NAT REDIRECT (TCP) and TPROXY (UDP) route traffic to Envoy on
 // loopback; this chain catches any traffic that escapes those
 // mechanisms, providing belt-and-suspenders enforcement that all
-// terrarium egress flows through Envoy.
+// filtered egress flows through Envoy.
 //
-// The chain uses policy ACCEPT so non-terrarium traffic (Envoy UID,
-// root DNS proxy, kernel ICMP) passes through unaffected.
+// In container mode the chain uses policy ACCEPT so non-terrarium
+// traffic (Envoy UID, root DNS proxy, kernel ICMP) passes through
+// unaffected. In VM mode, explicit Envoy and root ACCEPT rules are
+// added because matchFilteredTraffic matches all UIDs.
 func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UIDs) {
 	policy := nftables.ChainPolicyAccept
 	chain := conn.AddChain(&nftables.Chain{
@@ -1064,11 +1119,25 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 		Policy:   &policy,
 	})
 
+	// VM mode: Envoy and root legitimately send to non-loopback
+	// (Envoy proxies to upstream, root forwards DNS queries).
+	if uids.VMMode {
+		for _, uid := range []uint32{uids.Envoy, uids.Root} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchUID(uid),
+					verdictExprs(expr.VerdictAccept),
+				),
+			})
+		}
+	}
+
 	if logging {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchUID(uids.Terrarium),
+				matchFilteredTraffic(uids),
 				notMatchOIFName("lo"),
 				logPrefix("TERRARIUM_EGRESS_LEAK: "),
 			),
@@ -1078,13 +1147,15 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(
-			matchUID(uids.Terrarium),
+			matchFilteredTraffic(uids),
 			notMatchOIFName("lo"),
 			verdictExprs(expr.VerdictDrop),
 		),
 	})
 }
 
+// groupCIDRsByRule groups resolved CIDRs by their RuleIndex,
+// preserving order of first appearance.
 func groupCIDRsByRule(cidrs []config.ResolvedCIDR) [][]config.ResolvedCIDR {
 	if len(cidrs) == 0 {
 		return nil

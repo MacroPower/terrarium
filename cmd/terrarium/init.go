@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,8 +25,8 @@ import (
 	"go.jacobcolvin.com/terrarium/sysctl"
 )
 
-// ExitError carries a process exit code through the error return path
-// so the CLI entrypoint can propagate it to [os.Exit].
+// ExitError carries a child process exit code through the error
+// return path so the CLI entrypoint can propagate it to [os.Exit].
 type ExitError struct{ Code int }
 
 // Error returns a human-readable representation of the exit status.
@@ -46,7 +47,8 @@ var (
 	ErrEnvoyNotRunning = errors.New("envoy process not running")
 )
 
-// ParseUpstreamDNS extracts the first nameserver from resolv.conf content.
+// ParseUpstreamDNS extracts the first nameserver IP from resolv.conf
+// content. It returns the empty string when no nameserver is found.
 func ParseUpstreamDNS(resolvConf string) string {
 	for line := range strings.SplitSeq(resolvConf, "\n") {
 		line = strings.TrimSpace(line)
@@ -61,21 +63,25 @@ func ParseUpstreamDNS(resolvConf string) string {
 	return ""
 }
 
-// Init performs the full terrarium initialization sequence: generates
-// configs if needed, applies nftables firewall rules, starts the DNS
-// proxy and Envoy, then drops privileges and runs the given command
-// as a supervised child process. The context is threaded to all
-// subprocesses, allowing cancellation to propagate. Returns an
-// [*ExitError] carrying the child's exit code on normal termination.
-func Init(ctx context.Context, usr *config.User, args []string) error {
-	if len(args) == 0 {
-		return ErrNoCommand
-	}
+// infra holds the running infrastructure components started by
+// [setupInfrastructure]. The caller owns cleanup via [shutdown].
+type infra struct {
+	envoyCmd     *exec.Cmd
+	dnsProxy     *dnsproxy.Proxy
+	conn         firewall.Conn
+	drainTimeout time.Duration
+}
 
+// setupInfrastructure performs the shared initialization sequence:
+// generate configs, apply nftables rules, start DNS proxy, rewrite
+// resolv.conf, and start Envoy. On success the caller owns cleanup
+// via [shutdown]. On error, all resources are cleaned up before
+// returning.
+func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UIDs) (*infra, error) {
 	// Capture upstream DNS before we replace resolv.conf.
 	resolvData, err := os.ReadFile("/etc/resolv.conf")
 	if err != nil {
-		return fmt.Errorf("reading /etc/resolv.conf: %w", err)
+		return nil, fmt.Errorf("reading /etc/resolv.conf: %w", err)
 	}
 
 	upstream := ParseUpstreamDNS(string(resolvData))
@@ -90,7 +96,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 
 		cfg, err = Generate(ctx, usr)
 		if err != nil {
-			return fmt.Errorf("generating configs: %w", err)
+			return nil, fmt.Errorf("generating configs: %w", err)
 		}
 
 		// Ensure every directory in the config path is world-executable
@@ -99,7 +105,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		// like /root are typically 0700.
 		err = ensurePathTraversable(usr.EnvoyConfigPath)
 		if err != nil {
-			return fmt.Errorf("making envoy config path traversable: %w", err)
+			return nil, fmt.Errorf("making envoy config path traversable: %w", err)
 		}
 	}
 
@@ -112,7 +118,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 
 		err := installCA(ctx, caCertPath)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -120,12 +126,12 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	if cfg == nil {
 		cfgData, err := os.ReadFile(usr.ConfigPath)
 		if err != nil {
-			return fmt.Errorf("reading terrarium config: %w", err)
+			return nil, fmt.Errorf("reading terrarium config: %w", err)
 		}
 
 		cfg, err = config.ParseConfig(ctx, cfgData)
 		if err != nil {
-			return fmt.Errorf("parsing terrarium config: %w", err)
+			return nil, fmt.Errorf("parsing terrarium config: %w", err)
 		}
 	}
 
@@ -136,22 +142,14 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	// Apply nftables firewall rules atomically via netlink.
 	conn, err := nftables.New()
 	if err != nil {
-		return fmt.Errorf("creating nftables connection: %w", err)
+		return nil, fmt.Errorf("creating nftables connection: %w", err)
 	}
 
 	slog.InfoContext(ctx, "applying nftables firewall rules")
 
-	uids := firewall.UIDs{
-		//nolint:gosec // G115: UID values from CLI flags.
-		Terrarium: uint32(mustAtoi(usr.UID)),
-		//nolint:gosec // G115: UID values from CLI flags.
-		Envoy: uint32(mustAtoi(usr.EnvoyUID)),
-		Root:  0,
-	}
-
 	err = firewall.ApplyRules(ctx, conn, cfg, uids)
 	if err != nil {
-		return fmt.Errorf("applying firewall rules: %w", err)
+		return nil, fmt.Errorf("applying firewall rules: %w", err)
 	}
 
 	// Clean up firewall on error return so a restart in the same
@@ -188,7 +186,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	if needsEnvoy {
 		err := firewall.SetupPolicyRouting(ctx, sys)
 		if err != nil {
-			return fmt.Errorf("setting up policy routing: %w", err)
+			return nil, fmt.Errorf("setting up policy routing: %w", err)
 		}
 	}
 
@@ -196,7 +194,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	// avoid batching conflicts with rule setup.
 	dnsConn, err := nftables.New()
 	if err != nil {
-		return fmt.Errorf("creating DNS proxy nftables connection: %w", err)
+		return nil, fmt.Errorf("creating DNS proxy nftables connection: %w", err)
 	}
 
 	// Start DNS proxy with nftables set update function.
@@ -206,7 +204,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		}),
 	)
 	if err != nil {
-		return fmt.Errorf("starting DNS proxy: %w", err)
+		return nil, fmt.Errorf("starting DNS proxy: %w", err)
 	}
 
 	// Shut down DNS proxy on error return so goroutines and listeners
@@ -226,10 +224,10 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 
 	// Point system DNS to local resolver.
 	// Write to a temp file first, then atomically rename into place so that
-	// a failed write after unmount does not leave the container without DNS.
+	// a failed write after unmount does not leave the system without DNS.
 	tmpResolv, err := os.CreateTemp("/etc", ".resolv.conf.*")
 	if err != nil {
-		return fmt.Errorf("creating temp resolv.conf: %w", err)
+		return nil, fmt.Errorf("creating temp resolv.conf: %w", err)
 	}
 
 	_, err = tmpResolv.WriteString("nameserver 127.0.0.1\nnameserver ::1\n")
@@ -242,7 +240,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 			slog.DebugContext(ctx, "removing temp resolv.conf", slog.Any("err", removeErr))
 		}
 
-		return fmt.Errorf("writing temp resolv.conf: %w", err)
+		return nil, fmt.Errorf("writing temp resolv.conf: %w", err)
 	}
 
 	if closeErr != nil {
@@ -251,7 +249,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 			slog.DebugContext(ctx, "removing temp resolv.conf", slog.Any("err", removeErr))
 		}
 
-		return fmt.Errorf("closing temp resolv.conf: %w", closeErr)
+		return nil, fmt.Errorf("closing temp resolv.conf: %w", closeErr)
 	}
 
 	umountErr := syscall.Unmount("/etc/resolv.conf", 0)
@@ -266,14 +264,14 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 			slog.Any("err", err),
 		)
 
-		return fmt.Errorf("renaming resolv.conf: %w", err)
+		return nil, fmt.Errorf("renaming resolv.conf: %w", err)
 	}
 
 	// os.CreateTemp creates files with 0o600. Make resolv.conf world-readable
 	// so Envoy's getaddrinfo resolver (running as the envoy user) can read it.
 	err = os.Chmod("/etc/resolv.conf", 0o644)
 	if err != nil {
-		return fmt.Errorf("chmod resolv.conf: %w", err)
+		return nil, fmt.Errorf("chmod resolv.conf: %w", err)
 	}
 
 	// Start Envoy only when listeners are needed.
@@ -282,31 +280,72 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	if needsEnvoy {
 		envoyCmd, err = startEnvoy(ctx, usr, envoySettings, cfg)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	// Init setup succeeded; disable error-path cleanup defers.
-	// From this point, cleanup is handled by the shutdown path below.
+	// Setup succeeded; disable error-path cleanup defers.
+	// From this point, cleanup is handled by the caller via shutdown.
 	firewallCleanedUp = true
 	dnsProxyCleanedUp = true
 
 	// Signal readiness by creating a file at the requested path.
-	// This happens after all infrastructure is up (nftables, DNS
-	// proxy, Envoy) but before the user command starts.
 	if usr.ReadyFile != "" {
 		f, err := os.Create(usr.ReadyFile)
 		if err != nil {
-			return fmt.Errorf("creating ready file: %w", err)
+			return nil, fmt.Errorf("creating ready file: %w", err)
 		}
 
 		err = f.Close()
 		if err != nil {
-			return fmt.Errorf("closing ready file: %w", err)
+			return nil, fmt.Errorf("closing ready file: %w", err)
 		}
 	}
 
+	return &infra{
+		envoyCmd:     envoyCmd,
+		dnsProxy:     dnsProxy,
+		conn:         conn,
+		drainTimeout: envoySettings.DrainTimeout.Duration,
+	}, nil
+}
+
+// Init performs the full terrarium initialization sequence for
+// container mode: generates configs if needed, applies nftables
+// firewall rules, starts the DNS proxy and Envoy, then drops
+// privileges and execs the given command as a supervised child
+// process. It returns an [*ExitError] carrying the child's exit
+// code on normal termination. Use [Daemon] for VM-wide filtering
+// without a supervised child process.
+func Init(ctx context.Context, usr *config.User, args []string) error {
+	if len(args) == 0 {
+		return ErrNoCommand
+	}
+
+	terrariumUID, err := parseUID(usr.UID)
+	if err != nil {
+		return err
+	}
+
+	envoyUID, err := parseUID(usr.EnvoyUID)
+	if err != nil {
+		return err
+	}
+
+	uids := firewall.UIDs{
+		Terrarium: terrariumUID,
+		Envoy:     envoyUID,
+		Root:      0,
+	}
+
+	inf, err := setupInfrastructure(ctx, usr, uids)
+	if err != nil {
+		return err
+	}
+
 	// Prepare privilege drop.
+	sys := sysctl.New()
+
 	writeErr := sys.Write("0 "+usr.UID, "net", "ipv4", "ping_group_range")
 	if writeErr != nil {
 		slog.DebugContext(ctx, "setting ping group range", slog.Any("err", writeErr))
@@ -366,7 +405,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		waitErr = <-waitCh
 	}
 
-	shutdown(ctx, envoyCmd, dnsProxy, conn, envoySettings.DrainTimeout.Duration)
+	shutdown(ctx, inf.envoyCmd, inf.dnsProxy, inf.conn, inf.drainTimeout)
 
 	// Reap any remaining zombie children (PID 1 responsibility).
 	for {
@@ -400,38 +439,8 @@ func shutdown(
 	conn firewall.Conn, drainTimeout time.Duration,
 ) {
 	// Stop Envoy first so DNS remains available during drain.
-	if envoyCmd != nil && envoyCmd.Process != nil {
-		err := envoyCmd.Process.Signal(syscall.SIGTERM)
-		if err != nil {
-			slog.DebugContext(ctx, "stopping envoy", slog.Any("err", err))
-		} else {
-			// Wait for Envoy to exit gracefully.
-			envoyDone := make(chan struct{})
-
-			go func() {
-				waitErr := envoyCmd.Wait()
-				if waitErr != nil {
-					slog.DebugContext(ctx, "envoy exited", slog.Any("err", waitErr))
-				}
-
-				close(envoyDone)
-			}()
-
-			select {
-			case <-envoyDone:
-			case <-time.After(drainTimeout):
-				slog.WarnContext(ctx, "envoy did not exit within drain timeout, proceeding")
-			}
-		}
-	}
-
-	// Stop DNS proxy after Envoy is down.
-	if dnsProxy != nil {
-		err := dnsProxy.Shutdown()
-		if err != nil {
-			slog.DebugContext(ctx, "stopping DNS proxy", slog.Any("err", err))
-		}
-	}
+	stopEnvoy(ctx, envoyCmd, drainTimeout)
+	stopDNSProxy(ctx, dnsProxy)
 
 	// Remove policy routes before the nftables table so that
 	// TPROXY rules are inactive when routes are removed.
@@ -444,6 +453,51 @@ func shutdown(
 		if err != nil {
 			slog.DebugContext(ctx, "cleaning up firewall on shutdown", slog.Any("err", err))
 		}
+	}
+}
+
+// stopEnvoy sends SIGTERM to the Envoy process and waits up to
+// drainTimeout for it to exit gracefully. If the process has
+// already exited or was never started, it returns immediately.
+func stopEnvoy(ctx context.Context, cmd *exec.Cmd, drainTimeout time.Duration) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+
+	err := cmd.Process.Signal(syscall.SIGTERM)
+	if err != nil {
+		slog.DebugContext(ctx, "stopping envoy", slog.Any("err", err))
+		return
+	}
+
+	envoyDone := make(chan struct{})
+
+	go func() {
+		waitErr := cmd.Wait()
+		if waitErr != nil {
+			slog.DebugContext(ctx, "envoy exited", slog.Any("err", waitErr))
+		}
+
+		close(envoyDone)
+	}()
+
+	select {
+	case <-envoyDone:
+	case <-time.After(drainTimeout):
+		slog.WarnContext(ctx, "envoy did not exit within drain timeout, proceeding")
+	}
+}
+
+// stopDNSProxy shuts down the DNS proxy. If the proxy is nil,
+// it returns immediately.
+func stopDNSProxy(ctx context.Context, proxy *dnsproxy.Proxy) {
+	if proxy == nil {
+		return
+	}
+
+	err := proxy.Shutdown()
+	if err != nil {
+		slog.DebugContext(ctx, "stopping DNS proxy", slog.Any("err", err))
 	}
 }
 
@@ -548,14 +602,17 @@ func startEnvoy(
 	ctx context.Context, usr *config.User,
 	settings config.EnvoySettings, cfg *config.Config,
 ) (*exec.Cmd, error) {
-	envoyUID := mustAtoi(usr.EnvoyUID)
-
-	err := prepareEnvoyLogFile(usr.EnvoyLogPath, envoyUID)
+	envoyUID, err := parseUID(usr.EnvoyUID)
 	if err != nil {
 		return nil, err
 	}
 
-	err = prepareEnvoyLogFile(usr.EnvoyAccessLogPath, envoyUID)
+	err = prepareEnvoyLogFile(usr.EnvoyLogPath, int(envoyUID))
+	if err != nil {
+		return nil, err
+	}
+
+	err = prepareEnvoyLogFile(usr.EnvoyAccessLogPath, int(envoyUID))
 	if err != nil {
 		return nil, err
 	}
@@ -628,13 +685,16 @@ func prepareEnvoyLogFile(path string, ownerUID int) error {
 	return nil
 }
 
-func mustAtoi(s string) int {
-	n := 0
-	for _, c := range s {
-		n = n*10 + int(c-'0')
+// parseUID parses a numeric string as a user or group ID and returns
+// it as a uint32. It rejects empty strings, non-numeric input, and
+// values outside the 32-bit unsigned range.
+func parseUID(s string) (uint32, error) {
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("parsing UID %q: %w", s, err)
 	}
 
-	return n
+	return uint32(n), nil
 }
 
 // ensurePathTraversable walks up from the given file path and sets the
@@ -642,9 +702,15 @@ func mustAtoi(s string) int {
 // unprivileged users (like the envoy process) to traverse into
 // directories that may be restricted (e.g., /root with mode 0700).
 // Only the execute bit is added; read and write permissions are not
-// modified.
+// modified. Symlinks in the path are resolved before walking to
+// ensure permission changes apply to the real directory tree.
 func ensurePathTraversable(path string) error {
-	dir := filepath.Dir(path)
+	resolved, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("resolving symlinks in %s: %w", path, err)
+	}
+
+	dir := resolved
 
 	// Collect directories from the file's parent up to /.
 	var dirs []string
@@ -661,6 +727,10 @@ func ensurePathTraversable(path string) error {
 
 		perm := info.Mode().Perm()
 		if perm&0o001 == 0 {
+			slog.Warn("adding world-execute bit for path traversal",
+				slog.String("dir", d),
+				slog.String("old_mode", fmt.Sprintf("%04o", perm)),
+			)
 			//nolint:gosec // G302: intentionally adding world-execute for path traversal.
 			err := os.Chmod(d, perm|0o001)
 			if err != nil {
