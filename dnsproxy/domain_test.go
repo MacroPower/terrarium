@@ -26,12 +26,12 @@ func TestDomainMatches(t *testing.T) {
 		"non-wildcard subdomain": {
 			domain: dnsproxy.Domain{Name: "example.com"},
 			qname:  "sub.example.com.",
-			want:   false,
+			want:   true,
 		},
 		"non-wildcard deep subdomain": {
 			domain: dnsproxy.Domain{Name: "example.com"},
 			qname:  "a.b.c.example.com.",
-			want:   false,
+			want:   true,
 		},
 		"non-wildcard suffix trap": {
 			domain: dnsproxy.Domain{Name: "example.com"},
@@ -224,6 +224,18 @@ func TestCollectDomains(t *testing.T) {
 						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
 					},
 				),
+			},
+			want: []dnsproxy.Domain{{Name: "example.com"}},
+		},
+		"matchName then matchPattern same domain": {
+			cfg: config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{
+						{MatchName: "example.com"},
+						{MatchPattern: "*.example.com"},
+					},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
 			},
 			want: []dnsproxy.Domain{{Name: "example.com"}},
 		},

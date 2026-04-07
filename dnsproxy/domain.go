@@ -68,7 +68,7 @@ func (d Domain) Matches(qname string) bool {
 		return true
 	}
 
-	return q == d.Name
+	return q == d.Name || strings.HasSuffix(q, "."+d.Name)
 }
 
 // CollectDomains returns a sorted, deduplicated list of domains
@@ -254,6 +254,9 @@ func upgradeDomain(result []Domain, d Domain) {
 		if result[i].Name != d.Name {
 			continue
 		}
+
+		// Wildcard after exact is a no-op: exact entries already
+		// match all subdomains, so the wildcard adds nothing.
 
 		// Exact matchName upgrades a wildcard entry so the bare
 		// domain also resolves.

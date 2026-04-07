@@ -154,14 +154,15 @@ func TestProxyRestrictedMode(t *testing.T) {
 	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
 	require.Len(t, resp.Answer, 1)
 
-	// Subdomain of allowed domain should get REFUSED (exact match only).
+	// Subdomain of allowed domain should also resolve.
 	msg2 := new(dns.Msg)
 	msg2.SetQuestion("sub.allowed.example.com.", dns.TypeA)
 
 	resp2, _, err := client.Exchange(msg2, proxy.Addr)
 	require.NoError(t, err)
 	require.NotNil(t, resp2)
-	assert.Equal(t, dns.RcodeRefused, resp2.Rcode)
+	assert.Equal(t, dns.RcodeSuccess, resp2.Rcode)
+	require.Len(t, resp2.Answer, 1)
 
 	// Disallowed domain should get REFUSED.
 	msg3 := new(dns.Msg)
