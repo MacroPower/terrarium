@@ -27,7 +27,7 @@ func TestBuildAccessLog(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			logs := envoy.BuildAccessLog(tt.logging, "/tmp/access.log")
+			logs := envoy.BuildAccessLog(tt.logging, "logfmt", "/tmp/access.log")
 			if tt.wantLen == 0 {
 				assert.Nil(t, logs)
 				return
@@ -37,6 +37,37 @@ func TestBuildAccessLog(t *testing.T) {
 			assert.Equal(t, tt.wantName, logs[0].Name)
 		})
 	}
+}
+
+func TestBuildAccessLog_JSONFormat(t *testing.T) {
+	t.Parallel()
+
+	logs := envoy.BuildAccessLog(true, "json", "/tmp/access.log")
+	require.Len(t, logs, 1)
+
+	out, err := yaml.Marshal(logs)
+	require.NoError(t, err)
+
+	y := string(out)
+	assert.Contains(t, y, "json_format")
+	assert.Contains(t, y, "time:")
+	assert.Contains(t, y, "method:")
+	assert.NotContains(t, y, "text_format_source")
+}
+
+func TestBuildAccessLog_LogfmtFormat(t *testing.T) {
+	t.Parallel()
+
+	logs := envoy.BuildAccessLog(true, "logfmt", "/tmp/access.log")
+	require.Len(t, logs, 1)
+
+	out, err := yaml.Marshal(logs)
+	require.NoError(t, err)
+
+	y := string(out)
+	assert.Contains(t, y, "text_format_source")
+	assert.Contains(t, y, "time=%START_TIME%")
+	assert.NotContains(t, y, "json_format")
 }
 
 func TestBuildCatchAllUDPListener(t *testing.T) {
@@ -75,7 +106,7 @@ func TestBuildCatchAllUDPListener(t *testing.T) {
 func TestBuildCatchAllUDPListener_WithAccessLog(t *testing.T) {
 	t.Parallel()
 
-	accessLog := envoy.BuildAccessLog(true, "/tmp/access.log")
+	accessLog := envoy.BuildAccessLog(true, "logfmt", "/tmp/access.log")
 	l := envoy.BuildCatchAllUDPListener(15002, 120*time.Second, accessLog)
 
 	require.Len(t, l.ListenerFilters, 1)

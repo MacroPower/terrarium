@@ -198,7 +198,12 @@ func (c *Config) Validate(ctx context.Context) error {
 		}
 	}
 
-	normalizeEnvoySettings(c)
+	normalizeLogging(c)
+
+	err = validateLogging(c.Logging)
+	if err != nil {
+		return err
+	}
 
 	return c.validateEnvoySettings()
 }
@@ -207,10 +212,6 @@ func (c *Config) Validate(ctx context.Context) error {
 func (c *Config) validateEnvoySettings() error {
 	if c.Envoy == nil {
 		return nil
-	}
-
-	if c.Envoy.LogLevel != "" && !validEnvoyLogLevels[c.Envoy.LogLevel] {
-		return fmt.Errorf("%w: %q", ErrInvalidEnvoyLogLevel, c.Envoy.LogLevel)
 	}
 
 	if c.Envoy.DrainTimeout.Duration < 0 {
@@ -223,6 +224,33 @@ func (c *Config) validateEnvoySettings() error {
 
 	if c.Envoy.MaxDownstreamConnections < 0 {
 		return fmt.Errorf("%w: %d", ErrInvalidEnvoyMaxConnections, c.Envoy.MaxDownstreamConnections)
+	}
+
+	return nil
+}
+
+// validateLogging checks that logging config values are valid.
+func validateLogging(l *LoggingConfig) error {
+	if l == nil {
+		return nil
+	}
+
+	if l.DNS != nil && l.DNS.Format != "" {
+		if l.DNS.Format != DefaultLogFormat && l.DNS.Format != "json" {
+			return fmt.Errorf("%w: dns format %q", ErrInvalidLogFormat, l.DNS.Format)
+		}
+	}
+
+	if l.Envoy != nil {
+		if l.Envoy.Level != "" && !validEnvoyLogLevels[l.Envoy.Level] {
+			return fmt.Errorf("%w: %q", ErrInvalidEnvoyLogLevel, l.Envoy.Level)
+		}
+
+		if l.Envoy.AccessLog != nil && l.Envoy.AccessLog.Format != "" {
+			if l.Envoy.AccessLog.Format != DefaultLogFormat && l.Envoy.AccessLog.Format != "json" {
+				return fmt.Errorf("%w: envoy access log format %q", ErrInvalidLogFormat, l.Envoy.AccessLog.Format)
+			}
+		}
 	}
 
 	return nil

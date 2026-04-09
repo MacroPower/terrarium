@@ -101,7 +101,6 @@ func TestEnvoyDefaults(t *testing.T) {
 		"nil envoy returns all defaults": {
 			cfg: &config.Config{},
 			want: config.EnvoySettings{
-				LogLevel:                 config.DefaultEnvoyLogLevel,
 				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
 				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
 				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
@@ -111,12 +110,11 @@ func TestEnvoyDefaults(t *testing.T) {
 		"partial override fills remaining defaults": {
 			cfg: &config.Config{
 				Envoy: &config.EnvoySettings{
-					LogLevel: "debug",
+					DrainTimeout: config.Duration{Duration: 15 * time.Second},
 				},
 			},
 			want: config.EnvoySettings{
-				LogLevel:                 "debug",
-				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
+				DrainTimeout:             config.Duration{Duration: 15 * time.Second},
 				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
 				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
 				UDPIdleTimeout:           config.Duration{Duration: config.DefaultEnvoyUDPIdleTimeout},
@@ -125,7 +123,6 @@ func TestEnvoyDefaults(t *testing.T) {
 		"full override returns user values": {
 			cfg: &config.Config{
 				Envoy: &config.EnvoySettings{
-					LogLevel:                 "info",
 					DrainTimeout:             config.Duration{Duration: 30 * time.Second},
 					StartupTimeout:           config.Duration{Duration: 20 * time.Second},
 					MaxDownstreamConnections: 1024,
@@ -133,7 +130,6 @@ func TestEnvoyDefaults(t *testing.T) {
 				},
 			},
 			want: config.EnvoySettings{
-				LogLevel:                 "info",
 				DrainTimeout:             config.Duration{Duration: 30 * time.Second},
 				StartupTimeout:           config.Duration{Duration: 20 * time.Second},
 				MaxDownstreamConnections: 1024,
@@ -146,6 +142,106 @@ func TestEnvoyDefaults(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tt.want, tt.cfg.EnvoyDefaults())
+		})
+	}
+}
+
+func TestLoggingConvenienceMethods(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg                  *config.Config
+		wantFirewall         bool
+		wantDNS              bool
+		wantDNSFormat        string
+		wantDNSPath          string
+		wantAccessLog        bool
+		wantEnvoyLevel       string
+		wantAccessLogFormat  string
+		wantEnvoyPath        string
+		wantAccessLogPath    string
+		envoyPathFallback    string
+		accessLogPathFallack string
+	}{
+		"nil logging": {
+			cfg:                  &config.Config{},
+			wantDNSFormat:        "logfmt",
+			wantDNSPath:          "/dev/stderr",
+			wantEnvoyLevel:       "warning",
+			wantAccessLogFormat:  "logfmt",
+			wantEnvoyPath:        "/fallback/envoy.log",
+			wantAccessLogPath:    "/fallback/access.log",
+			envoyPathFallback:    "/fallback/envoy.log",
+			accessLogPathFallack: "/fallback/access.log",
+		},
+		"empty logging": {
+			cfg:                  &config.Config{Logging: &config.LoggingConfig{}},
+			wantDNSFormat:        "logfmt",
+			wantDNSPath:          "/dev/stderr",
+			wantEnvoyLevel:       "warning",
+			wantAccessLogFormat:  "logfmt",
+			wantEnvoyPath:        "/fallback/envoy.log",
+			wantAccessLogPath:    "/fallback/access.log",
+			envoyPathFallback:    "/fallback/envoy.log",
+			accessLogPathFallack: "/fallback/access.log",
+		},
+		"fully populated": {
+			cfg: &config.Config{Logging: &config.LoggingConfig{
+				DNS: &config.DNSLogging{
+					Enabled: true, Format: "json", Path: "/var/log/dns.log",
+				},
+				Envoy: &config.EnvoyLogging{
+					Level: "debug",
+					Path:  "/var/log/envoy.log",
+					AccessLog: &config.EnvoyAccessLog{
+						Enabled: true, Format: "json", Path: "/var/log/access.log",
+					},
+				},
+				Firewall: &config.FirewallLogging{Enabled: true},
+			}},
+			wantFirewall:         true,
+			wantDNS:              true,
+			wantDNSFormat:        "json",
+			wantDNSPath:          "/var/log/dns.log",
+			wantAccessLog:        true,
+			wantEnvoyLevel:       "debug",
+			wantAccessLogFormat:  "json",
+			wantEnvoyPath:        "/var/log/envoy.log",
+			wantAccessLogPath:    "/var/log/access.log",
+			envoyPathFallback:    "/ignored",
+			accessLogPathFallack: "/ignored",
+		},
+		"yaml path overrides fallback": {
+			cfg: &config.Config{Logging: &config.LoggingConfig{
+				Envoy: &config.EnvoyLogging{
+					Path:      "/yaml/envoy.log",
+					AccessLog: &config.EnvoyAccessLog{Path: "/yaml/access.log"},
+				},
+			}},
+			wantDNSFormat:        "logfmt",
+			wantDNSPath:          "/dev/stderr",
+			wantEnvoyLevel:       "warning",
+			wantAccessLogFormat:  "logfmt",
+			wantEnvoyPath:        "/yaml/envoy.log",
+			wantAccessLogPath:    "/yaml/access.log",
+			envoyPathFallback:    "/cli/envoy.log",
+			accessLogPathFallack: "/cli/access.log",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.wantFirewall, tt.cfg.FirewallLoggingEnabled())
+			assert.Equal(t, tt.wantDNS, tt.cfg.DNSLoggingEnabled())
+			assert.Equal(t, tt.wantDNSFormat, tt.cfg.DNSLogFormat())
+			assert.Equal(t, tt.wantDNSPath, tt.cfg.DNSLogPath())
+			assert.Equal(t, tt.wantAccessLog, tt.cfg.EnvoyAccessLogEnabled())
+			assert.Equal(t, tt.wantEnvoyLevel, tt.cfg.EnvoyLogLevel())
+			assert.Equal(t, tt.wantAccessLogFormat, tt.cfg.EnvoyAccessLogFormat())
+			assert.Equal(t, tt.wantEnvoyPath, tt.cfg.EnvoyLogPath(tt.envoyPathFallback))
+			assert.Equal(t, tt.wantAccessLogPath, tt.cfg.EnvoyAccessLogPath(tt.accessLogPathFallack))
 		})
 	}
 }

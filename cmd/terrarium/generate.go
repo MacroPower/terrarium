@@ -59,7 +59,13 @@ func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
 	}
 
 	caBundlePath := certs.FindCABundle()
-	envoyConf, err := GenerateEnvoyFromConfig(ctx, cfg, certsDir, caBundlePath, usr.EnvoyAccessLogPath)
+	envoyConf, err := GenerateEnvoyFromConfig(
+		ctx,
+		cfg,
+		certsDir,
+		caBundlePath,
+		cfg.EnvoyAccessLogPath(usr.EnvoyAccessLogPath),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
 	}
@@ -89,7 +95,7 @@ func GenerateEnvoyFromConfig(
 	cfg *config.Config,
 	certsDir, caBundlePath, accessLogPath string,
 ) (string, error) {
-	accessLog := envoy.BuildAccessLog(cfg.Logging, accessLogPath)
+	accessLog := envoy.BuildAccessLog(cfg.EnvoyAccessLogEnabled(), cfg.EnvoyAccessLogFormat(), accessLogPath)
 
 	resolvedPorts := cfg.ResolvePorts(ctx)
 

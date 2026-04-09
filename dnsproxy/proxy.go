@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -48,19 +50,21 @@ const minIPSetTTL = 60
 // replacing the previous dnsmasq + RefuseDNS two-hop chain with a
 // single process.
 type Proxy struct {
+	logFile          io.Closer
 	ctx              context.Context
+	logger           *slog.Logger
 	cancel           context.CancelFunc
 	fqdnSetFunc      func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error
 	udp4             *dns.Server
 	udp6             *dns.Server
 	tcp4             *dns.Server
 	tcp6             *dns.Server
-	upstream         string
 	Addr             string
-	domains          []Domain
+	upstream         string
 	patterns         []config.FQDNPattern
 	catchAllPatterns []config.FQDNPattern
 	icmpFQDNPatterns []config.FQDNPattern
+	domains          []Domain
 	clientTimeout    time.Duration
 	filterMode       mode
 	logging          bool
@@ -156,7 +160,19 @@ func Start(
 	}
 
 	if cfg != nil {
-		p.logging = cfg.Logging
+		p.logging = cfg.DNSLoggingEnabled()
+
+		if p.logging {
+			w, closer, err := openLogWriter(cfg.DNSLogPath())
+			if err != nil {
+				cancel()
+
+				return nil, fmt.Errorf("opening DNS log: %w", err)
+			}
+
+			p.logFile = closer
+			p.logger = newLogger(w, cfg.DNSLogFormat())
+		}
 	}
 
 	p.ipv6Disabled = ipv6Disabled
@@ -297,6 +313,13 @@ func (p *Proxy) Shutdown() error {
 		}
 	}
 
+	if p.logFile != nil {
+		err := p.logFile.Close()
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("shutting down DNS proxy: %v", errs)
 	}
@@ -341,7 +364,7 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 		resp.SetRcode(r, dns.RcodeRefused)
 
 		if p.logging {
-			slog.Info("dns query refused",
+			p.logger.Info("dns query refused",
 				slog.String("name", qname),
 			)
 		}
@@ -360,7 +383,7 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 		resp.SetRcode(r, dns.RcodeRefused)
 
 		if p.logging {
-			slog.Info("dns query refused",
+			p.logger.Info("dns query refused",
 				slog.String("name", qname),
 			)
 		}
@@ -419,7 +442,7 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 	}
 
 	if p.logging {
-		slog.Info("dns query",
+		p.logger.Info("dns query",
 			slog.String("name", qname),
 			slog.Int("answers", len(resp.Answer)),
 		)
@@ -499,7 +522,7 @@ func (p *Proxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []int,
 	// Extract and log CNAME targets for observability.
 	for _, rr := range resp.Answer {
 		if cname, ok := rr.(*dns.CNAME); ok && p.logging {
-			slog.Info("dns cname",
+			p.logger.Info("dns cname",
 				slog.String("name", qname),
 				slog.String("target", cname.Target),
 				slog.Int("ttl", int(cname.Hdr.Ttl)),
@@ -556,4 +579,37 @@ func (p *Proxy) updateFQDNSet(qname, setName string, ips []net.IP, ttl time.Dura
 	slog.Warn("fqdn set update called without fqdnSetFunc configured",
 		slog.String("set", setName),
 	)
+}
+
+// openLogWriter opens the output writer for the DNS query logger.
+// "/dev/stderr" maps to [os.Stderr]; any other path opens a file.
+// The returned [io.Closer] is nil when writing to stderr.
+func openLogWriter(path string) (io.Writer, io.Closer, error) {
+	if path == "" || path == "/dev/stderr" {
+		return os.Stderr, nil, nil
+	}
+
+	//nolint:gosec // G304: path is from validated config.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening log file %q: %w", path, err)
+	}
+
+	return f, f, nil
+}
+
+// newLogger creates a [*slog.Logger] with the given format.
+// "json" uses [slog.NewJSONHandler]; all other values use
+// [slog.NewTextHandler] (logfmt).
+func newLogger(w io.Writer, format string) *slog.Logger {
+	var handler slog.Handler
+
+	switch format {
+	case "json":
+		handler = slog.NewJSONHandler(w, nil)
+	default:
+		handler = slog.NewTextHandler(w, nil)
+	}
+
+	return slog.New(handler)
 }

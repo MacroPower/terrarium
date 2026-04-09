@@ -345,7 +345,12 @@ func (m *Tests) TestEgressCidrAllow(ctx context.Context) error {
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-cidr-logging
 func (m *Tests) TestEgressCidrLogging(ctx context.Context) error {
-	return newTestCase("cidr-logging", `logging: true
+	return newTestCase("cidr-logging", `logging:
+  envoy:
+    accessLog:
+      enabled: true
+  firewall:
+    enabled: true
 egress:
   - toCIDR:
       - "0.0.0.0/0"
@@ -661,8 +666,7 @@ func (m *Tests) TestEgressMultipleRules(ctx context.Context) error {
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-unrestricted
 func (m *Tests) TestEgressUnrestricted(ctx context.Context) error {
-	return newTestCase("unrestricted", `logging: false
-`,
+	return newTestCase("unrestricted", `{}`,
 		targetService("target-allow", defaultNginxConf),
 		targetService("target-deny", defaultNginxConf),
 		withoutEnvoy(),
@@ -988,12 +992,15 @@ func (m *Tests) TestEgressExitCodePropagation(ctx context.Context) error {
 	return g.Wait()
 }
 
-// TestEgressLogging verifies that logging: true produces Envoy access log
-// entries in the access log file for proxied traffic.
+// TestEgressLogging verifies that enabling access logging produces Envoy
+// access log entries in the access log file for proxied traffic.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-logging
 func (m *Tests) TestEgressLogging(ctx context.Context) error {
-	return newTestCase("logging", `logging: true
+	return newTestCase("logging", `logging:
+  envoy:
+    accessLog:
+      enabled: true
 egress:
   - toFQDNs:
       - matchName: "target-allow"
@@ -1019,8 +1026,7 @@ egress:
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-udp-forward
 func (m *Tests) TestEgressUdpForward(ctx context.Context) error {
-	return newTestCase("udp-forward", `logging: false
-`,
+	return newTestCase("udp-forward", `{}`,
 		udpEchoService("target-udp", 5000),
 		withoutEnvoy(),
 		withRootAssertions(
@@ -1087,7 +1093,10 @@ func (m *Tests) TestEgressUdpFiltered(ctx context.Context) error {
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-udp-logging
 func (m *Tests) TestEgressUdpLogging(ctx context.Context) error {
-	return newTestCase("udp-logging", `logging: true
+	return newTestCase("udp-logging", `logging:
+  envoy:
+    accessLog:
+      enabled: true
 `,
 		udpEchoService("target-udp", 5000),
 		withoutEnvoy(),

@@ -161,9 +161,11 @@ type fileAccessLogConfig struct {
 }
 
 // substitutionFormatString models Envoy's SubstitutionFormatString
-// with a text_format_source field for command-operator log formatting.
+// with text_format_source and json_format fields for command-operator
+// log formatting.
 type substitutionFormatString struct {
-	TextFormatSource dataSource `yaml:"text_format_source"`
+	TextFormatSource *dataSource       `yaml:"text_format_source,omitempty"`
+	JsonFormat       map[string]string `yaml:"json_format,omitempty"`
 }
 
 type httpConnManagerConfig struct {

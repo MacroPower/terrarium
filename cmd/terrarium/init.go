@@ -607,12 +607,15 @@ func startEnvoy(
 		return nil, err
 	}
 
-	err = prepareEnvoyLogFile(usr.EnvoyLogPath, int(envoyUID))
+	envoyLogPath := cfg.EnvoyLogPath(usr.EnvoyLogPath)
+	accessLogPath := cfg.EnvoyAccessLogPath(usr.EnvoyAccessLogPath)
+
+	err = prepareEnvoyLogFile(envoyLogPath, int(envoyUID))
 	if err != nil {
 		return nil, err
 	}
 
-	err = prepareEnvoyLogFile(usr.EnvoyAccessLogPath, int(envoyUID))
+	err = prepareEnvoyLogFile(accessLogPath, int(envoyUID))
 	if err != nil {
 		return nil, err
 	}
@@ -626,8 +629,8 @@ func startEnvoy(
 		"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups",
 		"--inh-caps=+cap_net_admin", "--ambient-caps=+cap_net_admin",
 		"--", "envoy", "-c", usr.EnvoyConfigPath,
-		"--log-level", settings.LogLevel,
-		"--log-path", usr.EnvoyLogPath,
+		"--log-level", cfg.EnvoyLogLevel(),
+		"--log-path", envoyLogPath,
 		"--concurrency", "2")
 
 	err = cmd.Start()

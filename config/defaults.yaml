@@ -40,4 +40,3 @@ egress:
             protocol: TCP
           - port: "80"
             protocol: TCP
-logging: false

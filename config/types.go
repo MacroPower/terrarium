@@ -58,15 +58,15 @@ type Config struct {
 	// supported; L7 rules and toFQDNs are not valid on deny rules.
 	// A nil pointer means the field was absent from YAML.
 	EgressDeny *[]EgressDenyRule `yaml:"egressDeny,omitempty"`
-	// Envoy configures Envoy proxy runtime behavior (log level,
-	// timeouts, connection limits). A nil pointer means the field
-	// was absent from YAML; all defaults apply. See [EnvoySettings].
+	// Envoy configures Envoy proxy runtime behavior (timeouts,
+	// connection limits). A nil pointer means the field was absent
+	// from YAML; all defaults apply. See [EnvoySettings].
 	Envoy *EnvoySettings `yaml:"envoy,omitempty"`
+	// Logging controls per-service logging behavior. See [LoggingConfig].
+	Logging *LoggingConfig `yaml:"logging,omitempty"`
 	// TCPForwards lists non-TLS TCP port-to-host mappings. Each entry
 	// creates a plain TCP proxy listener forwarding to the specified host.
 	TCPForwards []TCPForward `yaml:"tcpForwards,omitempty"`
-	// Logging enables Envoy access logs and iptables LOG targets.
-	Logging bool `yaml:"logging"`
 }
 
 // EgressRules returns the egress rules slice, or nil when Egress is absent.
@@ -595,6 +595,42 @@ type FQDNRulePorts struct {
 	RuleIndex int
 }
 
+// LoggingConfig controls per-service logging behavior.
+//
+// All sub-sections are optional; omitting any section uses defaults.
+// The entire logging block can be omitted from YAML.
+type LoggingConfig struct {
+	DNS      *DNSLogging      `yaml:"dns,omitempty"`
+	Envoy    *EnvoyLogging    `yaml:"envoy,omitempty"`
+	Firewall *FirewallLogging `yaml:"firewall,omitempty"`
+}
+
+// DNSLogging controls DNS proxy query/response logging.
+type DNSLogging struct {
+	Format  string `yaml:"format,omitempty"`
+	Path    string `yaml:"path,omitempty"`
+	Enabled bool   `yaml:"enabled"`
+}
+
+// EnvoyLogging controls Envoy process and access logging.
+type EnvoyLogging struct {
+	AccessLog *EnvoyAccessLog `yaml:"accessLog,omitempty"`
+	Level     string          `yaml:"level,omitempty"`
+	Path      string          `yaml:"path,omitempty"`
+}
+
+// EnvoyAccessLog controls Envoy file access log output.
+type EnvoyAccessLog struct {
+	Format  string `yaml:"format,omitempty"`
+	Path    string `yaml:"path,omitempty"`
+	Enabled bool   `yaml:"enabled"`
+}
+
+// FirewallLogging controls nftables LOG target generation.
+type FirewallLogging struct {
+	Enabled bool `yaml:"enabled"`
+}
+
 // UserFlags holds the CLI flag names for each [User] field. Override
 // individual names before calling [User.RegisterFlags] to customize
 // the flag interface. Create instances with [NewUser].
@@ -684,10 +720,14 @@ func (u *User) RegisterCompletions(_ *cobra.Command) error {
 	return nil
 }
 
-// Envoy default constants.
+// Default constants for logging and Envoy settings.
 const (
+	// DefaultLogFormat is the default log output format for DNS
+	// and Envoy access logs.
+	DefaultLogFormat = "logfmt"
+
 	// DefaultEnvoyLogLevel is the Envoy --log-level flag value used
-	// when [EnvoySettings.LogLevel] is empty.
+	// when [Config.EnvoyLogLevel] returns a default.
 	DefaultEnvoyLogLevel = "warning"
 
 	// DefaultEnvoyDrainTimeout is the maximum time to wait for Envoy
@@ -722,13 +762,11 @@ func ValidEnvoyLogLevels() []string {
 	return []string{"trace", "debug", "info", "warning", "error", "critical", "off"}
 }
 
-// EnvoySettings controls Envoy proxy runtime behavior. All fields are
-// optional; zero values mean "use default." Use [Config.EnvoyDefaults]
-// to obtain a fully populated copy with defaults applied.
+// EnvoySettings controls Envoy proxy runtime behavior (timeouts,
+// connection limits). All fields are optional; zero values mean
+// "use default." Use [Config.EnvoyDefaults] to obtain a fully
+// populated copy with defaults applied.
 type EnvoySettings struct {
-	// LogLevel sets the Envoy --log-level flag. Valid values are
-	// trace, debug, info, warning, error, critical, off.
-	LogLevel string `yaml:"logLevel,omitempty"`
 	// DrainTimeout is the maximum duration to wait for Envoy to exit
 	// after SIGTERM before proceeding with shutdown.
 	DrainTimeout Duration `yaml:"drainTimeout,omitempty"`
@@ -748,7 +786,6 @@ type EnvoySettings struct {
 // all defaults apply.
 func (c *Config) EnvoyDefaults() EnvoySettings {
 	s := EnvoySettings{
-		LogLevel:                 DefaultEnvoyLogLevel,
 		DrainTimeout:             Duration{DefaultEnvoyDrainTimeout},
 		StartupTimeout:           Duration{DefaultEnvoyStartupTimeout},
 		MaxDownstreamConnections: DefaultEnvoyMaxDownstreamConnections,
@@ -757,10 +794,6 @@ func (c *Config) EnvoyDefaults() EnvoySettings {
 
 	if c.Envoy == nil {
 		return s
-	}
-
-	if c.Envoy.LogLevel != "" {
-		s.LogLevel = c.Envoy.LogLevel
 	}
 
 	if c.Envoy.DrainTimeout.Duration != 0 {
@@ -780,6 +813,83 @@ func (c *Config) EnvoyDefaults() EnvoySettings {
 	}
 
 	return s
+}
+
+// FirewallLoggingEnabled reports whether nftables LOG targets are enabled.
+func (c *Config) FirewallLoggingEnabled() bool {
+	return c.Logging != nil && c.Logging.Firewall != nil && c.Logging.Firewall.Enabled
+}
+
+// DNSLoggingEnabled reports whether DNS proxy query logging is enabled.
+func (c *Config) DNSLoggingEnabled() bool {
+	return c.Logging != nil && c.Logging.DNS != nil && c.Logging.DNS.Enabled
+}
+
+// DNSLogFormat returns the DNS log format, defaulting to "logfmt".
+func (c *Config) DNSLogFormat() string {
+	if c.Logging != nil && c.Logging.DNS != nil && c.Logging.DNS.Format != "" {
+		return c.Logging.DNS.Format
+	}
+
+	return DefaultLogFormat
+}
+
+// DNSLogPath returns the DNS log file path, defaulting to "/dev/stderr".
+func (c *Config) DNSLogPath() string {
+	if c.Logging != nil && c.Logging.DNS != nil && c.Logging.DNS.Path != "" {
+		return c.Logging.DNS.Path
+	}
+
+	return "/dev/stderr"
+}
+
+// EnvoyAccessLogEnabled reports whether Envoy file access logs are enabled.
+func (c *Config) EnvoyAccessLogEnabled() bool {
+	return c.Logging != nil && c.Logging.Envoy != nil &&
+		c.Logging.Envoy.AccessLog != nil && c.Logging.Envoy.AccessLog.Enabled
+}
+
+// EnvoyLogLevel returns the Envoy process log level, defaulting to "warning".
+func (c *Config) EnvoyLogLevel() string {
+	if c.Logging != nil && c.Logging.Envoy != nil && c.Logging.Envoy.Level != "" {
+		return c.Logging.Envoy.Level
+	}
+
+	return DefaultEnvoyLogLevel
+}
+
+// EnvoyAccessLogFormat returns the Envoy access log format,
+// defaulting to [DefaultLogFormat].
+func (c *Config) EnvoyAccessLogFormat() string {
+	if c.Logging != nil && c.Logging.Envoy != nil &&
+		c.Logging.Envoy.AccessLog != nil && c.Logging.Envoy.AccessLog.Format != "" {
+		return c.Logging.Envoy.AccessLog.Format
+	}
+
+	return DefaultLogFormat
+}
+
+// EnvoyLogPath returns the Envoy process log path. When the YAML config
+// specifies a path, it takes priority; otherwise fallback (typically from
+// CLI flags via [User]) is used.
+func (c *Config) EnvoyLogPath(fallback string) string {
+	if c.Logging != nil && c.Logging.Envoy != nil && c.Logging.Envoy.Path != "" {
+		return c.Logging.Envoy.Path
+	}
+
+	return fallback
+}
+
+// EnvoyAccessLogPath returns the Envoy access log file path. When the
+// YAML config specifies a path, it takes priority; otherwise fallback
+// (typically from CLI flags via [User]) is used.
+func (c *Config) EnvoyAccessLogPath(fallback string) string {
+	if c.Logging != nil && c.Logging.Envoy != nil &&
+		c.Logging.Envoy.AccessLog != nil && c.Logging.Envoy.AccessLog.Path != "" {
+		return c.Logging.Envoy.AccessLog.Path
+	}
+
+	return fallback
 }
 
 // Duration wraps [time.Duration] with YAML string unmarshaling.
@@ -823,11 +933,25 @@ func (d Duration) String() string {
 	return d.Duration.String()
 }
 
-// normalizeEnvoySettings lowercases the log level so users can write
-// "Warning" or "WARNING" and it works.
-func normalizeEnvoySettings(c *Config) {
-	if c.Envoy != nil && c.Envoy.LogLevel != "" {
-		c.Envoy.LogLevel = strings.ToLower(c.Envoy.LogLevel)
+// normalizeLogging lowercases format and level strings in the logging
+// config so users can write "Warning", "JSON", etc.
+func normalizeLogging(c *Config) {
+	if c.Logging == nil {
+		return
+	}
+
+	if c.Logging.DNS != nil && c.Logging.DNS.Format != "" {
+		c.Logging.DNS.Format = strings.ToLower(c.Logging.DNS.Format)
+	}
+
+	if c.Logging.Envoy != nil {
+		if c.Logging.Envoy.Level != "" {
+			c.Logging.Envoy.Level = strings.ToLower(c.Logging.Envoy.Level)
+		}
+
+		if c.Logging.Envoy.AccessLog != nil && c.Logging.Envoy.AccessLog.Format != "" {
+			c.Logging.Envoy.AccessLog.Format = strings.ToLower(c.Logging.Envoy.AccessLog.Format)
+		}
 	}
 }
 

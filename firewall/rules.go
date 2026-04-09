@@ -128,7 +128,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	addOutputBaseRules(conn, table, outputChain, 0)
 	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
-	if cfg.Logging {
+	if cfg.FirewallLoggingEnabled() {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
 			Exprs: flatExprs(logPrefix("TERRARIUM_ALLOW: ")),
@@ -149,7 +149,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
-	addPostroutingGuard(conn, table, cfg.Logging, uids)
+	addPostroutingGuard(conn, table, cfg.FirewallLoggingEnabled(), uids)
 }
 
 func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
@@ -181,7 +181,7 @@ func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids 
 
 	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
-	if cfg.Logging {
+	if cfg.FirewallLoggingEnabled() {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
 			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
@@ -363,7 +363,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 		addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 	}
 
-	if cfg.Logging {
+	if cfg.FirewallLoggingEnabled() {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
 			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
@@ -420,7 +420,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 			catchAllFQDNRules, catchAllSets, uids)
 	}
 
-	if cfg.Logging {
+	if cfg.FirewallLoggingEnabled() {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: terrariumChain,
 			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
@@ -441,7 +441,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
-	addPostroutingGuard(conn, table, cfg.Logging, uids)
+	addPostroutingGuard(conn, table, cfg.FirewallLoggingEnabled(), uids)
 
 	return nil
 }

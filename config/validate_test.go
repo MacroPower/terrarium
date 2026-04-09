@@ -1739,7 +1739,6 @@ func TestValidate(t *testing.T) {
 		"valid envoy settings": {
 			cfg: &config.Config{
 				Envoy: &config.EnvoySettings{
-					LogLevel:                 "debug",
 					DrainTimeout:             config.Duration{Duration: 10 * time.Second},
 					StartupTimeout:           config.Duration{Duration: 30 * time.Second},
 					MaxDownstreamConnections: 1024,
@@ -1749,16 +1748,54 @@ func TestValidate(t *testing.T) {
 		"nil envoy settings": {
 			cfg: &config.Config{},
 		},
-		"envoy log level normalized": {
+		"envoy log level normalized via logging": {
 			cfg: &config.Config{
-				Envoy: &config.EnvoySettings{LogLevel: "WARNING"},
+				Logging: &config.LoggingConfig{
+					Envoy: &config.EnvoyLogging{Level: "WARNING"},
+				},
 			},
 		},
-		"invalid envoy log level": {
+		"invalid envoy log level via logging": {
 			cfg: &config.Config{
-				Envoy: &config.EnvoySettings{LogLevel: "verbose"},
+				Logging: &config.LoggingConfig{
+					Envoy: &config.EnvoyLogging{Level: "verbose"},
+				},
 			},
 			err: config.ErrInvalidEnvoyLogLevel,
+		},
+		"invalid dns log format": {
+			cfg: &config.Config{
+				Logging: &config.LoggingConfig{
+					DNS: &config.DNSLogging{Format: "xml"},
+				},
+			},
+			err: config.ErrInvalidLogFormat,
+		},
+		"valid dns log format json": {
+			cfg: &config.Config{
+				Logging: &config.LoggingConfig{
+					DNS: &config.DNSLogging{Format: "json"},
+				},
+			},
+		},
+		"invalid envoy access log format": {
+			cfg: &config.Config{
+				Logging: &config.LoggingConfig{
+					Envoy: &config.EnvoyLogging{
+						AccessLog: &config.EnvoyAccessLog{Format: "csv"},
+					},
+				},
+			},
+			err: config.ErrInvalidLogFormat,
+		},
+		"valid envoy access log format json": {
+			cfg: &config.Config{
+				Logging: &config.LoggingConfig{
+					Envoy: &config.EnvoyLogging{
+						AccessLog: &config.EnvoyAccessLog{Format: "json"},
+					},
+				},
+			},
 		},
 		"negative drain timeout": {
 			cfg: &config.Config{

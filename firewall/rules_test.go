@@ -146,7 +146,7 @@ func TestApplyRules_UnrestrictedWithLogging(t *testing.T) {
 	t.Parallel()
 
 	rec := &ruleRecorder{}
-	cfg := &config.Config{Logging: true}
+	cfg := &config.Config{Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}}}
 
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
@@ -216,7 +216,7 @@ func TestApplyRules_BlockedWithLogging(t *testing.T) {
 	rec := &ruleRecorder{}
 	cfg := &config.Config{
 		Egress:  egressRules(config.EgressRule{}),
-		Logging: true,
+		Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}},
 	}
 
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
@@ -249,7 +249,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 				}}},
 			},
 		),
-		Logging: true,
+		Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}},
 	}
 
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
@@ -1293,7 +1293,7 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 			wantChain: true,
 		},
 		"unrestricted with logging": {
-			cfg:       &config.Config{Logging: true},
+			cfg:       &config.Config{Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}}},
 			wantChain: true,
 			wantLog:   true,
 		},
@@ -1310,7 +1310,7 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 		},
 		"filtered with logging": {
 			cfg: &config.Config{
-				Logging: true,
+				Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}},
 				Egress: egressRules(
 					config.EgressRule{
 						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},

@@ -387,7 +387,11 @@ var (
 	// but compiling during validation provides defense-in-depth.
 	ErrDNSPatternCompile = errors.New("DNS pattern produces invalid regex")
 
-	// ErrInvalidEnvoyLogLevel is returned when [EnvoySettings.LogLevel]
+	// ErrInvalidLogFormat is returned when a log format value is not
+	// "logfmt" or "json".
+	ErrInvalidLogFormat = errors.New("invalid log format")
+
+	// ErrInvalidEnvoyLogLevel is returned when the Envoy log level
 	// is not one of the values accepted by Envoy's --log-level flag.
 	ErrInvalidEnvoyLogLevel = errors.New(
 		"envoy logLevel must be one of: trace, debug, info, warning, error, critical, off",

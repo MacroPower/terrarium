@@ -134,7 +134,7 @@ egress:
 			wantRules: 1,
 		},
 		"absent egress means unrestricted": {
-			yaml:      `logging: false`,
+			yaml:      `{}`,
 			wantRules: 0,
 		},
 		"empty egress list parses as blocked": {
@@ -181,7 +181,7 @@ func TestParseConfigEgressSemantics(t *testing.T) {
 		wantBlocked      bool
 	}{
 		"absent egress": {
-			yaml:             `logging: false`,
+			yaml:             `{}`,
 			wantUnrestricted: true,
 		},
 		"null egress": {
@@ -364,13 +364,11 @@ func TestParseEnvoySettings(t *testing.T) {
 		"all fields": {
 			yaml: `
 envoy:
-  logLevel: info
   drainTimeout: "10s"
   startupTimeout: "30s"
   maxDownstreamConnections: 1024
 `,
 			want: config.EnvoySettings{
-				LogLevel:                 "info",
 				DrainTimeout:             config.Duration{Duration: 10 * time.Second},
 				StartupTimeout:           config.Duration{Duration: 30 * time.Second},
 				MaxDownstreamConnections: 1024,
@@ -380,20 +378,18 @@ envoy:
 		"partial fields use defaults": {
 			yaml: `
 envoy:
-  logLevel: debug
+  drainTimeout: "5s"
 `,
 			want: config.EnvoySettings{
-				LogLevel:                 "debug",
-				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
+				DrainTimeout:             config.Duration{Duration: 5 * time.Second},
 				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
 				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,
 				UDPIdleTimeout:           config.Duration{Duration: config.DefaultEnvoyUDPIdleTimeout},
 			},
 		},
 		"absent envoy uses all defaults": {
-			yaml: `logging: false`,
+			yaml: `{}`,
 			want: config.EnvoySettings{
-				LogLevel:                 config.DefaultEnvoyLogLevel,
 				DrainTimeout:             config.Duration{Duration: config.DefaultEnvoyDrainTimeout},
 				StartupTimeout:           config.Duration{Duration: config.DefaultEnvoyStartupTimeout},
 				MaxDownstreamConnections: config.DefaultEnvoyMaxDownstreamConnections,

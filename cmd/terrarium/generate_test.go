@@ -206,9 +206,11 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
-				Logging: true,
+				Logging: &config.LoggingConfig{
+					Envoy: &config.EnvoyLogging{AccessLog: &config.EnvoyAccessLog{Enabled: true}},
+				},
 			},
-			want: []string{"envoy.access_loggers.stderr"},
+			want: []string{"envoy.access_loggers.file"},
 		},
 		"path restricted domain gets direct response": {
 			cfg: &config.Config{Egress: egressRules(
