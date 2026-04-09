@@ -28,3 +28,10 @@ dist/
 .tmp/
 .task/
 .chief/
+
+# Nix build outputs
+result
+result-*
+
+# Lima golden image
+lima/terrarium.qcow2

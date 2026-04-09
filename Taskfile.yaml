@@ -101,6 +101,63 @@ tasks:
         --tag={{.TAG}}
         --output=./dist
 
+  lima:lock:
+    desc: Updates the Lima flake lock file (run on the host)
+    cmds:
+      - nix flake update --flake {{.ROOT_DIR}}/lima
+
+  lima:image:
+    desc: Builds the golden qcow2 image (requires a Linux Nix builder)
+    vars:
+      NIX_SYSTEM:
+        sh: "uname -m | sed 's/arm64/aarch64/' | sed 's/$/-linux/'"
+    sources:
+      - lima/flake.nix
+      - lima/flake.lock
+      - lima/configuration.nix
+    generates:
+      - lima/terrarium.qcow2
+    cmds:
+      - nix build {{.ROOT_DIR}}/lima#packages.{{.NIX_SYSTEM}}.image --no-update-lock-file --always-allow-substitutes --out-link {{.ROOT_DIR}}/lima/result
+      - cp -f {{.ROOT_DIR}}/lima/result/*.qcow2 {{.ROOT_DIR}}/lima/terrarium.qcow2
+      - rm -f {{.ROOT_DIR}}/lima/result
+
+  lima:create:
+    desc: Creates and starts the Terrarium Lima VM
+    deps: [lima:image]
+    vars:
+      LIMA_IMAGE: "{{.ROOT_DIR}}/lima/terrarium.qcow2"
+      LIMA_ARCH:
+        sh: "uname -m | sed 's/arm64/aarch64/'"
+    cmds:
+      - >-
+        limactl create --name=terrarium
+        --set '.images = [{"location": "file://{{.LIMA_IMAGE}}", "arch": "{{.LIMA_ARCH}}"}]'
+        lima/terrarium.yaml
+      - limactl start terrarium
+
+  lima:rebuild:
+    desc: Rebuilds the Lima VM with the current NixOS configuration
+    vars:
+      ARCH:
+        sh: limactl shell terrarium -- uname -m
+    cmds:
+      - "limactl cp -r {{.ROOT_DIR}}/lima terrarium:/tmp/lima-flake"
+      - limactl shell terrarium -- sudo nixos-rebuild switch --no-update-lock-file --flake /tmp/lima-flake#terrarium-{{.ARCH}}
+
+  lima:logs:
+    desc: Tails provisioning logs from the Lima VM (run alongside lima:create)
+    cmds:
+      - |
+        until limactl shell terrarium -- true 2>/dev/null; do sleep 2; done
+        limactl shell terrarium -- journalctl -f -u lima-init --output=cat
+
+  lima:destroy:
+    desc: Stops and deletes the Terrarium Lima VM
+    cmds:
+      - limactl stop terrarium || true
+      - limactl delete terrarium
+
   install-hooks:
     desc: Install git hooks
     cmds:
