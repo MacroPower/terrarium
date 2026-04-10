@@ -77,7 +77,7 @@ func TestGenerate(t *testing.T) {
 
 			usr := tt.setup(t)
 
-			cfg, err := Generate(t.Context(), usr)
+			cfg, err := Generate(t.Context(), usr, false)
 			require.Error(t, err)
 			require.Nil(t, cfg)
 			require.ErrorContains(t, err, tt.wantMsg)
@@ -114,7 +114,7 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 	envoyResults := make([]string, iterations)
 
 	for i := range iterations {
-		envoy, err := GenerateEnvoyFromConfig(t.Context(), cfg, "", "", "")
+		envoy, err := GenerateEnvoyFromConfig(t.Context(), cfg, "", "", "", false)
 		require.NoError(t, err)
 
 		envoyResults[i] = envoy
@@ -1032,7 +1032,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			conf, err := GenerateEnvoyFromConfig(t.Context(), tt.cfg, tt.certsDir, "", "")
+			conf, err := GenerateEnvoyFromConfig(t.Context(), tt.cfg, tt.certsDir, "", "", false)
 			require.NoError(t, err)
 
 			for _, s := range tt.want {

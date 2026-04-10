@@ -1597,13 +1597,24 @@ func TestApplyRules_VMMode_PostroutingGuard(t *testing.T) {
 	assert.True(t, ruleMatchesUID(rules[1], testVMUIDs.Root),
 		"second postrouting rule should accept root UID")
 
-	// Last rule should be DROP without UID matching (all remaining
-	// traffic on non-loopback).
+	// DROP rule should use matchHasSocketOwner (MetaKeySKUID with
+	// CmpOpGte) so forwarded traffic (no socket) passes through.
 	lastRule := rules[len(rules)-1]
 	v, _ := ruleVerdict(lastRule)
 	assert.Equal(t, expr.VerdictDrop, v)
-	assert.False(t, ruleHasMetaKey(lastRule, expr.MetaKeySKUID),
-		"VM mode postrouting DROP should not match specific UID")
+	assert.True(t, ruleHasMetaKey(lastRule, expr.MetaKeySKUID),
+		"VM mode postrouting DROP should use matchHasSocketOwner")
+
+	// Verify CmpOpGte (matchHasSocketOwner) rather than CmpOpEq (matchUID).
+	var hasCmpGte bool
+	for _, e := range lastRule.Exprs {
+		if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpGte {
+			hasCmpGte = true
+		}
+	}
+
+	assert.True(t, hasCmpGte,
+		"VM mode postrouting DROP should use CmpOpGte (matchHasSocketOwner), not CmpOpEq (matchUID)")
 }
 
 func TestApplyRules_VMMode_Unrestricted(t *testing.T) {
@@ -1660,4 +1671,667 @@ func TestApplyRules_VMMode_Blocked(t *testing.T) {
 
 	assert.Less(t, envoyAcceptIdx, dropIdx,
 		"Envoy ACCEPT must come before terminal DROP in VM blocked mode")
+}
+
+func TestApplyRules_VMMode_NATPreRouting(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.Contains(t, names, "nat_prerouting")
+
+	rules := rec.rulesForChain("nat_prerouting")
+	require.NotEmpty(t, rules)
+
+	// Should have DNS DNAT rules (UDP + TCP port 53).
+	var dnsDNATCount int
+	for _, r := range rules {
+		if ruleHasNAT(r) && ruleHasDstPort(r, 53) {
+			dnsDNATCount++
+		}
+	}
+
+	assert.Equal(t, 2, dnsDNATCount, "should have DNS DNAT for UDP and TCP")
+
+	// Should have catch-all TCP DNAT as last rule.
+	lastRule := rules[len(rules)-1]
+	assert.True(t, ruleHasNAT(lastRule), "last nat_prerouting rule should be DNAT")
+
+	// Should have per-port FQDN DNAT.
+	var portDNATCount int
+	for _, r := range rules {
+		if ruleHasNAT(r) && !ruleHasDstPort(r, 53) {
+			portDNATCount++
+		}
+	}
+
+	assert.GreaterOrEqual(t, portDNATCount, 2,
+		"should have per-port DNAT and catch-all TCP DNAT")
+}
+
+func TestApplyRules_VMMode_NATPreRouting_Unrestricted(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.Contains(t, names, "nat_prerouting")
+
+	rules := rec.rulesForChain("nat_prerouting")
+	require.NotEmpty(t, rules)
+
+	// Should have DNS DNAT (UDP + TCP), port 80, 443, and catch-all.
+	var natCount int
+	for _, r := range rules {
+		if ruleHasNAT(r) {
+			natCount++
+		}
+	}
+
+	assert.Equal(t, 5, natCount,
+		"should have DNAT for DNS UDP, DNS TCP, port 80, port 443, and catch-all")
+}
+
+func TestApplyRules_VMMode_ForwardChain(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.Contains(t, names, "forward")
+
+	rules := rec.rulesForChain("forward")
+	require.NotEmpty(t, rules)
+
+	// First rule should be established/related ACCEPT.
+	v, _ := ruleVerdict(rules[0])
+	assert.Equal(t, expr.VerdictAccept, v)
+	assert.True(t, ruleHasCtState(rules[0]),
+		"first forward rule should match CT state")
+
+	// Should have jump to terrarium_output.
+	var hasJump bool
+	for _, r := range rules {
+		vk, chain := ruleVerdict(r)
+		if vk == expr.VerdictJump && chain == "terrarium_output" {
+			hasJump = true
+		}
+	}
+
+	assert.True(t, hasJump,
+		"forward chain should jump to terrarium_output for policy evaluation")
+}
+
+func TestApplyRules_VMMode_ForwardChain_Unrestricted(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.Contains(t, names, "forward")
+
+	rules := rec.rulesForChain("forward")
+	require.NotEmpty(t, rules)
+
+	// Should end with unconditional ACCEPT.
+	lastV, _ := ruleVerdict(rules[len(rules)-1])
+	assert.Equal(t, expr.VerdictAccept, lastV)
+}
+
+func TestApplyRules_VMMode_ForwardChain_Blocked(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{}),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	names := rec.chainNames()
+	assert.Contains(t, names, "forward")
+
+	rules := rec.rulesForChain("forward")
+	require.NotEmpty(t, rules)
+
+	// Should have established ACCEPT but no jump to terrarium_output.
+	v, _ := ruleVerdict(rules[0])
+	assert.Equal(t, expr.VerdictAccept, v)
+	assert.True(t, ruleHasCtState(rules[0]))
+
+	// No jump to terrarium_output (all new traffic dropped by policy).
+	for _, r := range rules {
+		vk, chain := ruleVerdict(r)
+		assert.False(t, vk == expr.VerdictJump && chain == "terrarium_output",
+			"blocked mode forward chain should not jump to terrarium_output")
+	}
+}
+
+func TestApplyRules_VMMode_MangleForwarded(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("mangle_prerouting")
+	require.NotEmpty(t, rules)
+
+	// First rule should be the forwarded UDP marking rule (non-loopback,
+	// non-local-dst scoping) with fwmark but no TPROXY.
+	firstRule := rules[0]
+	assert.True(t, ruleHasMark(firstRule),
+		"first mangle_prerouting rule should mark forwarded UDP")
+	assert.False(t, ruleHasTProxy(firstRule),
+		"forwarded UDP marking rule should not have TPROXY (just mark)")
+
+	// Should also have TPROXY rules after the marking rule.
+	var hasTProxy bool
+	for _, r := range rules[1:] {
+		if ruleHasTProxy(r) {
+			hasTProxy = true
+		}
+	}
+
+	assert.True(t, hasTProxy, "should have TPROXY rules after forwarded marking")
+}
+
+func TestApplyRules_VMMode_InputDNAT(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("input")
+	require.NotEmpty(t, rules)
+
+	// Should have ct status dnat ACCEPT rule.
+	var hasCtDNAT bool
+	for _, r := range rules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictAccept && ruleHasCtStatus(r) {
+			hasCtDNAT = true
+		}
+	}
+
+	assert.True(t, hasCtDNAT,
+		"VM mode input chain should have ct status dnat ACCEPT rule")
+}
+
+func TestApplyRules_VMMode_InputDNAT_NotInContainerMode(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("input")
+	require.NotEmpty(t, rules)
+
+	// Container mode should not have ct status dnat rule.
+	for _, r := range rules {
+		assert.False(t, ruleHasCtStatus(r),
+			"container mode input chain should not have ct status dnat rule")
+	}
+}
+
+// ruleHasNAT reports whether a rule contains a NAT expression.
+func ruleHasNAT(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if _, ok := e.(*expr.NAT); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleHasDstPort reports whether a rule matches the given destination port.
+func ruleHasDstPort(r *nftables.Rule, port uint16) bool {
+	expected := binaryutil.BigEndian.PutUint16(port)
+
+	for i, e := range r.Exprs {
+		p, ok := e.(*expr.Payload)
+		if !ok || p.Base != expr.PayloadBaseTransportHeader || p.Offset != 2 {
+			continue
+		}
+
+		if i+1 >= len(r.Exprs) {
+			continue
+		}
+
+		c, ok := r.Exprs[i+1].(*expr.Cmp)
+		if ok && c.Op == expr.CmpOpEq && assert.ObjectsAreEqual(expected, c.Data) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleHasCtStatus reports whether a rule loads conntrack status.
+func ruleHasCtStatus(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if ct, ok := e.(*expr.Ct); ok && ct.Key == expr.CtKeySTATUS {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleMatchesNFProto reports whether a rule matches a specific
+// nfproto (address family) value.
+func ruleMatchesNFProto(r *nftables.Rule, proto byte) bool {
+	hasNFProto := false
+
+	for _, e := range r.Exprs {
+		if m, ok := e.(*expr.Meta); ok && m.Key == expr.MetaKeyNFPROTO {
+			hasNFProto = true
+		}
+
+		if hasNFProto {
+			if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpEq {
+				if len(c.Data) == 1 && c.Data[0] == proto {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// ruleMatchesL4Proto reports whether a rule matches a specific
+// L4 protocol value.
+func ruleMatchesL4Proto(r *nftables.Rule, proto byte) bool {
+	hasL4Proto := false
+
+	for _, e := range r.Exprs {
+		if m, ok := e.(*expr.Meta); ok && m.Key == expr.MetaKeyL4PROTO {
+			hasL4Proto = true
+		}
+
+		if hasL4Proto {
+			if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpEq {
+				if len(c.Data) == 1 && c.Data[0] == proto {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func TestApplyRules_VMMode_InputTPROXY(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("input")
+	require.NotEmpty(t, rules)
+
+	// Should have both ct status DNAT and fwmark TPROXY ACCEPT rules.
+	var hasCtDNAT, hasMarkAccept bool
+	for _, r := range rules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictAccept {
+			if ruleHasCtStatus(r) {
+				hasCtDNAT = true
+			}
+
+			if ruleHasMark(r) && !ruleHasCtStatus(r) {
+				hasMarkAccept = true
+			}
+		}
+	}
+
+	assert.True(t, hasCtDNAT,
+		"VM mode input chain should have ct status DNAT ACCEPT rule")
+	assert.True(t, hasMarkAccept,
+		"VM mode input chain should have fwmark TPROXY ACCEPT rule")
+}
+
+func TestApplyRules_VMMode_InputTPROXY_NotInContainerMode(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("input")
+	require.NotEmpty(t, rules)
+
+	// Container mode should not have fwmark TPROXY accept rule.
+	for _, r := range rules {
+		assert.False(t, ruleHasMark(r),
+			"container mode input chain should not have fwmark TPROXY rule")
+	}
+}
+
+func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("mangle_prerouting")
+	require.NotEmpty(t, rules)
+
+	// Count marking rules (have mark set but no TPROXY).
+	var markRules []*nftables.Rule
+	for _, r := range rules {
+		if ruleHasMark(r) && !ruleHasTProxy(r) {
+			markRules = append(markRules, r)
+		}
+	}
+
+	// Should have 3 marking rules: IPv4 UDP, IPv6 UDP, IPv6 TCP.
+	require.Len(t, markRules, 3,
+		"VM mode should have 3 marking rules (IPv4 UDP, IPv6 UDP, IPv6 TCP)")
+
+	// First marking rule: IPv4 forwarded UDP (excludes DNS port 53).
+	assert.True(t, ruleMatchesNFProto(markRules[0], 2),
+		"first mark rule should be IPv4")
+	assert.True(t, ruleMatchesL4Proto(markRules[0], 17),
+		"first mark rule should be UDP")
+
+	// Second marking rule: IPv6 forwarded UDP (includes DNS).
+	assert.True(t, ruleMatchesNFProto(markRules[1], 10),
+		"second mark rule should be IPv6")
+	assert.True(t, ruleMatchesL4Proto(markRules[1], 17),
+		"second mark rule should be UDP")
+
+	// Third marking rule: IPv6 forwarded TCP.
+	assert.True(t, ruleMatchesNFProto(markRules[2], 10),
+		"third mark rule should be IPv6")
+	assert.True(t, ruleMatchesL4Proto(markRules[2], 6),
+		"third mark rule should be TCP")
+
+	// Should have IPv6 TPROXY dispatch rules.
+	var ipv6TProxyCount int
+	for _, r := range rules {
+		if ruleHasTProxy(r) && ruleMatchesNFProto(r, 10) {
+			ipv6TProxyCount++
+		}
+	}
+
+	// At least: 2 DNS (UDP+TCP), 1 per-port 443, 1 catch-all TCP,
+	// plus the generic IPv6 UDP TPROXY.
+	assert.GreaterOrEqual(t, ipv6TProxyCount, 4,
+		"should have IPv6 TPROXY dispatch rules for DNS, per-port, and catch-all")
+}
+
+func TestApplyRules_VMMode_IPv6TPROXY_NotInContainerMode(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("mangle_prerouting")
+	require.NotEmpty(t, rules)
+
+	// Container mode: only 2 TPROXY rules (IPv4 UDP, IPv6 UDP).
+	var tproxyCount int
+	for _, r := range rules {
+		if ruleHasTProxy(r) {
+			tproxyCount++
+		}
+	}
+
+	assert.Equal(t, 2, tproxyCount,
+		"container mode should only have IPv4+IPv6 UDP TPROXY rules")
+
+	// No marking rules in container mode (no forwarded traffic).
+	for _, r := range rules {
+		if ruleHasMark(r) && !ruleHasTProxy(r) {
+			t.Error("container mode should not have marking rules in mangle_prerouting")
+		}
+	}
+}
+
+func TestApplyRules_VMMode_IPv6TPROXY_DenyCIDR(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	denyRules := []config.EgressDenyRule{{
+		ToCIDRSet: []config.CIDRRule{{CIDR: "2001:db8::/32", Except: []string{"2001:db8:1::/48"}}},
+	}}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+		EgressDeny: &denyRules,
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	// Should have a deny_cidr_tproxy chain with per-rule structure.
+	names := rec.chainNames()
+	assert.Contains(t, names, "deny_cidr_tproxy_0",
+		"should create per-rule deny CIDR TPROXY chain")
+
+	chainRules := rec.rulesForChain("deny_cidr_tproxy_0")
+	require.NotEmpty(t, chainRules)
+
+	// Chain should have except RETURN before CIDR ACCEPT.
+	var hasReturn, hasAccept bool
+
+	returnIdx, acceptIdx := -1, -1
+
+	for i, r := range chainRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictReturn && !hasReturn {
+			hasReturn = true
+			returnIdx = i
+		}
+
+		if v == expr.VerdictAccept && !hasAccept {
+			hasAccept = true
+			acceptIdx = i
+		}
+	}
+
+	assert.True(t, hasReturn, "deny CIDR TPROXY chain should have except RETURN")
+	assert.True(t, hasAccept, "deny CIDR TPROXY chain should have CIDR ACCEPT")
+	assert.Less(t, returnIdx, acceptIdx,
+		"except RETURN should come before CIDR ACCEPT")
+}
+
+func TestApplyRules_VMMode_IPv6TPROXY_AllowCIDR(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToCIDR:    []string{"2001:db8::/32"},
+				ToCIDRSet: []config.CIDRRule{{CIDR: "2001:db8::/32", Except: []string{"2001:db8:1::/48"}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	// Should have a cidr_tproxy chain with per-rule structure.
+	names := rec.chainNames()
+	assert.Contains(t, names, "cidr_tproxy_0",
+		"should create per-rule allow CIDR TPROXY chain")
+
+	cidrRules := rec.rulesForChain("cidr_tproxy_0")
+	require.NotEmpty(t, cidrRules)
+
+	// Chain should have except RETURN before TPROXY dispatch.
+	var hasReturn, hasTProxy bool
+
+	for _, r := range cidrRules {
+		v, _ := ruleVerdict(r)
+		if v == expr.VerdictReturn {
+			hasReturn = true
+		}
+
+		if ruleHasTProxy(r) {
+			hasTProxy = true
+		}
+	}
+
+	assert.True(t, hasReturn, "allow CIDR TPROXY chain should have except RETURN")
+	assert.True(t, hasTProxy, "allow CIDR TPROXY chain should have TPROXY dispatch")
+}
+
+func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{} // nil Egress = unrestricted
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("mangle_prerouting")
+	require.NotEmpty(t, rules)
+
+	// VM unrestricted mode should have IPv6 marking and TPROXY dispatch.
+	var (
+		ipv6TCPMarkCount int
+		ipv6UDPMarkCount int
+		ipv6TCPTProxy    int
+		ipv6DNSTProxy    int
+	)
+
+	for _, r := range rules {
+		isMark := ruleHasMark(r) && !ruleHasTProxy(r)
+		isIPv6 := ruleMatchesNFProto(r, 10) // NFPROTO_IPV6
+
+		if isMark && isIPv6 && ruleMatchesL4Proto(r, 6) {
+			ipv6TCPMarkCount++
+		}
+
+		if isMark && isIPv6 && ruleMatchesL4Proto(r, 17) {
+			ipv6UDPMarkCount++
+		}
+
+		if ruleHasTProxy(r) && isIPv6 && ruleMatchesL4Proto(r, 6) {
+			ipv6TCPTProxy++
+		}
+
+		if ruleHasTProxy(r) && isIPv6 && ruleHasDstPort(r, 53) {
+			ipv6DNSTProxy++
+		}
+	}
+
+	assert.Equal(t, 1, ipv6TCPMarkCount,
+		"unrestricted VM mode should mark IPv6 forwarded TCP")
+	assert.Equal(t, 1, ipv6UDPMarkCount,
+		"unrestricted VM mode should mark IPv6 forwarded UDP")
+	assert.GreaterOrEqual(t, ipv6TCPTProxy, 3,
+		"unrestricted VM mode should have IPv6 TCP TPROXY dispatch (80, 443, catch-all)")
+	assert.GreaterOrEqual(t, ipv6DNSTProxy, 1,
+		"unrestricted VM mode should have IPv6 DNS TPROXY dispatch")
 }

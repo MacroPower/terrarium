@@ -73,7 +73,7 @@ func TestBuildAccessLog_LogfmtFormat(t *testing.T) {
 func TestBuildCatchAllUDPListener(t *testing.T) {
 	t.Parallel()
 
-	l := envoy.BuildCatchAllUDPListener(15002, 60*time.Second, nil)
+	l := envoy.BuildCatchAllUDPListener(15002, 60*time.Second, nil, false)
 
 	assert.Equal(t, "catch_all_udp", l.Name)
 	assert.True(t, l.Transparent, "UDP listener must be transparent for TPROXY")
@@ -107,7 +107,7 @@ func TestBuildCatchAllUDPListener_WithAccessLog(t *testing.T) {
 	t.Parallel()
 
 	accessLog := envoy.BuildAccessLog(true, "logfmt", "/tmp/access.log")
-	l := envoy.BuildCatchAllUDPListener(15002, 120*time.Second, accessLog)
+	l := envoy.BuildCatchAllUDPListener(15002, 120*time.Second, accessLog, false)
 
 	require.Len(t, l.ListenerFilters, 1)
 	assert.Equal(t, "envoy.filters.udp_listener.udp_proxy", l.ListenerFilters[0].Name)
@@ -118,4 +118,106 @@ func TestBuildCatchAllUDPListener_WithAccessLog(t *testing.T) {
 	y := string(out)
 	assert.Contains(t, y, "idle_timeout: 120s")
 	assert.Contains(t, y, "envoy.access_loggers.file")
+}
+
+func TestBuildTLSListener_Transparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildTLSListener(
+		"tls_test", 15443, 443, "tls_test",
+		nil, true, nil, "", true,
+	)
+
+	assert.Equal(t, "::", l.Address.SocketAddress.Address,
+		"transparent listener should bind to ::")
+	assert.True(t, l.Transparent,
+		"transparent listener should have Transparent=true")
+}
+
+func TestBuildTLSListener_NonTransparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildTLSListener(
+		"tls_test", 15443, 443, "tls_test",
+		nil, true, nil, "", false,
+	)
+
+	assert.Equal(t, "127.0.0.1", l.Address.SocketAddress.Address,
+		"non-transparent listener should bind to 127.0.0.1")
+	assert.False(t, l.Transparent,
+		"non-transparent listener should have Transparent=false")
+}
+
+func TestBuildHTTPForwardListener_Transparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildHTTPForwardListener(nil, true, nil, true)
+
+	assert.Equal(t, "::", l.Address.SocketAddress.Address)
+	assert.True(t, l.Transparent)
+}
+
+func TestBuildCatchAllTCPListener_Transparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildCatchAllTCPListener(15001, true, nil, true)
+
+	assert.Equal(t, "::", l.Address.SocketAddress.Address)
+	assert.True(t, l.Transparent)
+}
+
+func TestBuildCatchAllTCPListener_NonTransparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildCatchAllTCPListener(15001, true, nil, false)
+
+	assert.Equal(t, "127.0.0.1", l.Address.SocketAddress.Address)
+	assert.False(t, l.Transparent)
+}
+
+func TestBuildCIDRCatchAllListener_Transparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildCIDRCatchAllListener(15003, nil, true)
+
+	assert.Equal(t, "::", l.Address.SocketAddress.Address)
+	assert.True(t, l.Transparent)
+}
+
+func TestBuildCatchAllUDPListener_Transparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildCatchAllUDPListener(15002, 60*time.Second, nil, true)
+
+	assert.Equal(t, "::", l.Address.SocketAddress.Address,
+		"transparent UDP listener should bind to ::")
+	assert.True(t, l.Transparent)
+}
+
+func TestBuildCatchAllUDPListener_NonTransparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildCatchAllUDPListener(15002, 60*time.Second, nil, false)
+
+	assert.Equal(t, "0.0.0.0", l.Address.SocketAddress.Address,
+		"non-transparent UDP listener should bind to 0.0.0.0")
+	assert.True(t, l.Transparent)
+}
+
+func TestBuildTCPForwardListener_Transparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildTCPForwardListener("tcp_fwd_8080", 23080, "tcp_fwd_8080", nil, true)
+
+	assert.Equal(t, "::", l.Address.SocketAddress.Address)
+	assert.True(t, l.Transparent)
+}
+
+func TestBuildTCPForwardListener_NonTransparent(t *testing.T) {
+	t.Parallel()
+
+	l := envoy.BuildTCPForwardListener("tcp_fwd_8080", 23080, "tcp_fwd_8080", nil, false)
+
+	assert.Equal(t, "127.0.0.1", l.Address.SocketAddress.Address)
+	assert.False(t, l.Transparent)
 }

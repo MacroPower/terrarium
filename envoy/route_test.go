@@ -47,7 +47,7 @@ func TestHostHeaderMatcherStripsAnchors(t *testing.T) {
 				}},
 			}}
 
-			listener := envoy.BuildHTTPForwardListener(rules, false, nil)
+			listener := envoy.BuildHTTPForwardListener(rules, false, nil, false)
 
 			out, err := yaml.Marshal(listener)
 			require.NoError(t, err)
@@ -171,7 +171,7 @@ func TestMismatchActions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			listener := envoy.BuildHTTPForwardListener(tt.rules, false, nil)
+			listener := envoy.BuildHTTPForwardListener(tt.rules, false, nil, false)
 
 			out, err := yaml.Marshal(listener)
 			require.NoError(t, err)

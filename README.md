@@ -367,6 +367,56 @@ loopback because TPROXY'd packets arrive with non-local source addresses. The
 `net.ipv4.conf.all.rp_filter` to 2 during policy routing setup, since the
 effective value is `max(conf.all, conf.<iface>)` and both must be loose.
 
+### Daemon mode
+
+Daemon mode (`terrarium daemon`) runs terrarium as a VM-wide network filter,
+applying policy to all processes rather than a single container UID. This is
+designed for Lima VMs where containers run inside the VM via containerd/Docker
+bridge networking.
+
+Forwarded container traffic (bridge/veth) uses a separate interception path from
+locally-originated traffic:
+
+| Chain               | Hook        | Priority | Purpose                                                           |
+| ------------------- | ----------- | -------- | ----------------------------------------------------------------- |
+| `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 TCP + DNS to `127.0.0.1:envoy_port`           |
+| `mangle_prerouting` | PREROUTING  | -150     | Mark forwarded UDP + IPv6 TCP for TPROXY; dispatch IPv6 TPROXY    |
+| `input`             | INPUT       | 0        | Accept DNATted traffic (`ct status dnat`)                         |
+| `forward`           | FORWARD     | 0        | Policy-evaluate non-intercepted forwarded traffic (ICMP)          |
+| `postrouting_guard` | POSTROUTING | 0        | Catch locally-originated leaks (forwarded traffic passes through) |
+
+DNAT (not REDIRECT) is used in PREROUTING because REDIRECT would rewrite the
+destination to the incoming interface's address (the bridge IP), not loopback.
+This requires `net.ipv4.conf.all.route_localnet=1` so the kernel allows routing
+to 127.0.0.0/8 on non-loopback interfaces. The security implications are minimal
+since the VM itself is the security boundary.
+
+IPv6 forwarded traffic uses TPROXY (mangle PREROUTING) instead of DNAT because
+Linux has no `route_localnet` equivalent for IPv6. The mangle chain marks
+forwarded IPv6 UDP and TCP, then dispatches them to Envoy/DNS proxy via TPROXY.
+IPv6 deny CIDRs skip TPROXY so the FORWARD chain's terminal DROP applies.
+
+#### Container CA trust
+
+When L7 rules require MITM inspection, the CA certificate is installed into the
+host VM's trust store and copied to `/etc/terrarium/ca.pem`. Containers have
+isolated filesystems and need separate configuration:
+
+**Containerd registry access** (e.g., `docker pull` through L7-restricted HTTPS):
+
+```toml
+# /etc/containerd/certs.d/_default/hosts.toml
+[host."https://*"]
+  ca = "/etc/terrarium/ca.pem"
+```
+
+**Application HTTPS inside containers**:
+
+- Volume mount: bind-mount `/etc/terrarium/ca.pem` and set `SSL_CERT_FILE`
+- Build into image: copy and run `update-ca-certificates`
+- Non-L7 rules: if rules only use FQDN/CIDR selectors without L7 matchers
+  (paths/methods/headers), no MITM occurs and no CA is needed
+
 ### IPv6
 
 The entire stack is dual-stack. nftables uses a single inet-family table that

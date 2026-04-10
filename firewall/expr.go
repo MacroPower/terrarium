@@ -274,6 +274,8 @@ func redirectToPort(port uint16) []expr.Any {
 }
 
 // markPacket sets the packet fwmark to the given value.
+//
+//nolint:unparam // mark is parameterized for symmetry with matchMark/matchNotMark.
 func markPacket(mark uint32) []expr.Any {
 	return []expr.Any{
 		&expr.Immediate{
@@ -289,6 +291,8 @@ func markPacket(mark uint32) []expr.Any {
 }
 
 // matchMark matches packets with the given fwmark value.
+//
+//nolint:unparam // mark is parameterized for symmetry with markPacket/matchNotMark.
 func matchMark(mark uint32) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
@@ -331,6 +335,96 @@ func notMatchDstPort(port uint16) []expr.Any {
 			Len:          2,
 		},
 		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
+	}
+}
+
+// matchHasSocketOwner matches packets that have a socket owner (any
+// UID). The meta skuid register load fails rule evaluation for
+// packets without a socket owner (forwarded, kernel-originated). The
+// CmpOpGte 0 comparison is structurally a no-op (all uint32 values
+// are >= 0) but is required because a bare Meta load without a
+// subsequent comparison leaves stale register state for later
+// expressions.
+func matchHasSocketOwner() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+	}
+}
+
+// dnatToLocal returns expressions that DNAT to 127.0.0.1 on the given
+// port. IPv4 only -- there is no route_localnet equivalent for IPv6.
+// Uses register 1 for the address and register 2 for the port.
+func dnatToLocal(port uint16) []expr.Any {
+	return []expr.Any{
+		&expr.Immediate{
+			Register: 1,
+			Data:     net.IPv4(127, 0, 0, 1).To4(),
+		},
+		&expr.Immediate{
+			Register: 2,
+			Data:     binaryutil.BigEndian.PutUint16(port),
+		},
+		&expr.NAT{
+			Type:        expr.NATTypeDestNAT,
+			Family:      uint32(unix.NFPROTO_IPV4),
+			RegAddrMin:  1,
+			RegProtoMin: 2,
+			Specified:   true,
+		},
+	}
+}
+
+// matchNotLocalDst matches packets whose destination address is not
+// locally owned. Uses fib daddr type to check the address type
+// against the routing table. Prevents intercepting container-to-host
+// traffic in NAT PREROUTING.
+func matchNotLocalDst() []expr.Any {
+	return []expr.Any{
+		&expr.Fib{
+			Register:       1,
+			FlagDADDR:      true,
+			ResultADDRTYPE: true,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpNeq,
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL),
+		},
+	}
+}
+
+// matchCtStatusDNAT matches packets that have been DNATted by
+// conntrack. Uses ct status with the IPS_DST_NAT bit (0x20, 1 << 5).
+func matchCtStatusDNAT() []expr.Any {
+	const ipsDstNAT = 0x20
+
+	return []expr.Any{
+		&expr.Ct{Key: expr.CtKeySTATUS, Register: 1},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(ipsDstNAT),
+			Xor:            make([]byte, 4),
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpNeq,
+			Register: 1,
+			Data:     make([]byte, 4),
+		},
+	}
+}
+
+// matchNotIIFName matches packets whose input interface name is not
+// the given name. Used to scope rules to forwarded (non-loopback)
+// traffic.
+//
+//nolint:unparam // name is parameterized for symmetry with matchIIFName.
+func matchNotIIFName(name string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: ifname(name)},
 	}
 }
 

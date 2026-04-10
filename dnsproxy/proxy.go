@@ -11,9 +11,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
+	"golang.org/x/sys/unix"
 
 	"go.jacobcolvin.com/terrarium/config"
 )
@@ -69,6 +71,7 @@ type Proxy struct {
 	filterMode       mode
 	logging          bool
 	ipv6Disabled     bool
+	vmMode           bool
 }
 
 // Option configures optional behavior of a [Proxy].
@@ -77,6 +80,7 @@ type Proxy struct {
 //
 //   - [WithClientTimeout]
 //   - [WithFQDNSetFunc]
+//   - [WithVMMode]
 type Option func(*Proxy)
 
 // WithClientTimeout overrides the default 10-second upstream DNS
@@ -95,6 +99,16 @@ func WithFQDNSetFunc(
 ) Option {
 	return func(p *Proxy) {
 		p.fqdnSetFunc = fn
+	}
+}
+
+// WithVMMode enables VM mode, which binds IPv6 listeners to [::]
+// instead of [::1] and sets IPV6_TRANSPARENT on the sockets. This
+// allows the DNS proxy to receive TPROXY'd forwarded IPv6 DNS queries
+// with non-local destination addresses. An [Option].
+func WithVMMode() Option {
+	return func(p *Proxy) {
+		p.vmMode = true
 	}
 }
 
@@ -241,9 +255,23 @@ func Start(
 
 	// IPv6 listeners.
 	if !ipv6Disabled {
-		addr6 := fmt.Sprintf("[::1]:%d", udpAddr.Port)
+		host6 := "::1"
+		if p.vmMode {
+			host6 = "::"
+		}
 
-		udp6PC, err := lc.ListenPacket(ctx, "udp", addr6)
+		addr6 := fmt.Sprintf("[%s]:%d", host6, udpAddr.Port)
+
+		// VM mode: set IPV6_TRANSPARENT so the socket can accept
+		// TPROXY'd packets with non-local destination addresses.
+		lc6 := lc
+		if p.vmMode {
+			lc6 = net.ListenConfig{
+				Control: setIPv6Transparent,
+			}
+		}
+
+		udp6PC, err := lc6.ListenPacket(ctx, "udp", addr6)
 		if err != nil {
 			cleanup()
 
@@ -257,7 +285,7 @@ func Start(
 			Handler:    dns.HandlerFunc(p.handleUDPQuery),
 		}
 
-		tcp6Ln, err := lc.Listen(ctx, "tcp", addr6)
+		tcp6Ln, err := lc6.Listen(ctx, "tcp", addr6)
 		if err != nil {
 			cleanup()
 
@@ -612,4 +640,24 @@ func newLogger(w io.Writer, format string) *slog.Logger {
 	}
 
 	return slog.New(handler)
+}
+
+// setIPv6Transparent sets IPV6_TRANSPARENT on an IPv6 socket so it
+// can accept TPROXY'd packets with non-local destination addresses.
+// Used as a [net.ListenConfig.Control] function in VM mode.
+func setIPv6Transparent(_, _ string, c syscall.RawConn) error {
+	var optErr error
+
+	controlErr := c.Control(func(fd uintptr) {
+		optErr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
+	})
+	if controlErr != nil {
+		return fmt.Errorf("accessing raw socket: %w", controlErr)
+	}
+
+	if optErr != nil {
+		return fmt.Errorf("setting IPV6_TRANSPARENT: %w", optErr)
+	}
+
+	return nil
 }

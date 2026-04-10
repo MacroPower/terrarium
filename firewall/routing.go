@@ -71,6 +71,21 @@ func SetupPolicyRouting(ctx context.Context, sys *sysctl.Sysctl) error {
 	return nil
 }
 
+// SetupForwardRouting enables route_localnet so that DNAT to 127.0.0.1
+// works on non-loopback interfaces. This is required for NAT
+// PREROUTING to redirect forwarded container traffic to Envoy/DNS
+// proxy on loopback. The security implications are minimal in a VM
+// isolation context where the VM itself is the security boundary.
+// Only called when VMMode is true.
+func SetupForwardRouting(sys *sysctl.Sysctl) error {
+	err := sys.Enable("net", "ipv4", "conf", "all", "route_localnet")
+	if err != nil {
+		return fmt.Errorf("setting route_localnet: %w", err)
+	}
+
+	return nil
+}
+
 // CleanupPolicyRouting removes the policy routing rules and routes
 // added by [SetupPolicyRouting]. Errors are logged but not returned
 // (best-effort cleanup). Does not restore rp_filter since the

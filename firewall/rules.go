@@ -113,7 +113,7 @@ func UpdateFQDNSet(conn *nftables.Conn, setName string, ips []net.IP, ttl time.D
 }
 
 func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
-	addInputChain(conn, table)
+	addInputChain(conn, table, uids)
 
 	policy := nftables.ChainPolicyDrop
 	outputChain := conn.AddChain(&nftables.Chain{
@@ -143,9 +143,16 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	// NAT: 80, 443, TCPForwards, and catch-all TCP.
 	addUnrestrictedNAT(conn, table, cfg, uids)
 
-	// Mangle chains for UDP TPROXY.
+	// VM mode: NAT PREROUTING for forwarded container traffic.
+	if uids.VMMode {
+		addUnrestrictedNATPreRouting(conn, table, cfg)
+		addForwardChainUnrestricted(conn, table)
+	}
+
+	// Mangle chains for UDP TPROXY (and IPv6 TCP TPROXY in VM mode).
 	addMangleOutputChain(conn, table, uids)
-	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort))
+	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort),
+		[]int{80, 443}, cfg.TCPForwards, nil, nil, uids)
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
@@ -153,7 +160,13 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 }
 
 func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
-	addInputChain(conn, table)
+	addInputChain(conn, table, uids)
+
+	// VM mode: FORWARD chain with only established/related ACCEPT
+	// (all new forwarded traffic is dropped for fail-closed semantics).
+	if uids.VMMode {
+		addForwardChainBlocked(conn, table)
+	}
 
 	policy := nftables.ChainPolicyDrop
 	outputChain := conn.AddChain(&nftables.Chain{
@@ -200,7 +213,7 @@ type setRef struct {
 }
 
 func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) error {
-	addInputChain(conn, table)
+	addInputChain(conn, table, uids)
 
 	resolvedPorts := cfg.ResolvePorts(ctx)
 	cidr4, cidr6 := cfg.ResolveCIDRRules(ctx)
@@ -435,9 +448,16 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 	// NAT chain.
 	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, allDenyCIDRs, uids)
 
-	// Mangle chains for UDP TPROXY.
+	// VM mode: NAT PREROUTING and FORWARD for forwarded container traffic.
+	if uids.VMMode {
+		addNATPreRouting(conn, table, cfg, resolvedPorts, cidr4, allDenyCIDRs, uids)
+		addForwardChain(conn, table, terrariumChain)
+	}
+
+	// Mangle chains for UDP TPROXY (and IPv6 TCP TPROXY in VM mode).
 	addMangleOutputChain(conn, table, uids)
-	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort))
+	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort),
+		resolvedPorts, cfg.TCPForwards, cidr6, deny6, uids)
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.

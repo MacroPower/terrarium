@@ -20,7 +20,7 @@ import (
 // rules are applied directly via nftables netlink in [Init], not
 // written to files. The parsed [*Config] is returned so callers can
 // reuse it without re-parsing.
-func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
+func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Config, error) {
 	data, err := os.ReadFile(usr.ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
@@ -65,6 +65,7 @@ func Generate(ctx context.Context, usr *config.User) (*config.Config, error) {
 		certsDir,
 		caBundlePath,
 		cfg.EnvoyAccessLogPath(usr.EnvoyAccessLogPath),
+		vmMode,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
@@ -94,6 +95,7 @@ func GenerateEnvoyFromConfig(
 	ctx context.Context,
 	cfg *config.Config,
 	certsDir, caBundlePath, accessLogPath string,
+	vmMode bool,
 ) (string, error) {
 	accessLog := envoy.BuildAccessLog(cfg.EnvoyAccessLogEnabled(), cfg.EnvoyAccessLogFormat(), accessLogPath)
 
@@ -117,8 +119,8 @@ func GenerateEnvoyFromConfig(
 	// catch-all TCP listener for centralized access logging.
 	if !cfg.IsEgressBlocked() {
 		listeners = append(listeners,
-			buildTLSPassthroughListener(ctx, cfg, resolvedPortSet, openPortSet, accessLog, certsDir),
-			buildHTTPForwardListener(ctx, cfg, resolvedPortSet, openPortSet, accessLog),
+			buildTLSPassthroughListener(ctx, cfg, resolvedPortSet, openPortSet, accessLog, certsDir, vmMode),
+			buildHTTPForwardListener(ctx, cfg, resolvedPortSet, openPortSet, accessLog, vmMode),
 		)
 	}
 
@@ -126,7 +128,7 @@ func GenerateEnvoyFromConfig(
 		name := fmt.Sprintf("tcp_forward_%d", fwd.Port)
 		listeners = append(
 			listeners,
-			envoy.BuildTCPForwardListener(name, config.ProxyPortBase+fwd.Port, name, accessLog),
+			envoy.BuildTCPForwardListener(name, config.ProxyPortBase+fwd.Port, name, accessLog, vmMode),
 		)
 	}
 
@@ -146,7 +148,7 @@ func GenerateEnvoyFromConfig(
 			fmt.Sprintf("tls_passthrough_%d", p),
 			config.ProxyPortBase+p, p,
 			fmt.Sprintf("tls_passthrough_%d", p),
-			rulesP, openPortSet[p], accessLog, certsDir,
+			rulesP, openPortSet[p], accessLog, certsDir, vmMode,
 		))
 	}
 
@@ -155,7 +157,7 @@ func GenerateEnvoyFromConfig(
 	// NAT chain redirects matching TCP to this listener.
 	if cfg.HasCIDRRules() {
 		listeners = append(listeners,
-			envoy.BuildCIDRCatchAllListener(config.CIDRCatchAllPort, accessLog))
+			envoy.BuildCIDRCatchAllListener(config.CIDRCatchAllPort, accessLog, vmMode))
 	}
 
 	envoySettings := cfg.EnvoyDefaults()
@@ -163,9 +165,9 @@ func GenerateEnvoyFromConfig(
 	// Catch-all TCP and UDP listeners for non-blocked modes.
 	if !cfg.IsEgressBlocked() {
 		listeners = append(listeners,
-			envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, cfg.IsEgressUnrestricted(), accessLog),
+			envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, cfg.IsEgressUnrestricted(), accessLog, vmMode),
 			envoy.BuildCatchAllUDPListener(
-				config.CatchAllUDPProxyPort, envoySettings.UDPIdleTimeout.Duration, accessLog),
+				config.CatchAllUDPProxyPort, envoySettings.UDPIdleTimeout.Duration, accessLog, vmMode),
 		)
 	}
 
@@ -207,6 +209,7 @@ func buildTLSPassthroughListener(
 	resolvedPortSet, openPortSet map[int]bool,
 	accessLog []envoy.AccessLog,
 	certsDir string,
+	transparent bool,
 ) envoy.Listener {
 	rules := cfg.ResolveRulesForPort(ctx, 443)
 	rules = append(rules, cfg.ResolveServerNameRulesForPort(ctx, 443)...)
@@ -221,7 +224,7 @@ func buildTLSPassthroughListener(
 
 	return envoy.BuildTLSListener(
 		"tls_passthrough", 15443, 443, "tls_passthrough",
-		rules, open, accessLog, certsDir,
+		rules, open, accessLog, certsDir, transparent,
 	)
 }
 
@@ -233,6 +236,7 @@ func buildHTTPForwardListener(
 	cfg *config.Config,
 	resolvedPortSet, openPortSet map[int]bool,
 	accessLog []envoy.AccessLog,
+	transparent bool,
 ) envoy.Listener {
 	rules := cfg.ResolveRulesForPort(ctx, 80)
 	open := openPortSet[80]
@@ -244,5 +248,5 @@ func buildHTTPForwardListener(
 		rules = envoy.StripL7Restrictions(rules)
 	}
 
-	return envoy.BuildHTTPForwardListener(rules, open, accessLog)
+	return envoy.BuildHTTPForwardListener(rules, open, accessLog, transparent)
 }

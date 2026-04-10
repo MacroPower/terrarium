@@ -8,8 +8,31 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 )
 
+const (
+	// loopbackAddr is the default listener bind address for
+	// container mode (non-transparent) listeners.
+	loopbackAddr = "127.0.0.1"
+
+	// dualStackAddr is the listener bind address for VM mode
+	// (transparent) listeners. Dual-stack [::] accepts both IPv4
+	// and IPv6 connections.
+	dualStackAddr = "::"
+)
+
+// listenAddr returns the bind address for a listener based on the
+// transparent flag.
+func listenAddr(transparent bool) string {
+	if transparent {
+		return dualStackAddr
+	}
+
+	return loopbackAddr
+}
+
 // BuildTLSListener creates a TLS listener that matches connections by
-// SNI, with passthrough, wildcard RBAC, and MITM filter chains.
+// SNI, with passthrough, wildcard RBAC, and MITM filter chains. When
+// transparent is true, the listener binds to [::] (dual-stack) with
+// IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
 func BuildTLSListener(
 	name string,
 	listenPort, upstreamPort int,
@@ -18,6 +41,7 @@ func BuildTLSListener(
 	open bool,
 	accessLog []AccessLog,
 	certsDir string,
+	transparent bool,
 ) Listener {
 	var (
 		passthroughDomains []string
@@ -103,8 +127,9 @@ func BuildTLSListener(
 	return Listener{
 		Name: name,
 		Address: address{SocketAddress: socketAddress{
-			Address: "127.0.0.1", PortValue: listenPort,
+			Address: listenAddr(transparent), PortValue: listenPort,
 		}},
+		Transparent:        transparent,
 		DefaultFilterChain: &defaultChain,
 		ListenerFilters: []NamedTyped{{
 			Name: "envoy.filters.listener.tls_inspector",
@@ -117,8 +142,12 @@ func BuildTLSListener(
 }
 
 // BuildHTTPForwardListener creates an HTTP listener that forwards
-// requests based on Host header virtual host matching.
-func BuildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog []AccessLog) Listener {
+// requests based on Host header virtual host matching. When
+// transparent is true, the listener binds to [::] (dual-stack) with
+// IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
+func BuildHTTPForwardListener(
+	rules []config.ResolvedRule, open bool, accessLog []AccessLog, transparent bool,
+) Listener {
 	vhosts, wildcardDomains, exactDomains := buildHTTPVirtualHosts(rules, "dynamic_forward_proxy_cluster")
 
 	// Envoy allows only one virtual host with Domains: ["*"] per route
@@ -173,8 +202,9 @@ func BuildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog 
 	return Listener{
 		Name: "http_forward",
 		Address: address{SocketAddress: socketAddress{
-			Address: "127.0.0.1", PortValue: 15080,
+			Address: listenAddr(transparent), PortValue: 15080,
 		}},
+		Transparent: transparent,
 		FilterChains: []filterChain{{
 			Filters: []filter{{
 				Name: "envoy.filters.network.http_connection_manager",
@@ -201,18 +231,22 @@ func BuildHTTPForwardListener(rules []config.ResolvedRule, open bool, accessLog 
 }
 
 // BuildTCPForwardListener creates a plain TCP proxy listener that
-// forwards all connections to the named cluster.
+// forwards all connections to the named cluster. When transparent is
+// true, the listener binds to [::] (dual-stack) with IP_TRANSPARENT
+// for TPROXY-delivered traffic in VM mode.
 func BuildTCPForwardListener(
 	name string,
 	listenPort int,
 	clusterName string,
 	accessLog []AccessLog,
+	transparent bool,
 ) Listener {
 	return Listener{
 		Name: name,
 		Address: address{SocketAddress: socketAddress{
-			Address: "127.0.0.1", PortValue: listenPort,
+			Address: listenAddr(transparent), PortValue: listenPort,
 		}},
+		Transparent: transparent,
 		FilterChains: []filterChain{{
 			Filters: []filter{{
 				Name: "envoy.filters.network.tcp_proxy",
@@ -238,8 +272,10 @@ func BuildTCPForwardListener(
 // endpoints, immediately resetting the connection after logging. This
 // prevents the catch-all from bypassing policy: NAT fires before the
 // filter chain, so without Envoy-level rejection, non-policy-port
-// traffic would be silently forwarded.
-func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog) Listener {
+// traffic would be silently forwarded. When transparent is true, the
+// listener binds to [::] (dual-stack) with IP_TRANSPARENT for
+// TPROXY-delivered traffic in VM mode.
+func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, transparent bool) Listener {
 	cluster := "missing_sni_blackhole"
 	if open {
 		cluster = "original_dst"
@@ -248,8 +284,9 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog) 
 	return Listener{
 		Name: "catch_all_tcp",
 		Address: address{SocketAddress: socketAddress{
-			Address: "127.0.0.1", PortValue: listenPort,
+			Address: listenAddr(transparent), PortValue: listenPort,
 		}},
+		Transparent: transparent,
 		ListenerFilters: []NamedTyped{{
 			Name: "envoy.filters.listener.original_dst",
 			TypedConfig: typeOnly{
@@ -276,13 +313,16 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog) 
 // blackhole cluster), this listener always forwards to the original
 // destination via the original_dst cluster. The original_dst listener
 // filter recovers the real destination from conntrack; the tls_inspector
-// extracts SNI for access log visibility on TLS connections.
-func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog) Listener {
+// extracts SNI for access log visibility on TLS connections. When
+// transparent is true, the listener binds to [::] (dual-stack) with
+// IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
+func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog, transparent bool) Listener {
 	return Listener{
 		Name: "cidr_catch_all",
 		Address: address{SocketAddress: socketAddress{
-			Address: "127.0.0.1", PortValue: listenPort,
+			Address: listenAddr(transparent), PortValue: listenPort,
 		}},
+		Transparent: transparent,
 		ListenerFilters: []NamedTyped{
 			{
 				Name: "envoy.filters.listener.original_dst",
@@ -318,11 +358,18 @@ func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog) Listener {
 // non-local IPs. The original_dst listener filter is NOT used (it is
 // TCP-only); the ORIGINAL_DST cluster recovers the destination from
 // the transparent socket address instead.
-func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []AccessLog) Listener {
+func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []AccessLog, transparent bool) Listener {
+	// UDP listener is always transparent. In VM mode, bind to [::] for
+	// dual-stack TPROXY; otherwise bind to 0.0.0.0.
+	udpAddr := "0.0.0.0"
+	if transparent {
+		udpAddr = dualStackAddr
+	}
+
 	return Listener{
 		Name: "catch_all_udp",
 		Address: address{SocketAddress: socketAddress{
-			Address:   "0.0.0.0",
+			Address:   udpAddr,
 			Protocol:  "UDP",
 			PortValue: port,
 		}},

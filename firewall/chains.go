@@ -17,6 +17,11 @@ import (
 // the single Terrarium UID; in VM mode it returns nil so the
 // calling rule applies to all UIDs (Envoy and Root are excluded by
 // dedicated ACCEPT rules earlier in the chain).
+//
+// Note: the postrouting guard uses [matchHasSocketOwner] instead of
+// this function in VM mode so that forwarded packets (no socket
+// owner) pass through after being policy-evaluated in the FORWARD
+// chain.
 func matchFilteredTraffic(uids UIDs) []expr.Any {
 	if uids.VMMode {
 		return nil
@@ -25,7 +30,7 @@ func matchFilteredTraffic(uids UIDs) []expr.Any {
 	return matchUID(uids.Terrarium)
 }
 
-func addInputChain(conn Conn, table *nftables.Table) {
+func addInputChain(conn Conn, table *nftables.Table, uids UIDs) {
 	policy := nftables.ChainPolicyDrop
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "input",
@@ -53,6 +58,32 @@ func addInputChain(conn Conn, table *nftables.Table) {
 			verdictExprs(expr.VerdictAccept),
 		),
 	})
+
+	// VM mode: accept DNATted forwarded traffic (TCP + DNS) that was
+	// redirected to 127.0.0.1 by NAT PREROUTING. Without this rule,
+	// forwarded packets arriving on INPUT after DNAT would be dropped
+	// by the chain policy.
+	if uids.VMMode {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchCtStatusDNAT(),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+
+		// Accept TPROXY-marked forwarded traffic. TPROXY assigns the
+		// socket in mangle PREROUTING but the packet must still pass
+		// INPUT for delivery. Covers IPv6 forwarded TCP/DNS and
+		// fixes a latent gap for existing forwarded UDP TPROXY.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchMark(tproxyMark),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
 
 	// Default DROP via chain policy.
 }
@@ -667,58 +698,9 @@ func addCIDRNATRedirect(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs,
 ) {
-	groups := groupCIDRsByRule(cidrs)
-
-	for i, group := range groups {
-		if !slices.ContainsFunc(group, cidrNeedsTCPRedirect) {
-			continue
-		}
-
-		chainName := fmt.Sprintf("cidr_nat_%d", i)
-		chain := conn.AddChain(&nftables.Chain{
-			Name:  chainName,
-			Table: table,
-		})
-
-		// Except RETURNs: excepted subnets skip this rule's
-		// redirect. TCP-only matching mirrors the redirect rules
-		// below so non-TCP traffic returns from the chain unaffected
-		// (UDP uses TPROXY instead of NAT REDIRECT).
-		for _, rule := range group {
-			if !cidrNeedsTCPRedirect(rule) {
-				continue
-			}
-
-			for _, exc := range rule.Except {
-				_, excNet, err := net.ParseCIDR(exc)
-				if err != nil {
-					continue
-				}
-
-				addCIDRNATTCPRules(conn, table, chain, rule, uids, excNet, verdictExprs(expr.VerdictReturn))
-			}
-		}
-
-		// CIDR REDIRECTs: redirect matching TCP to CIDR catch-all.
-		for _, rule := range group {
-			if !cidrNeedsTCPRedirect(rule) {
-				continue
-			}
-
-			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
-			if err != nil {
-				continue
-			}
-
-			addCIDRNATTCPRules(conn, table, chain, rule, uids, cidrNet, redirectToPort(port16(config.CIDRCatchAllPort)))
-		}
-
-		// Jump from parent chain.
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: parentChain,
-			Exprs: flatExprs(verdictExprs(expr.VerdictJump, chainName)),
-		})
-	}
+	buildCIDRTCPChains(conn, table, parentChain, cidrs,
+		"cidr_nat", matchFilteredTraffic(uids),
+		redirectToPort(port16(config.CIDRCatchAllPort)), nil)
 }
 
 // cidrNeedsTCPRedirect reports whether a resolved CIDR rule has TCP
@@ -743,20 +725,23 @@ func cidrNeedsTCPRedirect(rule config.ResolvedCIDR) bool {
 	return false
 }
 
-// addCIDRNATTCPRules emits nftables rules for a single CIDR rule's
-// TCP ports, matching the given cidrNet and applying the terminal
-// expression (verdict or redirect). Portless rules emit a single
-// all-TCP rule; port-scoped rules emit one rule per eligible TCP port.
-func addCIDRNATTCPRules(
+// emitCIDRTCPRules emits nftables rules for a single CIDR rule's TCP
+// ports, matching the given cidrNet and applying the terminal
+// expression (verdict, redirect, or TPROXY). Portless rules emit a
+// single all-TCP rule; port-scoped rules emit one rule per eligible
+// TCP port. The prefix expressions are prepended to each rule (e.g.
+// UID matching for NAT paths, or nil for TPROXY paths where the
+// parent chain jump already scopes the traffic).
+func emitCIDRTCPRules(
 	conn Conn, table *nftables.Table, chain *nftables.Chain,
-	rule config.ResolvedCIDR, uids UIDs, cidrNet *net.IPNet,
+	rule config.ResolvedCIDR, prefix []expr.Any, cidrNet *net.IPNet,
 	terminal []expr.Any,
 ) {
 	if len(rule.Ports) == 0 {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchFilteredTraffic(uids),
+				prefix,
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstCIDR(cidrNet),
 				terminal,
@@ -774,7 +759,7 @@ func addCIDRNATTCPRules(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchFilteredTraffic(uids),
+				prefix,
 				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPortOrRange(port16(pp.Port), port16(pp.EndPort)),
 				matchDstCIDR(cidrNet),
@@ -835,8 +820,19 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 // addManglePreRoutingChain creates a filter-type prerouting chain at
 // mangle priority that applies TPROXY to marked UDP packets. Per-AF
 // rules are used (IPv4 and IPv6 separately) matching the codebase's
-// convention in matchDstCIDR.
-func addManglePreRoutingChain(conn Conn, table *nftables.Table, port uint16) {
+// convention in matchDstCIDR. In VM mode, forwarded UDP and IPv6 TCP
+// packets are also marked for TPROXY interception before the dispatch
+// rules. IPv6 forwarded TCP uses TPROXY because Linux has no
+// route_localnet equivalent for IPv6 (DNAT to 127.0.0.1 only works
+// for IPv4).
+func addManglePreRoutingChain(
+	conn Conn, table *nftables.Table,
+	udpPort uint16,
+	resolvedPorts []int,
+	tcpForwards []config.TCPForward,
+	cidr6, denyCIDR6 []config.ResolvedCIDR,
+	uids UIDs,
+) {
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "mangle_prerouting",
 		Table:    table,
@@ -845,6 +841,115 @@ func addManglePreRoutingChain(conn Conn, table *nftables.Table, port uint16) {
 		Priority: nftables.ChainPriorityMangle,
 	})
 
+	// VM mode: mark forwarded traffic for TPROXY interception.
+	// These marking rules fire before the dispatch rules below.
+	if uids.VMMode {
+		// IPv4 forwarded UDP: mark for TPROXY, excluding port 53
+		// (IPv4 DNS uses DNAT in NAT PREROUTING).
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV4),
+				matchNotIIFName("lo"),
+				matchNotLocalDst(),
+				matchL4Proto(unix.IPPROTO_UDP),
+				notMatchDstPort(53),
+				markPacket(tproxyMark),
+			),
+		})
+
+		// IPv6 forwarded UDP: mark for TPROXY, including port 53
+		// (IPv6 DNS must use TPROXY since there is no route_localnet).
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV6),
+				matchNotIIFName("lo"),
+				matchNotLocalDst(),
+				matchL4Proto(unix.IPPROTO_UDP),
+				markPacket(tproxyMark),
+			),
+		})
+
+		// IPv6 forwarded TCP: mark for TPROXY. IPv4 TCP uses DNAT
+		// in NAT PREROUTING via route_localnet.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV6),
+				matchNotIIFName("lo"),
+				matchNotLocalDst(),
+				matchL4Proto(unix.IPPROTO_TCP),
+				markPacket(tproxyMark),
+			),
+		})
+
+		// IPv6 DNS TPROXY (UDP + TCP port 53) -> DNS proxy.
+		// Must appear before the generic UDP/TCP TPROXY rules.
+		for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchMark(tproxyMark),
+					matchNFProto(unix.NFPROTO_IPV6),
+					matchL4Proto(proto),
+					matchDstPort(53),
+					tproxyToPort(unix.NFPROTO_IPV6, 53),
+				),
+			})
+		}
+
+		// IPv6 deny CIDR: ACCEPT to skip TPROXY so traffic falls
+		// to the FORWARD chain for policy DROP. Uses per-rule
+		// chains with except RETURNs and port scoping, mirroring
+		// addDenyCIDRChainsWithVerdict for the IPv4 NAT path.
+		addIPv6DenyCIDRTPROXYSkip(conn, table, chain, denyCIDR6)
+
+		// IPv6 allow CIDR + TCP -> TPROXY to CIDR catch-all port.
+		// Uses per-rule chains with except RETURNs, port scoping,
+		// and serverName/L7 skipping, mirroring addCIDRNATRedirect.
+		addIPv6AllowCIDRTPROXY(conn, table, chain, cidr6)
+
+		// IPv6 per-port TCP -> TPROXY to ProxyPortBase+port.
+		for _, p := range resolvedPorts {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchMark(tproxyMark),
+					matchNFProto(unix.NFPROTO_IPV6),
+					matchL4Proto(unix.IPPROTO_TCP),
+					matchDstPort(port16(p)),
+					tproxyToPort(unix.NFPROTO_IPV6, port16(config.ProxyPortBase+p)),
+				),
+			})
+		}
+
+		// IPv6 TCPForward -> TPROXY to ProxyPortBase+fwd.Port.
+		for _, fwd := range tcpForwards {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchMark(tproxyMark),
+					matchNFProto(unix.NFPROTO_IPV6),
+					matchL4Proto(unix.IPPROTO_TCP),
+					matchDstPort(port16(fwd.Port)),
+					tproxyToPort(unix.NFPROTO_IPV6, port16(config.ProxyPortBase+fwd.Port)),
+				),
+			})
+		}
+
+		// IPv6 catch-all TCP -> TPROXY to catch-all proxy port.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchMark(tproxyMark),
+				matchNFProto(unix.NFPROTO_IPV6),
+				matchL4Proto(unix.IPPROTO_TCP),
+				tproxyToPort(unix.NFPROTO_IPV6, port16(config.CatchAllProxyPort)),
+			),
+		})
+	}
+
 	// IPv4: match fwmark + UDP -> TPROXY to port.
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
@@ -852,7 +957,7 @@ func addManglePreRoutingChain(conn Conn, table *nftables.Table, port uint16) {
 			matchMark(tproxyMark),
 			matchL4Proto(unix.IPPROTO_UDP),
 			matchNFProto(unix.NFPROTO_IPV4),
-			tproxyToPort(unix.NFPROTO_IPV4, port),
+			tproxyToPort(unix.NFPROTO_IPV4, udpPort),
 		),
 	})
 
@@ -863,7 +968,7 @@ func addManglePreRoutingChain(conn Conn, table *nftables.Table, port uint16) {
 			matchMark(tproxyMark),
 			matchL4Proto(unix.IPPROTO_UDP),
 			matchNFProto(unix.NFPROTO_IPV6),
-			tproxyToPort(unix.NFPROTO_IPV6, port),
+			tproxyToPort(unix.NFPROTO_IPV6, udpPort),
 		),
 	})
 }
@@ -1133,11 +1238,20 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 		}
 	}
 
+	// In VM mode, use matchHasSocketOwner so forwarded packets (no
+	// socket owner) pass through -- they were already policy-evaluated
+	// in the FORWARD chain. In container mode, use matchFilteredTraffic
+	// to scope to the Terrarium UID.
+	trafficMatch := matchFilteredTraffic(uids)
+	if uids.VMMode {
+		trafficMatch = matchHasSocketOwner()
+	}
+
 	if logging {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchFilteredTraffic(uids),
+				trafficMatch,
 				notMatchOIFName("lo"),
 				logPrefix("TERRARIUM_EGRESS_LEAK: "),
 			),
@@ -1147,11 +1261,509 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(
-			matchFilteredTraffic(uids),
+			trafficMatch,
 			notMatchOIFName("lo"),
 			verdictExprs(expr.VerdictDrop),
 		),
 	})
+}
+
+// forwardGuardExprs returns the common match expressions for
+// PREROUTING/FORWARD rules targeting forwarded traffic: non-loopback
+// input interface, non-local destination, and IPv4 protocol.
+func forwardGuardExprs() []expr.Any {
+	return flatExprs(
+		matchNotIIFName("lo"),
+		matchNotLocalDst(),
+		matchNFProto(unix.NFPROTO_IPV4),
+	)
+}
+
+// addNATPreRouting creates a NAT PREROUTING chain for VM mode that
+// DNATs forwarded IPv4 TCP and DNS traffic to 127.0.0.1 for Envoy
+// and DNS proxy interception. All rules are scoped to non-loopback
+// input, non-local destination, and IPv4 (no route_localnet equivalent
+// for IPv6).
+func addNATPreRouting(
+	conn Conn, table *nftables.Table, cfg *config.Config,
+	resolvedPorts []int, cidr4, denyCIDRs []config.ResolvedCIDR,
+	uids UIDs,
+) {
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "nat_prerouting",
+		Table:    table,
+		Type:     nftables.ChainTypeNAT,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: nftables.ChainPriorityNATDest,
+	})
+
+	guard := forwardGuardExprs()
+
+	// 1. DNS DNAT: UDP/TCP port 53 -> DNS proxy.
+	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				guard,
+				matchL4Proto(proto),
+				matchDstPort(53),
+				dnatToLocal(53),
+			),
+		})
+	}
+
+	// 2. Deny CIDR NAT ACCEPT (prevent redirect for denied CIDRs).
+	// Filter to IPv4-only deny CIDRs for PREROUTING.
+	var deny4 []config.ResolvedCIDR
+	for _, c := range denyCIDRs {
+		_, ipNet, err := net.ParseCIDR(c.CIDR)
+		if err != nil {
+			continue
+		}
+
+		if ipNet.IP.To4() != nil {
+			deny4 = append(deny4, c)
+		}
+	}
+
+	addDenyCIDRChainsWithVerdict(conn, table, chain, deny4, uids,
+		"deny_cidr_nat_pre", expr.VerdictAccept)
+
+	// 3. Allow CIDR DNAT to CIDR catch-all port. Per-rule chains
+	// with except RETURNs mirror addCIDRNATRedirect so excepted
+	// subnets are not DNATted to Envoy.
+	addCIDRNATPreRoutingDNAT(conn, table, chain, cidr4, uids)
+
+	// 4. Per-port FQDN DNAT.
+	for _, p := range resolvedPorts {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				guard,
+				matchL4Proto(unix.IPPROTO_TCP),
+				matchDstPort(port16(p)),
+				dnatToLocal(port16(config.ProxyPortBase+p)),
+			),
+		})
+	}
+
+	// 5. TCPForward DNAT.
+	for _, fwd := range cfg.TCPForwards {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				guard,
+				matchL4Proto(unix.IPPROTO_TCP),
+				matchDstPort(port16(fwd.Port)),
+				dnatToLocal(port16(config.ProxyPortBase+fwd.Port)),
+			),
+		})
+	}
+
+	// 6. Catch-all TCP DNAT -> blackhole listener.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			guard,
+			matchL4Proto(unix.IPPROTO_TCP),
+			dnatToLocal(port16(config.CatchAllProxyPort)),
+		),
+	})
+}
+
+// addUnrestrictedNATPreRouting creates a NAT PREROUTING chain for
+// VM mode unrestricted policy. DNATs forwarded IPv4 TCP traffic to
+// Envoy for access logging (port 80 -> 15080, 443 -> 15443,
+// TCPForwards, and catch-all).
+func addUnrestrictedNATPreRouting(conn Conn, table *nftables.Table, cfg *config.Config) {
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "nat_prerouting",
+		Table:    table,
+		Type:     nftables.ChainTypeNAT,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: nftables.ChainPriorityNATDest,
+	})
+
+	guard := forwardGuardExprs()
+
+	// 1. DNS DNAT.
+	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				guard,
+				matchL4Proto(proto),
+				matchDstPort(53),
+				dnatToLocal(53),
+			),
+		})
+	}
+
+	// 2. Port 80 -> HTTP forward proxy.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			guard,
+			matchL4Proto(unix.IPPROTO_TCP),
+			matchDstPort(80),
+			dnatToLocal(15080),
+		),
+	})
+
+	// 3. Port 443 -> TLS passthrough.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			guard,
+			matchL4Proto(unix.IPPROTO_TCP),
+			matchDstPort(443),
+			dnatToLocal(15443),
+		),
+	})
+
+	// 4. TCPForward DNAT.
+	for _, fwd := range cfg.TCPForwards {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				guard,
+				matchL4Proto(unix.IPPROTO_TCP),
+				matchDstPort(port16(fwd.Port)),
+				dnatToLocal(port16(config.ProxyPortBase+fwd.Port)),
+			),
+		})
+	}
+
+	// 5. Catch-all TCP DNAT.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			guard,
+			matchL4Proto(unix.IPPROTO_TCP),
+			dnatToLocal(port16(config.CatchAllProxyPort)),
+		),
+	})
+}
+
+// addCIDRNATPreRoutingDNAT creates per-rule CIDR chains in the NAT
+// PREROUTING context, mirroring [addCIDRNATRedirect] for the OUTPUT
+// path. Each chain evaluates one rule's CIDRs: RETURN for except hits
+// (excepted subnets skip this rule's DNAT), DNAT for TCP CIDR hits
+// (DNAT to the CIDR catch-all listener). Uses [dnatToLocal] instead
+// of [redirectToPort] because REDIRECT in PREROUTING would redirect
+// to the incoming interface's address, not loopback.
+func addCIDRNATPreRoutingDNAT(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR, uids UIDs,
+) {
+	buildCIDRTCPChains(conn, table, parentChain, cidrs,
+		"cidr_nat_pre", matchFilteredTraffic(uids),
+		dnatToLocal(port16(config.CIDRCatchAllPort)), nil)
+}
+
+// tproxyIPv6Guard returns the common match expressions for IPv6
+// TPROXY dispatch rules in mangle PREROUTING: fwmark match and
+// IPv6 protocol scope.
+func tproxyIPv6Guard() []expr.Any {
+	return flatExprs(
+		matchMark(tproxyMark),
+		matchNFProto(unix.NFPROTO_IPV6),
+	)
+}
+
+// addIPv6DenyCIDRTPROXYSkip creates per-rule deny CIDR chains that
+// ACCEPT (skip TPROXY) for denied IPv6 CIDRs. Traffic that skips
+// TPROXY falls to the FORWARD chain where the filter deny rules DROP
+// it. Mirrors [addDenyCIDRChainsWithVerdict] but scoped to IPv6
+// TPROXY-marked traffic instead of UID-filtered traffic.
+func addIPv6DenyCIDRTPROXYSkip(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR,
+) {
+	groups := groupCIDRsByRule(cidrs)
+	guard := tproxyIPv6Guard()
+
+	for i, group := range groups {
+		chainName := fmt.Sprintf("deny_cidr_tproxy_%d", i)
+		chain := conn.AddChain(&nftables.Chain{
+			Name:  chainName,
+			Table: table,
+		})
+
+		// Except RETURNs: don't skip TPROXY for these sub-ranges.
+		for _, rule := range group {
+			for _, exc := range rule.Except {
+				_, excNet, err := net.ParseCIDR(exc)
+				if err != nil {
+					continue
+				}
+
+				if len(rule.Ports) == 0 {
+					conn.AddRule(&nftables.Rule{
+						Table: table, Chain: chain,
+						Exprs: flatExprs(
+							matchDstCIDR(excNet),
+							verdictExprs(expr.VerdictReturn),
+						),
+					})
+				} else {
+					for _, pp := range rule.Ports {
+						conn.AddRule(&nftables.Rule{
+							Table: table, Chain: chain,
+							Exprs: flatExprs(
+								matchPortProto(pp),
+								matchDstCIDR(excNet),
+								verdictExprs(expr.VerdictReturn),
+							),
+						})
+					}
+				}
+			}
+		}
+
+		// CIDR ACCEPT: skip TPROXY for matching denied traffic.
+		for _, rule := range group {
+			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
+			if err != nil {
+				continue
+			}
+
+			if len(rule.Ports) == 0 {
+				conn.AddRule(&nftables.Rule{
+					Table: table, Chain: chain,
+					Exprs: flatExprs(
+						matchDstCIDR(cidrNet),
+						verdictExprs(expr.VerdictAccept),
+					),
+				})
+			} else {
+				for _, pp := range rule.Ports {
+					conn.AddRule(&nftables.Rule{
+						Table: table, Chain: chain,
+						Exprs: flatExprs(
+							matchPortProto(pp),
+							matchDstCIDR(cidrNet),
+							verdictExprs(expr.VerdictAccept),
+						),
+					})
+				}
+			}
+		}
+
+		// Jump from parent chain (scoped to IPv6 TPROXY traffic).
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: parentChain,
+			Exprs: flatExprs(
+				guard,
+				verdictExprs(expr.VerdictJump, chainName),
+			),
+		})
+	}
+}
+
+// addIPv6AllowCIDRTPROXY creates per-rule CIDR chains that TPROXY
+// matching IPv6 TCP traffic to the CIDR catch-all listener. Mirrors
+// [addCIDRNATRedirect] / [addCIDRNATPreRoutingDNAT] but uses TPROXY
+// instead of REDIRECT/DNAT. Rules with serverNames or L7 ports are
+// skipped (they fall to per-port TPROXY dispatch for SNI/HTTP
+// filtering via Envoy).
+func addIPv6AllowCIDRTPROXY(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR,
+) {
+	buildCIDRTCPChains(conn, table, parentChain, cidrs,
+		"cidr_tproxy", nil,
+		tproxyToPort(unix.NFPROTO_IPV6, port16(config.CIDRCatchAllPort)),
+		tproxyIPv6Guard())
+}
+
+// buildCIDRTCPChains is the shared implementation for
+// [addCIDRNATRedirect], [addCIDRNATPreRoutingDNAT], and
+// [addIPv6AllowCIDRTPROXY]. It creates per-rule CIDR chains with
+// except RETURNs and terminal expressions (redirect, DNAT, or
+// TPROXY). The rulePrefix expressions are prepended to each rule
+// inside the chain. The jumpGuard expressions are prepended to the
+// jump rule on the parent chain (nil for an unconditional jump).
+func buildCIDRTCPChains(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR,
+	chainPrefix string, rulePrefix []expr.Any,
+	terminal, jumpGuard []expr.Any,
+) {
+	groups := groupCIDRsByRule(cidrs)
+
+	for i, group := range groups {
+		if !slices.ContainsFunc(group, cidrNeedsTCPRedirect) {
+			continue
+		}
+
+		chainName := fmt.Sprintf("%s_%d", chainPrefix, i)
+		chain := conn.AddChain(&nftables.Chain{
+			Name:  chainName,
+			Table: table,
+		})
+
+		// Except RETURNs: excepted subnets skip this rule's
+		// terminal action.
+		for _, rule := range group {
+			if !cidrNeedsTCPRedirect(rule) {
+				continue
+			}
+
+			for _, exc := range rule.Except {
+				_, excNet, err := net.ParseCIDR(exc)
+				if err != nil {
+					continue
+				}
+
+				emitCIDRTCPRules(conn, table, chain, rule, rulePrefix, excNet, verdictExprs(expr.VerdictReturn))
+			}
+		}
+
+		// CIDR terminal: apply the action to matching TCP.
+		for _, rule := range group {
+			if !cidrNeedsTCPRedirect(rule) {
+				continue
+			}
+
+			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
+			if err != nil {
+				continue
+			}
+
+			emitCIDRTCPRules(conn, table, chain, rule, rulePrefix, cidrNet, terminal)
+		}
+
+		// Jump from parent chain.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: parentChain,
+			Exprs: flatExprs(
+				jumpGuard,
+				verdictExprs(expr.VerdictJump, chainName),
+			),
+		})
+	}
+}
+
+// addForwardChain creates a FORWARD chain for VM mode that
+// policy-evaluates forwarded traffic. The chain handles established
+// connections, ICMP RELATED, and jumps to the terrarium_output chain
+// for new connection policy evaluation. Traffic not accepted by policy
+// is dropped.
+func addForwardChain(conn Conn, table *nftables.Table, terrariumChain *nftables.Chain) {
+	policy := nftables.ChainPolicyDrop
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "forward",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookForward,
+		Priority: nftables.ChainPriorityFilter,
+		Policy:   &policy,
+	})
+
+	// CT state established/related -> ACCEPT.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchCtState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED),
+			verdictExprs(expr.VerdictAccept),
+		),
+	})
+
+	// Per-type ICMP RELATED rules (same pattern as addOutputEstablishedAndICMP).
+	for _, icmpType := range []byte{3, 11, 12} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV4),
+				matchL4Proto(unix.IPPROTO_ICMP),
+				matchICMPType(icmpType),
+				matchCtState(expr.CtStateBitRELATED),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
+
+	for _, icmpType := range []byte{1, 2, 3, 4} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV6),
+				matchL4Proto(unix.IPPROTO_ICMPV6),
+				matchICMPType(icmpType),
+				matchCtState(expr.CtStateBitRELATED),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
+
+	// Jump to terrarium_output for policy evaluation.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			verdictExprs(expr.VerdictJump, terrariumChain.Name),
+		),
+	})
+
+	// Terminal DROP via chain policy.
+}
+
+// addForwardChainUnrestricted creates a FORWARD chain for VM mode
+// unrestricted policy that accepts all forwarded traffic after
+// established/related checks.
+func addForwardChainUnrestricted(conn Conn, table *nftables.Table) {
+	policy := nftables.ChainPolicyDrop
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "forward",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookForward,
+		Priority: nftables.ChainPriorityFilter,
+		Policy:   &policy,
+	})
+
+	// CT state established/related -> ACCEPT.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchCtState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED),
+			verdictExprs(expr.VerdictAccept),
+		),
+	})
+
+	// Accept all forwarded traffic.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			verdictExprs(expr.VerdictAccept),
+		),
+	})
+}
+
+// addForwardChainBlocked creates a FORWARD chain for VM mode blocked
+// policy that drops all new forwarded traffic (only
+// established/related is accepted for connection draining).
+func addForwardChainBlocked(conn Conn, table *nftables.Table) {
+	policy := nftables.ChainPolicyDrop
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     "forward",
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookForward,
+		Priority: nftables.ChainPriorityFilter,
+		Policy:   &policy,
+	})
+
+	// CT state established/related -> ACCEPT.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchCtState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED),
+			verdictExprs(expr.VerdictAccept),
+		),
+	})
+
+	// Terminal DROP via chain policy.
 }
 
 // groupCIDRsByRule groups resolved CIDRs by their RuleIndex,

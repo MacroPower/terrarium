@@ -94,7 +94,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	if os.IsNotExist(err) {
 		slog.InfoContext(ctx, "generating firewall configs")
 
-		cfg, err = Generate(ctx, usr)
+		cfg, err = Generate(ctx, usr, uids.VMMode)
 		if err != nil {
 			return nil, fmt.Errorf("generating configs: %w", err)
 		}
@@ -119,6 +119,17 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		err := installCA(ctx, caCertPath)
 		if err != nil {
 			return nil, err
+		}
+
+		// VM mode: copy CA to a well-known path so containerd and
+		// containers can be configured to trust it. Containerd
+		// registry access requires hosts.toml to reference this path;
+		// application containers need it volume-mounted or built in.
+		if uids.VMMode {
+			err = copyFile(caCertPath, "/etc/terrarium/ca.pem")
+			if err != nil {
+				return nil, fmt.Errorf("copying CA for container trust: %w", err)
+			}
 		}
 	}
 
@@ -190,6 +201,15 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		}
 	}
 
+	// VM mode: enable route_localnet for DNAT to 127.0.0.1 on
+	// non-loopback interfaces (forwarded container traffic).
+	if uids.VMMode {
+		err := firewall.SetupForwardRouting(sys)
+		if err != nil {
+			return nil, fmt.Errorf("setting up forward routing: %w", err)
+		}
+	}
+
 	// Create a separate nftables connection for the DNS proxy to
 	// avoid batching conflicts with rule setup.
 	dnsConn, err := nftables.New()
@@ -198,10 +218,18 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	}
 
 	// Start DNS proxy with nftables set update function.
-	dnsProxy, err := dnsproxy.Start(ctx, cfg, net.JoinHostPort(upstream, "53"), "127.0.0.1:53", ipv6Disabled,
+	dnsOpts := []dnsproxy.Option{
 		dnsproxy.WithFQDNSetFunc(func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			return firewall.UpdateFQDNSet(dnsConn, setName, ips, ttl)
 		}),
+	}
+
+	if uids.VMMode {
+		dnsOpts = append(dnsOpts, dnsproxy.WithVMMode())
+	}
+
+	dnsProxy, err := dnsproxy.Start(ctx, cfg, net.JoinHostPort(upstream, "53"), "127.0.0.1:53", ipv6Disabled,
+		dnsOpts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("starting DNS proxy: %w", err)
