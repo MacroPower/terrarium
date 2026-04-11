@@ -144,17 +144,33 @@ func Start(
 	switch {
 	case cfg == nil || cfg.IsEgressUnrestricted():
 		p.filterMode = modeForwardAll
+
+		slog.InfoContext(ctx, "dns proxy mode: forward-all (unrestricted)")
+
 	case cfg.IsEgressBlocked():
 		p.filterMode = modeRefuseAll
+
+		slog.InfoContext(ctx, "dns proxy mode: refuse-all (blocked)")
+
 	default:
 		domains := CollectDomains(cfg)
-		if slices.ContainsFunc(domains, func(d Domain) bool {
+
+		slog.InfoContext(ctx, "dns proxy collected domains",
+			slog.Int("count", len(domains)),
+			slog.Any("domains", domains),
+		)
+
+		if len(domains) == 0 || slices.ContainsFunc(domains, func(d Domain) bool {
 			return d.Name == "*"
 		}) {
 			p.filterMode = modeForwardAll
+
+			slog.InfoContext(ctx, "dns proxy mode: forward-all (no domains or bare wildcard)")
 		} else {
 			p.filterMode = modeAllowlist
 			p.domains = domains
+
+			slog.InfoContext(ctx, "dns proxy mode: allowlist")
 		}
 	}
 
@@ -642,13 +658,20 @@ func newLogger(w io.Writer, format string) *slog.Logger {
 	return slog.New(handler)
 }
 
-// setIPv6Transparent sets IPV6_TRANSPARENT on an IPv6 socket so it
-// can accept TPROXY'd packets with non-local destination addresses.
+// setIPv6Transparent sets IPV6_TRANSPARENT and IPV6_V6ONLY on an IPv6
+// socket so it can accept TPROXY'd packets with non-local destination
+// addresses. IPV6_V6ONLY prevents the dual-stack socket from also
+// binding IPv4, which would conflict with the separate IPv4 listener.
 // Used as a [net.ListenConfig.Control] function in VM mode.
 func setIPv6Transparent(_, _ string, c syscall.RawConn) error {
 	var optErr error
 
 	controlErr := c.Control(func(fd uintptr) {
+		optErr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_V6ONLY, 1)
+		if optErr != nil {
+			return
+		}
+
 		optErr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
 	})
 	if controlErr != nil {
@@ -656,7 +679,7 @@ func setIPv6Transparent(_, _ string, c syscall.RawConn) error {
 	}
 
 	if optErr != nil {
-		return fmt.Errorf("setting IPV6_TRANSPARENT: %w", optErr)
+		return fmt.Errorf("setting IPv6 socket options: %w", optErr)
 	}
 
 	return nil

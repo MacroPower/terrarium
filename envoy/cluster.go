@@ -124,11 +124,17 @@ func BuildClusters(
 			clusterType = "STATIC"
 		}
 
+		dnsFamily := "V4_ONLY"
+		if clusterType == "STATIC" {
+			dnsFamily = ""
+		}
+
 		clusters = append(clusters, cluster{
-			Name:           name,
-			ConnectTimeout: "5s",
-			Type:           clusterType,
-			LBPolicy:       "ROUND_ROBIN",
+			Name:            name,
+			ConnectTimeout:  "5s",
+			Type:            clusterType,
+			LBPolicy:        "ROUND_ROBIN",
+			DNSLookupFamily: dnsFamily,
 			LoadAssignment: &loadAssignment{
 				ClusterName: name,
 				Endpoints: []endpoint{{

@@ -5,7 +5,7 @@
   ...
 }:
 {
-  environment.systemPackages = [ terrarium ];
+  environment.systemPackages = [ terrarium pkgs.envoy-bin pkgs.nginx pkgs.socat pkgs.openssl pkgs.curl ];
 
   # Boot-time deny-all firewall. This table loads before terrarium
   # starts and blocks all non-loopback traffic. Terrarium replaces it
@@ -49,8 +49,8 @@
   # Terrarium VM-wide network filter daemon.
   systemd.services.terrarium = {
     description = "Terrarium VM-wide network filter daemon";
-    after = [ "network-online.target" "nftables.service" ];
-    wants = [ "network-online.target" ];
+    after = [ "network-online.target" "nftables.service" "dnsmasq.service" ];
+    wants = [ "network-online.target" "dnsmasq.service" ];
     wantedBy = [ "multi-user.target" ];
     environment = {
       # Terrarium resolves default paths from XDG and HOME. Point
@@ -61,8 +61,17 @@
       XDG_STATE_HOME = "/var/lib/terrarium";
     };
 
+    path = [ pkgs.envoy-bin ];
+
     serviceConfig = {
       Type = "notify";
+      # Seed the mutable config from the NixOS-managed default if it
+      # does not already exist. Tests overwrite this file at runtime.
+      ExecStartPre = pkgs.writeShellScript "terrarium-seed-config" ''
+        if [ ! -f /var/lib/terrarium/config.yaml ]; then
+          cp /etc/terrarium/config.yaml /var/lib/terrarium/config.yaml
+        fi
+      '';
       ExecStart = "${terrarium}/bin/terrarium daemon --config=\${TERRARIUM_CONFIG}";
       EnvironmentFile = "/etc/environment";
       StateDirectory = "terrarium";
@@ -135,5 +144,30 @@
   # installCA, which copies the MITM CA cert here at runtime.
   systemd.tmpfiles.rules = [
     "d /usr/local/share/ca-certificates 0755 root root -"
+    "f /etc/dnsmasq-hosts 0644 root root -"
   ];
+
+  # Local DNS forwarder for e2e tests. Listens on a separate loopback
+  # address (127.0.0.53) to avoid conflicting with terrarium's DNS
+  # proxy on 127.0.0.1:53. The test driver writes hostname entries to
+  # /etc/dnsmasq-hosts and reloads dnsmasq before restarting terrarium.
+  # The Lima DHCP gateway IP (192.168.5.3) varies by network mode.
+  services.dnsmasq = {
+    enable = true;
+    settings = {
+      listen-address = "127.0.0.53";
+      bind-interfaces = true;
+      server = [ "192.168.5.3" ];
+      addn-hosts = "/etc/dnsmasq-hosts";
+    };
+  };
+
+  # Point resolv.conf at dnsmasq. When the terrarium daemon starts, it
+  # reads /etc/resolv.conf and captures 127.0.0.53 as its upstream DNS,
+  # then starts its own proxy on 127.0.0.1:53. No port conflict.
+  networking.nameservers = lib.mkForce [ "127.0.0.53" ];
+
+  # Install the e2e test CA into the system trust store so Envoy's MITM
+  # DFP cluster validates upstream TLS connections signed by this CA.
+  security.pki.certificateFiles = [ ./test-ca.pem ];
 }

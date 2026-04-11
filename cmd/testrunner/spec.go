@@ -10,6 +10,8 @@ type spec struct {
 	RootAssertions  []assertion `json:"rootAssertions"`
 	LoopbackPort    int         `json:"loopbackPort,omitempty"`
 	ValidateEnvoy   bool        `json:"validateEnvoy"`
+	DaemonMode      bool        `json:"daemonMode,omitempty"`
+	SkipDaemonCheck bool        `json:"skipDaemonCheck,omitempty"`
 }
 
 // assertion defines a single test assertion to execute inside the

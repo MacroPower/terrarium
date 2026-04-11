@@ -19,14 +19,23 @@ const (
 	dualStackAddr = "::"
 )
 
-// listenAddr returns the bind address for a listener based on the
-// transparent flag.
-func listenAddr(transparent bool) string {
+// listenSocketAddr returns the socket address for a listener based on
+// the transparent flag. When transparent is true, the address binds to
+// dual-stack [::] with ipv4_compat enabled so envoy accepts both IPv4
+// and IPv6 connections on a single socket.
+func listenSocketAddr(transparent bool, port int) socketAddress {
 	if transparent {
-		return dualStackAddr
+		return socketAddress{
+			Address:    dualStackAddr,
+			PortValue:  port,
+			Ipv4Compat: true,
+		}
 	}
 
-	return loopbackAddr
+	return socketAddress{
+		Address:   loopbackAddr,
+		PortValue: port,
+	}
 }
 
 // BuildTLSListener creates a TLS listener that matches connections by
@@ -125,10 +134,8 @@ func BuildTLSListener(
 	defaultChain := buildDefaultRejectFilterChain(statPrefix)
 
 	return Listener{
-		Name: name,
-		Address: address{SocketAddress: socketAddress{
-			Address: listenAddr(transparent), PortValue: listenPort,
-		}},
+		Name:               name,
+		Address:            address{SocketAddress: listenSocketAddr(transparent, listenPort)},
 		Transparent:        transparent,
 		DefaultFilterChain: &defaultChain,
 		ListenerFilters: []NamedTyped{{
@@ -200,10 +207,8 @@ func BuildHTTPForwardListener(
 	}
 
 	return Listener{
-		Name: "http_forward",
-		Address: address{SocketAddress: socketAddress{
-			Address: listenAddr(transparent), PortValue: 15080,
-		}},
+		Name:        "http_forward",
+		Address:     address{SocketAddress: listenSocketAddr(transparent, 15080)},
 		Transparent: transparent,
 		FilterChains: []filterChain{{
 			Filters: []filter{{
@@ -242,10 +247,8 @@ func BuildTCPForwardListener(
 	transparent bool,
 ) Listener {
 	return Listener{
-		Name: name,
-		Address: address{SocketAddress: socketAddress{
-			Address: listenAddr(transparent), PortValue: listenPort,
-		}},
+		Name:        name,
+		Address:     address{SocketAddress: listenSocketAddr(transparent, listenPort)},
 		Transparent: transparent,
 		FilterChains: []filterChain{{
 			Filters: []filter{{
@@ -282,10 +285,8 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, 
 	}
 
 	return Listener{
-		Name: "catch_all_tcp",
-		Address: address{SocketAddress: socketAddress{
-			Address: listenAddr(transparent), PortValue: listenPort,
-		}},
+		Name:        "catch_all_tcp",
+		Address:     address{SocketAddress: listenSocketAddr(transparent, listenPort)},
 		Transparent: transparent,
 		ListenerFilters: []NamedTyped{{
 			Name: "envoy.filters.listener.original_dst",
@@ -318,10 +319,8 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, 
 // IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
 func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog, transparent bool) Listener {
 	return Listener{
-		Name: "cidr_catch_all",
-		Address: address{SocketAddress: socketAddress{
-			Address: listenAddr(transparent), PortValue: listenPort,
-		}},
+		Name:        "cidr_catch_all",
+		Address:     address{SocketAddress: listenSocketAddr(transparent, listenPort)},
 		Transparent: transparent,
 		ListenerFilters: []NamedTyped{
 			{
@@ -361,18 +360,20 @@ func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog, transparen
 func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []AccessLog, transparent bool) Listener {
 	// UDP listener is always transparent. In VM mode, bind to [::] for
 	// dual-stack TPROXY; otherwise bind to 0.0.0.0.
-	udpAddr := "0.0.0.0"
+	udpSockAddr := socketAddress{
+		Address:   "0.0.0.0",
+		Protocol:  "UDP",
+		PortValue: port,
+	}
+
 	if transparent {
-		udpAddr = dualStackAddr
+		udpSockAddr.Address = dualStackAddr
+		udpSockAddr.Ipv4Compat = true
 	}
 
 	return Listener{
-		Name: "catch_all_udp",
-		Address: address{SocketAddress: socketAddress{
-			Address:   udpAddr,
-			Protocol:  "UDP",
-			PortValue: port,
-		}},
+		Name:        "catch_all_udp",
+		Address:     address{SocketAddress: udpSockAddr},
 		Transparent: true,
 		UDPListenerConfig: &udpListenerConfig{
 			DownstreamSocketConfig: downstreamSocketConfig{

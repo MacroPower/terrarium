@@ -23,4 +23,4 @@ memory: 2GiB
 disk: 20GiB
 
 env:
-  TERRARIUM_CONFIG: "/etc/terrarium/config.yaml"
+  TERRARIUM_CONFIG: "/var/lib/terrarium/config.yaml"

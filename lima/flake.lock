@@ -93,31 +93,24 @@
         "type": "github"
       }
     },
-    "nur-packages": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1775577718,
-        "narHash": "sha256-rcMuUP4YFEyTnGw3IKQtuGlh1UfDLLLn/jLMe+MEhCM=",
-        "ref": "refs/heads/main",
-        "rev": "a2d1356929e44a6fda6cd7a50b99d11f124274a9",
-        "revCount": 53,
-        "type": "git",
-        "url": "https://nur.jacobcolvin.com"
-      },
-      "original": {
-        "type": "git",
-        "url": "https://nur.jacobcolvin.com"
-      }
-    },
     "root": {
       "inputs": {
         "nixos-lima": "nixos-lima",
         "nixpkgs": "nixpkgs",
-        "nur-packages": "nur-packages"
+        "source": "source"
+      }
+    },
+    "source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 0,
+        "narHash": "sha256-N08fcbkE08JP4ZIRcoSXtWAqZX2COObYyvoMOgHnEP0=",
+        "path": "..",
+        "type": "path"
+      },
+      "original": {
+        "path": "..",
+        "type": "path"
       }
     },
     "systems": {

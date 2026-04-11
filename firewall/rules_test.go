@@ -929,36 +929,16 @@ func TestApplyRules_MangleChains_Filtered(t *testing.T) {
 	assert.Contains(t, names, "mangle_prerouting")
 	assert.Contains(t, names, "postrouting_guard")
 
-	// Filtered mode: loopback accept in output should exclude
-	// TPROXY-marked packets (fwmark != 0x1).
+	// Filtered mode: no blanket oifname "lo" accept. Traffic to
+	// non-loopback IPs on lo must reach policy evaluation so deny
+	// rules can fire. Only 127.0.0.0/8 and ::1 are accepted.
 	outputRules := rec.rulesForChain("output")
 	require.NotEmpty(t, outputRules)
 
-	// First rule should be the loopback accept with mark exclusion.
+	// First rule should be the 127.0.0.0/8 CIDR accept (no oifname).
 	firstRule := outputRules[0]
-	assert.True(t, ruleHasMetaKey(firstRule, expr.MetaKeyOIFNAME),
-		"first output rule should match oifname")
-	assert.True(t, ruleHasMark(firstRule),
-		"first output rule should check fwmark (mark exclusion)")
-
-	// Verify the mark comparison is CmpOpNeq with value 0x1.
-	var foundMarkNeq bool
-
-	for _, e := range firstRule.Exprs {
-		c, ok := e.(*expr.Cmp)
-		if !ok || c.Op != expr.CmpOpNeq {
-			continue
-		}
-
-		// The mark value 0x1 in native endian (4 bytes).
-		markVal := binaryutil.NativeEndian.PutUint32(0x1)
-		if assert.ObjectsAreEqual(markVal, c.Data) {
-			foundMarkNeq = true
-		}
-	}
-
-	assert.True(t, foundMarkNeq,
-		"loopback accept must exclude fwmark 0x1 via CmpOpNeq")
+	assert.False(t, ruleHasMetaKey(firstRule, expr.MetaKeyOIFNAME),
+		"filtered mode should not have oifname lo accept")
 }
 
 func TestApplyRules_MangleChains_Blocked(t *testing.T) {

@@ -51,5 +51,9 @@ func main() {
 		os.Exit(runChild(s, *resultsPath))
 	}
 
+	if s.DaemonMode {
+		os.Exit(runDaemon(s))
+	}
+
 	os.Exit(run(s))
 }

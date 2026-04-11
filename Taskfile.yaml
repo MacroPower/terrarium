@@ -142,8 +142,12 @@ tasks:
       ARCH:
         sh: limactl shell terrarium -- uname -m
     cmds:
-      - "limactl cp -r {{.ROOT_DIR}}/lima terrarium:/tmp/lima-flake"
-      - limactl shell terrarium -- sudo nixos-rebuild switch --no-update-lock-file --flake /tmp/lima-flake#terrarium-{{.ARCH}}
+      - limactl shell terrarium -- sudo rm -rf /tmp/lima-source
+      - limactl shell terrarium -- sudo mkdir -p /tmp/lima-source
+      - git archive HEAD | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
+      - git diff --name-only HEAD | tar cf - -T - | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
+      - git ls-files --others --exclude-standard | tar cf - -T - | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
+      - limactl shell terrarium -- sudo nixos-rebuild switch --no-update-lock-file --override-input source path:/tmp/lima-source --flake /tmp/lima-source/lima#terrarium-{{.ARCH}}
 
   lima:logs:
     desc: Tails provisioning logs from the Lima VM (run alongside lima:create)
@@ -151,6 +155,16 @@ tasks:
       - |
         until limactl shell terrarium -- true 2>/dev/null; do sleep 2; done
         limactl shell terrarium -- journalctl -f -u lima-init --output=cat
+
+  lima:test:
+    desc: Runs Lima VM e2e tests
+    cmds:
+      - go run ./cmd/testrunner-lima --vm-name=terrarium
+
+  lima:test:single:
+    desc: Runs a single Lima VM e2e test by name
+    cmds:
+      - go run ./cmd/testrunner-lima --vm-name=terrarium --test={{.TEST}}
 
   lima:destroy:
     desc: Stops and deletes the Terrarium Lima VM

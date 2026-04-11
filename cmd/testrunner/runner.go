@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -83,7 +84,7 @@ func run(s spec) int {
 		terrariumDone <- terrarium.Wait()
 	}()
 
-	// Step 4: Poll for ready file, watching for early terrarium exit.
+	// Step 5: Poll for ready file, watching for early terrarium exit.
 	err = waitReady(terrariumDone)
 	if err != nil {
 		fmt.Printf("Infrastructure error: %v\n", err)
@@ -96,37 +97,17 @@ func run(s spec) int {
 		return 2
 	}
 
-	// Step 5: Run root assertions (as root, direct execution).
-	var results []result
+	// Step 6: Run all assertions (root + user).
+	results, err := runAllAssertions(s)
+	if err != nil {
+		fmt.Printf("Infrastructure error: running child assertions: %v\n", err)
 
-	if len(s.RootAssertions) > 0 {
-		fmt.Printf("\nRunning %d root assertions...\n", len(s.RootAssertions))
-
-		for i := range s.RootAssertions {
-			r := runAssertion(s.RootAssertions[i])
-			printResult(r)
-
-			results = append(results, r)
-		}
-	}
-
-	// Step 6: Run user assertions as UID 1000.
-	if len(s.Assertions) > 0 {
-		fmt.Printf("\nRunning %d user assertions (UID 1000)...\n", len(s.Assertions))
-
-		childResults, err := runAsChild(s.Assertions)
-		if err != nil {
-			fmt.Printf("Infrastructure error: running child assertions: %v\n", err)
-
-			sigErr := terrarium.Process.Signal(syscall.SIGTERM)
-			if sigErr != nil {
-				slog.Debug("signaling terrarium", slog.Any("err", sigErr))
-			}
-
-			return 2
+		sigErr := terrarium.Process.Signal(syscall.SIGTERM)
+		if sigErr != nil {
+			slog.Debug("signaling terrarium", slog.Any("err", sigErr))
 		}
 
-		results = append(results, childResults...)
+		return 2
 	}
 
 	// Step 7: Print summary and clean up. Wait for terrarium to exit
@@ -142,27 +123,53 @@ func run(s spec) int {
 		slog.Debug("terrarium did not exit within 10s after SIGTERM")
 	}
 
-	passed := 0
-
-	failed := 0
-	for _, r := range results {
-		if r.Status == statusPass {
-			passed++
-		} else {
-			failed++
-		}
-	}
-
-	fmt.Printf("\nResults: %d passed, %d failed\n", passed, failed)
-
-	if failed > 0 {
-		return 1
-	}
-
-	return 0
+	return summarizeResults(results)
 }
 
-// validateEnvoy generates an Envoy config and validates it.
+// runDaemon executes assertions against an already-running terrarium
+// daemon. It skips terrarium init startup, ready-file polling, extra
+// CA installation, and loopback listener setup. The daemon lifecycle
+// is managed externally (e.g., systemd), so no SIGTERM cleanup is
+// performed. Returns exit code 0 for all-pass, 1 for assertion
+// failures, and 2 for infrastructure errors.
+func runDaemon(s spec) int {
+	if !s.SkipDaemonCheck {
+		// Verify the daemon is active.
+		out, err := exec.CommandContext(
+			context.Background(), "systemctl", "is-active", "terrarium",
+		).Output()
+		if err != nil {
+			fmt.Printf(
+				"Infrastructure error: terrarium daemon not active: %v (output: %s)\n",
+				err,
+				strings.TrimSpace(string(out)),
+			)
+
+			return 2
+		}
+
+		status := strings.TrimSpace(string(out))
+		if status != "active" {
+			fmt.Printf("Infrastructure error: terrarium daemon status: %s\n", status)
+			return 2
+		}
+
+		fmt.Println("Terrarium daemon is active.")
+	}
+
+	results, err := runAllAssertions(s)
+	if err != nil {
+		fmt.Printf("Infrastructure error: running child assertions: %v\n", err)
+		return 2
+	}
+
+	return summarizeResults(results)
+}
+
+// validateEnvoy generates an Envoy bootstrap config from the terrarium
+// config at configPath, then runs envoy --mode=validate against it.
+// A temporary access log file is created so Envoy can open the path
+// referenced in the generated config.
 func validateEnvoy(configPath string) error {
 	ctx := context.Background()
 
@@ -351,8 +358,9 @@ func runChild(s spec, resultsPath string) int {
 	return 0
 }
 
-// startLoopbackListener starts a simple HTTP server on localhost at the
-// given port. Used by the loopback deny-all test.
+// startLoopbackListener starts an HTTP server on localhost at the given
+// port that responds with "LOOPBACK_OK" to all requests. It blocks until
+// the listener is ready or 10 seconds elapse.
 func startLoopbackListener(port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
@@ -440,6 +448,59 @@ func installExtraCACert(path string) error {
 	}
 
 	return nil
+}
+
+// runAllAssertions executes root assertions directly and user assertions
+// via a UID-switched child process, returning the combined results.
+func runAllAssertions(s spec) ([]result, error) {
+	var results []result
+
+	if len(s.RootAssertions) > 0 {
+		fmt.Printf("\nRunning %d root assertions...\n", len(s.RootAssertions))
+
+		for i := range s.RootAssertions {
+			r := runAssertion(s.RootAssertions[i])
+			printResult(r)
+
+			results = append(results, r)
+		}
+	}
+
+	if len(s.Assertions) > 0 {
+		fmt.Printf("\nRunning %d user assertions (UID 1000)...\n", len(s.Assertions))
+
+		childResults, err := runAsChild(s.Assertions)
+		if err != nil {
+			return nil, fmt.Errorf("running child assertions: %w", err)
+		}
+
+		results = append(results, childResults...)
+	}
+
+	return results, nil
+}
+
+// summarizeResults prints a pass/fail summary and returns exit code 0
+// for all-pass or 1 if any assertion failed.
+func summarizeResults(results []result) int {
+	passed := 0
+	failed := 0
+
+	for _, r := range results {
+		if r.Status == statusPass {
+			passed++
+		} else {
+			failed++
+		}
+	}
+
+	fmt.Printf("\nResults: %d passed, %d failed\n", passed, failed)
+
+	if failed > 0 {
+		return 1
+	}
+
+	return 0
 }
 
 // printResult prints a single assertion result to stdout.

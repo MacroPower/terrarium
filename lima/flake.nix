@@ -9,9 +9,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    nur-packages = {
-      url = "git+https://nur.jacobcolvin.com";
-      inputs.nixpkgs.follows = "nixpkgs";
+    source = {
+      url = "path:..";
+      flake = false;
     };
   };
 
@@ -19,18 +19,40 @@
     {
       nixpkgs,
       nixos-lima,
-      nur-packages,
+      source,
       ...
     }@inputs:
     let
+      lib = nixpkgs.lib;
+
+      mkTerrarium = pkgs:
+        pkgs.buildGoModule {
+          pname = "terrarium";
+          version = "dev";
+          src = lib.cleanSource source;
+          vendorHash = "sha256-MJNyu4NtDsDKbcUfi6PbRe4qHRHlxtnBMUNP/NBAf3M=";
+          env.CGO_ENABLED = 0;
+          subPackages = [ "cmd/terrarium" ];
+          ldflags = [
+            "-s"
+            "-w"
+            "-X go.jacobcolvin.com/x/version.Version=dev"
+          ];
+          flags = [ "-trimpath" ];
+        };
+
       modules = [
         "${nixos-lima}/lima.nix"
         ./configuration.nix
       ];
 
-      mkArgs = system: {
-        terrarium = nur-packages.packages.${system}.terrarium;
-      };
+      mkArgs = system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
+          terrarium = mkTerrarium pkgs;
+        };
 
       mkSystem =
         system:

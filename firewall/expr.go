@@ -292,19 +292,11 @@ func markPacket(mark uint32) []expr.Any {
 
 // matchMark matches packets with the given fwmark value.
 //
-//nolint:unparam // mark is parameterized for symmetry with markPacket/matchNotMark.
+//nolint:unparam // mark is parameterized for symmetry with markPacket.
 func matchMark(mark uint32) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
-	}
-}
-
-// matchNotMark matches packets whose fwmark is not the given value.
-func matchNotMark(mark uint32) []expr.Any {
-	return []expr.Any{
-		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
 	}
 }
 

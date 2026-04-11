@@ -69,6 +69,14 @@ func runAssertion(a assertion) result {
 		return assertPingAllowed(a)
 	case "ping_denied":
 		return assertPingDenied(a)
+	case "nft_table_exists":
+		return assertNftTableExists(a)
+	case "nft_table_absent":
+		return assertNftTableAbsent(a)
+	case "systemctl_active":
+		return assertSystemctlActive(a)
+	case "multi_uid_denied":
+		return assertMultiUIDDenied(a)
 	default:
 		return result{
 			Status: statusFail, Desc: a.Desc,
@@ -95,10 +103,13 @@ func httpClient() *http.Client {
 	}
 }
 
+// newRequest creates an [*http.Request] with a background context and
+// no body.
 func newRequest(method, url string) (*http.Request, error) {
 	return http.NewRequestWithContext(context.Background(), method, url, http.NoBody)
 }
 
+// dialUDP dials a UDP address with the given timeout.
 func dialUDP(ctx context.Context, addr string, timeout time.Duration) (net.Conn, error) {
 	dialer := net.Dialer{Timeout: timeout}
 	return dialer.DialContext(ctx, "udp", addr)
@@ -129,6 +140,8 @@ func withRetries(desc string, fn func() result) result {
 	return r
 }
 
+// assertHTTPAllowed verifies that an HTTP GET to the URL succeeds with
+// a 2xx or 3xx status code.
 func assertHTTPAllowed(a assertion) result {
 	return withRetries(a.Desc, func() result {
 		req, err := newRequest(http.MethodGet, a.URL)
@@ -159,6 +172,10 @@ func assertHTTPAllowed(a assertion) result {
 	})
 }
 
+// assertHTTPDenied verifies that an HTTP GET to the URL is blocked.
+// Connection errors, TLS errors, HTTP 403, and HTTP 404 all count as
+// denied. DNS resolution failures are treated as infrastructure errors
+// since the test expects network-level denial, not DNS failure.
 func assertHTTPDenied(a assertion) result {
 	client := httpClient()
 
@@ -213,6 +230,9 @@ func assertHTTPDenied(a assertion) result {
 	}
 }
 
+// assertNetworkDenied verifies that the URL is unreachable at the
+// network level. Any connection error, HTTP 403, or HTTP 404 counts
+// as denied.
 func assertNetworkDenied(a assertion) result {
 	client := httpClient()
 
@@ -247,6 +267,8 @@ func assertNetworkDenied(a assertion) result {
 	}
 }
 
+// assertL7Allowed verifies that an HTTP request returns 2xx and
+// optionally contains the expected body substring.
 func assertL7Allowed(a assertion) result {
 	method := a.Method
 	if method == "" {
@@ -296,6 +318,8 @@ func assertL7Allowed(a assertion) result {
 	})
 }
 
+// assertL7Denied verifies that an HTTP request is rejected with
+// HTTP 403 by Envoy's RBAC filter.
 func assertL7Denied(a assertion) result {
 	method := a.Method
 	if method == "" {
@@ -329,6 +353,8 @@ func assertL7Denied(a assertion) result {
 	}
 }
 
+// assertL7BodyWithHeader verifies that an HTTP request with a custom
+// header returns 2xx and optionally contains the expected body substring.
 func assertL7BodyWithHeader(a assertion) result {
 	method := a.Method
 	if method == "" {
@@ -389,6 +415,8 @@ func assertL7BodyWithHeader(a assertion) result {
 	})
 }
 
+// assertL7DeniedWithHeader verifies that an HTTP request with a custom
+// header is rejected with HTTP 403 or 404.
 func assertL7DeniedWithHeader(a assertion) result {
 	method := a.Method
 	if method == "" {
@@ -441,6 +469,9 @@ func assertL7DeniedWithHeader(a assertion) result {
 	}
 }
 
+// assertHTTPSPassthrough verifies that an HTTPS request reaches the
+// origin server without MITM interception, optionally checking the
+// response body for an expected substring.
 func assertHTTPSPassthrough(a assertion) result {
 	return withRetries(a.Desc, func() result {
 		req, err := newRequest(http.MethodGet, a.URL)
@@ -476,6 +507,8 @@ func assertHTTPSPassthrough(a assertion) result {
 	})
 }
 
+// assertUDPAllowed verifies that a UDP datagram can be sent and a
+// response containing the expected string is received.
 func assertUDPAllowed(a assertion) result {
 	return withRetries(a.Desc, func() result {
 		addr := net.JoinHostPort(a.Host, fmt.Sprintf("%d", a.Port))
@@ -522,6 +555,8 @@ func assertUDPAllowed(a assertion) result {
 	})
 }
 
+// assertUDPDenied verifies that a UDP datagram receives no response
+// within the deny timeout, indicating the traffic was dropped.
 func assertUDPDenied(a assertion) result {
 	addr := net.JoinHostPort(a.Host, fmt.Sprintf("%d", a.Port))
 
@@ -567,6 +602,9 @@ func assertUDPDenied(a assertion) result {
 	}
 }
 
+// assertUDPSend sends a UDP datagram without waiting for a response.
+// Used for tests that only need to verify the datagram was sent (e.g.,
+// checking access logs).
 func assertUDPSend(a assertion) result {
 	addr := net.JoinHostPort(a.Host, fmt.Sprintf("%d", a.Port))
 
@@ -593,6 +631,8 @@ func assertUDPSend(a assertion) result {
 	return result{Status: statusPass, Desc: a.Desc}
 }
 
+// assertTCPForward verifies that a TCP connection to the given address
+// receives a response containing the expected string.
 func assertTCPForward(a assertion) result {
 	return withRetries(a.Desc, func() result {
 		dialer := net.Dialer{Timeout: dialTimeout}
@@ -640,6 +680,8 @@ func assertTCPForward(a assertion) result {
 	})
 }
 
+// assertDNSNoError verifies that a DNS A query for the domain returns
+// NOERROR with at least one answer record.
 func assertDNSNoError(a assertion) result {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(a.Domain), dns.TypeA)
@@ -691,6 +733,8 @@ func assertDNSForwarded(a assertion) result {
 	return result{Status: statusPass, Desc: a.Desc, Detail: fmt.Sprintf("rcode=%s", dns.RcodeToString[r.Rcode])}
 }
 
+// assertDNSRefused verifies that a DNS A query for the domain returns
+// REFUSED, indicating the DNS proxy rejected it.
 func assertDNSRefused(a assertion) result {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(a.Domain), dns.TypeA)
@@ -713,6 +757,9 @@ func assertDNSRefused(a assertion) result {
 	}
 }
 
+// assertFileGrep verifies that a file contains content matching the
+// given pattern. The pattern is tried as a regex first; if it fails
+// to compile, a substring match is used instead.
 func assertFileGrep(a assertion) result {
 	data, err := os.ReadFile(a.File)
 	if err != nil {
@@ -736,6 +783,9 @@ func assertFileGrep(a assertion) result {
 	return result{Status: statusFail, Desc: a.Desc, Detail: fmt.Sprintf("pattern not found in %s", string(data))}
 }
 
+// assertEnvoyUID verifies that the Envoy process is running under the
+// expected UID by scanning /proc for a process whose cmdline contains
+// "envoy".
 func assertEnvoyUID(a assertion) result {
 	// Read /proc to find envoy process and check its UID.
 	entries, err := os.ReadDir("/proc")
@@ -786,6 +836,8 @@ func assertEnvoyUID(a assertion) result {
 	return result{Status: statusFail, Desc: a.Desc, Detail: "no envoy process found"}
 }
 
+// assertPingAllowed verifies that ICMP ping to the host succeeds when
+// run as UID/GID 1000 via terrarium exec.
 func assertPingAllowed(a assertion) result {
 	return withRetries(a.Desc, func() result {
 		cmd := exec.CommandContext( //nolint:gosec // host from test spec
@@ -804,6 +856,8 @@ func assertPingAllowed(a assertion) result {
 	})
 }
 
+// assertPingDenied verifies that ICMP ping to the host fails when run
+// as UID/GID 1000 via terrarium exec.
 func assertPingDenied(a assertion) result {
 	cmd := exec.CommandContext( //nolint:gosec // host from test spec
 		context.Background(),
@@ -818,6 +872,107 @@ func assertPingDenied(a assertion) result {
 	}
 
 	return result{Status: statusFail, Desc: a.Desc, Detail: "ping succeeded unexpectedly"}
+}
+
+// assertNftTableExists verifies that an nftables table with the
+// expected name exists in the inet family.
+func assertNftTableExists(a assertion) result {
+	cmd := exec.CommandContext( //nolint:gosec // table name from test spec
+		context.Background(),
+		"nft", "list", "table", "inet", a.Expected,
+	)
+
+	err := cmd.Run()
+	if err != nil {
+		return result{
+			Status: statusFail,
+			Desc:   a.Desc,
+			Detail: fmt.Sprintf("nft list table inet %s: %v", a.Expected, err),
+		}
+	}
+
+	return result{Status: statusPass, Desc: a.Desc}
+}
+
+// assertNftTableAbsent verifies that an nftables table with the
+// expected name does not exist in the inet family.
+func assertNftTableAbsent(a assertion) result {
+	cmd := exec.CommandContext( //nolint:gosec // table name from test spec
+		context.Background(),
+		"nft", "list", "table", "inet", a.Expected,
+	)
+
+	err := cmd.Run()
+	if err != nil {
+		// Non-zero exit means the table does not exist -- pass.
+		return result{Status: statusPass, Desc: a.Desc}
+	}
+
+	return result{Status: statusFail, Desc: a.Desc, Detail: fmt.Sprintf("table inet %s still exists", a.Expected)}
+}
+
+// assertSystemctlActive verifies that a systemd unit is in "active"
+// state.
+func assertSystemctlActive(a assertion) result {
+	out, err := exec.CommandContext( //nolint:gosec // unit name from test spec
+		context.Background(),
+		"systemctl", "is-active", a.Expected,
+	).Output()
+	if err != nil {
+		return result{
+			Status: statusFail,
+			Desc:   a.Desc,
+			Detail: fmt.Sprintf("systemctl is-active %s: %v", a.Expected, err),
+		}
+	}
+
+	status := strings.TrimSpace(string(out))
+	if status == "active" {
+		return result{Status: statusPass, Desc: a.Desc}
+	}
+
+	return result{Status: statusFail, Desc: a.Desc, Detail: fmt.Sprintf("expected active, got %s", status)}
+}
+
+// assertMultiUIDDenied verifies that an HTTP request run as the given
+// UID via terrarium exec is denied. Connection failure, HTTP 403, or
+// HTTP 404 all count as denied.
+func assertMultiUIDDenied(a assertion) result {
+	uid := a.UID
+	if uid == "" {
+		uid = "1000"
+	}
+
+	cmd := exec.CommandContext( //nolint:gosec // uid and url from test spec
+		context.Background(),
+		"terrarium", "exec",
+		"--reuid="+uid, "--regid="+uid, "--clear-groups",
+		"--", "sh", "-c",
+		fmt.Sprintf(
+			`curl --max-time 5 --silent --output /dev/null --write-out "%%{http_code}" %s || echo "CONNFAIL"`,
+			a.URL,
+		),
+	)
+
+	out, err := cmd.Output()
+	if err != nil {
+		// Command failure means the request could not complete -- denied.
+		return result{Status: statusPass, Desc: a.Desc, Detail: fmt.Sprintf("exec error (denied): %v", err)}
+	}
+
+	output := strings.TrimSpace(string(out))
+
+	// Connection failure or HTTP 403/404 = denied. When curl fails,
+	// --write-out prints "000" and the || echo fallback appends
+	// "CONNFAIL", producing "000CONNFAIL".
+	if strings.Contains(output, "CONNFAIL") || output == "000" || output == "403" || output == "404" {
+		return result{Status: statusPass, Desc: a.Desc, Detail: fmt.Sprintf("UID %s denied (output: %s)", uid, output)}
+	}
+
+	return result{
+		Status: statusFail, Desc: a.Desc,
+		Detail: fmt.Sprintf("expected UID %s denied, got HTTP %s", uid, output),
+	}
 }
 
 // isTLSError checks if the error chain contains a TLS-related error.

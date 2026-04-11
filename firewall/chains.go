@@ -90,23 +90,24 @@ func addInputChain(conn Conn, table *nftables.Table, uids UIDs) {
 
 // addOutputBaseRules emits the initial OUTPUT rules that appear in all
 // three modes: loopback interface accept and loopback CIDR accept
-// (nfproto-scoped). When excludeMark is non-zero, the loopback OIF
-// accept rule is qualified with fwmark != excludeMark so that
-// TPROXY-marked packets fall through to security evaluation.
+// (nfproto-scoped). When excludeMark is non-zero (filtered mode),
+// the blanket oifname "lo" accept is omitted entirely. Traffic to
+// non-loopback IPs routed through lo (e.g., the VM's own address)
+// must reach policy evaluation so deny rules can fire. The CIDR
+// rules below still accept traffic to 127.0.0.0/8 and ::1.
 func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain, excludeMark uint32) {
-	// 1. Allow loopback interface (optionally excluding marked packets).
-	loExprs := matchOIFName("lo")
-	if excludeMark != 0 {
-		loExprs = flatExprs(loExprs, matchNotMark(excludeMark))
+	// 1. Allow loopback interface (unrestricted/blocked modes only).
+	// In filtered mode, skip this rule so traffic to non-loopback IPs
+	// on lo reaches the terrarium_output policy chain.
+	if excludeMark == 0 {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchOIFName("lo"),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
 	}
-
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			loExprs,
-			verdictExprs(expr.VerdictAccept),
-		),
-	})
 
 	// 2. Allow loopback CIDR (nfproto-scoped).
 	conn.AddRule(&nftables.Rule{

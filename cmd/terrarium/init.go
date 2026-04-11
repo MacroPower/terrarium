@@ -660,6 +660,7 @@ func startEnvoy(
 		"--log-level", cfg.EnvoyLogLevel(),
 		"--log-path", envoyLogPath,
 		"--concurrency", "2")
+	cmd.Stderr = os.Stderr
 
 	err = cmd.Start()
 	if err != nil {

@@ -26,9 +26,9 @@ type Listener struct {
 	DefaultFilterChain *filterChain       `yaml:"default_filter_chain,omitempty"`
 	UDPListenerConfig  *udpListenerConfig `yaml:"udp_listener_config,omitempty"`
 	Name               string             `yaml:"name"`
-	Address            address            `yaml:"address"`
 	ListenerFilters    []NamedTyped       `yaml:"listener_filters,omitempty"`
 	FilterChains       []filterChain      `yaml:"filter_chains,omitempty"`
+	Address            address            `yaml:"address"`
 	Transparent        bool               `yaml:"transparent,omitempty"`
 }
 
@@ -37,9 +37,10 @@ type address struct {
 }
 
 type socketAddress struct {
-	Address   string `yaml:"address"`
-	Protocol  string `yaml:"protocol,omitempty"`
-	PortValue int    `yaml:"port_value"`
+	Address    string `yaml:"address"`
+	Protocol   string `yaml:"protocol,omitempty"`
+	PortValue  int    `yaml:"port_value"`
+	Ipv4Compat bool   `yaml:"ipv4_compat,omitempty"`
 }
 
 // NamedTyped is a generic Envoy config element with a name and typed_config.
@@ -343,6 +344,7 @@ type cluster struct {
 	ConnectTimeout                string           `yaml:"connect_timeout"`
 	Type                          string           `yaml:"type,omitempty"`
 	LBPolicy                      string           `yaml:"lb_policy"`
+	DNSLookupFamily               string           `yaml:"dns_lookup_family,omitempty"`
 }
 
 type clusterType struct {
