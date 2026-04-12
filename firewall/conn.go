@@ -4,6 +4,12 @@ import "github.com/google/nftables"
 
 const tableName = "terrarium"
 
+// guardTableName is the separate nftables table that provides
+// deny-all egress when the daemon's table is absent (restart gaps,
+// crashes). Created externally by the host (e.g., NixOS
+// networking.nftables.tables) and never modified by the daemon.
+const guardTableName = "terrarium-guard"
+
 // UIDs holds the numeric user IDs that nftables rules use to
 // distinguish infrastructure traffic from policy-evaluated traffic.
 type UIDs struct {

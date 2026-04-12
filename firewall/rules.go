@@ -14,6 +14,25 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 )
 
+// CheckBootTables verifies that both boot-time nftables tables exist
+// before the daemon replaces them with policy rules. In VM mode, the
+// host is expected to create these tables at boot (e.g., via NixOS
+// networking.nftables.tables). If either table is missing, egress may
+// escape unfiltered during restart gaps. This is purely diagnostic:
+// warnings are logged but startup is not blocked.
+func CheckBootTables(ctx context.Context, conn *nftables.Conn) {
+	for _, name := range []string{tableName, guardTableName} {
+		_, err := conn.ListTableOfFamily(name, nftables.TableFamilyINet)
+		if err != nil {
+			slog.WarnContext(ctx,
+				"boot-time nftables table missing, host may be misconfigured",
+				slog.String("table", name),
+				slog.Any("err", err),
+			)
+		}
+	}
+}
+
 // ApplyRules deletes any existing terrarium table, builds the full
 // nftables ruleset (table, chains, sets, rules), and applies
 // atomically via Flush. A single inet-family table replaces all four

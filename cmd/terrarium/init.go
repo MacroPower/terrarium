@@ -156,6 +156,12 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		return nil, fmt.Errorf("creating nftables connection: %w", err)
 	}
 
+	// VM mode: verify boot-time tables exist before ApplyRules
+	// deletes and recreates the terrarium table.
+	if uids.VMMode {
+		firewall.CheckBootTables(ctx, conn)
+	}
+
 	slog.InfoContext(ctx, "applying nftables firewall rules")
 
 	err = firewall.ApplyRules(ctx, conn, cfg, uids)
