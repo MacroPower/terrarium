@@ -2560,3 +2560,135 @@ func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
 	assert.GreaterOrEqual(t, ipv6DNSTProxy, 1,
 		"unrestricted VM mode should have IPv6 DNS TPROXY dispatch")
 }
+
+// ruleWritesMark reports whether a rule contains a Meta expression that
+// writes the fwmark (SourceRegister: true with MetaKeyMARK).
+func ruleWritesMark(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if m, ok := e.(*expr.Meta); ok && m.Key == expr.MetaKeyMARK && m.SourceRegister {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleHasBitwise reports whether a rule contains a Bitwise expression.
+func ruleHasBitwise(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if _, ok := e.(*expr.Bitwise); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+func TestOutputChain_GuardMark(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		uids firewall.UIDs
+		// Guard mark index differs: unrestricted/blocked have oifname
+		// "lo" accept (index 0), then 2 CIDRs (1, 2), guard mark at 3.
+		// Filtered omits oifname, so 2 CIDRs (0, 1), guard mark at 2.
+		wantIndex int
+	}{
+		"unrestricted": {
+			cfg:       &config.Config{},
+			uids:      testUIDs,
+			wantIndex: 3,
+		},
+		"blocked": {
+			cfg:       &config.Config{Egress: egressRules(config.EgressRule{})},
+			uids:      testUIDs,
+			wantIndex: 3,
+		},
+		"filtered": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+				),
+			},
+			uids:      testUIDs,
+			wantIndex: 2,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tc.cfg, tc.uids)
+			require.NoError(t, err)
+
+			outputRules := rec.rulesForChain("output")
+			require.Greater(t, len(outputRules), tc.wantIndex,
+				"output chain should have enough rules for guard mark")
+
+			guardRule := outputRules[tc.wantIndex]
+			assert.True(t, ruleWritesMark(guardRule),
+				"rule at index %d should write the guard mark", tc.wantIndex)
+		})
+	}
+}
+
+func TestMatchMark_Bitmask(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToCIDR: []string{"10.0.0.0/8"},
+				ToPorts: []config.PortRule{{Ports: []config.Port{
+					{Port: "443", Protocol: "TCP"},
+				}}},
+			},
+		),
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	// INPUT chain in VM mode has matchMark(tproxyMark) + ACCEPT for
+	// TPROXY-marked forwarded packets. This rule should use bitmask
+	// matching (Bitwise + CmpOpNeq on zero) not exact equality.
+	inputRules := rec.rulesForChain("input")
+	require.NotEmpty(t, inputRules)
+
+	var foundBitmaskMark bool
+
+	for _, r := range inputRules {
+		// Find the mark-match + ACCEPT rule (not ct status, not TProxy).
+		if !ruleHasMark(r) || ruleHasCtStatus(r) || ruleHasTProxy(r) {
+			continue
+		}
+
+		v, _ := ruleVerdict(r)
+		if v != expr.VerdictAccept {
+			continue
+		}
+
+		// Should use Bitwise for bitmask matching.
+		assert.True(t, ruleHasBitwise(r),
+			"mark match should use Bitwise expression for bitmask matching")
+
+		// Verify no exact-equality match on the tproxyMark value.
+		for _, e := range r.Exprs {
+			if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpEq {
+				markData := binaryutil.NativeEndian.PutUint32(0x1)
+				assert.False(t, assert.ObjectsAreEqual(markData, c.Data),
+					"mark match should not use exact equality on 0x1")
+			}
+		}
+
+		foundBitmaskMark = true
+	}
+
+	assert.True(t, foundBitmaskMark,
+		"input chain should have a bitmask mark match rule for TPROXY")
+}

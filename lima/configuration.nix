@@ -221,37 +221,29 @@ in
   # deletes the terrarium table.
   #
   # Priority 10 fires after the daemon's filter output chain
-  # (priority 0). In nftables, accept in one chain does not skip
-  # subsequent chains; only drop is terminal. So this guard must
-  # explicitly accept the same non-loopback egress the daemon allows:
-  # Envoy (proxied connections) and root (DNS forwarding). All other
-  # user traffic is NAT-redirected to Envoy on loopback by the daemon.
+  # (priority 0). The daemon's output chain sets fwmark bit 0x2 on
+  # every packet that enters policy evaluation. Accepted packets carry
+  # this bit to the guard; dropped packets never reach here. The guard
+  # checks this single bit instead of enumerating terrarium-internal
+  # details (UIDs, TPROXY mark, ICMP).
+  #
+  # ct state established,related appears after the mark check so that
+  # established connections survive daemon restart (graceful draining)
+  # even without the mark.
   networking.nftables.tables.terrarium-guard = {
     family = "inet";
     content = ''
       chain output {
         type filter hook output priority 10; policy accept;
-        # Accept loopback CIDR and TPROXY-marked packets. Using CIDR
-        # checks instead of oifname "lo" prevents traffic to the VM's
-        # own IP (routed through lo) from being accepted when the
-        # terrarium daemon is down.
         ip daddr 127.0.0.0/8 accept
         ip6 daddr ::1 accept
-        meta mark 0x1 accept
-        meta skuid 1001 accept
-        meta skuid 0 accept
+        meta mark & 0x2 == 0x2 accept
+        ct state established,related accept
         # Allow dnsmasq to forward DNS queries to the upstream resolver.
         # dnsmasq runs as a dedicated user (not root) and must reach the
         # Lima gateway when the terrarium daemon is not running.
         udp dport 53 accept
         tcp dport 53 accept
-        # ICMP is never proxied through Envoy; its policy is enforced
-        # by the terrarium filter chain. Allow it through so ICMP
-        # echo-requests accepted by the terrarium table are not dropped
-        # by this guard chain.
-        meta l4proto icmp accept
-        meta l4proto icmpv6 accept
-        ct state established,related accept
         drop
       }
     '';

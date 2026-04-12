@@ -403,6 +403,67 @@ local-destination case. DNS UDP DNAT requires
 interfaces allow routing to 127.0.0.0/8. Deny CIDRs skip TPROXY so the
 FORWARD chain's terminal DROP applies.
 
+#### Guard table
+
+Terrarium manages a single `terrarium` table via netlink, deleting and recreating
+it on every config reload. During the brief window between delete and apply (or if
+the daemon crashes), there are no egress rules at all. A separate `terrarium-guard`
+table at priority 10 closes this gap.
+
+The filter output chain sets fwmark bit 0x2 on every packet that enters policy
+evaluation (after loopback CIDR accepts, before any allow/deny rules). Accepted
+packets carry this bit; dropped packets never leave the chain. The guard table
+checks this single bit to accept policy-evaluated traffic without duplicating
+terrarium-internal details like UIDs, TPROXY marks, or ICMP exceptions. When the
+daemon is down (no terrarium table, no mark), the guard drops all non-loopback
+egress. The guard mark coexists with the TPROXY mark (0x1) via bitwise OR:
+TPROXY'd packets carry both bits (0x3), and `matchMark` uses bitmask matching so
+each bit is identified independently.
+
+Two tables are needed. A boot-time `terrarium` table provides deny-all until the
+daemon starts. The daemon replaces it with policy-based rules. The
+`terrarium-guard` table is never touched by the daemon and survives across
+reloads:
+
+```nft
+# Boot-time deny-all (terrarium replaces this on startup).
+table inet terrarium {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iifname "lo" accept
+    ct state established,related accept
+    tcp dport 22 accept  # adjust for your management access
+  }
+  chain output {
+    type filter hook output priority filter; policy drop;
+    oifname "lo" accept
+    ct state established,related accept
+  }
+}
+
+# Guard table (terrarium never touches this).
+table inet terrarium-guard {
+  chain output {
+    type filter hook output priority 10; policy accept;
+    ip daddr 127.0.0.0/8 accept
+    ip6 daddr ::1 accept
+    meta mark & 0x2 == 0x2 accept
+    ct state established,related accept
+    # Add rules here for services that need egress independent of
+    # terrarium (e.g., a local DNS forwarder):
+    # udp dport 53 accept
+    # tcp dport 53 accept
+    drop
+  }
+}
+```
+
+The `ct state established,related` rule appears after the mark check so
+established connections survive a daemon restart (graceful draining) even without
+the mark. Load both tables at boot before the daemon starts -- on NixOS use
+`networking.nftables.tables`, on systemd systems use an nftables service with
+a config file, or load them via `nft -f` in an init script.
+
 #### Host requirements
 
 Bridge-networked containers require kernel modules and sysctls that terrarium

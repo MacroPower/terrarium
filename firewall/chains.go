@@ -125,13 +125,21 @@ func addInputChain(conn Conn, table *nftables.Table, uids UIDs) {
 	// Default DROP via chain policy.
 }
 
-// addOutputBaseRules emits the initial OUTPUT rules that appear in all
-// three modes: loopback interface accept and loopback CIDR accept
-// (nfproto-scoped). When excludeMark is non-zero (filtered mode),
-// the blanket oifname "lo" accept is omitted entirely. Traffic to
-// non-loopback IPs routed through lo (e.g., the VM's own address)
-// must reach policy evaluation so deny rules can fire. The CIDR
-// rules below still accept traffic to 127.0.0.0/8 and ::1.
+// addOutputBaseRules emits the initial OUTPUT rules shared across all
+// three security modes: loopback CIDR accepts (127.0.0.0/8 and ::1),
+// a conditional blanket oifname "lo" accept, and the guard mark.
+// When excludeMark is non-zero (filtered mode), the blanket oifname
+// "lo" accept is omitted so that traffic to non-loopback IPs routed
+// through lo (e.g., the VM's own address) reaches policy evaluation
+// where deny rules can fire.
+//
+// The guard mark ([guardMark] 0x2) is set as the last rule via
+// [orMarkBit], after loopback accepts but before returning. Only
+// traffic proceeding to policy evaluation gets marked; loopback traffic
+// is short-circuited. The external guard table checks this bit to
+// accept policy-evaluated packets without enumerating terrarium-internal
+// details. In blocked mode, non-loopback packets pass through this rule
+// but are subsequently dropped; the mark is harmless on dropped packets.
 func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain, excludeMark uint32) {
 	// 1. Allow loopback interface (unrestricted/blocked modes only).
 	// In filtered mode, skip this rule so traffic to non-loopback IPs
@@ -161,6 +169,12 @@ func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain,
 			matchDstCIDR(mustParseCIDR("::1/128")),
 			verdictExprs(expr.VerdictAccept),
 		),
+	})
+
+	// 3. Mark packet as policy-evaluated for the guard table.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: orMarkBit(guardMark),
 	})
 }
 

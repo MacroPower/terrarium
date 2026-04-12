@@ -273,9 +273,10 @@ func redirectToPort(port uint16) []expr.Any {
 	}
 }
 
-// markPacket sets the packet fwmark to the given value.
+// markPacket sets the packet fwmark to the given value, overwriting
+// all bits. For bitwise OR (preserving existing bits), see [orMarkBit].
 //
-//nolint:unparam // mark is parameterized for symmetry with matchMark/matchNotMark.
+//nolint:unparam // mark is parameterized for symmetry with matchMark.
 func markPacket(mark uint32) []expr.Any {
 	return []expr.Any{
 		&expr.Immediate{
@@ -290,13 +291,51 @@ func markPacket(mark uint32) []expr.Any {
 	}
 }
 
-// matchMark matches packets with the given fwmark value.
+// orMarkBit sets a single fwmark bit via OR without clearing other
+// bits. Uses the nftables Bitwise primitive: (mark & ~bit) ^ bit is
+// equivalent to mark | bit. For full-overwrite marking, see
+// [markPacket].
+//
+//nolint:unparam // bit is parameterized for symmetry with markPacket.
+func orMarkBit(bit uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(^bit),
+			Xor:            binaryutil.NativeEndian.PutUint32(bit),
+		},
+		&expr.Meta{
+			Key:            expr.MetaKeyMARK,
+			SourceRegister: true,
+			Register:       1,
+		},
+	}
+}
+
+// matchMark matches packets that have the given fwmark bit(s) set,
+// using bitmask matching: (mark & bit) != 0. This correctly identifies
+// a mark bit regardless of other bits that may be set (e.g., [tproxyMark]
+// 0x1 is matched even when [guardMark] 0x2 is also present: 0x3 & 0x1 != 0).
 //
 //nolint:unparam // mark is parameterized for symmetry with markPacket.
 func matchMark(mark uint32) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(mark),
+			Xor:            make([]byte, 4),
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpNeq,
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(0),
+		},
 	}
 }
 

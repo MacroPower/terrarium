@@ -28,6 +28,13 @@ const (
 	// matched in the mangle prerouting chain.
 	tproxyMark uint32 = 0x1
 
+	// guardMark is the fwmark bit set by the filter output chain to
+	// signal that a packet has been evaluated by terrarium's policy
+	// engine. The external guard table checks this bit instead of
+	// enumerating terrarium-internal exceptions (UIDs, TPROXY mark,
+	// ICMP). Uses bit 0x2 to coexist with [tproxyMark] (0x1).
+	guardMark uint32 = 0x2
+
 	// tproxyTable is the policy routing table number used to route
 	// marked packets back through loopback for TPROXY interception.
 	tproxyTable = 100
