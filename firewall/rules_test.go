@@ -1675,9 +1675,10 @@ func TestApplyRules_VMMode_NATPreRouting(t *testing.T) {
 	rules := rec.rulesForChain("nat_prerouting")
 	require.NotEmpty(t, rules)
 
-	// Should have DNS DNAT for UDP only (TCP uses TPROXY in mangle
-	// PREROUTING because br_netfilter prevents DNAT to 127.0.0.1
-	// for bridge-forwarded TCP packets).
+	// Should have DNS DNAT for UDP + TCP port 53. Non-DNS forwarded
+	// TCP uses TPROXY in mangle PREROUTING; DNS TCP DNAT here catches
+	// queries to bridge-local resolvers (e.g., BuildKit on the CNI
+	// gateway) where mangle's matchNotLocalDst skips them.
 	var dnsDNATCount int
 	for _, r := range rules {
 		if ruleHasNAT(r) && ruleHasDstPort(r, 53) {
@@ -1685,19 +1686,18 @@ func TestApplyRules_VMMode_NATPreRouting(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 1, dnsDNATCount, "should have DNS DNAT for UDP only")
+	assert.Equal(t, 2, dnsDNATCount, "should have DNS DNAT for UDP and TCP")
 
-	// No per-port or catch-all TCP DNAT (all forwarded TCP uses
-	// TPROXY in mangle PREROUTING).
-	var tcpDNATCount int
+	// Bridge-local DNAT for resolved ports (port 443 in this config).
+	var bridgeLocalDNATCount int
 	for _, r := range rules {
 		if ruleHasNAT(r) && !ruleHasDstPort(r, 53) {
-			tcpDNATCount++
+			bridgeLocalDNATCount++
 		}
 	}
 
-	assert.Equal(t, 0, tcpDNATCount,
-		"should not have per-port or catch-all TCP DNAT (uses TPROXY)")
+	assert.Equal(t, 1, bridgeLocalDNATCount,
+		"should have bridge-local DNAT for resolved port 443")
 }
 
 func TestApplyRules_VMMode_NATPreRouting_Unrestricted(t *testing.T) {
@@ -1715,8 +1715,8 @@ func TestApplyRules_VMMode_NATPreRouting_Unrestricted(t *testing.T) {
 	rules := rec.rulesForChain("nat_prerouting")
 	require.NotEmpty(t, rules)
 
-	// Should have DNS DNAT for UDP only (all forwarded TCP uses
-	// TPROXY in mangle PREROUTING).
+	// Should have DNS DNAT for UDP + TCP (2) plus bridge-local DNAT
+	// for ports 80 and 443 (2) = 4 total.
 	var natCount int
 	for _, r := range rules {
 		if ruleHasNAT(r) {
@@ -1724,8 +1724,53 @@ func TestApplyRules_VMMode_NATPreRouting_Unrestricted(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 1, natCount,
-		"should have DNAT for DNS UDP only (TCP uses TPROXY)")
+	assert.Equal(t, 4, natCount,
+		"should have DNAT for DNS (UDP+TCP) and bridge-local (80+443)")
+}
+
+func TestApplyRules_VMMode_NATPreRouting_TCPForwards(t *testing.T) {
+	t.Parallel()
+
+	rec := &ruleRecorder{}
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			},
+		),
+		TCPForwards: []config.TCPForward{
+			{Port: 22, Host: "github.com"},
+		},
+	}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+	require.NoError(t, err)
+
+	rules := rec.rulesForChain("nat_prerouting")
+	require.NotEmpty(t, rules)
+
+	// 2 DNS (UDP+TCP) + 1 resolved port (443) + 1 TCPForward (22) = 4.
+	var natCount int
+	for _, r := range rules {
+		if ruleHasNAT(r) {
+			natCount++
+		}
+	}
+
+	assert.Equal(t, 4, natCount,
+		"should have DNAT for DNS, resolved port, and TCPForward")
+
+	// Verify the TCPForward port is present.
+	var hasTCPForwardPort bool
+	for _, r := range rules {
+		if ruleHasNAT(r) && ruleHasDstPort(r, 22) {
+			hasTCPForwardPort = true
+		}
+	}
+
+	assert.True(t, hasTCPForwardPort,
+		"should have bridge-local DNAT for TCPForward port 22")
 }
 
 func TestApplyRules_VMMode_ForwardChain(t *testing.T) {

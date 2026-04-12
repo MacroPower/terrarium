@@ -79,11 +79,54 @@ func TestVM(t *testing.T) { //nolint:paralleltest // sequential: shared VM, shar
 	// Tests run sequentially against a single shared VM: each test
 	// writes its own config, restarts the daemon, and runs assertions.
 	// Parallel execution would cause config and daemon conflicts.
+	//
+	// Post-suite cleanup resets the VM to a known-good state so that
+	// subsequent lima:rebuild runs succeed without manual intervention.
+	t.Cleanup(func() { resetVM(t.Context()) })
+
 	for i := range vmTests { //nolint:paralleltest // sequential: shared VM
 		tc := vmTests[i]
 		t.Run(tc.name, func(t *testing.T) {
 			runVMTest(t, tc)
 		})
+	}
+}
+
+// resetVM restores the VM to a clean state after the full test suite.
+// This ensures lima:rebuild works without manual intervention: the
+// stale mutable config is removed (so the NixOS default is seeded on
+// next daemon start), nftables tables are reloaded, and the daemon is
+// restarted with the default config.
+func resetVM(ctx context.Context) {
+	d := testDriver
+
+	d.stopAllServices(ctx)
+	d.stopContainerServices(ctx)
+	d.cleanupDNS(ctx)
+
+	// Remove the test-written mutable config so the seed script
+	// copies the NixOS-managed default on next daemon start.
+	_, err := d.shell(ctx, "sudo", "rm", "-f", "/var/lib/terrarium/config.yaml")
+	if err != nil {
+		slog.WarnContext(ctx, "removing mutable config", slog.String("error", err.Error()))
+	}
+
+	// Reload nftables to restore guard and boot-time tables.
+	_, err = d.shell(ctx, "sudo", "systemctl", "reload", "nftables")
+	if err != nil {
+		slog.WarnContext(ctx, "reloading nftables", slog.String("error", err.Error()))
+	}
+
+	// Restart the daemon with the default config so it is in a
+	// known-good state for lima:rebuild.
+	_, err = d.shell(ctx, "sudo", "rm", "-rf", "/var/lib/terrarium/terrarium")
+	if err != nil {
+		slog.WarnContext(ctx, "removing generated configs", slog.String("error", err.Error()))
+	}
+
+	_, err = d.shell(ctx, "sudo", "systemctl", "restart", "terrarium")
+	if err != nil {
+		slog.WarnContext(ctx, "restarting terrarium", slog.String("error", err.Error()))
 	}
 }
 
@@ -94,6 +137,12 @@ func runVMTest(t *testing.T, tc vmTest) {
 	d := testDriver
 
 	hasContainers := len(tc.containerServices) > 0 || len(tc.containerAssertions) > 0
+
+	// Kill any stale services from a previous test before starting
+	// new ones. Cleanup runs between tests but a bind failure race
+	// can leave a previous test's nginx occupying ports that the
+	// current test needs with a different config.
+	d.stopAllServices(ctx)
 
 	// Start container services first (they need time to start).
 	if len(tc.containerServices) > 0 {
@@ -156,6 +205,11 @@ func runVMTest(t *testing.T, tc vmTest) {
 
 	// Run all assertions via testrunner subprocess.
 	runVMAssertions(t, d, merged)
+
+	// Run custom verify if provided.
+	if tc.verify != nil {
+		tc.verify(t, d)
+	}
 
 	// Run custom teardown if provided.
 	if tc.teardown != nil {

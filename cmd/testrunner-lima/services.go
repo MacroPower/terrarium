@@ -161,16 +161,29 @@ func (d *driver) startSocat(ctx context.Context, svc serviceSpec) error {
 	return nil
 }
 
-// stopAllServices kills nginx and socat processes started by tests.
+// stopAllServices kills nginx and socat processes started by tests
+// and waits for them to exit so ports are released before the next
+// test starts its own services.
 func (d *driver) stopAllServices(ctx context.Context) {
-	_, err := d.shell(ctx, "sudo", "pkill", "nginx")
+	// Use SIGKILL for immediate termination. SIGTERM leaves a race
+	// window where the next test's startNginx sees "Address already
+	// in use" and silently skips, running against the stale nginx.
+	_, err := d.shell(ctx, "sudo", "pkill", "-KILL", "nginx")
 	if err != nil {
 		slog.DebugContext(ctx, "stopping nginx", slog.String("error", err.Error()))
 	}
 
-	_, err = d.shell(ctx, "sudo", "pkill", "-f", "socat")
+	_, err = d.shell(ctx, "sudo", "pkill", "-KILL", "-f", "socat")
 	if err != nil {
 		slog.DebugContext(ctx, "stopping socat", slog.String("error", err.Error()))
+	}
+
+	// Wait for processes to fully exit so listening sockets are
+	// released before the next test binds the same ports.
+	_, err = d.shell(ctx, "sudo", "sh", "-c",
+		`for i in 1 2 3 4 5; do pgrep nginx >/dev/null 2>&1 || break; sleep 0.1; done`)
+	if err != nil {
+		slog.DebugContext(ctx, "waiting for nginx to exit", slog.String("error", err.Error()))
 	}
 
 	_, err = d.shell(ctx, "sudo", "sh", "-c",

@@ -145,7 +145,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 
 	// VM mode: NAT PREROUTING for DNS and FORWARD for forwarded traffic.
 	if uids.VMMode {
-		addUnrestrictedNATPreRouting(conn, table)
+		addUnrestrictedNATPreRouting(conn, table, cfg.TCPForwards)
 		addForwardChainUnrestricted(conn, table)
 	}
 
@@ -450,7 +450,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 
 	// VM mode: NAT PREROUTING and FORWARD for forwarded container traffic.
 	if uids.VMMode {
-		addNATPreRouting(conn, table)
+		addNATPreRouting(conn, table, resolvedPorts, cfg.TCPForwards)
 		addForwardChain(conn, table, terrariumChain)
 	}
 

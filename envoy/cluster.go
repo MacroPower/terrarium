@@ -110,7 +110,7 @@ func BuildClusters(
 						AutoSNI:           true,
 						AutoSANValidation: true,
 					},
-					UseDownstreamProtocolConfig: useDownstreamProtocolConfig{},
+					AutoConfig: autoConfig{},
 				},
 			},
 		})

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"testing"
 )
 
 // Assertion builder functions construct [assertion] values that match
@@ -1084,6 +1085,40 @@ egressDeny:
 		},
 		containerAssertions: []assertion{
 			httpAllowed("https://ct-allow:443/", "mixed: container HTTPS to ct-allow"),
+		},
+	},
+
+	// Bridge-local DNS test: verifies that containers with DNS pointing
+	// at a bridge-local address (like BuildKit/Dagger's embedded
+	// resolver) still get DNS intercepted by terrarium.
+	{
+		name: "vm-container-bridge-local-dns",
+		config: `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+`,
+		services: []serviceSpec{
+			nginxService("target-allow", defaultNginxConf),
+		},
+		verify: func(t *testing.T, d *driver) {
+			t.Helper()
+
+			ctx := t.Context()
+
+			// Run curl from a bridge-networked container with DNS
+			// set to the CNI gateway (172.20.0.1). This is a local
+			// address on the VM, simulating BuildKit's behavior.
+			out, err := d.runInBridgeContainer(ctx,
+				"172.20.0.1",
+				"curl", "-sf", "--max-time", "10",
+				"http://target-allow:80/")
+			if err != nil {
+				t.Errorf("bridge-local DNS: curl failed: %v\noutput: %s", err, out)
+			}
 		},
 	},
 

@@ -44,12 +44,13 @@ in
     "net.ipv4.conf.default.route_localnet" = 1;
   };
 
-  # Loose rpfilter allows bridge traffic through the NixOS firewall
-  # rpfilter chain. With br_netfilter, bridged packets enter L3 hooks
-  # with the bridge port (veth) as iif, but routes point to the bridge
-  # master (cni0). Strict rpfilter fails because fib saddr . iif has
-  # no matching route. Loose mode drops the iif constraint.
-  networking.firewall.checkReversePath = "loose";
+  # Disable the NixOS firewall. Its nftables INPUT chain (policy DROP)
+  # fires before terrarium's and blocks DNATted bridge-container traffic
+  # (DNS, HTTP) that terrarium explicitly accepts. Terrarium manages its
+  # own table; the NixOS firewall is redundant and actively conflicts.
+  # This does not affect networking.nftables.tables.* (boot-time table
+  # and guard table remain).
+  networking.firewall.enable = false;
 
   # CNI bridge network for test containers. ipMasq is disabled to
   # avoid MASQUERADE rules that could interact with terrarium's
@@ -178,7 +179,9 @@ in
   # Terrarium egress policy, applied on every boot.
   # Edit and run `task lima:rebuild` to apply changes.
   environment.etc."terrarium/config.yaml".text = builtins.toJSON {
-    logging = true;
+    logging = {
+      firewall.enabled = true;
+    };
     egress = [
       {
         toFQDNs = [
@@ -227,6 +230,11 @@ in
         oifname "lo" accept
         meta skuid 1001 accept
         meta skuid 0 accept
+        # Allow dnsmasq to forward DNS queries to the upstream resolver.
+        # dnsmasq runs as a dedicated user (not root) and must reach the
+        # Lima gateway when the terrarium daemon is not running.
+        udp dport 53 accept
+        tcp dport 53 accept
         ct state established,related accept
         drop
       }
@@ -250,7 +258,7 @@ in
     settings = {
       listen-address = "127.0.0.53";
       bind-interfaces = true;
-      server = [ "192.168.5.3" ];
+      server = [ "192.168.5.2" ];
       addn-hosts = "/etc/dnsmasq-hosts";
     };
   };

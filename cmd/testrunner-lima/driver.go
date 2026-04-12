@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -176,6 +177,23 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 		slog.DebugContext(ctx, "removing generated configs", slog.String("error", err.Error()))
 	}
 
+	// Flush conntrack entries so stale NAT/DNAT state from the
+	// previous test does not affect connection routing.
+	_, err = d.shell(ctx, "sudo", "conntrack", "-F")
+	if err != nil {
+		slog.DebugContext(ctx, "flushing conntrack", slog.String("error", err.Error()))
+	}
+
+	// Reload nftables service to restore the guard table and
+	// boot-time terrarium table. Tests that flush or delete tables
+	// (e.g. vm-guard-table) leave the nftables state dirty; reload
+	// ensures a known-good baseline before the daemon replaces the
+	// terrarium table with policy rules.
+	_, err = d.shell(ctx, "sudo", "systemctl", "reload", "nftables")
+	if err != nil {
+		slog.DebugContext(ctx, "reloading nftables", slog.String("error", err.Error()))
+	}
+
 	_, err = d.shell(ctx, "sudo", "systemctl", "restart", "terrarium")
 	if err != nil {
 		return fmt.Errorf("systemctl restart: %w", err)
@@ -285,11 +303,18 @@ func (d *driver) runTestrunner(ctx context.Context) (int, string, error) {
 
 // vmTest defines a single VM e2e test case. The test lifecycle is:
 // start services, write config, run setup hook, restart daemon, run
-// assertions, run teardown hook, stop services.
+// assertions, run verify hook, run teardown hook, stop services.
 type vmTest struct {
 	// setup runs after services are started but before the daemon
 	// is restarted. Used for tests that need custom pre-conditions.
 	setup func(ctx context.Context, d *driver) error
+
+	// verify runs after testrunner assertions complete. It receives
+	// the testing.T so it can call driver methods and assert results
+	// directly -- used for tests that need to run commands inside
+	// ephemeral containers or other actions the testrunner spec
+	// cannot express.
+	verify func(t *testing.T, d *driver)
 
 	// teardown runs after the testrunner completes, before cleanup.
 	teardown func(ctx context.Context, d *driver) error
@@ -493,6 +518,13 @@ func (d *driver) startContainerService(ctx context.Context, svc serviceSpec) err
 		return fmt.Errorf("writing nginx config: %w", err)
 	}
 
+	// Remove any stale container with this name from a previous test
+	// run whose cleanup may not have completed yet.
+	_, err = d.shell(ctx, "sudo", "nerdctl", "rm", "-f", svc.hostname)
+	if err != nil {
+		slog.DebugContext(ctx, "removing stale container", slog.String("error", err.Error()))
+	}
+
 	// Start the container with host networking so it listens on
 	// the VM's IP. Host networking avoids br_netfilter issues where
 	// NAT REDIRECT fails for bridge subnet destinations.
@@ -509,6 +541,22 @@ func (d *driver) startContainerService(ctx context.Context, svc serviceSpec) err
 	}
 
 	return nil
+}
+
+// runInBridgeContainer runs a command inside an ephemeral
+// bridge-networked container with the given DNS server and returns
+// the combined output. The container is removed after the command
+// completes.
+func (d *driver) runInBridgeContainer(ctx context.Context, dns string, args ...string) (string, error) {
+	cmdArgs := []string{
+		"sudo", "nerdctl", "run", "--rm",
+		"--network", "bridge",
+		"--dns", dns,
+		"terrarium-test:latest",
+	}
+	cmdArgs = append(cmdArgs, args...)
+
+	return d.shell(ctx, cmdArgs...)
 }
 
 // stopContainerServices kills and removes all test containers.

@@ -359,11 +359,10 @@ type clusterDFPConfig struct {
 
 type httpProtocolOptions struct {
 	UpstreamHTTPProtocolOptions *upstreamHTTPProtocolOptions `yaml:"upstream_http_protocol_options,omitempty"`
-	UseDownstreamProtocolConfig useDownstreamProtocolConfig  `yaml:"use_downstream_protocol_config"`
+	AutoConfig                  autoConfig                   `yaml:"auto_config"`
 	AtType                      string                       `yaml:"@type"`
 }
 
-// upstreamHTTPProtocolOptions models Envoy's UpstreamHttpProtocolOptions.
 // upstreamHTTPProtocolOptions models Envoy's UpstreamHttpProtocolOptions.
 // auto_sni sets the upstream TLS SNI from the Host header; auto_san_validation
 // validates the upstream cert SAN against the SNI.
@@ -372,7 +371,11 @@ type upstreamHTTPProtocolOptions struct {
 	AutoSANValidation bool `yaml:"auto_san_validation"`
 }
 
-type useDownstreamProtocolConfig struct{}
+// autoConfig models Envoy's HttpProtocolOptions.AutoHttpConfig.
+// An empty struct serializes to `auto_config: {}`, which tells Envoy
+// to negotiate the upstream protocol via ALPN, falling back to HTTP/1.1
+// when the upstream does not support h2.
+type autoConfig struct{}
 
 type loadAssignment struct {
 	ClusterName string     `yaml:"cluster_name"`

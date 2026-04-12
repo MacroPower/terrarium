@@ -258,7 +258,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		return nil, fmt.Errorf("creating temp resolv.conf: %w", err)
 	}
 
-	_, err = tmpResolv.WriteString("nameserver 127.0.0.1\nnameserver ::1\n")
+	_, err = tmpResolv.WriteString("nameserver 127.0.0.1\n")
 
 	closeErr := tmpResolv.Close()
 

@@ -1290,23 +1290,37 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 	})
 }
 
-// forwardGuardExprs returns the common match expressions for
-// PREROUTING/FORWARD rules targeting forwarded traffic: non-loopback
-// input interface, non-local destination, and IPv4 protocol.
-func forwardGuardExprs() []expr.Any {
+// dnsGuardExprs returns match expressions for DNS interception in
+// NAT PREROUTING: non-loopback input interface and IPv4 protocol.
+// Unlike the TPROXY marking rules in mangle PREROUTING, it omits
+// the non-local destination check so DNS queries to bridge-local
+// addresses (e.g., BuildKit's embedded resolver on the CNI gateway)
+// are also intercepted and forwarded to the terrarium DNS proxy.
+func dnsGuardExprs() []expr.Any {
 	return flatExprs(
 		matchNotIIFName("lo"),
-		matchNotLocalDst(),
 		matchNFProto(unix.NFPROTO_IPV4),
 	)
 }
 
 // addNATPreRouting creates a NAT PREROUTING chain for VM mode that
-// DNATs forwarded IPv4 DNS UDP traffic to 127.0.0.1 for the DNS
-// proxy. IPv4 forwarded TCP uses TPROXY (in mangle PREROUTING)
-// instead of DNAT because br_netfilter prevents DNAT to 127.0.0.1
-// for bridge-forwarded TCP packets.
-func addNATPreRouting(conn Conn, table *nftables.Table) {
+// DNATs forwarded DNS traffic to 127.0.0.1 for the DNS proxy. Uses
+// [dnsGuardExprs] (no local-dst check) so DNS to bridge-local
+// addresses (e.g., BuildKit's embedded resolver on the CNI gateway)
+// is also intercepted. Non-DNS forwarded TCP uses TPROXY in mangle
+// PREROUTING because br_netfilter prevents DNAT to 127.0.0.1 for
+// bridge-forwarded TCP; DNS TCP to local destinations is not
+// bridge-forwarded (it is locally delivered), so DNAT works.
+// DNS TCP to non-local destinations is already handled by TPROXY in
+// mangle PREROUTING (higher priority), so this DNAT rule only fires
+// for the local-destination case.
+//
+// After DNS rules, per-port bridge-local DNAT rules redirect TCP
+// traffic from bridge containers destined for the VM's own IPs to
+// Envoy. These use [matchLocalDst] so only locally-delivered traffic
+// is intercepted (non-local forwarded traffic uses TPROXY). Per-port
+// matching avoids intercepting SSH (port 22).
+func addNATPreRouting(conn Conn, table *nftables.Table, resolvedPorts []int, tcpForwards []config.TCPForward) {
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "nat_prerouting",
 		Table:    table,
@@ -1315,26 +1329,62 @@ func addNATPreRouting(conn Conn, table *nftables.Table) {
 		Priority: nftables.ChainPriorityNATDest,
 	})
 
-	guard := forwardGuardExprs()
+	guard := dnsGuardExprs()
 
-	// DNS DNAT: UDP port 53 -> DNS proxy. TCP port 53 uses TPROXY
-	// in mangle PREROUTING (br_netfilter prevents TCP DNAT to
-	// 127.0.0.1 for bridge-forwarded packets).
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			guard,
-			matchL4Proto(unix.IPPROTO_UDP),
-			matchDstPort(53),
-			dnatToLocal(53),
-		),
-	})
+	// DNS DNAT: UDP + TCP port 53 -> DNS proxy.
+	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				guard,
+				matchL4Proto(proto),
+				matchDstPort(53),
+				dnatToLocal(53),
+			),
+		})
+	}
+
+	// Bridge-local TCP DNAT: redirect bridge-container traffic destined
+	// for the VM's own IPs to Envoy proxy ports. Non-lo + IPv4 +
+	// local-dst scoping ensures only locally-delivered bridge traffic
+	// matches (not forwarded traffic, which uses TPROXY).
+	bridgeGuard := flatExprs(
+		matchNotIIFName("lo"),
+		matchNFProto(unix.NFPROTO_IPV4),
+		matchLocalDst(),
+		matchL4Proto(unix.IPPROTO_TCP),
+	)
+
+	for _, port := range resolvedPorts {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				bridgeGuard,
+				matchDstPort(port16(port)),
+				dnatToLocal(port16(config.ProxyPortBase+port)),
+			),
+		})
+	}
+
+	for _, fwd := range tcpForwards {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				bridgeGuard,
+				matchDstPort(port16(fwd.Port)),
+				dnatToLocal(port16(config.ProxyPortBase+fwd.Port)),
+			),
+		})
+	}
 }
 
 // addUnrestrictedNATPreRouting creates a NAT PREROUTING chain for
-// VM mode unrestricted policy. DNATs forwarded IPv4 DNS UDP traffic
-// to the DNS proxy. Forwarded TCP uses TPROXY in mangle PREROUTING.
-func addUnrestrictedNATPreRouting(conn Conn, table *nftables.Table) {
+// VM mode unrestricted policy. DNATs forwarded DNS traffic to the
+// DNS proxy. Uses [dnsGuardExprs] for the same bridge-local DNS
+// interception as [addNATPreRouting]. After DNS rules, bridge-local
+// DNAT rules redirect ports 80, 443, and TCPForward ports to Envoy.
+// Forwarded non-local TCP uses TPROXY in mangle PREROUTING.
+func addUnrestrictedNATPreRouting(conn Conn, table *nftables.Table, tcpForwards []config.TCPForward) {
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "nat_prerouting",
 		Table:    table,
@@ -1343,18 +1393,51 @@ func addUnrestrictedNATPreRouting(conn Conn, table *nftables.Table) {
 		Priority: nftables.ChainPriorityNATDest,
 	})
 
-	guard := forwardGuardExprs()
+	guard := dnsGuardExprs()
 
-	// DNS DNAT: UDP port 53 -> DNS proxy.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			guard,
-			matchL4Proto(unix.IPPROTO_UDP),
-			matchDstPort(53),
-			dnatToLocal(53),
-		),
-	})
+	// DNS DNAT: UDP + TCP port 53 -> DNS proxy.
+	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				guard,
+				matchL4Proto(proto),
+				matchDstPort(53),
+				dnatToLocal(53),
+			),
+		})
+	}
+
+	// Bridge-local TCP DNAT: hardcoded ports 80 and 443 (matching
+	// addUnrestrictedNAT OUTPUT rules) plus per-port TCPForwards.
+	bridgeGuard := flatExprs(
+		matchNotIIFName("lo"),
+		matchNFProto(unix.NFPROTO_IPV4),
+		matchLocalDst(),
+		matchL4Proto(unix.IPPROTO_TCP),
+	)
+
+	for _, port := range []int{80, 443} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				bridgeGuard,
+				matchDstPort(port16(port)),
+				dnatToLocal(port16(config.ProxyPortBase+port)),
+			),
+		})
+	}
+
+	for _, fwd := range tcpForwards {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				bridgeGuard,
+				matchDstPort(port16(fwd.Port)),
+				dnatToLocal(port16(config.ProxyPortBase+fwd.Port)),
+			),
+		})
+	}
 }
 
 // tproxyNFProtoGuard returns the common match expressions for

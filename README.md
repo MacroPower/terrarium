@@ -379,22 +379,74 @@ locally-originated traffic:
 
 | Chain               | Hook        | Priority | Purpose                                                           |
 | ------------------- | ----------- | -------- | ----------------------------------------------------------------- |
-| `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 TCP + DNS to `127.0.0.1:envoy_port`           |
-| `mangle_prerouting` | PREROUTING  | -150     | Mark forwarded UDP + IPv6 TCP for TPROXY; dispatch IPv6 TPROXY    |
+| `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 DNS (UDP + TCP) to `127.0.0.1:53`             |
+| `mangle_prerouting` | PREROUTING  | -150     | Mark forwarded UDP + TCP for TPROXY; dispatch to Envoy/DNS proxy  |
 | `input`             | INPUT       | 0        | Accept DNATted traffic (`ct status dnat`)                         |
 | `forward`           | FORWARD     | 0        | Policy-evaluate non-intercepted forwarded traffic (ICMP)          |
 | `postrouting_guard` | POSTROUTING | 0        | Catch locally-originated leaks (forwarded traffic passes through) |
 
-DNAT (not REDIRECT) is used in PREROUTING because REDIRECT would rewrite the
-destination to the incoming interface's address (the bridge IP), not loopback.
-This requires `net.ipv4.conf.all.route_localnet=1` so the kernel allows routing
-to 127.0.0.0/8 on non-loopback interfaces. The security implications are minimal
-since the VM itself is the security boundary.
+All forwarded non-DNS TCP (IPv4 and IPv6) uses TPROXY rather than DNAT. When
+`br_netfilter` is loaded (required for bridge-networked containers), bridged
+frames traverse netfilter inet hooks so terrarium's nftables rules see the
+traffic. However, `br_netfilter` prevents DNAT to 127.0.0.1 for bridge-forwarded
+TCP because the bridge path does not re-route DNATted packets through loopback.
+TPROXY avoids this by intercepting transparently without rewriting the
+destination.
 
-IPv6 forwarded traffic uses TPROXY (mangle PREROUTING) instead of DNAT because
-Linux has no `route_localnet` equivalent for IPv6. The mangle chain marks
-forwarded IPv6 UDP and TCP, then dispatches them to Envoy/DNS proxy via TPROXY.
-IPv6 deny CIDRs skip TPROXY so the FORWARD chain's terminal DROP applies.
+DNS (UDP and TCP port 53) uses DNAT in NAT PREROUTING. The DNS DNAT rules
+intentionally omit the non-local destination check so queries to bridge-local
+resolvers (e.g., BuildKit's embedded DNS on the CNI gateway) are also
+intercepted. For non-local destinations, DNS TCP is already handled by TPROXY
+in mangle PREROUTING (higher priority); the NAT DNAT rule only fires for the
+local-destination case. DNS UDP DNAT requires
+`net.ipv4.conf.default.route_localnet=1` so dynamically-created bridge
+interfaces allow routing to 127.0.0.0/8. Deny CIDRs skip TPROXY so the
+FORWARD chain's terminal DROP applies.
+
+#### Host requirements
+
+Bridge-networked containers require kernel modules and sysctls that terrarium
+does not configure itself (they need root and typically belong in the host's
+boot configuration):
+
+```
+# Load br_netfilter so bridged L2 frames enter netfilter inet hooks.
+modprobe br_netfilter
+
+# Force bridged traffic through iptables/nftables.
+sysctl net.bridge.bridge-nf-call-iptables=1
+sysctl net.bridge.bridge-nf-call-ip6tables=1
+
+# Enable IP forwarding for container routing.
+sysctl net.ipv4.ip_forward=1
+
+# Allow DNAT to 127.0.0.1 on bridge interfaces (for DNS UDP).
+# Setting "default" ensures dynamically-created interfaces inherit it.
+sysctl net.ipv4.conf.default.route_localnet=1
+```
+
+Container runtimes that manage their own NAT rules (CNI bridge `ipMasq`,
+Docker's `--iptables`) can conflict with terrarium's nftables table. Disable
+source NAT in the CNI bridge plugin (`"ipMasq": false`) or Docker
+(`--iptables=false`) and let terrarium handle traffic interception exclusively.
+
+If the host runs a strict reverse-path filter (the NixOS default), it must be
+relaxed to "loose" mode. With `br_netfilter`, bridged packets enter L3 hooks
+with the bridge port (veth) as iif, but routes point to the bridge master
+(cni0). Strict rpfilter fails because `fib saddr . iif` has no matching route;
+loose mode drops the iif constraint:
+
+```
+# NixOS: networking.firewall.checkReversePath = "loose";
+# Or: sysctl net.ipv4.conf.all.rp_filter=2
+```
+
+#### Container DNS
+
+Terrarium intercepts all forwarded DNS (UDP and TCP port 53) in NAT PREROUTING,
+including queries to bridge-local addresses like a CNI gateway or BuildKit's
+embedded resolver. This ensures container DNS works regardless of what
+resolv.conf the container runtime injects.
 
 #### Container CA trust
 

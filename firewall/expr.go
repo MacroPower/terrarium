@@ -367,6 +367,25 @@ func dnatToLocal(port uint16) []expr.Any {
 	}
 }
 
+// matchLocalDst matches packets whose destination address is locally
+// owned. Uses fib daddr type to check the address type against the
+// routing table. Used in NAT PREROUTING to intercept bridge-container
+// traffic destined for the VM's own IPs.
+func matchLocalDst() []expr.Any {
+	return []expr.Any{
+		&expr.Fib{
+			Register:       1,
+			FlagDADDR:      true,
+			ResultADDRTYPE: true,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL),
+		},
+	}
+}
+
 // matchNotLocalDst matches packets whose destination address is not
 // locally owned. Uses fib daddr type to check the address type
 // against the routing table. Prevents intercepting container-to-host
