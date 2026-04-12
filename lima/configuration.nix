@@ -4,8 +4,95 @@
   terrarium,
   ...
 }:
+let
+  testImage = pkgs.dockerTools.buildLayeredImage {
+    name = "terrarium-test";
+    tag = "latest";
+    contents = pkgs.buildEnv {
+      name = "test-image-env";
+      paths = [ pkgs.curl pkgs.cacert pkgs.nginx pkgs.openssl pkgs.coreutils ];
+      pathsToLink = [ "/bin" "/etc" "/lib" "/share" ];
+    };
+    # Minimal passwd/group so nginx can resolve user "nobody".
+    fakeRootCommands = ''
+      mkdir -p ./etc ./tmp ./var/log/nginx
+      echo 'root:x:0:0:root:/root:/bin/false' > ./etc/passwd
+      echo 'nobody:x:65534:65534:nobody:/nonexistent:/bin/false' >> ./etc/passwd
+      echo 'root:x:0:' > ./etc/group
+      echo 'nobody:x:65534:' >> ./etc/group
+      echo 'nogroup:x:65533:' >> ./etc/group
+    '';
+    config.Env = [ "PATH=/bin" ];
+  };
+in
 {
-  environment.systemPackages = [ terrarium pkgs.envoy-bin pkgs.nginx pkgs.socat pkgs.openssl pkgs.curl ];
+  environment.systemPackages = [ terrarium pkgs.envoy-bin pkgs.nginx pkgs.socat pkgs.openssl pkgs.curl pkgs.nerdctl pkgs.cni-plugins pkgs.conntrack-tools ];
+
+  # Containerd for running bridge-networked test containers.
+  virtualisation.containerd.enable = true;
+
+  # br_netfilter forces bridged L2 frames through netfilter inet hooks
+  # so terrarium's nftables rules see container-to-container traffic.
+  boot.kernelModules = [ "br_netfilter" ];
+  boot.kernel.sysctl = {
+    "net.bridge.bridge-nf-call-iptables" = 1;
+    "net.bridge.bridge-nf-call-ip6tables" = 1;
+    "net.ipv4.ip_forward" = 1;
+    # route_localnet on default ensures dynamically-created interfaces
+    # (cni0, veth*) inherit the setting. Required for DNAT to 127.0.0.1
+    # on bridge interfaces.
+    "net.ipv4.conf.default.route_localnet" = 1;
+  };
+
+  # Loose rpfilter allows bridge traffic through the NixOS firewall
+  # rpfilter chain. With br_netfilter, bridged packets enter L3 hooks
+  # with the bridge port (veth) as iif, but routes point to the bridge
+  # master (cni0). Strict rpfilter fails because fib saddr . iif has
+  # no matching route. Loose mode drops the iif constraint.
+  networking.firewall.checkReversePath = "loose";
+
+  # CNI bridge network for test containers. ipMasq is disabled to
+  # avoid MASQUERADE rules that could interact with terrarium's
+  # nftables table.
+  environment.etc."cni/net.d/10-bridge.conflist".text = builtins.toJSON {
+    cniVersion = "1.0.0";
+    name = "bridge";
+    plugins = [
+      {
+        type = "bridge";
+        bridge = "cni0";
+        isGateway = true;
+        ipMasq = false;
+        ipam = {
+          type = "host-local";
+          ranges = [ [ { subnet = "172.20.0.0/16"; gateway = "172.20.0.1"; } ] ];
+          routes = [ { dst = "0.0.0.0/0"; } ];
+        };
+      }
+      { type = "portmap"; capabilities = { portMappings = true; }; }
+      { type = "loopback"; }
+    ];
+  };
+
+  # Pre-load the test container image into containerd.
+  systemd.services.load-test-image = {
+    after = [ "containerd.service" ];
+    requires = [ "containerd.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      TimeoutStartSec = "60s";
+      ExecStartPre = "${pkgs.writeShellScript "wait-containerd" ''
+        for i in $(seq 1 30); do
+          ${pkgs.nerdctl}/bin/nerdctl version >/dev/null 2>&1 && exit 0
+          sleep 1
+        done
+        exit 1
+      ''}";
+      ExecStart = "${pkgs.nerdctl}/bin/nerdctl load -i ${testImage}";
+    };
+  };
 
   # Boot-time deny-all firewall. This table loads before terrarium
   # starts and blocks all non-loopback traffic. Terrarium replaces it
@@ -37,6 +124,12 @@
   # (which runs inside lima-init) to call switch without killing itself.
   systemd.services.lima-init.restartIfChanged = lib.mkForce false;
   systemd.services.lima-guestagent.restartIfChanged = lib.mkForce false;
+
+  # Test user (UID 1000) for container assertion commands.
+  users.users.testuser = {
+    isNormalUser = true;
+    uid = 1000;
+  };
 
   # Envoy user (UID 1001) matching Terrarium's default.
   users.users.envoy = {

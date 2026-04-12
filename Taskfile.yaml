@@ -131,7 +131,7 @@ tasks:
         sh: "uname -m | sed 's/arm64/aarch64/'"
     cmds:
       - >-
-        limactl create --name=terrarium
+        limactl create --name=terrarium --tty=false
         --set '.images = [{"location": "file://{{.LIMA_IMAGE}}", "arch": "{{.LIMA_ARCH}}"}]'
         lima/terrarium.yaml
       - limactl start terrarium
@@ -159,12 +159,12 @@ tasks:
   lima:test:
     desc: Runs Lima VM e2e tests
     cmds:
-      - go run ./cmd/testrunner-lima --vm-name=terrarium
+      - go test -v -count=1 -timeout=30m ./cmd/testrunner-lima
 
   lima:test:single:
     desc: Runs a single Lima VM e2e test by name
     cmds:
-      - go run ./cmd/testrunner-lima --vm-name=terrarium --test={{.TEST}}
+      - go test -v -count=1 -timeout=30m -run TestVM/{{.TEST}} ./cmd/testrunner-lima
 
   lima:destroy:
     desc: Stops and deletes the Terrarium Lima VM

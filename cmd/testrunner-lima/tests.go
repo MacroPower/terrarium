@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-// Assertion builder functions construct assertion values that match the
-// testrunner's JSON schema. Each function maps to an assertion type
+// Assertion builder functions construct [assertion] values that match
+// the testrunner's JSON schema. Each function maps to an assertion type
 // (e.g., httpAllowed -> "http_allowed").
 
 func httpAllowed(url, desc string) assertion {
@@ -29,7 +29,7 @@ func l7Denied(url, method, desc string) assertion {
 	return assertion{Type: "l7_denied", URL: url, Method: method, Desc: desc}
 }
 
-//nolint:unparam // url is parameterized for consistency with other assertion builders.
+//nolint:unparam // parameterized for consistency with other assertion builders.
 func l7BodyWithHeader(url, method, header, body, desc string) assertion {
 	return assertion{Type: "l7_body_with_header", URL: url, Method: method, Header: header, Body: body, Desc: desc}
 }
@@ -38,6 +38,7 @@ func l7DeniedWithHeader(url, method, header, desc string) assertion {
 	return assertion{Type: "l7_denied_with_header", URL: url, Method: method, Header: header, Desc: desc}
 }
 
+//nolint:unparam // parameterized for consistency with other assertion builders.
 func httpsPassthrough(url, body, desc string) assertion {
 	return assertion{Type: "https_passthrough", URL: url, Body: body, Desc: desc}
 }
@@ -94,9 +95,10 @@ func multiUIDDenied(url, uid, desc string) assertion {
 	return assertion{Type: "multi_uid_denied", URL: url, UID: uid, Desc: desc}
 }
 
-// vmTests defines all Lima VM e2e test cases. Each test writes a
-// terrarium config to the VM, starts target services, restarts the
-// daemon, and runs the testrunner in daemon mode.
+// vmTests defines all Lima VM e2e test cases run by the
+// testrunner-lima command. Tests cover deny-all, FQDN exact/wildcard,
+// CIDR, L7 HTTP filtering, port ranges, UDP, ICMP, egress deny rules,
+// guard table behavior, config reload, and container-originated traffic.
 var vmTests = []vmTest{
 	{
 		name: "vm-deny-all",
@@ -959,6 +961,129 @@ egressDeny:
 			httpAllowed("http://one.target-zone:80/", "wildcard-http-rbac: single-label match allowed"),
 			networkDenied("http://deep.sub.target-zone:80/", "wildcard-http-rbac: multi-label rejected by DNS"),
 			networkDenied("http://denied.other-zone:80/", "wildcard-http-rbac: wrong zone denied"),
+		},
+	},
+
+	// Container e2e tests: traffic originates from bridge-networked
+	// containers and is intercepted via NAT PREROUTING DNAT (IPv4) or
+	// TPROXY (IPv6). Target services run as containers with fixed IPs
+	// on the 172.20.0.0/16 bridge subnet.
+	{
+		name:   "vm-container-infra-smoke",
+		config: ``,
+		containerServices: []serviceSpec{
+			nginxService("ct-smoke", defaultNginxConf),
+		},
+		containerAssertions: []assertion{
+			httpAllowed("http://ct-smoke:80/", "container-infra: HTTP reachable"),
+			httpsPassthrough("https://ct-smoke:443/", "OK", "container-infra: HTTPS reachable"),
+		},
+		rootAssertions: []assertion{
+			dnsForwarded("ct-smoke", "container-infra: DNS resolves"),
+		},
+	},
+	{
+		name: "vm-container-deny-all",
+		config: `egress:
+  - {}
+`,
+		containerServices: []serviceSpec{
+			nginxService("ct-target", defaultNginxConf),
+		},
+		containerAssertions: []assertion{
+			networkDenied("http://ct-target:80/", "container deny-all: HTTP denied"),
+			networkDenied("https://ct-target:443/", "container deny-all: HTTPS denied"),
+		},
+	},
+	{
+		name: "vm-container-fqdn-allow",
+		config: `egress:
+  - toFQDNs:
+      - matchName: "ct-allow"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+          - port: "443"
+            protocol: TCP
+`,
+		containerServices: []serviceSpec{
+			nginxService("ct-allow", defaultNginxConf),
+			nginxService("ct-deny", defaultNginxConf),
+		},
+		containerAssertions: []assertion{
+			httpAllowed("http://ct-allow:80/", "container fqdn-allow: HTTP to ct-allow"),
+			httpAllowed("https://ct-allow:443/", "container fqdn-allow: HTTPS to ct-allow"),
+			networkDenied("http://ct-deny:80/", "container fqdn-allow: HTTP to ct-deny denied"),
+			networkDenied("https://ct-deny:443/", "container fqdn-allow: HTTPS to ct-deny denied"),
+		},
+	},
+	{
+		name: "vm-container-https-passthrough",
+		config: `egress:
+  - toFQDNs:
+      - matchName: "ct-target"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		containerServices: []serviceSpec{
+			nginxService("ct-target", defaultNginxConf),
+		},
+		containerAssertions: []assertion{
+			httpsPassthrough("https://ct-target:443/", "OK", "container https-passthrough: HTTPS passthrough"),
+		},
+	},
+	{
+		name: "vm-container-l7-filtering",
+		config: `egress:
+  - toFQDNs:
+      - matchName: "ct-l7"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+        rules:
+          http:
+            - method: "GET"
+              path: "/allowed/.*"
+`,
+		containerServices: []serviceSpec{
+			nginxService("ct-l7", l7NginxConf),
+		},
+		containerAssertions: []assertion{
+			l7Allowed(
+				"https://ct-l7:443/allowed/resource",
+				"GET",
+				"ALLOWED_PATH",
+				"container l7: GET /allowed/resource",
+			),
+			l7Denied("https://ct-l7:443/denied/resource", "GET", "container l7: GET /denied/resource denied"),
+		},
+	},
+	{
+		name: "vm-container-mixed",
+		config: `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+      - matchName: "ct-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		services: []serviceSpec{
+			nginxService("target-allow", defaultNginxConf),
+		},
+		assertions: []assertion{
+			httpAllowed("https://target-allow:443/", "mixed: VM HTTPS to target-allow"),
+		},
+		containerServices: []serviceSpec{
+			nginxService("ct-allow", defaultNginxConf),
+		},
+		containerAssertions: []assertion{
+			httpAllowed("https://ct-allow:443/", "mixed: container HTTPS to ct-allow"),
 		},
 	},
 

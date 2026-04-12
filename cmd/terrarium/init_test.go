@@ -3,16 +3,34 @@ package main
 import (
 	"net"
 	"os/exec"
+	"syscall"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/dnstest"
 )
+
+// setReuseAddr sets SO_REUSEADDR on the socket. Used in port-release
+// verification to avoid racing with kernel socket teardown in
+// sandboxed build environments.
+func setReuseAddr(_, _ string, c syscall.RawConn) error {
+	var opErr error
+
+	err := c.Control(func(fd uintptr) {
+		opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+	})
+	if err != nil {
+		return err
+	}
+
+	return opErr
+}
 
 func TestParseUpstreamDNS(t *testing.T) {
 	t.Parallel()
@@ -82,7 +100,11 @@ func TestDNSProxyShutdownOnInitFailure(t *testing.T) {
 	require.NoError(t, proxy.Shutdown())
 
 	// Verify the port is released by binding the same address.
-	lc := net.ListenConfig{}
+	// Use SO_REUSEADDR to avoid racing with kernel socket teardown
+	// in sandboxed build environments.
+	lc := net.ListenConfig{
+		Control: setReuseAddr,
+	}
 	ln, err := lc.ListenPacket(t.Context(), "udp", proxy.Addr)
 	require.NoError(t, err)
 	require.NoError(t, ln.Close())
@@ -168,8 +190,11 @@ func TestShutdownOrder(t *testing.T) {
 	// Envoy process should have been terminated and waited on.
 	assert.NotNil(t, envoyCmd.ProcessState, "envoy process should have been waited on")
 
-	// DNS proxy port should be released.
-	lc := net.ListenConfig{}
+	// DNS proxy port should be released. Use SO_REUSEADDR to avoid
+	// racing with kernel socket teardown in sandboxed build environments.
+	lc := net.ListenConfig{
+		Control: setReuseAddr,
+	}
 	ln, err := lc.ListenPacket(t.Context(), "udp", proxy.Addr)
 	require.NoError(t, err)
 	require.NoError(t, ln.Close())

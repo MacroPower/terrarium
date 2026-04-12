@@ -1675,7 +1675,9 @@ func TestApplyRules_VMMode_NATPreRouting(t *testing.T) {
 	rules := rec.rulesForChain("nat_prerouting")
 	require.NotEmpty(t, rules)
 
-	// Should have DNS DNAT rules (UDP + TCP port 53).
+	// Should have DNS DNAT for UDP only (TCP uses TPROXY in mangle
+	// PREROUTING because br_netfilter prevents DNAT to 127.0.0.1
+	// for bridge-forwarded TCP packets).
 	var dnsDNATCount int
 	for _, r := range rules {
 		if ruleHasNAT(r) && ruleHasDstPort(r, 53) {
@@ -1683,22 +1685,19 @@ func TestApplyRules_VMMode_NATPreRouting(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 2, dnsDNATCount, "should have DNS DNAT for UDP and TCP")
+	assert.Equal(t, 1, dnsDNATCount, "should have DNS DNAT for UDP only")
 
-	// Should have catch-all TCP DNAT as last rule.
-	lastRule := rules[len(rules)-1]
-	assert.True(t, ruleHasNAT(lastRule), "last nat_prerouting rule should be DNAT")
-
-	// Should have per-port FQDN DNAT.
-	var portDNATCount int
+	// No per-port or catch-all TCP DNAT (all forwarded TCP uses
+	// TPROXY in mangle PREROUTING).
+	var tcpDNATCount int
 	for _, r := range rules {
 		if ruleHasNAT(r) && !ruleHasDstPort(r, 53) {
-			portDNATCount++
+			tcpDNATCount++
 		}
 	}
 
-	assert.GreaterOrEqual(t, portDNATCount, 2,
-		"should have per-port DNAT and catch-all TCP DNAT")
+	assert.Equal(t, 0, tcpDNATCount,
+		"should not have per-port or catch-all TCP DNAT (uses TPROXY)")
 }
 
 func TestApplyRules_VMMode_NATPreRouting_Unrestricted(t *testing.T) {
@@ -1716,7 +1715,8 @@ func TestApplyRules_VMMode_NATPreRouting_Unrestricted(t *testing.T) {
 	rules := rec.rulesForChain("nat_prerouting")
 	require.NotEmpty(t, rules)
 
-	// Should have DNS DNAT (UDP + TCP), port 80, 443, and catch-all.
+	// Should have DNS DNAT for UDP only (all forwarded TCP uses
+	// TPROXY in mangle PREROUTING).
 	var natCount int
 	for _, r := range rules {
 		if ruleHasNAT(r) {
@@ -1724,8 +1724,8 @@ func TestApplyRules_VMMode_NATPreRouting_Unrestricted(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 5, natCount,
-		"should have DNAT for DNS UDP, DNS TCP, port 80, port 443, and catch-all")
+	assert.Equal(t, 1, natCount,
+		"should have DNAT for DNS UDP only (TCP uses TPROXY)")
 }
 
 func TestApplyRules_VMMode_ForwardChain(t *testing.T) {
@@ -2097,9 +2097,9 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 		}
 	}
 
-	// Should have 3 marking rules: IPv4 UDP, IPv6 UDP, IPv6 TCP.
-	require.Len(t, markRules, 3,
-		"VM mode should have 3 marking rules (IPv4 UDP, IPv6 UDP, IPv6 TCP)")
+	// Should have 4 marking rules: IPv4 UDP, IPv6 UDP, IPv4 TCP, IPv6 TCP.
+	require.Len(t, markRules, 4,
+		"VM mode should have 4 marking rules (IPv4 UDP, IPv6 UDP, IPv4 TCP, IPv6 TCP)")
 
 	// First marking rule: IPv4 forwarded UDP (excludes DNS port 53).
 	assert.True(t, ruleMatchesNFProto(markRules[0], 2),
@@ -2113,11 +2113,17 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 	assert.True(t, ruleMatchesL4Proto(markRules[1], 17),
 		"second mark rule should be UDP")
 
-	// Third marking rule: IPv6 forwarded TCP.
-	assert.True(t, ruleMatchesNFProto(markRules[2], 10),
-		"third mark rule should be IPv6")
+	// Third marking rule: IPv4 forwarded TCP.
+	assert.True(t, ruleMatchesNFProto(markRules[2], 2),
+		"third mark rule should be IPv4")
 	assert.True(t, ruleMatchesL4Proto(markRules[2], 6),
 		"third mark rule should be TCP")
+
+	// Fourth marking rule: IPv6 forwarded TCP.
+	assert.True(t, ruleMatchesNFProto(markRules[3], 10),
+		"fourth mark rule should be IPv6")
+	assert.True(t, ruleMatchesL4Proto(markRules[3], 6),
+		"fourth mark rule should be TCP")
 
 	// Should have IPv6 TPROXY dispatch rules.
 	var ipv6TProxyCount int
@@ -2191,12 +2197,12 @@ func TestApplyRules_VMMode_IPv6TPROXY_DenyCIDR(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
 	require.NoError(t, err)
 
-	// Should have a deny_cidr_tproxy chain with per-rule structure.
+	// Should have a deny_cidr_tproxy6 chain with per-rule structure.
 	names := rec.chainNames()
-	assert.Contains(t, names, "deny_cidr_tproxy_0",
+	assert.Contains(t, names, "deny_cidr_tproxy6_0",
 		"should create per-rule deny CIDR TPROXY chain")
 
-	chainRules := rec.rulesForChain("deny_cidr_tproxy_0")
+	chainRules := rec.rulesForChain("deny_cidr_tproxy6_0")
 	require.NotEmpty(t, chainRules)
 
 	// Chain should have except RETURN before CIDR ACCEPT.
@@ -2239,12 +2245,12 @@ func TestApplyRules_VMMode_IPv6TPROXY_AllowCIDR(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
 	require.NoError(t, err)
 
-	// Should have a cidr_tproxy chain with per-rule structure.
+	// Should have a cidr_tproxy6 chain with per-rule structure.
 	names := rec.chainNames()
-	assert.Contains(t, names, "cidr_tproxy_0",
+	assert.Contains(t, names, "cidr_tproxy6_0",
 		"should create per-rule allow CIDR TPROXY chain")
 
-	cidrRules := rec.rulesForChain("cidr_tproxy_0")
+	cidrRules := rec.rulesForChain("cidr_tproxy6_0")
 	require.NotEmpty(t, cidrRules)
 
 	// Chain should have except RETURN before TPROXY dispatch.

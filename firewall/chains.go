@@ -821,17 +821,17 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 // addManglePreRoutingChain creates a filter-type prerouting chain at
 // mangle priority that applies TPROXY to marked UDP packets. Per-AF
 // rules are used (IPv4 and IPv6 separately) matching the codebase's
-// convention in matchDstCIDR. In VM mode, forwarded UDP and IPv6 TCP
+// convention in matchDstCIDR. In VM mode, forwarded UDP and TCP
 // packets are also marked for TPROXY interception before the dispatch
-// rules. IPv6 forwarded TCP uses TPROXY because Linux has no
-// route_localnet equivalent for IPv6 (DNAT to 127.0.0.1 only works
-// for IPv4).
+// rules. Forwarded TCP uses TPROXY (instead of NAT PREROUTING DNAT)
+// because br_netfilter prevents DNAT to 127.0.0.1 for
+// bridge-forwarded TCP packets.
 func addManglePreRoutingChain(
 	conn Conn, table *nftables.Table,
 	udpPort uint16,
 	resolvedPorts []int,
 	tcpForwards []config.TCPForward,
-	cidr6, denyCIDR6 []config.ResolvedCIDR,
+	cidr4, cidr6, denyCIDR4, denyCIDR6 []config.ResolvedCIDR,
 	uids UIDs,
 ) {
 	chain := conn.AddChain(&nftables.Chain{
@@ -872,16 +872,33 @@ func addManglePreRoutingChain(
 			),
 		})
 
-		// IPv6 forwarded TCP: mark for TPROXY. IPv4 TCP uses DNAT
-		// in NAT PREROUTING via route_localnet.
+		// Forwarded TCP: mark for TPROXY. IPv4 uses TPROXY instead
+		// of DNAT because br_netfilter prevents DNAT to 127.0.0.1
+		// for bridge-forwarded TCP (the bridge path does not re-route
+		// DNATted packets through loopback).
+		for _, nfProto := range []byte{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchNFProto(nfProto),
+					matchNotIIFName("lo"),
+					matchNotLocalDst(),
+					matchL4Proto(unix.IPPROTO_TCP),
+					markPacket(tproxyMark),
+				),
+			})
+		}
+
+		// IPv4 DNS TCP TPROXY -> DNS proxy. IPv4 DNS UDP uses DNAT
+		// in NAT PREROUTING (UDP DNAT works with br_netfilter).
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchNFProto(unix.NFPROTO_IPV6),
-				matchNotIIFName("lo"),
-				matchNotLocalDst(),
+				matchMark(tproxyMark),
+				matchNFProto(unix.NFPROTO_IPV4),
 				matchL4Proto(unix.IPPROTO_TCP),
-				markPacket(tproxyMark),
+				matchDstPort(53),
+				tproxyToPort(unix.NFPROTO_IPV4, 53),
 			),
 		})
 
@@ -900,55 +917,59 @@ func addManglePreRoutingChain(
 			})
 		}
 
-		// IPv6 deny CIDR: ACCEPT to skip TPROXY so traffic falls
-		// to the FORWARD chain for policy DROP. Uses per-rule
-		// chains with except RETURNs and port scoping, mirroring
-		// addDenyCIDRChainsWithVerdict for the IPv4 NAT path.
-		addIPv6DenyCIDRTPROXYSkip(conn, table, chain, denyCIDR6)
+		// Deny CIDR: ACCEPT to skip TPROXY so traffic falls to the
+		// FORWARD chain for policy DROP.
+		addForwardedDenyCIDRTPROXYSkip(conn, table, chain, denyCIDR4, unix.NFPROTO_IPV4)
+		addForwardedDenyCIDRTPROXYSkip(conn, table, chain, denyCIDR6, unix.NFPROTO_IPV6)
 
-		// IPv6 allow CIDR + TCP -> TPROXY to CIDR catch-all port.
-		// Uses per-rule chains with except RETURNs, port scoping,
-		// and serverName/L7 skipping, mirroring addCIDRNATRedirect.
-		addIPv6AllowCIDRTPROXY(conn, table, chain, cidr6)
+		// Allow CIDR + TCP -> TPROXY to CIDR catch-all port.
+		addForwardedAllowCIDRTPROXY(conn, table, chain, cidr4, unix.NFPROTO_IPV4)
+		addForwardedAllowCIDRTPROXY(conn, table, chain, cidr6, unix.NFPROTO_IPV6)
 
-		// IPv6 per-port TCP -> TPROXY to ProxyPortBase+port.
+		// Per-port TCP -> TPROXY to ProxyPortBase+port.
 		for _, p := range resolvedPorts {
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: chain,
-				Exprs: flatExprs(
-					matchMark(tproxyMark),
-					matchNFProto(unix.NFPROTO_IPV6),
-					matchL4Proto(unix.IPPROTO_TCP),
-					matchDstPort(port16(p)),
-					tproxyToPort(unix.NFPROTO_IPV6, port16(config.ProxyPortBase+p)),
-				),
-			})
+			for _, nfProto := range []byte{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
+				conn.AddRule(&nftables.Rule{
+					Table: table, Chain: chain,
+					Exprs: flatExprs(
+						matchMark(tproxyMark),
+						matchNFProto(nfProto),
+						matchL4Proto(unix.IPPROTO_TCP),
+						matchDstPort(port16(p)),
+						tproxyToPort(nfProto, port16(config.ProxyPortBase+p)),
+					),
+				})
+			}
 		}
 
-		// IPv6 TCPForward -> TPROXY to ProxyPortBase+fwd.Port.
+		// TCPForward -> TPROXY to ProxyPortBase+fwd.Port.
 		for _, fwd := range tcpForwards {
+			for _, nfProto := range []byte{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
+				conn.AddRule(&nftables.Rule{
+					Table: table, Chain: chain,
+					Exprs: flatExprs(
+						matchMark(tproxyMark),
+						matchNFProto(nfProto),
+						matchL4Proto(unix.IPPROTO_TCP),
+						matchDstPort(port16(fwd.Port)),
+						tproxyToPort(nfProto, port16(config.ProxyPortBase+fwd.Port)),
+					),
+				})
+			}
+		}
+
+		// Catch-all TCP -> TPROXY to catch-all proxy port.
+		for _, nfProto := range []byte{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: chain,
 				Exprs: flatExprs(
 					matchMark(tproxyMark),
-					matchNFProto(unix.NFPROTO_IPV6),
+					matchNFProto(nfProto),
 					matchL4Proto(unix.IPPROTO_TCP),
-					matchDstPort(port16(fwd.Port)),
-					tproxyToPort(unix.NFPROTO_IPV6, port16(config.ProxyPortBase+fwd.Port)),
+					tproxyToPort(nfProto, port16(config.CatchAllProxyPort)),
 				),
 			})
 		}
-
-		// IPv6 catch-all TCP -> TPROXY to catch-all proxy port.
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchMark(tproxyMark),
-				matchNFProto(unix.NFPROTO_IPV6),
-				matchL4Proto(unix.IPPROTO_TCP),
-				tproxyToPort(unix.NFPROTO_IPV6, port16(config.CatchAllProxyPort)),
-			),
-		})
 	}
 
 	// IPv4: match fwmark + UDP -> TPROXY to port.
@@ -1281,15 +1302,11 @@ func forwardGuardExprs() []expr.Any {
 }
 
 // addNATPreRouting creates a NAT PREROUTING chain for VM mode that
-// DNATs forwarded IPv4 TCP and DNS traffic to 127.0.0.1 for Envoy
-// and DNS proxy interception. All rules are scoped to non-loopback
-// input, non-local destination, and IPv4 (no route_localnet equivalent
-// for IPv6).
-func addNATPreRouting(
-	conn Conn, table *nftables.Table, cfg *config.Config,
-	resolvedPorts []int, cidr4, denyCIDRs []config.ResolvedCIDR,
-	uids UIDs,
-) {
+// DNATs forwarded IPv4 DNS UDP traffic to 127.0.0.1 for the DNS
+// proxy. IPv4 forwarded TCP uses TPROXY (in mangle PREROUTING)
+// instead of DNAT because br_netfilter prevents DNAT to 127.0.0.1
+// for bridge-forwarded TCP packets.
+func addNATPreRouting(conn Conn, table *nftables.Table) {
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "nat_prerouting",
 		Table:    table,
@@ -1300,83 +1317,24 @@ func addNATPreRouting(
 
 	guard := forwardGuardExprs()
 
-	// 1. DNS DNAT: UDP/TCP port 53 -> DNS proxy.
-	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				guard,
-				matchL4Proto(proto),
-				matchDstPort(53),
-				dnatToLocal(53),
-			),
-		})
-	}
-
-	// 2. Deny CIDR NAT ACCEPT (prevent redirect for denied CIDRs).
-	// Filter to IPv4-only deny CIDRs for PREROUTING.
-	var deny4 []config.ResolvedCIDR
-	for _, c := range denyCIDRs {
-		_, ipNet, err := net.ParseCIDR(c.CIDR)
-		if err != nil {
-			continue
-		}
-
-		if ipNet.IP.To4() != nil {
-			deny4 = append(deny4, c)
-		}
-	}
-
-	addDenyCIDRChainsWithVerdict(conn, table, chain, deny4, uids,
-		"deny_cidr_nat_pre", expr.VerdictAccept)
-
-	// 3. Allow CIDR DNAT to CIDR catch-all port. Per-rule chains
-	// with except RETURNs mirror addCIDRNATRedirect so excepted
-	// subnets are not DNATted to Envoy.
-	addCIDRNATPreRoutingDNAT(conn, table, chain, cidr4, uids)
-
-	// 4. Per-port FQDN DNAT.
-	for _, p := range resolvedPorts {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				guard,
-				matchL4Proto(unix.IPPROTO_TCP),
-				matchDstPort(port16(p)),
-				dnatToLocal(port16(config.ProxyPortBase+p)),
-			),
-		})
-	}
-
-	// 5. TCPForward DNAT.
-	for _, fwd := range cfg.TCPForwards {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				guard,
-				matchL4Proto(unix.IPPROTO_TCP),
-				matchDstPort(port16(fwd.Port)),
-				dnatToLocal(port16(config.ProxyPortBase+fwd.Port)),
-			),
-		})
-	}
-
-	// 6. Catch-all TCP DNAT -> blackhole listener.
+	// DNS DNAT: UDP port 53 -> DNS proxy. TCP port 53 uses TPROXY
+	// in mangle PREROUTING (br_netfilter prevents TCP DNAT to
+	// 127.0.0.1 for bridge-forwarded packets).
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(
 			guard,
-			matchL4Proto(unix.IPPROTO_TCP),
-			dnatToLocal(port16(config.CatchAllProxyPort)),
+			matchL4Proto(unix.IPPROTO_UDP),
+			matchDstPort(53),
+			dnatToLocal(53),
 		),
 	})
 }
 
 // addUnrestrictedNATPreRouting creates a NAT PREROUTING chain for
-// VM mode unrestricted policy. DNATs forwarded IPv4 TCP traffic to
-// Envoy for access logging (port 80 -> 15080, 443 -> 15443,
-// TCPForwards, and catch-all).
-func addUnrestrictedNATPreRouting(conn Conn, table *nftables.Table, cfg *config.Config) {
+// VM mode unrestricted policy. DNATs forwarded IPv4 DNS UDP traffic
+// to the DNS proxy. Forwarded TCP uses TPROXY in mangle PREROUTING.
+func addUnrestrictedNATPreRouting(conn Conn, table *nftables.Table) {
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "nat_prerouting",
 		Table:    table,
@@ -1387,105 +1345,47 @@ func addUnrestrictedNATPreRouting(conn Conn, table *nftables.Table, cfg *config.
 
 	guard := forwardGuardExprs()
 
-	// 1. DNS DNAT.
-	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				guard,
-				matchL4Proto(proto),
-				matchDstPort(53),
-				dnatToLocal(53),
-			),
-		})
-	}
-
-	// 2. Port 80 -> HTTP forward proxy.
+	// DNS DNAT: UDP port 53 -> DNS proxy.
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(
 			guard,
-			matchL4Proto(unix.IPPROTO_TCP),
-			matchDstPort(80),
-			dnatToLocal(15080),
-		),
-	})
-
-	// 3. Port 443 -> TLS passthrough.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			guard,
-			matchL4Proto(unix.IPPROTO_TCP),
-			matchDstPort(443),
-			dnatToLocal(15443),
-		),
-	})
-
-	// 4. TCPForward DNAT.
-	for _, fwd := range cfg.TCPForwards {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				guard,
-				matchL4Proto(unix.IPPROTO_TCP),
-				matchDstPort(port16(fwd.Port)),
-				dnatToLocal(port16(config.ProxyPortBase+fwd.Port)),
-			),
-		})
-	}
-
-	// 5. Catch-all TCP DNAT.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			guard,
-			matchL4Proto(unix.IPPROTO_TCP),
-			dnatToLocal(port16(config.CatchAllProxyPort)),
+			matchL4Proto(unix.IPPROTO_UDP),
+			matchDstPort(53),
+			dnatToLocal(53),
 		),
 	})
 }
 
-// addCIDRNATPreRoutingDNAT creates per-rule CIDR chains in the NAT
-// PREROUTING context, mirroring [addCIDRNATRedirect] for the OUTPUT
-// path. Each chain evaluates one rule's CIDRs: RETURN for except hits
-// (excepted subnets skip this rule's DNAT), DNAT for TCP CIDR hits
-// (DNAT to the CIDR catch-all listener). Uses [dnatToLocal] instead
-// of [redirectToPort] because REDIRECT in PREROUTING would redirect
-// to the incoming interface's address, not loopback.
-func addCIDRNATPreRoutingDNAT(
-	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	cidrs []config.ResolvedCIDR, uids UIDs,
-) {
-	buildCIDRTCPChains(conn, table, parentChain, cidrs,
-		"cidr_nat_pre", matchFilteredTraffic(uids),
-		dnatToLocal(port16(config.CIDRCatchAllPort)), nil)
-}
-
-// tproxyIPv6Guard returns the common match expressions for IPv6
+// tproxyNFProtoGuard returns the common match expressions for
 // TPROXY dispatch rules in mangle PREROUTING: fwmark match and
-// IPv6 protocol scope.
-func tproxyIPv6Guard() []expr.Any {
+// address family scope.
+func tproxyNFProtoGuard(nfProto byte) []expr.Any {
 	return flatExprs(
 		matchMark(tproxyMark),
-		matchNFProto(unix.NFPROTO_IPV6),
+		matchNFProto(nfProto),
 	)
 }
 
-// addIPv6DenyCIDRTPROXYSkip creates per-rule deny CIDR chains that
-// ACCEPT (skip TPROXY) for denied IPv6 CIDRs. Traffic that skips
-// TPROXY falls to the FORWARD chain where the filter deny rules DROP
-// it. Mirrors [addDenyCIDRChainsWithVerdict] but scoped to IPv6
-// TPROXY-marked traffic instead of UID-filtered traffic.
-func addIPv6DenyCIDRTPROXYSkip(
+// addForwardedDenyCIDRTPROXYSkip creates per-rule deny CIDR chains
+// that ACCEPT (skip TPROXY) for denied CIDRs in the given address
+// family. Traffic that skips TPROXY falls to the FORWARD chain where
+// the filter deny rules DROP it. Mirrors [addDenyCIDRChainsWithVerdict]
+// but scoped to TPROXY-marked forwarded traffic.
+func addForwardedDenyCIDRTPROXYSkip(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	cidrs []config.ResolvedCIDR,
+	cidrs []config.ResolvedCIDR, nfProto byte,
 ) {
 	groups := groupCIDRsByRule(cidrs)
-	guard := tproxyIPv6Guard()
+	guard := tproxyNFProtoGuard(nfProto)
 
 	for i, group := range groups {
-		chainName := fmt.Sprintf("deny_cidr_tproxy_%d", i)
+		familySuffix := "4"
+		if nfProto == unix.NFPROTO_IPV6 {
+			familySuffix = "6"
+		}
+
+		chainName := fmt.Sprintf("deny_cidr_tproxy%s_%d", familySuffix, i)
 		chain := conn.AddChain(&nftables.Chain{
 			Name:  chainName,
 			Table: table,
@@ -1551,7 +1451,7 @@ func addIPv6DenyCIDRTPROXYSkip(
 			}
 		}
 
-		// Jump from parent chain (scoped to IPv6 TPROXY traffic).
+		// Jump from parent chain (scoped to TPROXY-marked traffic).
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: parentChain,
 			Exprs: flatExprs(
@@ -1562,25 +1462,30 @@ func addIPv6DenyCIDRTPROXYSkip(
 	}
 }
 
-// addIPv6AllowCIDRTPROXY creates per-rule CIDR chains that TPROXY
-// matching IPv6 TCP traffic to the CIDR catch-all listener. Mirrors
-// [addCIDRNATRedirect] / [addCIDRNATPreRoutingDNAT] but uses TPROXY
-// instead of REDIRECT/DNAT. Rules with serverNames or L7 ports are
-// skipped (they fall to per-port TPROXY dispatch for SNI/HTTP
-// filtering via Envoy).
-func addIPv6AllowCIDRTPROXY(
+// addForwardedAllowCIDRTPROXY creates per-rule CIDR chains that
+// TPROXY matching TCP traffic to the CIDR catch-all listener for the
+// given address family. Mirrors [addCIDRNATRedirect] but uses TPROXY
+// instead of REDIRECT. Rules with serverNames or L7 ports are skipped
+// (they fall to per-port TPROXY dispatch for SNI/HTTP filtering via
+// Envoy).
+func addForwardedAllowCIDRTPROXY(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	cidrs []config.ResolvedCIDR,
+	cidrs []config.ResolvedCIDR, nfProto byte,
 ) {
+	familySuffix := "4"
+	if nfProto == unix.NFPROTO_IPV6 {
+		familySuffix = "6"
+	}
+
 	buildCIDRTCPChains(conn, table, parentChain, cidrs,
-		"cidr_tproxy", nil,
-		tproxyToPort(unix.NFPROTO_IPV6, port16(config.CIDRCatchAllPort)),
-		tproxyIPv6Guard())
+		"cidr_tproxy"+familySuffix, nil,
+		tproxyToPort(nfProto, port16(config.CIDRCatchAllPort)),
+		tproxyNFProtoGuard(nfProto))
 }
 
 // buildCIDRTCPChains is the shared implementation for
-// [addCIDRNATRedirect], [addCIDRNATPreRoutingDNAT], and
-// [addIPv6AllowCIDRTPROXY]. It creates per-rule CIDR chains with
+// [addCIDRNATRedirect] and [addForwardedAllowCIDRTPROXY]. It creates
+// per-rule CIDR chains with
 // except RETURNs and terminal expressions (redirect, DNAT, or
 // TPROXY). The rulePrefix expressions are prepended to each rule
 // inside the chain. The jumpGuard expressions are prepended to the

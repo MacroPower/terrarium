@@ -21,12 +21,14 @@ const (
 // run executes the full e2e test lifecycle defined by the given [spec].
 // It returns exit code 0 for all-pass, 1 for assertion failures, and
 // 2 for infrastructure errors.
-func run(s spec) int {
+func run(ctx context.Context, s spec) int {
+	debugMode = s.Debug
+
 	// Step 1: Validate Envoy config if requested.
 	if s.ValidateEnvoy {
 		fmt.Println("Validating Envoy configuration...")
 
-		err := validateEnvoy(s.ConfigPath)
+		err := validateEnvoy(ctx, s.ConfigPath)
 		if err != nil {
 			fmt.Printf("Infrastructure error: envoy validation: %v\n", err)
 			return 2
@@ -48,7 +50,7 @@ func run(s spec) int {
 
 	// Step 3: Start loopback listener if configured.
 	if s.LoopbackPort > 0 {
-		startLoopbackListener(s.LoopbackPort)
+		startLoopbackListener(ctx, s.LoopbackPort)
 	}
 
 	// Step 4: Start terrarium init as a subprocess.
@@ -64,8 +66,6 @@ func run(s spec) int {
 		"--",
 	}
 	args = append(args, "sh", "-c", initCmd)
-
-	ctx := context.Background()
 
 	terrarium := exec.CommandContext(ctx, "terrarium", args...) //nolint:gosec // args built from spec
 	terrarium.Stdout = os.Stdout
@@ -91,20 +91,20 @@ func run(s spec) int {
 		// Try to capture any terrarium stderr output.
 		sigErr := terrarium.Process.Signal(syscall.SIGTERM)
 		if sigErr != nil {
-			slog.Debug("signaling terrarium", slog.Any("err", sigErr))
+			slog.DebugContext(ctx, "signaling terrarium", slog.Any("err", sigErr))
 		}
 
 		return 2
 	}
 
 	// Step 6: Run all assertions (root + user).
-	results, err := runAllAssertions(s)
+	results, err := runAllAssertions(ctx, s)
 	if err != nil {
 		fmt.Printf("Infrastructure error: running child assertions: %v\n", err)
 
 		sigErr := terrarium.Process.Signal(syscall.SIGTERM)
 		if sigErr != nil {
-			slog.Debug("signaling terrarium", slog.Any("err", sigErr))
+			slog.DebugContext(ctx, "signaling terrarium", slog.Any("err", sigErr))
 		}
 
 		return 2
@@ -114,13 +114,13 @@ func run(s spec) int {
 	// so Envoy flushes access logs before the container stops.
 	sigErr := terrarium.Process.Signal(syscall.SIGTERM)
 	if sigErr != nil {
-		slog.Debug("signaling terrarium", slog.Any("err", sigErr))
+		slog.DebugContext(ctx, "signaling terrarium", slog.Any("err", sigErr))
 	}
 
 	select {
 	case <-terrariumDone:
 	case <-time.After(10 * time.Second):
-		slog.Debug("terrarium did not exit within 10s after SIGTERM")
+		slog.DebugContext(ctx, "terrarium did not exit within 10s after SIGTERM")
 	}
 
 	return summarizeResults(results)
@@ -132,11 +132,13 @@ func run(s spec) int {
 // is managed externally (e.g., systemd), so no SIGTERM cleanup is
 // performed. Returns exit code 0 for all-pass, 1 for assertion
 // failures, and 2 for infrastructure errors.
-func runDaemon(s spec) int {
+func runDaemon(ctx context.Context, s spec) int {
+	debugMode = s.Debug
+
 	if !s.SkipDaemonCheck {
 		// Verify the daemon is active.
 		out, err := exec.CommandContext(
-			context.Background(), "systemctl", "is-active", "terrarium",
+			ctx, "systemctl", "is-active", "terrarium",
 		).Output()
 		if err != nil {
 			fmt.Printf(
@@ -157,7 +159,7 @@ func runDaemon(s spec) int {
 		fmt.Println("Terrarium daemon is active.")
 	}
 
-	results, err := runAllAssertions(s)
+	results, err := runAllAssertions(ctx, s)
 	if err != nil {
 		fmt.Printf("Infrastructure error: running child assertions: %v\n", err)
 		return 2
@@ -170,9 +172,7 @@ func runDaemon(s spec) int {
 // config at configPath, then runs envoy --mode=validate against it.
 // A temporary access log file is created so Envoy can open the path
 // referenced in the generated config.
-func validateEnvoy(configPath string) error {
-	ctx := context.Background()
-
+func validateEnvoy(ctx context.Context, configPath string) error {
 	// Create a temporary access log file so Envoy validation can open
 	// the path referenced in the generated config.
 	accessLog := "/tmp/envoy-validate-access.log"
@@ -184,7 +184,7 @@ func validateEnvoy(configPath string) error {
 
 	closeErr := f.Close()
 	if closeErr != nil {
-		slog.Debug("closing access log for validation", slog.Any("err", closeErr))
+		slog.DebugContext(ctx, "closing access log for validation", slog.Any("err", closeErr))
 	}
 
 	genCmd := exec.CommandContext(ctx, "terrarium", "generate",
@@ -214,12 +214,12 @@ func validateEnvoy(configPath string) error {
 
 	rmErr := os.Remove("/tmp/envoy-validate.yaml")
 	if rmErr != nil {
-		slog.Debug("removing envoy config", slog.Any("err", rmErr))
+		slog.DebugContext(ctx, "removing envoy config", slog.Any("err", rmErr))
 	}
 
 	rmErr = os.Remove(accessLog)
 	if rmErr != nil {
-		slog.Debug("removing access log for validation", slog.Any("err", rmErr))
+		slog.DebugContext(ctx, "removing access log for validation", slog.Any("err", rmErr))
 	}
 
 	return nil
@@ -256,9 +256,10 @@ func waitReady(terrariumDone <-chan error) error {
 
 // runAsChild re-executes the testrunner as a child process with UID/GID
 // 1000, running only the given assertions. Returns the child's results.
-func runAsChild(assertions []assertion) ([]result, error) {
+func runAsChild(ctx context.Context, assertions []assertion, debug bool) ([]result, error) {
 	childSpec := spec{
 		Assertions: assertions,
+		Debug:      debug,
 	}
 
 	specJSON, err := json.Marshal(childSpec)
@@ -276,14 +277,14 @@ func runAsChild(assertions []assertion) ([]result, error) {
 	defer func() {
 		err := os.Remove(specFile)
 		if err != nil {
-			slog.Debug("removing spec file", slog.Any("err", err))
+			slog.DebugContext(ctx, "removing spec file", slog.Any("err", err))
 		}
 	}()
 
 	resultsFile := "/tmp/child-results.json"
 
 	cmd := exec.CommandContext(
-		context.Background(),
+		ctx,
 		"/proc/self/exe", "--child", "--spec", specFile, "--results", resultsFile,
 	)
 	cmd.Stdout = os.Stdout
@@ -312,7 +313,7 @@ func runAsChild(assertions []assertion) ([]result, error) {
 
 	rmErr := os.Remove(resultsFile)
 	if rmErr != nil {
-		slog.Debug("removing results file", slog.Any("err", rmErr))
+		slog.DebugContext(ctx, "removing results file", slog.Any("err", rmErr))
 	}
 
 	var results []result
@@ -327,11 +328,13 @@ func runAsChild(assertions []assertion) ([]result, error) {
 
 // runChild executes assertions directly (called in the child process
 // after UID switch). Results are written to the given file path.
-func runChild(s spec, resultsPath string) int {
+func runChild(ctx context.Context, s spec, resultsPath string) int {
+	debugMode = s.Debug
+
 	var results []result
 
 	for i := range s.Assertions {
-		r := runAssertion(s.Assertions[i])
+		r := runAssertion(ctx, s.Assertions[i])
 		printResult(r)
 
 		results = append(results, r)
@@ -361,7 +364,7 @@ func runChild(s spec, resultsPath string) int {
 // startLoopbackListener starts an HTTP server on localhost at the given
 // port that responds with "LOOPBACK_OK" to all requests. It blocks until
 // the listener is ready or 10 seconds elapse.
-func startLoopbackListener(port int) {
+func startLoopbackListener(ctx context.Context, port int) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -382,7 +385,7 @@ func startLoopbackListener(port int) {
 	go func() {
 		err := srv.ListenAndServe()
 		if err != nil {
-			slog.Debug("loopback listener exited", slog.Any("err", err))
+			slog.DebugContext(ctx, "loopback listener exited", slog.Any("err", err))
 		}
 	}()
 
@@ -391,7 +394,7 @@ func startLoopbackListener(port int) {
 
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequestWithContext(
-			context.Background(), http.MethodGet,
+			ctx, http.MethodGet,
 			fmt.Sprintf("http://127.0.0.1:%d/", port), http.NoBody,
 		)
 		if err != nil {
@@ -402,7 +405,7 @@ func startLoopbackListener(port int) {
 		if err == nil {
 			err := resp.Body.Close()
 			if err != nil {
-				slog.Debug("closing response body", slog.Any("err", err))
+				slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 			}
 
 			return
@@ -452,14 +455,14 @@ func installExtraCACert(path string) error {
 
 // runAllAssertions executes root assertions directly and user assertions
 // via a UID-switched child process, returning the combined results.
-func runAllAssertions(s spec) ([]result, error) {
+func runAllAssertions(ctx context.Context, s spec) ([]result, error) {
 	var results []result
 
 	if len(s.RootAssertions) > 0 {
 		fmt.Printf("\nRunning %d root assertions...\n", len(s.RootAssertions))
 
 		for i := range s.RootAssertions {
-			r := runAssertion(s.RootAssertions[i])
+			r := runAssertion(ctx, s.RootAssertions[i])
 			printResult(r)
 
 			results = append(results, r)
@@ -469,7 +472,7 @@ func runAllAssertions(s spec) ([]result, error) {
 	if len(s.Assertions) > 0 {
 		fmt.Printf("\nRunning %d user assertions (UID 1000)...\n", len(s.Assertions))
 
-		childResults, err := runAsChild(s.Assertions)
+		childResults, err := runAsChild(ctx, s.Assertions, s.Debug)
 		if err != nil {
 			return nil, fmt.Errorf("running child assertions: %w", err)
 		}

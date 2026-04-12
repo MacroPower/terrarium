@@ -12,6 +12,7 @@ type spec struct {
 	ValidateEnvoy   bool        `json:"validateEnvoy"`
 	DaemonMode      bool        `json:"daemonMode,omitempty"`
 	SkipDaemonCheck bool        `json:"skipDaemonCheck,omitempty"`
+	Debug           bool        `json:"debug,omitempty"`
 }
 
 // assertion defines a single test assertion to execute inside the

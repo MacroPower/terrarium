@@ -35,43 +35,8 @@ func tcpEchoService(hostname string, port int) serviceSpec {
 	return serviceSpec{hostname: hostname, socat: "tcp", port: port}
 }
 
-// setupDNS writes /etc/hosts and dnsmasq entries for test hostnames
-// pointing to the VM's own IP, then reloads dnsmasq.
-func (d *driver) setupDNS(ctx context.Context, hostnames []string) error {
-	if len(hostnames) == 0 {
-		return nil
-	}
-
-	// Build /etc/hosts additions (for the testrunner's HTTP client).
-	var hostsLines []string
-	for _, h := range hostnames {
-		hostsLines = append(hostsLines, fmt.Sprintf("%s %s", d.ip, h))
-	}
-
-	hostsContent := strings.Join(hostsLines, "\n") + "\n"
-
-	// Write to /etc/dnsmasq-hosts. On NixOS /etc/hosts is read-only,
-	// so all test DNS entries go through dnsmasq.
-	err := d.writeFile(ctx, "/etc/dnsmasq-hosts", hostsContent)
-	if err != nil {
-		return fmt.Errorf("writing dnsmasq-hosts: %w", err)
-	}
-
-	// Reload dnsmasq so it picks up new entries.
-	_, err = d.shell(ctx, "sudo", "systemctl", "reload", "dnsmasq")
-	if err != nil {
-		// Try restart if reload is not supported.
-		_, err = d.shell(ctx, "sudo", "systemctl", "restart", "dnsmasq")
-		if err != nil {
-			return fmt.Errorf("reloading dnsmasq: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// cleanupDNS removes test hostname entries from /etc/hosts and
-// clears /etc/dnsmasq-hosts.
+// cleanupDNS removes test hostname entries and clears
+// /etc/dnsmasq-hosts.
 func (d *driver) cleanupDNS(ctx context.Context) {
 	// Clear dnsmasq-hosts.
 	err := d.writeFile(ctx, "/etc/dnsmasq-hosts", "")

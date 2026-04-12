@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,142 +10,19 @@ import (
 )
 
 func main() {
-	vmName := flag.String("vm-name", "terrarium", "Lima VM name")
-	testName := flag.String("test", "", "run a single test by name")
-	list := flag.Bool("list", false, "list available tests")
-
-	flag.Parse()
-
-	if *list {
-		for _, tc := range vmTests {
-			fmt.Println(tc.name)
-		}
-
-		return
-	}
-
-	ctx := context.Background()
-
-	d := &driver{vmName: *vmName}
-
-	// Build and deploy testrunner.
-	fmt.Println("Building testrunner for linux...")
-
-	binPath, err := buildTestrunner(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "building testrunner: %v\n", err)
-		os.Exit(2)
-	}
-
-	fmt.Println("Copying testrunner to VM...")
-
-	err = d.copyFile(ctx, binPath, "/usr/local/bin/testrunner")
-
-	rmErr := os.Remove(binPath)
-	if rmErr != nil {
-		slog.DebugContext(ctx, "removing temp binary", slog.String("error", rmErr.Error()))
-	}
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "copying testrunner to VM: %v\n", err)
-		os.Exit(2)
-	}
-
-	_, err = d.shell(ctx, "sudo", "chmod", "+x", "/usr/local/bin/testrunner")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "chmod testrunner: %v\n", err)
-		os.Exit(2)
-	}
-
-	// Install test CA cert and key for nginx cert signing.
-	err = d.writeTestCACert(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "writing test CA cert: %v\n", err)
-		os.Exit(2)
-	}
-
-	err = d.writeFile(ctx, "/tmp/test-ca-key.pem", testCAKey)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "writing test CA key: %v\n", err)
-		os.Exit(2)
-	}
-
-	// Discover VM IP.
-	d.ip, err = d.vmIP(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "discovering VM IP: %v\n", err)
-		os.Exit(2)
-	}
-
-	fmt.Printf("VM IP: %s\n", d.ip)
-
-	// Select tests.
-	tests := vmTests
-	if *testName != "" {
-		tests = nil
-
-		for _, tc := range vmTests {
-			if tc.name == *testName {
-				tests = append(tests, tc)
-
-				break
-			}
-		}
-
-		if len(tests) == 0 {
-			fmt.Fprintf(os.Stderr, "unknown test: %s\n", *testName)
-			os.Exit(2)
-		}
-	}
-
-	// Run tests sequentially.
-	passed := 0
-	failed := 0
-
-	var failures []string
-
-	for i, tc := range tests {
-		fmt.Printf("\n[%d/%d] %s\n", i+1, len(tests), tc.name)
-
-		err := d.runTest(ctx, tc)
-		if err != nil {
-			fmt.Printf("  FAIL: %v\n", err)
-
-			failed++
-
-			failures = append(failures, tc.name)
-		} else {
-			fmt.Printf("  PASS\n")
-
-			passed++
-		}
-
-		fmt.Print(d.tailLogs(ctx))
-	}
-
-	// Summary.
-	fmt.Printf("\n========================================\n")
-	fmt.Printf("Results: %d passed, %d failed out of %d\n", passed, failed, len(tests))
-
-	if failed > 0 {
-		fmt.Printf("Failed tests:\n")
-
-		for _, name := range failures {
-			fmt.Printf("  - %s\n", name)
-		}
-
-		os.Exit(1)
-	}
+	fmt.Println("Run tests with: go test -v -count=1 -timeout=30m ./cmd/testrunner-lima")
 }
 
-// buildTestrunner cross-compiles the testrunner binary for linux and
-// returns the path to the output binary.
+// buildTestrunner cross-compiles the testrunner binary for linux/GOARCH
+// and returns the path to the temporary output file. The caller is
+// responsible for removing the file when done.
 func buildTestrunner(ctx context.Context) (string, error) {
 	goarch := runtime.GOARCH
 	out := filepath.Join(os.TempDir(), "testrunner-linux")
 
 	//nolint:gosec // args are controlled by build code.
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", out, "-ldflags=-s -w", "./cmd/testrunner")
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", out, "-ldflags=-s -w",
+		"go.jacobcolvin.com/terrarium/cmd/testrunner")
 
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+goarch, "CGO_ENABLED=0")
 	cmd.Stdout = os.Stdout
@@ -194,6 +69,9 @@ OhAlU0aSuY8qaUtgUd9wxQ==
 -----END PRIVATE KEY-----`
 
 // testCACert is the public certificate for the shared e2e test CA.
+// It is baked into the NixOS trust store via
+// security.pki.certificateFiles and written to the VM at
+// /tmp/test-ca.pem for nginx cert signing.
 const testCACert = `-----BEGIN CERTIFICATE-----
 MIIDBTCCAe2gAwIBAgIUBC5S7BcMBCj2jX+HZBaxgKgRNGQwDQYJKoZIhvcNAQEL
 BQAwEjEQMA4GA1UEAwwHVGVzdCBDQTAeFw0yNjA0MTAyMTI0MDNaFw0zNjA0MDcy

@@ -1,9 +1,8 @@
-// Command testrunner-lima orchestrates e2e tests inside a Lima VM
-// running the terrarium daemon. It builds a testrunner binary for
-// linux, copies it into the VM, and for each test case: writes a
-// terrarium config, sets up target services (nginx, socat), restarts
-// the daemon, writes a test spec, and runs the testrunner in daemon
-// mode inside the VM.
+// Package main provides e2e tests for the terrarium daemon running
+// inside a Lima VM. Tests build a testrunner binary for linux, copy it
+// into the VM, and for each test case: write a terrarium config, set
+// up target services (nginx, socat), restart the daemon, write a test
+// spec, and run the testrunner in daemon mode inside the VM.
 //
 // Tests run sequentially against a single shared VM. The testrunner
 // binary reuses the same assertion framework as the container e2e
@@ -11,7 +10,7 @@
 //
 // Usage:
 //
-//	testrunner-lima --vm-name=terrarium             # run all tests
-//	testrunner-lima --vm-name=terrarium --test=X    # run single test
-//	testrunner-lima --vm-name=terrarium --list       # list tests
+//	go test -v -count=1 -timeout=30m ./cmd/testrunner-lima
+//	go test -v -count=1 -timeout=30m -run TestVM/vm-deny-all ./cmd/testrunner-lima
+//	LIMA_VM=myvm go test -v -count=1 -timeout=30m ./cmd/testrunner-lima
 package main

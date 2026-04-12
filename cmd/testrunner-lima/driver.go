@@ -14,6 +14,8 @@ import (
 )
 
 // driver orchestrates test execution inside a Lima VM via limactl.
+// It provides helpers for file transfer, service lifecycle, daemon
+// management, and running the testrunner binary over limactl shell.
 type driver struct {
 	vmName string
 	ip     string
@@ -185,6 +187,15 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 	for time.Now().Before(deadline) {
 		out, err := d.shell(ctx, "systemctl", "is-active", "terrarium")
 		if err == nil && strings.TrimSpace(out) == "active" {
+			// Restart nscd (nsncd) after the daemon is active so
+			// stale DNS failures from a previous daemon run do not
+			// persist. nsncd proxies NSS lookups over a Unix socket;
+			// restarting it clears any in-flight failures.
+			_, nscdErr := d.shell(ctx, "sudo", "systemctl", "restart", "nscd")
+			if nscdErr != nil {
+				slog.DebugContext(ctx, "restarting nscd", slog.String("error", nscdErr.Error()))
+			}
+
 			return nil
 		}
 
@@ -201,7 +212,8 @@ func (d *driver) stopDaemon(ctx context.Context) error {
 }
 
 // assertion mirrors the testrunner's assertion struct for JSON
-// serialization into the spec passed to the testrunner binary.
+// serialization. Fields are populated based on the assertion type;
+// unused fields are omitted from the JSON spec via omitempty tags.
 type assertion struct {
 	Type     string `json:"type"`
 	URL      string `json:"url,omitempty"`
@@ -219,13 +231,16 @@ type assertion struct {
 	Port     int    `json:"port,omitempty"`
 }
 
-// daemonSpec is the JSON spec written to the VM for the testrunner
-// to execute in daemon mode.
+// daemonSpec is the JSON test specification written to the VM for the
+// testrunner to execute. Assertions run as a non-root user;
+// RootAssertions run as root to test infrastructure-level behavior
+// (nftables state, DNS proxy, process UIDs).
 type daemonSpec struct {
 	Assertions      []assertion `json:"assertions"`
 	RootAssertions  []assertion `json:"rootAssertions"`
 	DaemonMode      bool        `json:"daemonMode"`
 	SkipDaemonCheck bool        `json:"skipDaemonCheck,omitempty"`
+	Debug           bool        `json:"debug,omitempty"`
 }
 
 // writeSpec marshals the spec to JSON and writes it to /tmp/spec.json
@@ -268,7 +283,9 @@ func (d *driver) runTestrunner(ctx context.Context) (int, string, error) {
 	return 0, string(out), nil
 }
 
-// vmTest defines a single VM e2e test case.
+// vmTest defines a single VM e2e test case. The test lifecycle is:
+// start services, write config, run setup hook, restart daemon, run
+// assertions, run teardown hook, stop services.
 type vmTest struct {
 	// setup runs after services are started but before the daemon
 	// is restarted. Used for tests that need custom pre-conditions.
@@ -277,11 +294,28 @@ type vmTest struct {
 	// teardown runs after the testrunner completes, before cleanup.
 	teardown func(ctx context.Context, d *driver) error
 
-	name           string
-	config         string
-	assertions     []assertion
+	// name identifies the test in output and --test filtering.
+	name string
+
+	// config is the terrarium YAML config written to the VM.
+	config string
+
+	// assertions run as a non-root user inside the VM.
+	assertions []assertion
+
+	// rootAssertions run as root inside the VM.
 	rootAssertions []assertion
-	services       []serviceSpec
+
+	// services are nginx/socat targets started on the VM host.
+	services []serviceSpec
+
+	// containerServices are nginx targets started as bridge-networked
+	// containers with fixed IPs.
+	containerServices []serviceSpec
+
+	// containerAssertions run from ephemeral bridge-networked
+	// containers to test intercepted container traffic.
+	containerAssertions []assertion
 }
 
 // tailLogs fetches recent terrarium daemon and sub-process logs for
@@ -366,89 +400,158 @@ func (d *driver) tailLogs(ctx context.Context) string {
 		}
 	}
 
+	// Connection tracking state for NAT/DNAT debugging.
+	conntrack, err := d.shell(ctx, "sudo", "conntrack", "-L")
+	if err != nil {
+		slog.DebugContext(ctx, "fetching conntrack", slog.String("error", err.Error()))
+	}
+
+	if conntrack != "" {
+		lines := strings.Split(conntrack, "\n")
+		if len(lines) > 50 {
+			lines = lines[len(lines)-50:]
+		}
+
+		buf.WriteString("  --- conntrack ---\n")
+		buf.WriteString(strings.Join(lines, "\n"))
+		buf.WriteString("\n")
+	}
+
+	// DNS configuration.
+	resolvConf, err := d.shell(ctx, "cat", "/etc/resolv.conf")
+	if err != nil {
+		slog.DebugContext(ctx, "fetching resolv.conf", slog.String("error", err.Error()))
+	}
+
+	if resolvConf != "" {
+		buf.WriteString("  --- resolv.conf ---\n")
+		buf.WriteString(resolvConf)
+		buf.WriteString("\n")
+	}
+
+	// Listening sockets.
+	ss, err := d.shell(ctx, "ss", "-tlnp")
+	if err != nil {
+		slog.DebugContext(ctx, "fetching ss", slog.String("error", err.Error()))
+	}
+
+	if ss != "" {
+		buf.WriteString("  --- ss -tlnp ---\n")
+		buf.WriteString(ss)
+		buf.WriteString("\n")
+	}
+
+	// Container logs for debugging container test failures.
+	ctList, err := d.shell(ctx, "sudo", "nerdctl", "ps", "-aq")
+	if err == nil && ctList != "" {
+		for id := range strings.FieldsSeq(ctList) {
+			ctLogs, err := d.shell(ctx, "sudo", "nerdctl", "logs", "--tail", "20", id)
+			if err != nil {
+				continue
+			}
+
+			if ctLogs != "" {
+				fmt.Fprintf(&buf, "  --- container %s logs ---\n%s\n", id, ctLogs)
+			}
+		}
+	}
+
 	return buf.String()
 }
 
-// runTest executes a single test case: sets up services, writes
-// config, restarts daemon, runs testrunner, then cleans up.
-func (d *driver) runTest(ctx context.Context, tc vmTest) error {
-	// Set up DNS entries and services.
-	var hostnames []string
+// startContainerService generates TLS certs, writes an nginx config,
+// and starts a named container with a fixed IP on the bridge network.
+func (d *driver) startContainerService(ctx context.Context, svc serviceSpec) error {
+	tag := sanitizeHostname(svc.hostname)
+	certPath := fmt.Sprintf("/tmp/nginx-%s-cert.pem", tag)
+	keyPath := fmt.Sprintf("/tmp/nginx-%s-key.pem", tag)
+	csrPath := fmt.Sprintf("/tmp/nginx-%s-csr.pem", tag)
+	extPath := fmt.Sprintf("/tmp/nginx-%s-ext.cnf", tag)
+	confPath := fmt.Sprintf("/tmp/nginx-%s.conf", tag)
 
-	for _, svc := range tc.services {
-		hostnames = append(hostnames, svc.hostname)
-	}
-
-	err := d.setupDNS(ctx, hostnames)
+	// Generate a TLS cert signed by the test CA.
+	_, err := d.shell(ctx, "sudo", "sh", "-c", fmt.Sprintf(
+		`openssl req -newkey rsa:2048 -keyout %s `+
+			`-out %s -nodes -subj "/CN=%s" 2>/dev/null && `+
+			`echo "subjectAltName=DNS:%s" > %s && `+
+			`openssl x509 -req -in %s `+
+			`-CA /tmp/test-ca.pem -CAkey /tmp/test-ca-key.pem `+
+			`-CAcreateserial -out %s -days 1 `+
+			`-extfile %s 2>/dev/null`,
+		keyPath, csrPath, svc.hostname, svc.hostname, extPath,
+		csrPath, certPath, extPath))
 	if err != nil {
-		return fmt.Errorf("setting up DNS: %w", err)
+		return fmt.Errorf("generating TLS cert: %w", err)
 	}
 
-	defer d.cleanupDNS(ctx)
-
-	for _, svc := range tc.services {
-		err := d.startService(ctx, svc)
-		if err != nil {
-			d.stopAllServices(ctx)
-
-			return fmt.Errorf("starting service %s: %w", svc.hostname, err)
-		}
-	}
-
-	defer d.stopAllServices(ctx)
-
-	// Write config and restart daemon.
-	err = d.writeConfig(ctx, tc.config)
+	// Write nginx config wrapped in required top-level directives.
+	// The container volume-mounts certs to /tmp/nginx-cert.pem and
+	// /tmp/nginx-key.pem, matching the paths in the config templates.
+	fullConf := "error_log /dev/null;\nevents {}\nhttp {\naccess_log /dev/null;\n" + svc.nginxConf + "\n}\n"
+	err = d.writeFile(ctx, confPath, fullConf)
 	if err != nil {
-		return fmt.Errorf("writing config: %w", err)
+		return fmt.Errorf("writing nginx config: %w", err)
 	}
 
-	// Run custom setup if provided.
-	if tc.setup != nil {
-		err = tc.setup(ctx, d)
-		if err != nil {
-			return fmt.Errorf("custom setup: %w", err)
-		}
-	}
-
-	err = d.restartDaemon(ctx)
+	// Start the container with host networking so it listens on
+	// the VM's IP. Host networking avoids br_netfilter issues where
+	// NAT REDIRECT fails for bridge subnet destinations.
+	_, err = d.shell(ctx, "sudo", "nerdctl", "run", "-d",
+		"--name", svc.hostname,
+		"--network", "host",
+		"-v", certPath+":/tmp/nginx-cert.pem:ro",
+		"-v", keyPath+":/tmp/nginx-key.pem:ro",
+		"-v", confPath+":/etc/nginx/nginx.conf:ro",
+		"terrarium-test:latest",
+		"nginx", "-c", "/etc/nginx/nginx.conf", "-g", "daemon off;")
 	if err != nil {
-		return fmt.Errorf("restarting daemon: %w", err)
+		return fmt.Errorf("starting container %s: %w", svc.hostname, err)
 	}
 
-	// Write spec and run testrunner.
-	spec := daemonSpec{
-		DaemonMode:     true,
-		Assertions:     tc.assertions,
-		RootAssertions: tc.rootAssertions,
-	}
+	return nil
+}
 
-	err = d.writeSpec(ctx, spec)
+// stopContainerServices kills and removes all test containers.
+func (d *driver) stopContainerServices(ctx context.Context) {
+	_, err := d.shell(ctx, "sudo", "sh", "-c",
+		`nerdctl rm -f $(nerdctl ps -aq) 2>/dev/null || true`)
 	if err != nil {
-		return fmt.Errorf("writing spec: %w", err)
+		slog.DebugContext(ctx, "stopping containers", slog.String("error", err.Error()))
+	}
+}
+
+// setupContainerDNS writes dnsmasq host entries mapping all service
+// hostnames to the VM's IP. Container services run with host
+// networking so they listen on the VM's IP alongside VM services.
+func (d *driver) setupContainerDNS(ctx context.Context, vmServices, containerServices []serviceSpec) error {
+	var lines []string
+
+	for _, svc := range vmServices {
+		lines = append(lines, fmt.Sprintf("%s %s", d.ip, svc.hostname))
 	}
 
-	exitCode, output, err := d.runTestrunner(ctx)
-	if err != nil {
-		return fmt.Errorf("running testrunner: %w\noutput:\n%s", err, output)
+	for _, svc := range containerServices {
+		lines = append(lines, fmt.Sprintf("%s %s", d.ip, svc.hostname))
 	}
 
-	// Run custom teardown if provided.
-	if tc.teardown != nil {
-		tdErr := tc.teardown(ctx, d)
-		if tdErr != nil {
-			return fmt.Errorf("custom teardown: %w", tdErr)
-		}
-	}
-
-	fmt.Print(output)
-
-	switch exitCode {
-	case 0:
+	if len(lines) == 0 {
 		return nil
-	case 1:
-		return fmt.Errorf("assertion failures")
-	default:
-		return fmt.Errorf("infrastructure error (exit %d)", exitCode)
 	}
+
+	content := strings.Join(lines, "\n") + "\n"
+
+	err := d.writeFile(ctx, "/etc/dnsmasq-hosts", content)
+	if err != nil {
+		return fmt.Errorf("writing dnsmasq-hosts: %w", err)
+	}
+
+	_, err = d.shell(ctx, "sudo", "systemctl", "reload", "dnsmasq")
+	if err != nil {
+		_, err = d.shell(ctx, "sudo", "systemctl", "restart", "dnsmasq")
+		if err != nil {
+			return fmt.Errorf("reloading dnsmasq: %w", err)
+		}
+	}
+
+	return nil
 }

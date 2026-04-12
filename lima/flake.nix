@@ -32,6 +32,7 @@
           src = lib.cleanSource source;
           vendorHash = "sha256-MJNyu4NtDsDKbcUfi6PbRe4qHRHlxtnBMUNP/NBAf3M=";
           env.CGO_ENABLED = 0;
+          env.GOWORK = "off";
           subPackages = [ "cmd/terrarium" ];
           ldflags = [
             "-s"

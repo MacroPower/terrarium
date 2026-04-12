@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -42,18 +43,20 @@ func main() {
 		os.Exit(2)
 	}
 
+	ctx := context.Background()
+
 	if *child {
 		if *resultsPath == "" {
 			fmt.Fprintln(os.Stderr, "child mode requires --results <path>")
 			os.Exit(2)
 		}
 
-		os.Exit(runChild(s, *resultsPath))
+		os.Exit(runChild(ctx, s, *resultsPath))
 	}
 
 	if s.DaemonMode {
-		os.Exit(runDaemon(s))
+		os.Exit(runDaemon(ctx, s))
 	}
 
-	os.Exit(run(s))
+	os.Exit(run(ctx, s))
 }
