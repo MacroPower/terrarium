@@ -265,11 +265,11 @@ process can read these files but cannot modify them.
 
 #### Network-level enforcement
 
-Even if the user rewrites `/etc/resolv.conf` to point at an external DNS server,
-nftables blocks the attempt. Port 53 egress is only allowed for root (UID 0);
-UID 1000 traffic to external port 53 hits the terrarium_output chain's DROP. The
-user's DNS queries reach 127.0.0.1:53 (the proxy) via loopback, which is
-accepted before UID dispatch.
+All DNS traffic from policy-evaluated UIDs is intercepted by nftables NAT OUTPUT
+REDIRECT rules and sent to the local DNS proxy on port 53. This happens
+regardless of what `/etc/resolv.conf` says -- even if the user points it at an
+external server, the redirect fires first. Port 53 egress is only allowed for
+root (UID 0); the proxy forwards upstream queries as root.
 
 #### Layered defense
 
@@ -477,8 +477,9 @@ are created in pairs: one `TypeIPAddr` set for A records and one `TypeIP6Addr`
 set for AAAA records, both with per-element TTLs. The mangle prerouting chain
 has separate per-AF TPROXY rules for `NFPROTO_IPV4` and `NFPROTO_IPV6`. Policy
 routing rules and routes are installed for both `AF_INET` and `AF_INET6`. The
-DNS proxy listens on both `127.0.0.1:53` and `[::1]:53`, and `/etc/resolv.conf`
-is rewritten with both nameservers.
+DNS proxy listens on both `127.0.0.1:53` and `[::1]:53`. NAT OUTPUT REDIRECT
+rules intercept port 53 for both address families, so no `/etc/resolv.conf`
+modification is needed.
 
 At startup, init checks whether IPv6 is actually available via
 `net.ipv6.conf.all.disable_ipv6`. If the stack appears disabled, IPv6 is
@@ -493,7 +494,7 @@ explicitly turned off via sysctl on all interfaces as defense-in-depth. The
 3. Install CA certificates (if L7 rules need MITM)
 4. Apply nftables rules atomically via netlink
 5. Set up policy routing for UDP TPROXY (if egress is not blocked)
-6. Start DNS proxy, rewrite `/etc/resolv.conf` to loopback
+6. Start DNS proxy (nftables NAT OUTPUT redirects port 53 to loopback)
 7. Start Envoy (if egress is not blocked), wait for listener readiness
 8. Create ready-file if configured (signals all infrastructure is up)
 9. Drop privileges, exec user command

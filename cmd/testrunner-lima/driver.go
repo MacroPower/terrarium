@@ -132,21 +132,11 @@ func (d *driver) writeConfig(ctx context.Context, yaml string) error {
 }
 
 // restartDaemon restarts the terrarium systemd service and polls until
-// it reports "active", or returns an error after 30 seconds. It first
-// restores /etc/resolv.conf to point at dnsmasq in case the previous
-// daemon run replaced it.
+// it reports "active", or returns an error after 30 seconds.
 func (d *driver) restartDaemon(ctx context.Context) error {
-	// Restore resolv.conf to point at dnsmasq before restarting, in
-	// case the previous daemon run replaced it.
-	_, err := d.shell(ctx, "sudo", "sh", "-c",
-		`echo "nameserver 127.0.0.53" > /etc/resolv.conf`)
-	if err != nil {
-		return fmt.Errorf("restoring resolv.conf: %w", err)
-	}
-
 	// Clear logs from previous test runs so failure logs only
 	// contain output from the current test.
-	_, err = d.shell(ctx, "sudo", "journalctl", "--rotate")
+	_, err := d.shell(ctx, "sudo", "journalctl", "--rotate")
 	if err != nil {
 		slog.DebugContext(ctx, "rotating journal", slog.String("error", err.Error()))
 	}

@@ -128,7 +128,7 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 		assert.NotEqual(t, expr.VerdictDrop, v, "unrestricted mode should not DROP")
 	}
 
-	// NAT: port 80, port 443, catch-all TCP REDIRECTs.
+	// NAT: DNS UDP, DNS TCP, port 80, port 443, catch-all TCP REDIRECTs.
 	natRules := rec.rulesForChain("nat_output")
 	require.NotEmpty(t, natRules)
 
@@ -139,7 +139,7 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 3, redirCount, "should have REDIRECTs for port 80, 443, and catch-all")
+	assert.Equal(t, 5, redirCount, "should have REDIRECTs for DNS UDP, DNS TCP, port 80, 443, and catch-all")
 }
 
 func TestApplyRules_UnrestrictedWithLogging(t *testing.T) {
@@ -174,7 +174,7 @@ func TestApplyRules_UnrestrictedWithTCPForwards(t *testing.T) {
 	assert.Contains(t, rec.chainNames(), "nat_output")
 
 	natRules := rec.rulesForChain("nat_output")
-	// port 80, port 443, TCPForward port 3000, catch-all TCP = 4 REDIRECTs.
+	// DNS UDP, DNS TCP, port 80, port 443, TCPForward port 3000, catch-all TCP = 6 REDIRECTs.
 	var redirCount int
 	for _, r := range natRules {
 		if ruleHasRedir(r) {
@@ -182,7 +182,10 @@ func TestApplyRules_UnrestrictedWithTCPForwards(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 4, redirCount, "should have REDIRECTs for port 80, 443, TCPForward, and catch-all")
+	assert.Equal(
+		t, 6, redirCount,
+		"should have REDIRECTs for DNS UDP, DNS TCP, port 80, 443, TCPForward, and catch-all",
+	)
 }
 
 func TestApplyRules_Blocked(t *testing.T) {
@@ -200,7 +203,20 @@ func TestApplyRules_Blocked(t *testing.T) {
 	assert.Contains(t, names, "input")
 	assert.Contains(t, names, "output")
 	assert.NotContains(t, names, "terrarium_output")
-	assert.NotContains(t, names, "nat_output")
+	assert.Contains(t, names, "nat_output")
+
+	// NAT: DNS REDIRECT (UDP + TCP).
+	natRules := rec.rulesForChain("nat_output")
+	require.NotEmpty(t, natRules)
+
+	var redirCount int
+	for _, r := range natRules {
+		if ruleHasRedir(r) {
+			redirCount++
+		}
+	}
+
+	assert.Equal(t, 2, redirCount, "should have DNS UDP and DNS TCP REDIRECTs")
 
 	// OUTPUT ends with DROP.
 	outputRules := rec.rulesForChain("output")
@@ -221,6 +237,10 @@ func TestApplyRules_BlockedWithLogging(t *testing.T) {
 
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
+
+	// Blocked mode with logging should still have nat_output for DNS REDIRECT.
+	names := rec.chainNames()
+	assert.Contains(t, names, "nat_output")
 
 	outputRules := rec.rulesForChain("output")
 	require.GreaterOrEqual(t, len(outputRules), 2)
@@ -352,7 +372,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 4, redirCount, "should have REDIRECTs for ports 80, 443, 8080, and catch-all")
+	assert.Equal(t, 6, redirCount, "should have REDIRECTs for DNS UDP, DNS TCP, ports 80, 443, 8080, and catch-all")
 
 	// NAT: verify RETURN for CIDRs appears before REDIRECT.
 	firstNATReturn, firstNATRedir := -1, -1
@@ -598,9 +618,9 @@ func TestApplyRules_OpenTCPSinglePortGoThroughEnvoy(t *testing.T) {
 		}
 	}
 
-	// Per-port REDIRECT (443) + catch-all REDIRECT = 2.
-	assert.Equal(t, 2, redirCount,
-		"should have per-port REDIRECT and catch-all REDIRECT")
+	// DNS UDP, DNS TCP, per-port REDIRECT (443), catch-all REDIRECT = 4.
+	assert.Equal(t, 4, redirCount,
+		"should have DNS UDP, DNS TCP, per-port REDIRECT, and catch-all REDIRECT")
 }
 
 func TestApplyRules_TCPForwards(t *testing.T) {
@@ -1372,6 +1392,26 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 
 			assert.Equal(t, tt.wantLog, hasLog,
 				"LOG rule presence should match logging config")
+
+			// ICMP accept rules should exist before the log/drop rules.
+			var icmpAccept, icmpv6Accept bool
+			for _, r := range rules {
+				rv, _ := ruleVerdict(r)
+				if rv != expr.VerdictAccept {
+					continue
+				}
+
+				if ruleMatchesL4Proto(r, 1) { // IPPROTO_ICMP
+					icmpAccept = true
+				}
+
+				if ruleMatchesL4Proto(r, 58) { // IPPROTO_ICMPV6
+					icmpv6Accept = true
+				}
+			}
+
+			assert.True(t, icmpAccept, "postrouting_guard should accept ICMP")
+			assert.True(t, icmpv6Accept, "postrouting_guard should accept ICMPv6")
 		})
 	}
 }
@@ -1564,8 +1604,8 @@ func TestApplyRules_VMMode_PostroutingGuard(t *testing.T) {
 	rules := rec.rulesForChain("postrouting_guard")
 	require.NotEmpty(t, rules)
 
-	// First two rules should ACCEPT Envoy and root UIDs.
-	require.GreaterOrEqual(t, len(rules), 3)
+	// First two rules should ACCEPT Envoy and root UIDs, plus ICMP/ICMPv6 accepts and drop.
+	require.GreaterOrEqual(t, len(rules), 5)
 
 	v0, _ := ruleVerdict(rules[0])
 	assert.Equal(t, expr.VerdictAccept, v0)
@@ -1595,6 +1635,26 @@ func TestApplyRules_VMMode_PostroutingGuard(t *testing.T) {
 
 	assert.True(t, hasCmpGte,
 		"VM mode postrouting DROP should use CmpOpGte (matchHasSocketOwner), not CmpOpEq (matchUID)")
+
+	// ICMP accept rules should exist between UID accepts and drop.
+	var icmpAccept, icmpv6Accept bool
+	for _, r := range rules {
+		rv, _ := ruleVerdict(r)
+		if rv != expr.VerdictAccept {
+			continue
+		}
+
+		if ruleMatchesL4Proto(r, 1) { // IPPROTO_ICMP
+			icmpAccept = true
+		}
+
+		if ruleMatchesL4Proto(r, 58) { // IPPROTO_ICMPV6
+			icmpv6Accept = true
+		}
+	}
+
+	assert.True(t, icmpAccept, "VM mode postrouting_guard should accept ICMP")
+	assert.True(t, icmpv6Accept, "VM mode postrouting_guard should accept ICMPv6")
 }
 
 func TestApplyRules_VMMode_Unrestricted(t *testing.T) {
@@ -1651,6 +1711,140 @@ func TestApplyRules_VMMode_Blocked(t *testing.T) {
 
 	assert.Less(t, envoyAcceptIdx, dropIdx,
 		"Envoy ACCEPT must come before terminal DROP in VM blocked mode")
+
+	// NAT: DNS REDIRECT with Envoy/Root ACCEPT before them.
+	natRules := rec.rulesForChain("nat_output")
+	require.NotEmpty(t, natRules, "blocked VM mode should have nat_output for DNS REDIRECT")
+
+	// First two rules: Envoy ACCEPT, Root ACCEPT.
+	require.GreaterOrEqual(t, len(natRules), 4)
+
+	v, _ := ruleVerdict(natRules[0])
+	assert.Equal(t, expr.VerdictAccept, v)
+	assert.True(t, ruleMatchesUID(natRules[0], testVMUIDs.Envoy))
+
+	v, _ = ruleVerdict(natRules[1])
+	assert.Equal(t, expr.VerdictAccept, v)
+	assert.True(t, ruleMatchesUID(natRules[1], testVMUIDs.Root))
+
+	// Remaining rules: DNS REDIRECT (UDP + TCP).
+	var vmRedirCount int
+	for _, r := range natRules[2:] {
+		if ruleHasRedir(r) {
+			vmRedirCount++
+		}
+	}
+
+	assert.Equal(t, 2, vmRedirCount, "should have DNS UDP and DNS TCP REDIRECTs")
+}
+
+func TestApplyRules_ExcludeUIDs(t *testing.T) {
+	t.Parallel()
+
+	const dnsmasqUID uint32 = 997
+
+	tests := map[string]struct {
+		uids firewall.UIDs
+		cfg  *config.Config
+	}{
+		"container_unrestricted": {
+			uids: firewall.UIDs{
+				Terrarium:   1000,
+				Envoy:       999,
+				Root:        0,
+				ExcludeUIDs: []uint32{dnsmasqUID},
+			},
+			cfg: &config.Config{},
+		},
+		"container_blocked": {
+			uids: firewall.UIDs{
+				Terrarium:   1000,
+				Envoy:       999,
+				Root:        0,
+				ExcludeUIDs: []uint32{dnsmasqUID},
+			},
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{}),
+			},
+		},
+		"vm_unrestricted": {
+			uids: firewall.UIDs{
+				Envoy:       999,
+				Root:        0,
+				VMMode:      true,
+				ExcludeUIDs: []uint32{dnsmasqUID},
+			},
+			cfg: &config.Config{},
+		},
+		"vm_blocked": {
+			uids: firewall.UIDs{
+				Envoy:       999,
+				Root:        0,
+				VMMode:      true,
+				ExcludeUIDs: []uint32{dnsmasqUID},
+			},
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{}),
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tc.cfg, tc.uids)
+			require.NoError(t, err)
+
+			natRules := rec.rulesForChain("nat_output")
+			require.NotEmpty(t, natRules)
+
+			// Find the first excluded-UID ACCEPT and first DNS REDIRECT.
+			firstExcludeAccept := -1
+			firstDNSRedir := -1
+
+			for i, r := range natRules {
+				if firstExcludeAccept == -1 &&
+					ruleMatchesUID(r, dnsmasqUID) &&
+					ruleHasDstPort(r, 53) {
+					v, _ := ruleVerdict(r)
+					if v == expr.VerdictAccept {
+						firstExcludeAccept = i
+					}
+				}
+
+				if firstDNSRedir == -1 &&
+					ruleHasRedir(r) &&
+					ruleHasDstPort(r, 53) {
+					firstDNSRedir = i
+				}
+			}
+
+			require.NotEqual(t, -1, firstExcludeAccept,
+				"should have ACCEPT rule for excluded UID on port 53")
+			require.NotEqual(t, -1, firstDNSRedir,
+				"should have DNS REDIRECT rule")
+			assert.Less(t, firstExcludeAccept, firstDNSRedir,
+				"excluded UID ACCEPT must come before DNS REDIRECT")
+
+			// Both UDP and TCP should have ACCEPT rules for the
+			// excluded UID.
+			var excludeAcceptCount int
+			for _, r := range natRules {
+				if ruleMatchesUID(r, dnsmasqUID) && ruleHasDstPort(r, 53) {
+					v, _ := ruleVerdict(r)
+					if v == expr.VerdictAccept {
+						excludeAcceptCount++
+					}
+				}
+			}
+
+			assert.Equal(t, 2, excludeAcceptCount,
+				"should have ACCEPT rules for excluded UID on both UDP and TCP port 53")
+		})
+	}
 }
 
 func TestApplyRules_VMMode_NATPreRouting(t *testing.T) {

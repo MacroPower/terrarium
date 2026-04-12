@@ -638,6 +638,7 @@ type UserFlags struct {
 	UID                string
 	GID                string
 	EnvoyUID           string
+	ExcludeDNSUIDs     string
 	Username           string
 	HomeDir            string
 	ConfigPath         string
@@ -653,19 +654,20 @@ type UserFlags struct {
 // These values are passed from the CLI entrypoint so library packages
 // have no baked-in assumptions. Create instances with [NewUser].
 type User struct {
-	UID                string
+	Flags              UserFlags
+	ConfigPath         string
 	GID                string
 	EnvoyUID           string
 	Username           string
 	HomeDir            string
-	ConfigPath         string
 	CertsDir           string
 	CADir              string
 	EnvoyConfigPath    string
 	EnvoyLogPath       string
 	EnvoyAccessLogPath string
 	ReadyFile          string
-	Flags              UserFlags
+	UID                string
+	ExcludeDNSUIDs     []uint
 }
 
 // NewUser creates a new [*User] with default flag names.
@@ -675,6 +677,7 @@ func NewUser() *User {
 			UID:                "uid",
 			GID:                "gid",
 			EnvoyUID:           "envoy-uid",
+			ExcludeDNSUIDs:     "exclude-dns-uids",
 			Username:           "username",
 			HomeDir:            "home-dir",
 			ConfigPath:         "config",
@@ -695,6 +698,8 @@ func (u *User) RegisterFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&u.UID, u.Flags.UID, "1000", "terrarium user UID")
 	flags.StringVar(&u.GID, u.Flags.GID, "1000", "terrarium user GID")
 	flags.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "1001", "Envoy process UID")
+	flags.UintSliceVar(&u.ExcludeDNSUIDs, u.Flags.ExcludeDNSUIDs, nil,
+		"UIDs excluded from DNS interception (e.g., local DNS forwarder)")
 	flags.StringVar(&u.Username, u.Flags.Username, "dev", "terrarium username")
 	flags.StringVar(&u.HomeDir, u.Flags.HomeDir,
 		userHomeDir(), "terrarium user home directory")

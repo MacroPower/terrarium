@@ -205,6 +205,30 @@ func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids 
 		Table: table, Chain: outputChain,
 		Exprs: flatExprs(verdictExprs(expr.VerdictDrop)),
 	})
+
+	// NAT: redirect DNS to local proxy even in blocked mode so the
+	// proxy can return REFUSED instead of leaking to external DNS.
+	natChain := conn.AddChain(&nftables.Chain{
+		Name:     "nat_output",
+		Table:    table,
+		Type:     nftables.ChainTypeNAT,
+		Hooknum:  nftables.ChainHookOutput,
+		Priority: nftables.ChainPriorityNATDest,
+	})
+
+	if uids.VMMode {
+		for _, uid := range []uint32{uids.Envoy, uids.Root} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: natChain,
+				Exprs: flatExprs(
+					matchUID(uid),
+					verdictExprs(expr.VerdictAccept),
+				),
+			})
+		}
+	}
+
+	addDNSRedirect(conn, table, natChain, uids)
 }
 
 // setRef holds the v4 and v6 set objects for a single FQDN rule.

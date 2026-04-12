@@ -869,9 +869,11 @@ egressDeny:
 			nginxService("target-allow", defaultNginxConf),
 			nginxService("target-deny", defaultNginxConf),
 		},
-		rootAssertions: []assertion{
+		assertions: []assertion{
 			httpsPassthrough("https://target-allow:443/", "OK", "icmp-fqdn: HTTPS passthrough"),
 			networkDenied("https://target-deny:443/", "icmp-fqdn: HTTPS to target-deny denied"),
+		},
+		rootAssertions: []assertion{
 			pingAllowed("target-allow", "icmp-fqdn: ping to target-allow"),
 			pingDenied("target-deny", "icmp-fqdn: ping to target-deny denied"),
 		},

@@ -7,6 +7,11 @@ const tableName = "terrarium"
 // UIDs holds the numeric user IDs that nftables rules use to
 // distinguish infrastructure traffic from policy-evaluated traffic.
 type UIDs struct {
+	// ExcludeUIDs lists UIDs whose DNS traffic should not be
+	// redirected to the local DNS proxy (e.g., a system DNS
+	// forwarder like dnsmasq that needs to reach upstream servers).
+	ExcludeUIDs []uint32
+
 	Terrarium uint32
 	Envoy     uint32
 	Root      uint32

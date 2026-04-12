@@ -32,9 +32,10 @@ func Daemon(ctx context.Context, usr *config.User) error {
 	}
 
 	uids := firewall.UIDs{
-		Envoy:  envoyUID,
-		Root:   0,
-		VMMode: true,
+		Envoy:       envoyUID,
+		Root:        0,
+		VMMode:      true,
+		ExcludeUIDs: toUint32s(usr.ExcludeDNSUIDs),
 	}
 
 	inf, err := setupInfrastructure(ctx, usr, uids)

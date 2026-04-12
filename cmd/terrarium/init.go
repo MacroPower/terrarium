@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -73,12 +74,11 @@ type infra struct {
 }
 
 // setupInfrastructure performs the shared initialization sequence:
-// generate configs, apply nftables rules, start DNS proxy, rewrite
-// resolv.conf, and start Envoy. On success the caller owns cleanup
-// via [shutdown]. On error, all resources are cleaned up before
-// returning.
+// generate configs, apply nftables rules, start DNS proxy, and start
+// Envoy. On success the caller owns cleanup via [shutdown]. On error,
+// all resources are cleaned up before returning.
 func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UIDs) (*infra, error) {
-	// Capture upstream DNS before we replace resolv.conf.
+	// Capture upstream DNS from resolv.conf.
 	resolvData, err := os.ReadFile("/etc/resolv.conf")
 	if err != nil {
 		return nil, fmt.Errorf("reading /etc/resolv.conf: %w", err)
@@ -250,58 +250,6 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		}
 	}()
 
-	// Point system DNS to local resolver.
-	// Write to a temp file first, then atomically rename into place so that
-	// a failed write after unmount does not leave the system without DNS.
-	tmpResolv, err := os.CreateTemp("/etc", ".resolv.conf.*")
-	if err != nil {
-		return nil, fmt.Errorf("creating temp resolv.conf: %w", err)
-	}
-
-	_, err = tmpResolv.WriteString("nameserver 127.0.0.1\n")
-
-	closeErr := tmpResolv.Close()
-
-	if err != nil {
-		removeErr := os.Remove(tmpResolv.Name())
-		if removeErr != nil {
-			slog.DebugContext(ctx, "removing temp resolv.conf", slog.Any("err", removeErr))
-		}
-
-		return nil, fmt.Errorf("writing temp resolv.conf: %w", err)
-	}
-
-	if closeErr != nil {
-		removeErr := os.Remove(tmpResolv.Name())
-		if removeErr != nil {
-			slog.DebugContext(ctx, "removing temp resolv.conf", slog.Any("err", removeErr))
-		}
-
-		return nil, fmt.Errorf("closing temp resolv.conf: %w", closeErr)
-	}
-
-	umountErr := syscall.Unmount("/etc/resolv.conf", 0)
-	if umountErr != nil {
-		slog.DebugContext(ctx, "unmounting resolv.conf", slog.Any("err", umountErr))
-	}
-
-	err = os.Rename(tmpResolv.Name(), "/etc/resolv.conf")
-	if err != nil {
-		slog.ErrorContext(ctx, "atomic resolv.conf rename failed after unmount",
-			slog.String("temp", tmpResolv.Name()),
-			slog.Any("err", err),
-		)
-
-		return nil, fmt.Errorf("renaming resolv.conf: %w", err)
-	}
-
-	// os.CreateTemp creates files with 0o600. Make resolv.conf world-readable
-	// so Envoy's getaddrinfo resolver (running as the envoy user) can read it.
-	err = os.Chmod("/etc/resolv.conf", 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("chmod resolv.conf: %w", err)
-	}
-
 	// Start Envoy only when listeners are needed.
 	var envoyCmd *exec.Cmd
 
@@ -361,9 +309,10 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	}
 
 	uids := firewall.UIDs{
-		Terrarium: terrariumUID,
-		Envoy:     envoyUID,
-		Root:      0,
+		Terrarium:   terrariumUID,
+		Envoy:       envoyUID,
+		Root:        0,
+		ExcludeUIDs: toUint32s(usr.ExcludeDNSUIDs),
 	}
 
 	inf, err := setupInfrastructure(ctx, usr, uids)
@@ -727,6 +676,19 @@ func parseUID(s string) (uint32, error) {
 	}
 
 	return uint32(n), nil
+}
+
+func toUint32s(us []uint) []uint32 {
+	out := make([]uint32, len(us))
+	for i, u := range us {
+		if u > math.MaxUint32 {
+			panic(fmt.Sprintf("value %d at index %d overflows uint32", u, i))
+		}
+
+		out[i] = uint32(u)
+	}
+
+	return out
 }
 
 // ensurePathTraversable walks up from the given file path and sets the

@@ -142,16 +142,12 @@ tasks:
       ARCH:
         sh: limactl shell terrarium -- uname -m
     cmds:
-      # Stop terrarium and restore DNS so nixos-rebuild can reach the
-      # binary cache. The daemon replaces resolv.conf with 127.0.0.1
-      # (its own DNS proxy); restoring 127.0.0.53 (dnsmasq) gives root
-      # a working resolver without the daemon running. Flushing the
-      # terrarium nftables table removes the filter OUTPUT policy that
-      # blocks root HTTPS.
+      # Stop terrarium and flush nftables so nixos-rebuild can reach
+      # the binary cache. Flushing the terrarium nftables table removes
+      # the filter OUTPUT policy that blocks root HTTPS.
       - |
         limactl shell terrarium -- sudo sh -c '
           systemctl stop terrarium 2>/dev/null
-          echo "nameserver 127.0.0.53" > /etc/resolv.conf
           nft flush table inet terrarium 2>/dev/null
           nft "add chain inet terrarium output { type filter hook output priority 0; policy accept; }"
           nft "add chain inet terrarium input { type filter hook input priority 0; policy accept; }"

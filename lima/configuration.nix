@@ -166,7 +166,11 @@ in
           cp /etc/terrarium/config.yaml /var/lib/terrarium/config.yaml
         fi
       '';
-      ExecStart = "${terrarium}/bin/terrarium daemon --config=\${TERRARIUM_CONFIG}";
+      ExecStart = pkgs.writeShellScript "terrarium-daemon" ''
+        exec ${terrarium}/bin/terrarium daemon \
+          --config="$TERRARIUM_CONFIG" \
+          --exclude-dns-uids="$(${pkgs.coreutils}/bin/id -u dnsmasq)"
+      '';
       EnvironmentFile = "/etc/environment";
       StateDirectory = "terrarium";
       WatchdogSec = "30s";
@@ -227,7 +231,13 @@ in
     content = ''
       chain output {
         type filter hook output priority 10; policy accept;
-        oifname "lo" accept
+        # Accept loopback CIDR and TPROXY-marked packets. Using CIDR
+        # checks instead of oifname "lo" prevents traffic to the VM's
+        # own IP (routed through lo) from being accepted when the
+        # terrarium daemon is down.
+        ip daddr 127.0.0.0/8 accept
+        ip6 daddr ::1 accept
+        meta mark 0x1 accept
         meta skuid 1001 accept
         meta skuid 0 accept
         # Allow dnsmasq to forward DNS queries to the upstream resolver.
@@ -235,6 +245,12 @@ in
         # Lima gateway when the terrarium daemon is not running.
         udp dport 53 accept
         tcp dport 53 accept
+        # ICMP is never proxied through Envoy; its policy is enforced
+        # by the terrarium filter chain. Allow it through so ICMP
+        # echo-requests accepted by the terrarium table are not dropped
+        # by this guard chain.
+        meta l4proto icmp accept
+        meta l4proto icmpv6 accept
         ct state established,related accept
         drop
       }
@@ -263,9 +279,10 @@ in
     };
   };
 
-  # Point resolv.conf at dnsmasq. When the terrarium daemon starts, it
-  # reads /etc/resolv.conf and captures 127.0.0.53 as its upstream DNS,
-  # then starts its own proxy on 127.0.0.1:53. No port conflict.
+  # Point resolv.conf at dnsmasq. The terrarium daemon reads
+  # /etc/resolv.conf to discover 127.0.0.53 as its upstream DNS, then
+  # starts its own proxy on 127.0.0.1:53. DNS is intercepted via
+  # nftables NAT REDIRECT, so resolv.conf is never modified.
   networking.nameservers = lib.mkForce [ "127.0.0.53" ];
 
   # Install the e2e test CA into the system trust store so Envoy's MITM

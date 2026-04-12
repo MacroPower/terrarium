@@ -30,6 +30,43 @@ func matchFilteredTraffic(uids UIDs) []expr.Any {
 	return matchUID(uids.Terrarium)
 }
 
+// addDNSRedirect adds NAT REDIRECT rules for DNS (port 53, UDP +
+// TCP) to the given chain. UIDs listed in [UIDs.ExcludeUIDs] get
+// port-53 ACCEPT rules before the REDIRECT so they can reach upstream
+// DNS servers without being looped back to the local proxy. The
+// REDIRECT rules use [matchFilteredTraffic] for UID scoping: in
+// container mode only the Terrarium UID is matched; in VM mode all
+// UIDs are matched (Envoy and root are excluded by earlier ACCEPT
+// rules in the chain).
+func addDNSRedirect(conn Conn, table *nftables.Table, chain *nftables.Chain, uids UIDs) {
+	// Let excluded UIDs (e.g., dnsmasq) bypass DNS interception.
+	for _, uid := range uids.ExcludeUIDs {
+		for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchUID(uid),
+					matchL4Proto(proto),
+					matchDstPort(53),
+					verdictExprs(expr.VerdictAccept),
+				),
+			})
+		}
+	}
+
+	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchFilteredTraffic(uids),
+				matchL4Proto(proto),
+				matchDstPort(53),
+				redirectToPort(53),
+			),
+		})
+	}
+}
+
 func addInputChain(conn Conn, table *nftables.Table, uids UIDs) {
 	policy := nftables.ChainPolicyDrop
 	chain := conn.AddChain(&nftables.Chain{
@@ -547,6 +584,10 @@ func addNATRules(
 		}
 	}
 
+	// DNS REDIRECT: intercept all DNS (port 53, UDP + TCP) from
+	// policy-evaluated traffic and send it to the local DNS proxy.
+	addDNSRedirect(conn, table, natChain, uids)
+
 	allCIDRs := slices.Concat(cidr4, cidr6)
 
 	// 1. Deny CIDR NAT ACCEPT (prevent redirect for denied CIDRs).
@@ -618,6 +659,10 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 			})
 		}
 	}
+
+	// DNS REDIRECT: intercept all DNS (port 53, UDP + TCP) from
+	// policy-evaluated traffic and send it to the local DNS proxy.
+	addDNSRedirect(conn, table, natChain, uids)
 
 	// 1. Port 80 -> HTTP forward proxy.
 	conn.AddRule(&nftables.Rule{
@@ -1231,10 +1276,13 @@ func addCatchAllFQDNRules(
 // mechanisms, providing belt-and-suspenders enforcement that all
 // filtered egress flows through Envoy.
 //
+// ICMP/ICMPv6 is explicitly accepted because it is never proxied
+// through Envoy -- its policy is enforced by the filter chain.
+//
 // In container mode the chain uses policy ACCEPT so non-terrarium
-// traffic (Envoy UID, root DNS proxy, kernel ICMP) passes through
-// unaffected. In VM mode, explicit Envoy and root ACCEPT rules are
-// added because matchFilteredTraffic matches all UIDs.
+// traffic (Envoy UID, root DNS proxy) passes through unaffected.
+// In VM mode, explicit Envoy and root ACCEPT rules are added
+// because matchFilteredTraffic matches all UIDs.
 func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UIDs) {
 	policy := nftables.ChainPolicyAccept
 	chain := conn.AddChain(&nftables.Chain{
@@ -1267,6 +1315,20 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 	trafficMatch := matchFilteredTraffic(uids)
 	if uids.VMMode {
 		trafficMatch = matchHasSocketOwner()
+	}
+
+	// ICMP is never proxied through Envoy; its policy is enforced by
+	// the filter chain. Allow it through unconditionally so it can
+	// egress on non-loopback interfaces.
+	for _, proto := range []byte{unix.IPPROTO_ICMP, unix.IPPROTO_ICMPV6} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				trafficMatch,
+				matchL4Proto(proto),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
 	}
 
 	if logging {
