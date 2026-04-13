@@ -44,13 +44,20 @@ in
     "net.ipv4.conf.default.route_localnet" = 1;
   };
 
-  # Disable the NixOS firewall. Its nftables INPUT chain (policy DROP)
-  # fires before terrarium's and blocks DNATted bridge-container traffic
-  # (DNS, HTTP) that terrarium explicitly accepts. Terrarium manages its
-  # own table; the NixOS firewall is redundant and actively conflicts.
-  # This does not affect networking.nftables.tables.* (boot-time table
-  # and guard table remain).
-  networking.firewall.enable = false;
+  # Terrarium handles egress only; the host firewall manages inbound
+  # filtering. checkReversePath must be "loose" for TPROXY and
+  # br_netfilter routing. extraInputRules accepts terrarium's intercepted
+  # traffic patterns: DNATted bridge-container traffic and TPROXY-marked
+  # forwarded packets.
+  networking.firewall = {
+    enable = true;
+    checkReversePath = "loose";
+    allowedTCPPorts = [ 22 ]; # SSH for Lima guest agent
+    extraInputRules = ''
+      ct status dnat accept
+      meta mark & 0x1 == 0x1 accept
+    '';
+  };
 
   # CNI bridge network for test containers. ipMasq is disabled to
   # avoid MASQUERADE rules that could interact with terrarium's
@@ -104,13 +111,6 @@ in
     tables.terrarium = {
       family = "inet";
       content = ''
-        chain input {
-          type filter hook input priority filter; policy drop;
-          iifname "lo" accept
-          ct state established,related accept
-          # Allow SSH from Lima host for guest agent communication.
-          tcp dport 22 accept
-        }
         chain output {
           type filter hook output priority filter; policy drop;
           oifname "lo" accept

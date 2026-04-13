@@ -30,13 +30,6 @@ func ifname(name string) []byte {
 	return b
 }
 
-func matchIIFName(name string) []expr.Any {
-	return []expr.Any{
-		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(name)},
-	}
-}
-
 func matchOIFName(name string) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
@@ -444,33 +437,11 @@ func matchNotLocalDst() []expr.Any {
 	}
 }
 
-// matchCtStatusDNAT matches packets that have been DNATted by
-// conntrack. Uses ct status with the IPS_DST_NAT bit (0x20, 1 << 5).
-func matchCtStatusDNAT() []expr.Any {
-	const ipsDstNAT = 0x20
-
-	return []expr.Any{
-		&expr.Ct{Key: expr.CtKeySTATUS, Register: 1},
-		&expr.Bitwise{
-			SourceRegister: 1,
-			DestRegister:   1,
-			Len:            4,
-			Mask:           binaryutil.NativeEndian.PutUint32(ipsDstNAT),
-			Xor:            make([]byte, 4),
-		},
-		&expr.Cmp{
-			Op:       expr.CmpOpNeq,
-			Register: 1,
-			Data:     make([]byte, 4),
-		},
-	}
-}
-
 // matchNotIIFName matches packets whose input interface name is not
 // the given name. Used to scope rules to forwarded (non-loopback)
 // traffic.
 //
-//nolint:unparam // name is parameterized for symmetry with matchIIFName.
+//nolint:unparam // name is parameterized for symmetry with matchOIFName.
 func matchNotIIFName(name string) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},

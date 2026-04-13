@@ -103,10 +103,10 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 	assert.Equal(t, "terrarium", rec.tables[0].Name)
 	assert.Equal(t, nftables.TableFamilyINet, rec.tables[0].Family)
 
-	// Chains: input, output, nat_output, mangle, postrouting_guard
+	// Chains: output, nat_output, mangle, postrouting_guard
 	// (no terrarium_output).
 	names := rec.chainNames()
-	assert.Contains(t, names, "input")
+	assert.NotContains(t, names, "input")
 	assert.Contains(t, names, "output")
 	assert.Contains(t, names, "nat_output")
 	assert.Contains(t, names, "postrouting_guard")
@@ -200,7 +200,7 @@ func TestApplyRules_Blocked(t *testing.T) {
 	require.NoError(t, err)
 
 	names := rec.chainNames()
-	assert.Contains(t, names, "input")
+	assert.NotContains(t, names, "input")
 	assert.Contains(t, names, "output")
 	assert.NotContains(t, names, "terrarium_output")
 	assert.Contains(t, names, "nat_output")
@@ -276,7 +276,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 	require.NoError(t, err)
 
 	names := rec.chainNames()
-	assert.Contains(t, names, "input")
+	assert.NotContains(t, names, "input")
 	assert.Contains(t, names, "output")
 	assert.Contains(t, names, "terrarium_output")
 	assert.Contains(t, names, "cidr_0")
@@ -662,29 +662,6 @@ func TestApplyRules_TCPForwards(t *testing.T) {
 	require.NotEqual(t, -1, fwdRedirIdx)
 	assert.Greater(t, fwdRedirIdx, envoyRedirIdx,
 		"TCPForward REDIRECT should appear after Envoy REDIRECT")
-}
-
-func TestApplyRules_InputChain(t *testing.T) {
-	t.Parallel()
-
-	rec := &ruleRecorder{}
-	cfg := &config.Config{}
-
-	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
-	require.NoError(t, err)
-
-	inputRules := rec.rulesForChain("input")
-	require.Len(t, inputRules, 2)
-
-	// First rule: match iifname -> ACCEPT.
-	v, _ := ruleVerdict(inputRules[0])
-	assert.Equal(t, expr.VerdictAccept, v)
-	assert.True(t, ruleHasMetaKey(inputRules[0], expr.MetaKeyIIFNAME))
-
-	// Second rule: ct state established,related -> ACCEPT.
-	v, _ = ruleVerdict(inputRules[1])
-	assert.Equal(t, expr.VerdictAccept, v)
-	assert.True(t, ruleHasCtState(inputRules[1]))
 }
 
 func TestApplyRules_PerRuleFQDNSetIsolation(t *testing.T) {
@@ -2136,64 +2113,6 @@ func TestApplyRules_VMMode_MangleForwarded(t *testing.T) {
 	assert.True(t, hasTProxy, "should have TPROXY rules after forwarded marking")
 }
 
-func TestApplyRules_VMMode_InputDNAT(t *testing.T) {
-	t.Parallel()
-
-	rec := &ruleRecorder{}
-	cfg := &config.Config{
-		Egress: egressRules(
-			config.EgressRule{
-				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-			},
-		),
-	}
-
-	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
-	require.NoError(t, err)
-
-	rules := rec.rulesForChain("input")
-	require.NotEmpty(t, rules)
-
-	// Should have ct status dnat ACCEPT rule.
-	var hasCtDNAT bool
-	for _, r := range rules {
-		v, _ := ruleVerdict(r)
-		if v == expr.VerdictAccept && ruleHasCtStatus(r) {
-			hasCtDNAT = true
-		}
-	}
-
-	assert.True(t, hasCtDNAT,
-		"VM mode input chain should have ct status dnat ACCEPT rule")
-}
-
-func TestApplyRules_VMMode_InputDNAT_NotInContainerMode(t *testing.T) {
-	t.Parallel()
-
-	rec := &ruleRecorder{}
-	cfg := &config.Config{
-		Egress: egressRules(
-			config.EgressRule{
-				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-			},
-		),
-	}
-
-	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
-	require.NoError(t, err)
-
-	rules := rec.rulesForChain("input")
-	require.NotEmpty(t, rules)
-
-	// Container mode should not have ct status dnat rule.
-	for _, r := range rules {
-		assert.False(t, ruleHasCtStatus(r),
-			"container mode input chain should not have ct status dnat rule")
-	}
-}
-
 // ruleHasNAT reports whether a rule contains a NAT expression.
 func ruleHasNAT(r *nftables.Rule) bool {
 	for _, e := range r.Exprs {
@@ -2221,17 +2140,6 @@ func ruleHasDstPort(r *nftables.Rule, port uint16) bool {
 
 		c, ok := r.Exprs[i+1].(*expr.Cmp)
 		if ok && c.Op == expr.CmpOpEq && assert.ObjectsAreEqual(expected, c.Data) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// ruleHasCtStatus reports whether a rule loads conntrack status.
-func ruleHasCtStatus(r *nftables.Rule) bool {
-	for _, e := range r.Exprs {
-		if ct, ok := e.(*expr.Ct); ok && ct.Key == expr.CtKeySTATUS {
 			return true
 		}
 	}
@@ -2281,72 +2189,6 @@ func ruleMatchesL4Proto(r *nftables.Rule, proto byte) bool {
 	}
 
 	return false
-}
-
-func TestApplyRules_VMMode_InputTPROXY(t *testing.T) {
-	t.Parallel()
-
-	rec := &ruleRecorder{}
-	cfg := &config.Config{
-		Egress: egressRules(
-			config.EgressRule{
-				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-			},
-		),
-	}
-
-	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
-	require.NoError(t, err)
-
-	rules := rec.rulesForChain("input")
-	require.NotEmpty(t, rules)
-
-	// Should have both ct status DNAT and fwmark TPROXY ACCEPT rules.
-	var hasCtDNAT, hasMarkAccept bool
-	for _, r := range rules {
-		v, _ := ruleVerdict(r)
-		if v == expr.VerdictAccept {
-			if ruleHasCtStatus(r) {
-				hasCtDNAT = true
-			}
-
-			if ruleHasMark(r) && !ruleHasCtStatus(r) {
-				hasMarkAccept = true
-			}
-		}
-	}
-
-	assert.True(t, hasCtDNAT,
-		"VM mode input chain should have ct status DNAT ACCEPT rule")
-	assert.True(t, hasMarkAccept,
-		"VM mode input chain should have fwmark TPROXY ACCEPT rule")
-}
-
-func TestApplyRules_VMMode_InputTPROXY_NotInContainerMode(t *testing.T) {
-	t.Parallel()
-
-	rec := &ruleRecorder{}
-	cfg := &config.Config{
-		Egress: egressRules(
-			config.EgressRule{
-				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
-				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
-			},
-		),
-	}
-
-	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
-	require.NoError(t, err)
-
-	rules := rec.rulesForChain("input")
-	require.NotEmpty(t, rules)
-
-	// Container mode should not have fwmark TPROXY accept rule.
-	for _, r := range rules {
-		assert.False(t, ruleHasMark(r),
-			"container mode input chain should not have fwmark TPROXY rule")
-	}
 }
 
 func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
@@ -2693,41 +2535,25 @@ func TestMatchMark_Bitmask(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
 	require.NoError(t, err)
 
-	// INPUT chain in VM mode has matchMark(tproxyMark) + ACCEPT for
-	// TPROXY-marked forwarded packets. This rule should use bitmask
-	// matching (Bitwise + CmpOpNeq on zero) not exact equality.
-	inputRules := rec.rulesForChain("input")
-	require.NotEmpty(t, inputRules)
+	// Verify bitmask matching is used in mangle_prerouting for TPROXY
+	// mark rules. TPROXY rules should use Bitwise for bitmask matching,
+	// not exact equality.
+	mangleRules := rec.rulesForChain("mangle_prerouting")
+	require.NotEmpty(t, mangleRules)
 
 	var foundBitmaskMark bool
 
-	for _, r := range inputRules {
-		// Find the mark-match + ACCEPT rule (not ct status, not TProxy).
-		if !ruleHasMark(r) || ruleHasCtStatus(r) || ruleHasTProxy(r) {
-			continue
-		}
-
-		v, _ := ruleVerdict(r)
-		if v != expr.VerdictAccept {
+	for _, r := range mangleRules {
+		if !ruleHasMark(r) {
 			continue
 		}
 
 		// Should use Bitwise for bitmask matching.
-		assert.True(t, ruleHasBitwise(r),
-			"mark match should use Bitwise expression for bitmask matching")
-
-		// Verify no exact-equality match on the tproxyMark value.
-		for _, e := range r.Exprs {
-			if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpEq {
-				markData := binaryutil.NativeEndian.PutUint32(0x1)
-				assert.False(t, assert.ObjectsAreEqual(markData, c.Data),
-					"mark match should not use exact equality on 0x1")
-			}
+		if ruleHasBitwise(r) {
+			foundBitmaskMark = true
 		}
-
-		foundBitmaskMark = true
 	}
 
 	assert.True(t, foundBitmaskMark,
-		"input chain should have a bitmask mark match rule for TPROXY")
+		"mangle_prerouting chain should have a bitmask mark match rule")
 }

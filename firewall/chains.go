@@ -67,64 +67,6 @@ func addDNSRedirect(conn Conn, table *nftables.Table, chain *nftables.Chain, uid
 	}
 }
 
-func addInputChain(conn Conn, table *nftables.Table, uids UIDs) {
-	policy := nftables.ChainPolicyDrop
-	chain := conn.AddChain(&nftables.Chain{
-		Name:     "input",
-		Table:    table,
-		Type:     nftables.ChainTypeFilter,
-		Hooknum:  nftables.ChainHookInput,
-		Priority: nftables.ChainPriorityFilter,
-		Policy:   &policy,
-	})
-
-	// Allow loopback.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			matchIIFName("lo"),
-			verdictExprs(expr.VerdictAccept),
-		),
-	})
-
-	// Allow established/related.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			matchCtState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED),
-			verdictExprs(expr.VerdictAccept),
-		),
-	})
-
-	// VM mode: accept DNATted forwarded traffic (TCP + DNS) that was
-	// redirected to 127.0.0.1 by NAT PREROUTING. Without this rule,
-	// forwarded packets arriving on INPUT after DNAT would be dropped
-	// by the chain policy.
-	if uids.VMMode {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchCtStatusDNAT(),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
-
-		// Accept TPROXY-marked forwarded traffic. TPROXY assigns the
-		// socket in mangle PREROUTING but the packet must still pass
-		// INPUT for delivery. Covers IPv6 forwarded TCP/DNS and
-		// fixes a latent gap for existing forwarded UDP TPROXY.
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchMark(tproxyMark),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
-	}
-
-	// Default DROP via chain policy.
-}
-
 // addOutputBaseRules emits the initial OUTPUT rules shared across all
 // three security modes: the guard mark, loopback CIDR accepts
 // (127.0.0.0/8 and ::1), and a conditional blanket oifname "lo" accept.

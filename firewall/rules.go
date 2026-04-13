@@ -132,8 +132,6 @@ func UpdateFQDNSet(conn *nftables.Conn, setName string, ips []net.IP, ttl time.D
 }
 
 func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
-	addInputChain(conn, table, uids)
-
 	policy := nftables.ChainPolicyDrop
 	outputChain := conn.AddChain(&nftables.Chain{
 		Name:     "output",
@@ -179,8 +177,6 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 }
 
 func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
-	addInputChain(conn, table, uids)
-
 	// VM mode: FORWARD chain with only established/related ACCEPT
 	// (all new forwarded traffic is dropped for fail-closed semantics).
 	if uids.VMMode {
@@ -256,8 +252,6 @@ type setRef struct {
 }
 
 func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) error {
-	addInputChain(conn, table, uids)
-
 	resolvedPorts := cfg.ResolvePorts(ctx)
 	cidr4, cidr6 := cfg.ResolveCIDRRules(ctx)
 	allCIDRs := slices.Concat(cidr4, cidr6)

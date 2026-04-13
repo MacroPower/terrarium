@@ -381,7 +381,6 @@ locally-originated traffic:
 | ------------------- | ----------- | -------- | ----------------------------------------------------------------- |
 | `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 DNS (UDP + TCP) to `127.0.0.1:53`             |
 | `mangle_prerouting` | PREROUTING  | -150     | Mark forwarded UDP + TCP for TPROXY; dispatch to Envoy/DNS proxy  |
-| `input`             | INPUT       | 0        | Accept DNATted traffic (`ct status dnat`)                         |
 | `forward`           | FORWARD     | 0        | Policy-evaluate non-intercepted forwarded traffic (ICMP)          |
 | `postrouting_guard` | POSTROUTING | 0        | Catch locally-originated leaks (forwarded traffic passes through) |
 
@@ -428,12 +427,6 @@ reloads:
 ```nft
 # Boot-time deny-all (terrarium replaces this on startup).
 table inet terrarium {
-  chain input {
-    type filter hook input priority filter; policy drop;
-    iifname "lo" accept
-    ct state established,related accept
-    tcp dport 22 accept  # adjust for your management access
-  }
   chain output {
     type filter hook output priority filter; policy drop;
     oifname "lo" accept
@@ -501,6 +494,48 @@ loose mode drops the iif constraint:
 # NixOS: networking.firewall.checkReversePath = "loose";
 # Or: sysctl net.ipv4.conf.all.rp_filter=2
 ```
+
+#### Host firewall
+
+Terrarium is an egress filter and does not create an INPUT chain. Inbound
+filtering is the responsibility of the host firewall (NixOS firewall, iptables,
+etc.) or, in container mode, the container runtime's bridge/port-mapping rules.
+
+The host firewall must accept traffic patterns created by terrarium's NAT and
+TPROXY interception. Without these rules, DNATted bridge-container traffic
+(DNS, HTTP redirected to `127.0.0.1`) and TPROXY-marked forwarded packets
+would be dropped:
+
+```nft
+# Accept DNATted bridge-container traffic.
+ct status dnat accept
+# Accept TPROXY-marked forwarded packets.
+meta mark & 0x1 == 0x1 accept
+```
+
+On NixOS, add these via `extraInputRules` (appended to the `input-allow` chain
+which is jumped to from the main INPUT chain for new connections):
+
+```nix
+networking.firewall = {
+  enable = true;
+  checkReversePath = "loose";
+  allowedTCPPorts = [ 22 ];  # SSH or other management access
+  extraInputRules = ''
+    ct status dnat accept
+    meta mark & 0x1 == 0x1 accept
+  '';
+};
+```
+
+The fwmark (`meta mark`) is a kernel-internal field on the socket buffer -- it
+never appears on the wire and arrives as 0 on all inbound packets. Only local
+nftables rules, TPROXY, or processes with `CAP_NET_ADMIN` can set it, so
+external traffic cannot spoof the mark to bypass the firewall.
+
+The NixOS firewall does not create a FORWARD chain by default
+(`networking.firewall.filterForward` is false), so there is no conflict with
+terrarium's FORWARD chain.
 
 #### Container DNS
 
