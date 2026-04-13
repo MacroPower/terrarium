@@ -295,8 +295,8 @@ func dnsForwarded(domain, desc string) assertion {
 	return assertion{Type: "dns_forwarded", Domain: domain, Desc: desc}
 }
 
-func dnsRefused(domain, desc string) assertion {
-	return assertion{Type: "dns_refused", Domain: domain, Desc: desc}
+func dnsBlocked(domain, desc string) assertion {
+	return assertion{Type: "dns_blocked", Domain: domain, Desc: desc}
 }
 
 func fileGrep(file, pattern, desc string) assertion {

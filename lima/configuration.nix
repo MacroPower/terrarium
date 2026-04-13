@@ -169,9 +169,16 @@ in
       ExecStart = pkgs.writeShellScript "terrarium-daemon" ''
         exec ${terrarium}/bin/terrarium daemon \
           --config="$TERRARIUM_CONFIG" \
-          --exclude-dns-uids="$(${pkgs.coreutils}/bin/id -u dnsmasq)"
+          --exclude-dns-uids="$(${pkgs.coreutils}/bin/id -u dnsmasq)" \
+          --pid-file=/run/terrarium/terrarium.pid
+      '';
+      ExecReload = pkgs.writeShellScript "terrarium-reload" ''
+        exec ${terrarium}/bin/terrarium daemon reload \
+          --config="$TERRARIUM_CONFIG" \
+          --pid-file=/run/terrarium/terrarium.pid
       '';
       EnvironmentFile = "/etc/environment";
+      RuntimeDirectory = "terrarium";
       StateDirectory = "terrarium";
       WatchdogSec = "30s";
       Restart = "always";
@@ -263,6 +270,7 @@ in
   # The Lima DHCP gateway IP (192.168.5.3) varies by network mode.
   services.dnsmasq = {
     enable = true;
+    resolveLocalQueries = false;
     settings = {
       listen-address = "127.0.0.53";
       bind-interfaces = true;

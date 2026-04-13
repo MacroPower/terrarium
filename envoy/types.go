@@ -125,11 +125,26 @@ type dnsCacheConfig struct {
 	DNSLookupFamily        string                `yaml:"dns_lookup_family"`
 }
 
-// typedExtensionConfig models a minimal Envoy TypedExtensionConfig
-// with a name and a typed_config that only carries the @type URL.
+// typedExtensionConfig models an Envoy TypedExtensionConfig with a
+// name and an arbitrary typed_config payload (e.g. [typeOnly] or
+// [caresDNSResolverConfig]).
 type typedExtensionConfig struct {
-	Name        string   `yaml:"name"`
-	TypedConfig typeOnly `yaml:"typed_config"`
+	TypedConfig any    `yaml:"typed_config"`
+	Name        string `yaml:"name"`
+}
+
+// caresDNSResolverConfig models Envoy's CaresDnsResolverConfig for
+// the c-ares DNS resolver. It specifies explicit resolver addresses
+// and options to bypass system resolver configuration.
+type caresDNSResolverConfig struct {
+	AtType             string             `yaml:"@type"`
+	Resolvers          []address          `yaml:"resolvers"`
+	DNSResolverOptions dnsResolverOptions `yaml:"dns_resolver_options"`
+}
+
+// dnsResolverOptions models Envoy's DnsResolverOptions message.
+type dnsResolverOptions struct {
+	NoDefaultSearchDomain bool `yaml:"no_default_search_domain"`
 }
 
 type tcpProxyConfig struct {
@@ -398,9 +413,18 @@ var sharedDNSCacheConfig = dnsCacheConfig{
 	Name:            "dynamic_forward_proxy_cache",
 	DNSLookupFamily: "ALL",
 	TypedDNSResolverConfig: &typedExtensionConfig{
-		Name: "envoy.network.dns_resolver.getaddrinfo",
-		TypedConfig: typeOnly{
-			AtType: "type.googleapis.com/envoy.extensions.network.dns_resolver.getaddrinfo.v3.GetAddrInfoDnsResolverConfig",
+		Name: "envoy.network.dns_resolver.cares",
+		TypedConfig: caresDNSResolverConfig{
+			AtType: "type.googleapis.com/envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig",
+			Resolvers: []address{{
+				SocketAddress: socketAddress{
+					Address:   "127.0.0.1",
+					PortValue: 53,
+				},
+			}},
+			DNSResolverOptions: dnsResolverOptions{
+				NoDefaultSearchDomain: true,
+			},
 		},
 	},
 }

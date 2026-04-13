@@ -18,14 +18,18 @@ import (
 // Daemon runs terrarium as a VM-wide network filter daemon. It
 // performs the same infrastructure setup as [Init] (nftables, DNS
 // proxy, Envoy) but applies policy rules to all UIDs in the network
-// namespace rather than a single Terrarium UID. Instead of
+// namespace rather than a single container UID. Instead of
 // privilege-dropping and exec'ing a user command, it blocks until
-// SIGTERM or SIGINT arrives and then tears down cleanly.
+// a termination signal arrives and then tears down cleanly.
+//
+// SIGHUP triggers a live configuration reload via
+// [reloadInfrastructure] without restarting the process. SIGTERM and
+// SIGINT initiate graceful shutdown.
 //
 // On shutdown, nftables rules and policy routes are intentionally
 // left in place so the VM remains fail-closed. The rules are
 // atomically replaced on the next startup.
-func Daemon(ctx context.Context, usr *config.User) error {
+func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 	envoyUID, err := parseUID(usr.EnvoyUID)
 	if err != nil {
 		return err
@@ -43,6 +47,14 @@ func Daemon(ctx context.Context, usr *config.User) error {
 		return err
 	}
 
+	// Write PID file so `terrarium daemon reload` can discover us.
+	err = writePIDFile(pidFile)
+	if err != nil {
+		return err
+	}
+
+	defer os.Remove(pidFile) //nolint:errcheck // best-effort cleanup.
+
 	// Start watchdog goroutine before signaling readiness.
 	watchdogCtx, watchdogCancel := context.WithCancel(ctx)
 	defer watchdogCancel()
@@ -53,15 +65,25 @@ func Daemon(ctx context.Context, usr *config.User) error {
 
 	slog.InfoContext(ctx, "terrarium daemon ready, filtering all VM traffic")
 
-	// Block until termination signal.
+	// Block until termination signal, handling SIGHUP for reload.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-	sig := <-sigCh
+	for sig := range sigCh {
+		if sig != syscall.SIGHUP {
+			slog.InfoContext(ctx, "received signal, shutting down",
+				slog.Any("signal", sig),
+			)
 
-	slog.InfoContext(ctx, "received signal, shutting down",
-		slog.Any("signal", sig),
-	)
+			break
+		}
+
+		slog.InfoContext(ctx, "received SIGHUP, reloading configuration")
+
+		sdNotify(ctx, "RELOADING=1")
+		reloadInfrastructure(ctx, usr, uids, inf)
+		sdNotify(ctx, "READY=1")
+	}
 
 	sdNotify(ctx, "STOPPING=1")
 	watchdogCancel()

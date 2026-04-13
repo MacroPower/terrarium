@@ -64,8 +64,8 @@ func dnsForwarded(domain, desc string) assertion {
 	return assertion{Type: "dns_forwarded", Domain: domain, Desc: desc}
 }
 
-func dnsRefused(domain, desc string) assertion {
-	return assertion{Type: "dns_refused", Domain: domain, Desc: desc}
+func dnsBlocked(domain, desc string) assertion {
+	return assertion{Type: "dns_blocked", Domain: domain, Desc: desc}
 }
 
 func envoyUID(uid, desc string) assertion {
@@ -659,7 +659,7 @@ egress:
 		},
 		rootAssertions: []assertion{
 			dnsForwarded("target-allow", "dns-proxy: allowed domain is forwarded"),
-			dnsRefused("target-deny", "dns-proxy: denied domain returns REFUSED"),
+			dnsBlocked("target-deny", "dns-proxy: denied domain returns NXDOMAIN"),
 		},
 	},
 	{
@@ -1106,10 +1106,8 @@ egressDeny:
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 		},
-		verify: func(t *testing.T, d *driver) {
+		verify: func(ctx context.Context, t *testing.T, d *driver) {
 			t.Helper()
-
-			ctx := t.Context()
 
 			// Run curl from a bridge-networked container with DNS
 			// set to the CNI gateway (172.20.0.1). This is a local
@@ -1255,9 +1253,9 @@ egressDeny:
 				return fmt.Errorf("writing config B: %w", err)
 			}
 
-			err = d.restartDaemon(ctx)
+			err = d.reloadDaemon(ctx)
 			if err != nil {
-				return fmt.Errorf("restarting daemon with config B: %w", err)
+				return fmt.Errorf("reloading daemon with config B: %w", err)
 			}
 
 			// Write spec for config B assertions.

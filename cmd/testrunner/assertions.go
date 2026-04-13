@@ -100,8 +100,8 @@ func runAssertion(ctx context.Context, a assertion) result {
 		return assertDNSNoError(a)
 	case "dns_forwarded":
 		return assertDNSForwarded(a)
-	case "dns_refused":
-		return assertDNSRefused(a)
+	case "dns_blocked":
+		return assertDNSBlocked(a)
 	case "file_grep":
 		return assertFileGrep(a)
 	case "envoy_uid":
@@ -786,9 +786,11 @@ func assertDNSForwarded(a assertion) result {
 	return result{Status: statusPass, Desc: a.Desc, Detail: fmt.Sprintf("rcode=%s", dns.RcodeToString[r.Rcode])}
 }
 
-// assertDNSRefused verifies that a DNS A query for the domain returns
-// REFUSED, indicating the DNS proxy rejected it.
-func assertDNSRefused(a assertion) result {
+// assertDNSBlocked verifies that a DNS A query for the domain returns
+// NXDOMAIN, indicating the DNS proxy's allowlist rejected it. NXDOMAIN
+// (not REFUSED) is used so stub resolvers fall back through the
+// resolv.conf search domain list correctly.
+func assertDNSBlocked(a assertion) result {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(a.Domain), dns.TypeA)
 
@@ -800,13 +802,13 @@ func assertDNSRefused(a assertion) result {
 		return result{Status: statusFail, Desc: a.Desc, Detail: fmt.Sprintf("DNS query: %v", err)}
 	}
 
-	if r.Rcode == dns.RcodeRefused {
+	if r.Rcode == dns.RcodeNameError {
 		return result{Status: statusPass, Desc: a.Desc}
 	}
 
 	return result{
 		Status: statusFail, Desc: a.Desc,
-		Detail: fmt.Sprintf("expected REFUSED, got %s", dns.RcodeToString[r.Rcode]),
+		Detail: fmt.Sprintf("expected NXDOMAIN, got %s", dns.RcodeToString[r.Rcode]),
 	}
 }
 

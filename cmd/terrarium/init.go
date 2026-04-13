@@ -48,15 +48,24 @@ var (
 	ErrEnvoyNotRunning = errors.New("envoy process not running")
 )
 
-// ParseUpstreamDNS extracts the first nameserver IP from resolv.conf
-// content. It returns the empty string when no nameserver is found.
+// ParseUpstreamDNS extracts the first usable nameserver IP from
+// resolv.conf content. It skips 127.0.0.1 and ::1 because those are
+// the DNS proxy's own listen addresses -- using them as upstream would
+// create a forwarding loop. Other loopback addresses like 127.0.0.53
+// (dnsmasq) are valid upstreams and are not skipped. It returns the
+// empty string when no usable nameserver is found.
 func ParseUpstreamDNS(resolvConf string) string {
 	for line := range strings.SplitSeq(resolvConf, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "nameserver") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
-				return fields[1]
+				addr := fields[1]
+				if addr == "127.0.0.1" || addr == "::1" {
+					continue
+				}
+
+				return addr
 			}
 		}
 	}

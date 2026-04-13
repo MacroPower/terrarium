@@ -47,9 +47,20 @@ func TestParseUpstreamDNS(t *testing.T) {
 			resolvConf: "search example.com\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n",
 			want:       "1.1.1.1",
 		},
-		"ipv6": {
+		"skip ipv6 loopback": {
 			resolvConf: "nameserver ::1\nnameserver 8.8.8.8\n",
-			want:       "::1",
+			want:       "8.8.8.8",
+		},
+		"ipv6 non-loopback": {
+			resolvConf: "nameserver 2001:4860:4860::8888\n",
+			want:       "2001:4860:4860::8888",
+		},
+		"skip loopback": {
+			resolvConf: "nameserver 127.0.0.1\nnameserver ::1\nnameserver 127.0.0.53\n",
+			want:       "127.0.0.53",
+		},
+		"all loopback": {
+			resolvConf: "nameserver 127.0.0.1\nnameserver ::1\n",
 		},
 		"empty": {
 			resolvConf: "search example.com\n",

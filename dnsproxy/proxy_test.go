@@ -55,14 +55,14 @@ func TestStart(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "1.2.3.4", a.A.String())
 
-	// Query a non-matching domain -- should get REFUSED in restricted mode.
+	// Query a non-matching domain -- should get NXDOMAIN in restricted mode.
 	msg2 := new(dns.Msg)
 	msg2.SetQuestion("nomatch.example.com.", dns.TypeA)
 
 	resp2, _, err := client.Exchange(msg2, proxy.Addr)
 	require.NoError(t, err)
 	require.NotNil(t, resp2)
-	assert.Equal(t, dns.RcodeRefused, resp2.Rcode)
+	assert.Equal(t, dns.RcodeNameError, resp2.Rcode)
 }
 
 func TestProxyTCPPassthrough(t *testing.T) {
@@ -164,14 +164,14 @@ func TestProxyRestrictedMode(t *testing.T) {
 	assert.Equal(t, dns.RcodeSuccess, resp2.Rcode)
 	require.Len(t, resp2.Answer, 1)
 
-	// Disallowed domain should get REFUSED.
+	// Disallowed domain should get NXDOMAIN.
 	msg3 := new(dns.Msg)
 	msg3.SetQuestion("blocked.example.com.", dns.TypeA)
 
 	resp3, _, err := client.Exchange(msg3, proxy.Addr)
 	require.NoError(t, err)
 	require.NotNil(t, resp3)
-	assert.Equal(t, dns.RcodeRefused, resp3.Rcode)
+	assert.Equal(t, dns.RcodeNameError, resp3.Rcode)
 }
 
 func TestProxyRestrictedWildcard(t *testing.T) {
@@ -202,23 +202,23 @@ func TestProxyRestrictedWildcard(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
 
-	// Bare parent should get REFUSED (wildcard excludes bare parent).
+	// Bare parent should get NXDOMAIN (wildcard excludes bare parent).
 	msg2 := new(dns.Msg)
 	msg2.SetQuestion("example.com.", dns.TypeA)
 
 	resp2, _, err := client.Exchange(msg2, proxy.Addr)
 	require.NoError(t, err)
 	require.NotNil(t, resp2)
-	assert.Equal(t, dns.RcodeRefused, resp2.Rcode)
+	assert.Equal(t, dns.RcodeNameError, resp2.Rcode)
 
-	// Multi-label subdomain should get REFUSED (single-star depth).
+	// Multi-label subdomain should get NXDOMAIN (single-star depth).
 	msg3 := new(dns.Msg)
 	msg3.SetQuestion("a.b.example.com.", dns.TypeA)
 
 	resp3, _, err := client.Exchange(msg3, proxy.Addr)
 	require.NoError(t, err)
 	require.NotNil(t, resp3)
-	assert.Equal(t, dns.RcodeRefused, resp3.Rcode)
+	assert.Equal(t, dns.RcodeNameError, resp3.Rcode)
 }
 
 func TestProxyBareWildcard(t *testing.T) {
@@ -639,14 +639,14 @@ func TestProxyTCPForwardHosts(t *testing.T) {
 	require.NotNil(t, resp2)
 	assert.Equal(t, dns.RcodeSuccess, resp2.Rcode)
 
-	// Unrelated domain should get REFUSED.
+	// Unrelated domain should get NXDOMAIN.
 	msg3 := new(dns.Msg)
 	msg3.SetQuestion("blocked.org.", dns.TypeA)
 
 	resp3, _, err := client.Exchange(msg3, proxy.Addr)
 	require.NoError(t, err)
 	require.NotNil(t, resp3)
-	assert.Equal(t, dns.RcodeRefused, resp3.Rcode)
+	assert.Equal(t, dns.RcodeNameError, resp3.Rcode)
 }
 
 // startCNAMEMockDNS starts a mock DNS server that returns a CNAME

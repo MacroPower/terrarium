@@ -955,7 +955,8 @@ func TestApplyRules_MangleChains_Filtered(t *testing.T) {
 	outputRules := rec.rulesForChain("output")
 	require.NotEmpty(t, outputRules)
 
-	// First rule should be the 127.0.0.0/8 CIDR accept (no oifname).
+	// First rule is the guard mark (no oifname); filtered mode omits
+	// the blanket oifname "lo" accept.
 	firstRule := outputRules[0]
 	assert.False(t, ruleHasMetaKey(firstRule, expr.MetaKeyOIFNAME),
 		"filtered mode should not have oifname lo accept")
@@ -1843,6 +1844,45 @@ func TestApplyRules_ExcludeUIDs(t *testing.T) {
 
 			assert.Equal(t, 2, excludeAcceptCount,
 				"should have ACCEPT rules for excluded UID on both UDP and TCP port 53")
+
+			// The filter output chain must also allow excluded UID DNS
+			// so their queries to external upstream resolvers are not
+			// dropped by the chain policy.
+			outputRules := rec.rulesForChain("output")
+			require.NotEmpty(t, outputRules)
+
+			var filterAcceptCount int
+			for _, r := range outputRules {
+				if ruleMatchesUID(r, dnsmasqUID) && ruleHasDstPort(r, 53) {
+					v, _ := ruleVerdict(r)
+					if v == expr.VerdictAccept {
+						filterAcceptCount++
+					}
+				}
+			}
+
+			assert.Equal(t, 2, filterAcceptCount,
+				"should have filter output ACCEPT rules for excluded UID on both UDP and TCP port 53")
+
+			// VM mode (non-blocked): the postrouting_guard must also
+			// allow excluded UID DNS so upstream queries can egress on
+			// non-loopback. Blocked mode has no postrouting_guard since
+			// the output chain drops all traffic.
+			pgRules := rec.rulesForChain("postrouting_guard")
+			if tc.uids.VMMode && len(pgRules) > 0 {
+				var pgAcceptCount int
+				for _, r := range pgRules {
+					if ruleMatchesUID(r, dnsmasqUID) && ruleHasDstPort(r, 53) {
+						v, _ := ruleVerdict(r)
+						if v == expr.VerdictAccept {
+							pgAcceptCount++
+						}
+					}
+				}
+
+				assert.Equal(t, 2, pgAcceptCount,
+					"should have postrouting_guard ACCEPT rules for excluded UID on both UDP and TCP port 53")
+			}
 		})
 	}
 }
@@ -2590,20 +2630,19 @@ func TestOutputChain_GuardMark(t *testing.T) {
 	tests := map[string]struct {
 		cfg  *config.Config
 		uids firewall.UIDs
-		// Guard mark index differs: unrestricted/blocked have oifname
-		// "lo" accept (index 0), then 2 CIDRs (1, 2), guard mark at 3.
-		// Filtered omits oifname, so 2 CIDRs (0, 1), guard mark at 2.
+		// Guard mark is always the first rule (index 0) in the output
+		// chain across all modes.
 		wantIndex int
 	}{
 		"unrestricted": {
 			cfg:       &config.Config{},
 			uids:      testUIDs,
-			wantIndex: 3,
+			wantIndex: 0,
 		},
 		"blocked": {
 			cfg:       &config.Config{Egress: egressRules(config.EgressRule{})},
 			uids:      testUIDs,
-			wantIndex: 3,
+			wantIndex: 0,
 		},
 		"filtered": {
 			cfg: &config.Config{
@@ -2612,7 +2651,7 @@ func TestOutputChain_GuardMark(t *testing.T) {
 				),
 			},
 			uids:      testUIDs,
-			wantIndex: 2,
+			wantIndex: 0,
 		},
 	}
 

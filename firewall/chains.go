@@ -126,22 +126,30 @@ func addInputChain(conn Conn, table *nftables.Table, uids UIDs) {
 }
 
 // addOutputBaseRules emits the initial OUTPUT rules shared across all
-// three security modes: loopback CIDR accepts (127.0.0.0/8 and ::1),
-// a conditional blanket oifname "lo" accept, and the guard mark.
+// three security modes: the guard mark, loopback CIDR accepts
+// (127.0.0.0/8 and ::1), and a conditional blanket oifname "lo" accept.
 // When excludeMark is non-zero (filtered mode), the blanket oifname
 // "lo" accept is omitted so that traffic to non-loopback IPs routed
 // through lo (e.g., the VM's own address) reaches policy evaluation
 // where deny rules can fire.
 //
-// The guard mark ([guardMark] 0x2) is set as the last rule via
-// [orMarkBit], after loopback accepts but before returning. Only
-// traffic proceeding to policy evaluation gets marked; loopback traffic
-// is short-circuited. The external guard table checks this bit to
-// accept policy-evaluated packets without enumerating terrarium-internal
-// details. In blocked mode, non-loopback packets pass through this rule
-// but are subsequently dropped; the mark is harmless on dropped packets.
+// The guard mark ([guardMark] 0x2) is set as the very first rule via
+// [orMarkBit], before any loopback accepts. This ensures packets to
+// non-loopback IPs routed through lo (e.g., the VM's own address)
+// carry the mark into the external guard table even when the oifname
+// "lo" accept short-circuits policy evaluation. The external guard
+// table checks this bit to accept policy-evaluated packets without
+// enumerating terrarium-internal details.
 func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain, excludeMark uint32) {
-	// 1. Allow loopback interface (unrestricted/blocked modes only).
+	// 1. Mark packet as policy-evaluated for the guard table.
+	// Must be first so packets accepted by loopback rules below
+	// still carry the mark into the external guard table.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: orMarkBit(guardMark),
+	})
+
+	// 2. Allow loopback interface (unrestricted/blocked modes only).
 	// In filtered mode, skip this rule so traffic to non-loopback IPs
 	// on lo reaches the terrarium_output policy chain.
 	if excludeMark == 0 {
@@ -154,7 +162,7 @@ func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain,
 		})
 	}
 
-	// 2. Allow loopback CIDR (nfproto-scoped).
+	// 3. Allow loopback CIDR (nfproto-scoped).
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(
@@ -169,12 +177,6 @@ func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain,
 			matchDstCIDR(mustParseCIDR("::1/128")),
 			verdictExprs(expr.VerdictAccept),
 		),
-	})
-
-	// 3. Mark packet as policy-evaluated for the guard table.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: orMarkBit(guardMark),
 	})
 }
 
@@ -236,6 +238,24 @@ func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftabl
 				verdictExprs(expr.VerdictAccept),
 			),
 		})
+	}
+
+	// Excluded UID DNS queries (UDP + TCP port 53). These UIDs
+	// bypass DNS NAT redirect (see [addDNSRedirect]) and need a
+	// matching filter allow rule so their queries to external
+	// upstream resolvers are not dropped by the output chain policy.
+	for _, uid := range uids.ExcludeUIDs {
+		for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchUID(uid),
+					matchL4Proto(proto),
+					matchDstPort(53),
+					verdictExprs(expr.VerdictAccept),
+				),
+			})
+		}
 	}
 }
 
@@ -1319,6 +1339,23 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 					verdictExprs(expr.VerdictAccept),
 				),
 			})
+		}
+
+		// Excluded UIDs (e.g., dnsmasq) need non-loopback DNS egress
+		// to reach their upstream resolvers. Without this, the guard
+		// drop rule blocks their queries to external nameservers.
+		for _, uid := range uids.ExcludeUIDs {
+			for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+				conn.AddRule(&nftables.Rule{
+					Table: table, Chain: chain,
+					Exprs: flatExprs(
+						matchUID(uid),
+						matchL4Proto(proto),
+						matchDstPort(53),
+						verdictExprs(expr.VerdictAccept),
+					),
+				})
+			}
 		}
 	}
 

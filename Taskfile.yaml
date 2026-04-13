@@ -125,6 +125,8 @@ tasks:
   lima:create:
     desc: Creates and starts the Terrarium Lima VM
     deps: [lima:image]
+    status:
+      - limactl list --json | jq -es 'map(select(.name == "terrarium")) | length > 0'
     vars:
       LIMA_IMAGE: "{{.ROOT_DIR}}/lima/terrarium.qcow2"
       LIMA_ARCH:
@@ -138,9 +140,7 @@ tasks:
 
   lima:rebuild:
     desc: Rebuilds the Lima VM with the current NixOS configuration
-    vars:
-      ARCH:
-        sh: limactl shell terrarium -- uname -m
+    deps: [lima:create]
     cmds:
       # Stop terrarium and flush nftables so nixos-rebuild can reach
       # the binary cache. Flushing the terrarium nftables table removes
@@ -151,6 +151,8 @@ tasks:
           nft flush table inet terrarium 2>/dev/null
           nft "add chain inet terrarium output { type filter hook output priority 0; policy accept; }"
           nft "add chain inet terrarium input { type filter hook input priority 0; policy accept; }"
+          nft flush table inet terrarium-guard 2>/dev/null
+          nft "add chain inet terrarium-guard output { type filter hook output priority 10; policy accept; }"
           rm -f /var/lib/terrarium/config.yaml
           systemctl restart dnsmasq
         '
@@ -159,7 +161,7 @@ tasks:
       - git archive HEAD | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
       - git diff --name-only HEAD | tar cf - -T - | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
       - git ls-files --others --exclude-standard | tar cf - -T - | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
-      - limactl shell terrarium -- sudo nixos-rebuild switch --no-update-lock-file --override-input source path:/tmp/lima-source --flake /tmp/lima-source/lima#terrarium-{{.ARCH}}
+      - limactl shell terrarium -- sudo nixos-rebuild switch --no-update-lock-file --override-input source path:/tmp/lima-source --flake "/tmp/lima-source/lima#terrarium-$(limactl shell terrarium -- uname -m)"
 
   lima:logs:
     desc: Tails provisioning logs from the Lima VM (run alongside lima:create)
@@ -170,11 +172,13 @@ tasks:
 
   lima:test:
     desc: Runs Lima VM e2e tests
+    deps: [lima:rebuild]
     cmds:
       - go test -v -count=1 -timeout=30m ./cmd/testrunner-lima
 
   lima:test:single:
     desc: Runs a single Lima VM e2e test by name
+    deps: [lima:rebuild]
     cmds:
       - go test -v -count=1 -timeout=30m -run TestVM/{{.TEST}} ./cmd/testrunner-lima
 

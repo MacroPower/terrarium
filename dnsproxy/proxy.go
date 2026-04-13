@@ -38,7 +38,7 @@ const (
 	modeRefuseAll
 
 	// modeAllowlist forwards queries matching the allowed domain
-	// list and returns REFUSED for everything else.
+	// list and returns NXDOMAIN for everything else.
 	modeAllowlist
 )
 
@@ -48,9 +48,10 @@ const minIPSetTTL = 60
 
 // Proxy is a filtering DNS proxy that handles domain-level
 // filtering and ipset population. It forwards allowed queries to the
-// real upstream resolver and returns REFUSED for blocked domains,
-// replacing the previous dnsmasq + RefuseDNS two-hop chain with a
-// single process.
+// real upstream resolver and returns NXDOMAIN for domains not on
+// the allowlist (so stub resolvers fall back through search domains)
+// or REFUSED in deny-all mode, replacing the previous
+// dnsmasq + RefuseDNS two-hop chain with a single process.
 type Proxy struct {
 	logFile          io.Closer
 	ctx              context.Context
@@ -421,20 +422,22 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 		return
 	}
 
-	// Allowlist mode: refuse queries that don't match any allowed domain.
+	// Allowlist mode: return NXDOMAIN for queries that don't match any
+	// allowed domain. NXDOMAIN (not REFUSED) ensures stub resolvers like
+	// nsncd fall back through the search domain list correctly.
 	if p.filterMode == modeAllowlist && !p.domainAllowed(qname) {
 		resp := new(dns.Msg)
-		resp.SetRcode(r, dns.RcodeRefused)
+		resp.SetRcode(r, dns.RcodeNameError)
 
 		if p.logging {
-			p.logger.Info("dns query refused",
+			p.logger.Info("dns query blocked",
 				slog.String("name", qname),
 			)
 		}
 
 		err := w.WriteMsg(resp)
 		if err != nil {
-			slog.Warn("writing dns refusal", slog.Any("err", err))
+			slog.Warn("writing dns block response", slog.Any("err", err))
 		}
 
 		return

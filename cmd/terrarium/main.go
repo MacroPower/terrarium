@@ -1,6 +1,7 @@
-// Terrarium is the CLI entrypoint for terrarium container operations,
-// including firewall config generation, user setup, and privilege-dropping
-// init.
+// Terrarium manages egress network policy for containers and VMs.
+// It generates nftables firewall rules and Envoy proxy configs from
+// Cilium-compatible YAML policy, and can run as either a per-container
+// init wrapper or a VM-wide daemon.
 package main
 
 import (
@@ -58,10 +59,33 @@ func main() {
 		)
 	}
 
+	var pidFile string
+
+	daemonCmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Run as a VM-wide network filter daemon",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return Daemon(cmd.Context(), usr, pidFile)
+		},
+	}
+
+	daemonCmd.PersistentFlags().StringVar(&pidFile, "pid-file",
+		"/run/terrarium/terrarium.pid", "path to PID file")
+
+	daemonCmd.AddCommand(&cobra.Command{
+		Use:   "reload",
+		Short: "Validate config and signal the daemon to reload",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return DaemonReload(cmd.Context(), usr, pidFile)
+		},
+	})
+
 	rootCmd.AddCommand(
 		&cobra.Command{
 			Use:   "generate",
-			Short: "Generate iptables/envoy configs from YAML",
+			Short: "Generate nftables/envoy configs from YAML",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				_, err := Generate(cmd.Context(), usr, false)
@@ -76,14 +100,7 @@ func main() {
 				return Init(cmd.Context(), usr, args)
 			},
 		},
-		&cobra.Command{
-			Use:   "daemon",
-			Short: "Run as a VM-wide network filter daemon",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return Daemon(cmd.Context(), usr)
-			},
-		},
+		daemonCmd,
 	)
 
 	err = fang.Execute(context.Background(), rootCmd,

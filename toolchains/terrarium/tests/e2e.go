@@ -846,7 +846,7 @@ func (m *Tests) TestEgressDnsProxyFiltering(ctx context.Context) error {
 		targetService("target-deny", defaultNginxConf),
 		withRootAssertions(
 			dnsForwarded("target-allow", "dns-proxy: allowed domain is forwarded"),
-			dnsRefused("target-deny", "dns-proxy: denied domain returns REFUSED"),
+			dnsBlocked("target-deny", "dns-proxy: denied domain returns NXDOMAIN"),
 		),
 	).run(ctx)
 }

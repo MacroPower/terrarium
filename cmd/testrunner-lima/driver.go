@@ -189,11 +189,13 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 		return fmt.Errorf("systemctl restart: %w", err)
 	}
 
-	// Poll for active status.
-	deadline := time.Now().Add(30 * time.Second)
+	// Poll for active status, respecting both a 30-second wall-clock
+	// deadline and the caller's context (e.g. per-test timeout).
+	pollCtx, pollCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer pollCancel()
 
-	for time.Now().Before(deadline) {
-		out, err := d.shell(ctx, "systemctl", "is-active", "terrarium")
+	for pollCtx.Err() == nil {
+		out, err := d.shell(pollCtx, "systemctl", "is-active", "terrarium")
 		if err == nil && strings.TrimSpace(out) == "active" {
 			// Restart nscd (nsncd) after the daemon is active so
 			// stale DNS failures from a previous daemon run do not
@@ -211,6 +213,38 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("terrarium daemon did not become active within 30s")
+}
+
+// reloadDaemon signals the terrarium daemon to reload its configuration
+// via `systemctl reload` and restarts nscd to clear stale DNS state.
+func (d *driver) reloadDaemon(ctx context.Context) error {
+	_, err := d.shell(ctx, "sudo", "systemctl", "reload", "terrarium")
+	if err != nil {
+		return fmt.Errorf("systemctl reload: %w", err)
+	}
+
+	// Verify the daemon is still active after reload, respecting both
+	// a 10-second wall-clock deadline and the caller's context.
+	pollCtx, pollCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pollCancel()
+
+	for pollCtx.Err() == nil {
+		out, err := d.shell(pollCtx, "systemctl", "is-active", "terrarium")
+		if err == nil && strings.TrimSpace(out) == "active" {
+			// Restart nscd so stale DNS failures from the previous
+			// config do not persist.
+			_, nscdErr := d.shell(ctx, "sudo", "systemctl", "restart", "nscd")
+			if nscdErr != nil {
+				slog.DebugContext(ctx, "restarting nscd", slog.String("error", nscdErr.Error()))
+			}
+
+			return nil
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return fmt.Errorf("terrarium daemon did not become active within 10s after reload")
 }
 
 // stopDaemon stops the terrarium daemon.
@@ -300,11 +334,11 @@ type vmTest struct {
 	setup func(ctx context.Context, d *driver) error
 
 	// verify runs after testrunner assertions complete. It receives
-	// the testing.T so it can call driver methods and assert results
-	// directly -- used for tests that need to run commands inside
-	// ephemeral containers or other actions the testrunner spec
-	// cannot express.
-	verify func(t *testing.T, d *driver)
+	// the per-test timeout context and testing.T so it can call
+	// driver methods and assert results directly -- used for tests
+	// that need to run commands inside ephemeral containers or other
+	// actions the testrunner spec cannot express.
+	verify func(ctx context.Context, t *testing.T, d *driver)
 
 	// teardown runs after the testrunner completes, before cleanup.
 	teardown func(ctx context.Context, d *driver) error
@@ -338,9 +372,18 @@ type vmTest struct {
 // stderr), the on-disk Envoy and DNS log files, the active nftables
 // ruleset, and kernel log entries from nftables LOG targets.
 func (d *driver) tailLogs(ctx context.Context) string {
+	// Per-command timeout so one hung log source does not consume the
+	// entire cleanup budget. 15 seconds accounts for limactl shell
+	// SSH overhead on a loaded VM.
+	const perCmd = 15 * time.Second
+
 	var buf strings.Builder
 
-	journal, err := d.shell(ctx, "sudo", "journalctl", "-u", "terrarium", "-n", "50", "--no-pager")
+	cmdCtx, cancel := context.WithTimeout(ctx, perCmd)
+	journal, err := d.shell(cmdCtx, "sudo", "journalctl", "-u", "terrarium", "-n", "50", "--no-pager")
+
+	cancel()
+
 	if err != nil {
 		slog.DebugContext(ctx, "fetching journal", slog.String("error", err.Error()))
 	}
@@ -361,7 +404,10 @@ func (d *driver) tailLogs(ctx context.Context) string {
 	}
 
 	for _, logFile := range logFiles {
-		content, err := d.shell(ctx, "sudo", "cat", logFile.path)
+		cmdCtx, cancel := context.WithTimeout(ctx, perCmd)
+		content, err := d.shell(cmdCtx, "sudo", "cat", logFile.path)
+
+		cancel()
 
 		switch {
 		case err != nil:
@@ -379,7 +425,11 @@ func (d *driver) tailLogs(ctx context.Context) string {
 	}
 
 	// nftables ruleset for firewall debugging.
-	nft, err := d.shell(ctx, "sudo", "nft", "list", "ruleset")
+	cmdCtx, cancel = context.WithTimeout(ctx, perCmd)
+	nft, err := d.shell(cmdCtx, "sudo", "nft", "list", "ruleset")
+
+	cancel()
+
 	if err != nil {
 		slog.DebugContext(ctx, "fetching nftables ruleset", slog.String("error", err.Error()))
 	}
@@ -391,7 +441,11 @@ func (d *driver) tailLogs(ctx context.Context) string {
 	}
 
 	// Kernel log entries from nftables LOG targets (TERRARIUM_* prefixed).
-	klog, err := d.shell(ctx, "sudo", "dmesg", "--time-format=reltime", "-l", "warn")
+	cmdCtx, cancel = context.WithTimeout(ctx, perCmd)
+	klog, err := d.shell(cmdCtx, "sudo", "dmesg", "--time-format=reltime", "-l", "warn")
+
+	cancel()
+
 	if err != nil {
 		slog.DebugContext(ctx, "fetching dmesg", slog.String("error", err.Error()))
 	}
@@ -416,7 +470,11 @@ func (d *driver) tailLogs(ctx context.Context) string {
 	}
 
 	// Connection tracking state for NAT/DNAT debugging.
-	conntrack, err := d.shell(ctx, "sudo", "conntrack", "-L")
+	cmdCtx, cancel = context.WithTimeout(ctx, perCmd)
+	conntrack, err := d.shell(cmdCtx, "sudo", "conntrack", "-L")
+
+	cancel()
+
 	if err != nil {
 		slog.DebugContext(ctx, "fetching conntrack", slog.String("error", err.Error()))
 	}
@@ -433,7 +491,11 @@ func (d *driver) tailLogs(ctx context.Context) string {
 	}
 
 	// DNS configuration.
-	resolvConf, err := d.shell(ctx, "cat", "/etc/resolv.conf")
+	cmdCtx, cancel = context.WithTimeout(ctx, perCmd)
+	resolvConf, err := d.shell(cmdCtx, "cat", "/etc/resolv.conf")
+
+	cancel()
+
 	if err != nil {
 		slog.DebugContext(ctx, "fetching resolv.conf", slog.String("error", err.Error()))
 	}
@@ -445,7 +507,11 @@ func (d *driver) tailLogs(ctx context.Context) string {
 	}
 
 	// Listening sockets.
-	ss, err := d.shell(ctx, "ss", "-tlnp")
+	cmdCtx, cancel = context.WithTimeout(ctx, perCmd)
+	ss, err := d.shell(cmdCtx, "ss", "-tlnp")
+
+	cancel()
+
 	if err != nil {
 		slog.DebugContext(ctx, "fetching ss", slog.String("error", err.Error()))
 	}
@@ -457,10 +523,18 @@ func (d *driver) tailLogs(ctx context.Context) string {
 	}
 
 	// Container logs for debugging container test failures.
-	ctList, err := d.shell(ctx, "sudo", "nerdctl", "ps", "-aq")
+	cmdCtx, cancel = context.WithTimeout(ctx, perCmd)
+	ctList, err := d.shell(cmdCtx, "sudo", "nerdctl", "ps", "-aq")
+
+	cancel()
+
 	if err == nil && ctList != "" {
 		for id := range strings.FieldsSeq(ctList) {
-			ctLogs, err := d.shell(ctx, "sudo", "nerdctl", "logs", "--tail", "20", id)
+			cmdCtx, cancel := context.WithTimeout(ctx, perCmd)
+			ctLogs, err := d.shell(cmdCtx, "sudo", "nerdctl", "logs", "--tail", "20", id)
+
+			cancel()
+
 			if err != nil {
 				continue
 			}
