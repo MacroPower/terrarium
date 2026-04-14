@@ -865,12 +865,36 @@ func addManglePreRoutingChain(
 
 	// VM mode: mark forwarded traffic for TPROXY interception.
 	// These marking rules fire before the dispatch rules below.
+	//
+	// Each rule includes notMatchMark(guardMark) to exclude
+	// locally-generated traffic that re-enters PREROUTING via
+	// br_netfilter when traversing a bridge to a container. The
+	// output filter chain sets guardMark on all locally-generated
+	// packets; genuinely forwarded container traffic never passes
+	// through OUTPUT and therefore has no guard mark.
 	if uids.VMMode {
+		// Accept established/related traffic before marking.
+		// Return traffic for forwarded connections (e.g.,
+		// SYN-ACK from a container on br-tproxy to a container
+		// on cni0) must not be marked for TPROXY, otherwise the
+		// catch-all TPROXY rule intercepts the reply and Envoy
+		// receives a SYN-ACK for a connection it never opened.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNotIIFName("lo"),
+				matchNotLocalDst(),
+				matchCtState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+
 		// IPv4 forwarded UDP: mark for TPROXY, excluding port 53
 		// (IPv4 DNS uses DNAT in NAT PREROUTING).
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
+				notMatchMark(guardMark),
 				matchNFProto(unix.NFPROTO_IPV4),
 				matchNotIIFName("lo"),
 				matchNotLocalDst(),
@@ -885,6 +909,7 @@ func addManglePreRoutingChain(
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
+				notMatchMark(guardMark),
 				matchNFProto(unix.NFPROTO_IPV6),
 				matchNotIIFName("lo"),
 				matchNotLocalDst(),
@@ -901,6 +926,7 @@ func addManglePreRoutingChain(
 			conn.AddRule(&nftables.Rule{
 				Table: table, Chain: chain,
 				Exprs: flatExprs(
+					notMatchMark(guardMark),
 					matchNFProto(nfProto),
 					matchNotIIFName("lo"),
 					matchNotLocalDst(),
@@ -944,8 +970,8 @@ func addManglePreRoutingChain(
 		addForwardedDenyCIDRTPROXYSkip(conn, table, chain, denyCIDR6, unix.NFPROTO_IPV6)
 
 		// Allow CIDR + TCP -> TPROXY to CIDR catch-all port.
-		addForwardedAllowCIDRTPROXY(conn, table, chain, cidr4, unix.NFPROTO_IPV4)
-		addForwardedAllowCIDRTPROXY(conn, table, chain, cidr6, unix.NFPROTO_IPV6)
+		addForwardedAllowCIDRSkipTPROXY(conn, table, chain, cidr4, unix.NFPROTO_IPV4)
+		addForwardedAllowCIDRSkipTPROXY(conn, table, chain, cidr6, unix.NFPROTO_IPV6)
 
 		// Per-port TCP -> TPROXY to ProxyPortBase+port.
 		for _, p := range resolvedPorts {
@@ -1600,13 +1626,20 @@ func addForwardedDenyCIDRTPROXYSkip(
 	}
 }
 
-// addForwardedAllowCIDRTPROXY creates per-rule CIDR chains that
-// TPROXY matching TCP traffic to the CIDR catch-all listener for the
-// given address family. Mirrors [addCIDRNATRedirect] but uses TPROXY
-// instead of REDIRECT. Rules with serverNames or L7 ports are skipped
-// (they fall to per-port TPROXY dispatch for SNI/HTTP filtering via
-// Envoy).
-func addForwardedAllowCIDRTPROXY(
+// addForwardedAllowCIDRSkipTPROXY creates per-rule CIDR chains that
+// clear the TPROXY fwmark and accept, letting matching TCP traffic
+// bypass Envoy and be forwarded directly by the kernel. The FORWARD
+// chain's policy evaluation ([addForwardChain]) still enforces the
+// CIDR allowlist.
+//
+// CIDR traffic cannot use TPROXY or NAT REDIRECT in the PREROUTING
+// path because br_netfilter's ip_sabotage_in prevents inet hooks
+// from running on the ip_rcv pass for bridge-delivered packets. The
+// TPROXY mark (table 100, local default) would route the packet to
+// INPUT instead of FORWARD, and the CIDR catch-all listener never
+// receives the connection. Clearing the mark restores normal
+// forwarding.
+func addForwardedAllowCIDRSkipTPROXY(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, nfProto byte,
 ) {
@@ -1615,14 +1648,22 @@ func addForwardedAllowCIDRTPROXY(
 		familySuffix = "6"
 	}
 
+	// Clear mark + accept: the packet exits mangle_prerouting with
+	// mark 0. Policy routing (table 100) does not apply, so the
+	// kernel forwards the packet normally via the FORWARD chain.
+	clearAndAccept := flatExprs(
+		markPacket(0),
+		verdictExprs(expr.VerdictAccept),
+	)
+
 	buildCIDRTCPChains(conn, table, parentChain, cidrs,
 		"cidr_tproxy"+familySuffix, nil,
-		tproxyToPort(nfProto, port16(config.CIDRCatchAllPort)),
+		clearAndAccept,
 		tproxyNFProtoGuard(nfProto))
 }
 
 // buildCIDRTCPChains is the shared implementation for
-// [addCIDRNATRedirect] and [addForwardedAllowCIDRTPROXY]. It creates
+// [addCIDRNATRedirect] and [addForwardedAllowCIDRSkipTPROXY]. It creates
 // per-rule CIDR chains with
 // except RETURNs and terminal expressions (redirect, DNAT, or
 // TPROXY). The rulePrefix expressions are prepended to each rule

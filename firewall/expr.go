@@ -332,6 +332,28 @@ func matchMark(mark uint32) []expr.Any {
 	}
 }
 
+// notMatchMark matches packets that do NOT have the given fwmark
+// bit(s) set: (mark & bit) == 0. Used to exclude locally-generated
+// traffic (identified by [guardMark]) from TPROXY marking in
+// mangle PREROUTING when br_netfilter re-enters the hook.
+func notMatchMark(mark uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(mark),
+			Xor:            make([]byte, 4),
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(0),
+		},
+	}
+}
+
 // tproxyToPort applies TPROXY to redirect traffic to a local port.
 // Requires per-AF rules (NFPROTO_IPV4 or NFPROTO_IPV6).
 func tproxyToPort(family byte, port uint16) []expr.Any {
@@ -344,6 +366,9 @@ func tproxyToPort(family byte, port uint16) []expr.Any {
 			Family:      family,
 			TableFamily: family,
 			RegPort:     1,
+		},
+		&expr.Verdict{
+			Kind: expr.VerdictAccept,
 		},
 	}
 }

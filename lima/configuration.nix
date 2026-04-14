@@ -82,6 +82,30 @@ in
     ];
   };
 
+  # Second bridge network on a separate subnet for cross-network
+  # TPROXY tests. Traffic from the default bridge (172.20.0.0/16) to
+  # this subnet is L3-routed through the VM kernel, exercising the
+  # FORWARD chain and mangle PREROUTING TPROXY path.
+  environment.etc."cni/net.d/20-tproxy-test.conflist".text = builtins.toJSON {
+    cniVersion = "1.0.0";
+    name = "tproxy-test";
+    plugins = [
+      {
+        type = "bridge";
+        bridge = "br-tproxy";
+        isGateway = true;
+        ipMasq = false;
+        ipam = {
+          type = "host-local";
+          ranges = [ [ { subnet = "172.21.0.0/16"; gateway = "172.21.0.1"; } ] ];
+          routes = [ { dst = "0.0.0.0/0"; } ];
+        };
+      }
+      { type = "portmap"; capabilities = { portMappings = true; }; }
+      { type = "loopback"; }
+    ];
+  };
+
   # Pre-load the test container image into containerd.
   systemd.services.load-test-image = {
     after = [ "containerd.service" ];

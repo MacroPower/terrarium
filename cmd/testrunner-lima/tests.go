@@ -3,7 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Assertion builder functions construct [assertion] values that match
@@ -1118,6 +1123,152 @@ egressDeny:
 				"http://target-allow:80/")
 			if err != nil {
 				t.Errorf("bridge-local DNS: curl failed: %v\noutput: %s", err, out)
+			}
+		},
+	},
+
+	// Bridge-to-external test: verifies that bridge-networked container
+	// traffic traversing the FORWARD chain and mangle PREROUTING TPROXY
+	// path reaches the correct Envoy listener. The service runs on the
+	// tproxy-test network (172.21.0.0/16, defined in configuration.nix)
+	// so traffic from the default bridge (172.20.0.0/16) is L3-routed
+	// through the VM kernel rather than L2 bridge-forwarded.
+	{
+		name: "vm-container-bridge-external",
+		config: `egress:
+  - toCIDR:
+      - "172.21.0.0/16"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+`,
+		verify: func(ctx context.Context, t *testing.T, d *driver) {
+			t.Helper()
+
+			// Write a minimal nginx config for the service.
+			confPath := "/tmp/bridge-svc-nginx.conf"
+			conf := "error_log /dev/null;\nevents {}\nhttp {\naccess_log /dev/null;\nserver { listen 80; location / { return 200 'ok'; } }\n}\n"
+
+			err := d.writeFile(ctx, confPath, conf)
+			require.NoError(t, err)
+
+			// Remove any stale container from a previous run.
+			_, err = d.shell(ctx, "sudo", "nerdctl", "rm", "-f", "bridge-svc")
+			if err != nil {
+				t.Logf("removing stale bridge-svc container: %v", err)
+			}
+
+			t.Cleanup(func() {
+				_, err := d.shell(ctx, "sudo", "nerdctl", "rm", "-f", "bridge-svc")
+				if err != nil {
+					t.Logf("cleanup: removing bridge-svc container: %v", err)
+				}
+			})
+
+			// Remove stale 172.21.0.0/16 routes from interfaces
+			// other than br-tproxy. Previous nerdctl network
+			// operations can leave behind duplicate bridges
+			// (br-<hash>, cni1, etc.) with the same subnet,
+			// causing the kernel to route via a linkdown device.
+			_, err = d.shell(ctx, "sudo", "ip", "route", "flush", "172.21.0.0/16", "dev", "cni1")
+			if err != nil {
+				t.Logf("flushing cni1 routes: %v", err)
+			}
+
+			routeOut, err := d.shell(ctx, "ip", "route", "show", "172.21.0.0/16")
+			if err != nil {
+				t.Logf("listing routes for 172.21.0.0/16: %v", err)
+			}
+
+			for line := range strings.SplitSeq(routeOut, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.Contains(line, "br-tproxy") {
+					continue
+				}
+
+				// Extract "dev <name>" and flush that device's route.
+				parts := strings.Fields(line)
+				for i, p := range parts {
+					if p == "dev" && i+1 < len(parts) {
+						_, err = d.shell(
+							ctx, "sudo", "ip", "route", "flush",
+							"172.21.0.0/16", "dev", parts[i+1],
+						)
+						if err != nil {
+							t.Logf("flushing route for dev %s: %v", parts[i+1], err)
+						}
+					}
+				}
+			}
+
+			// Start nginx on the tproxy-test network (172.21.0.0/16,
+			// defined in configuration.nix). Traffic from the default
+			// bridge is L3-routed through the VM kernel and hits the
+			// FORWARD chain + mangle PREROUTING TPROXY.
+			_, err = d.shell(ctx, "sudo", "nerdctl", "run", "-d",
+				"--name", "bridge-svc",
+				"--network", "tproxy-test",
+				"-v", confPath+":/etc/nginx/nginx.conf:ro",
+				"terrarium-test:latest",
+				"nginx", "-c", "/etc/nginx/nginx.conf", "-g", "daemon off;")
+			require.NoError(t, err)
+
+			// Get the service container's IP on the second network.
+			ipOut, err := d.shell(ctx, "sudo", "nerdctl", "inspect",
+				"-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", "bridge-svc")
+			require.NoError(t, err)
+
+			ip := strings.TrimSpace(ipOut)
+			require.NotEmpty(t, ip, "bridge-svc container has no IP")
+
+			// Wait for nginx to be listening inside the
+			// container. Using nerdctl exec bypasses all host
+			// nftables chains, confirming the service is ready
+			// before testing the TPROXY path.
+			var readyErr error
+			for range 10 {
+				_, readyErr = d.shell(ctx, "sudo", "nerdctl", "exec",
+					"bridge-svc", "curl", "-sf", "--max-time", "1",
+					"http://127.0.0.1:80/")
+				if readyErr == nil {
+					break
+				}
+
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			require.NoError(t, readyErr, "nginx not listening in bridge-svc")
+
+			// Curl the service from a bridge container.
+			out, err := d.runInBridgeContainer(ctx,
+				"172.20.0.1",
+				"curl", "-sf", "--max-time", "10",
+				"http://"+net.JoinHostPort(ip, "80")+"/")
+			if err != nil {
+				// Collect diagnostics on failure.
+				nft, nftErr := d.shell(ctx, "sudo", "nft",
+					"list", "table", "inet", "terrarium")
+				routes, routesErr := d.shell(ctx, "ip", "route", "show", "table", "all")
+				ipRules, ipRulesErr := d.shell(ctx, "ip", "rule", "show")
+				ss, ssErr := d.shell(ctx, "sudo", "ss", "-tlnp")
+				ct, ctErr := d.shell(ctx, "sudo", "conntrack", "-L")
+				arp, arpErr := d.shell(ctx, "ip", "neigh", "show")
+
+				for name, derr := range map[string]error{
+					"nft": nftErr, "routes": routesErr, "ip rule": ipRulesErr,
+					"ss": ssErr, "conntrack": ctErr, "neigh": arpErr,
+				} {
+					if derr != nil {
+						t.Logf("diagnostic %s: %v", name, derr)
+					}
+				}
+
+				t.Errorf("bridge-external: curl failed: %v\noutput: %s"+
+					"\n\nnft terrarium:\n%s"+
+					"\nip route:\n%s\nip rule:\n%s\nss:\n%s"+
+					"\nconntrack:\n%s\nneigh:\n%s",
+					err, out, nft, routes, ipRules, ss, ct, arp)
 			}
 		},
 	},

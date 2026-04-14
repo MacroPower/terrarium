@@ -899,6 +899,10 @@ func TestApplyRules_MangleChains_Unrestricted(t *testing.T) {
 	for _, r := range preRules {
 		if ruleHasTProxy(r) {
 			tproxyCount++
+
+			v, _ := ruleVerdict(r)
+			assert.Equal(t, expr.VerdictAccept, v,
+				"TPROXY rule should accept to prevent catch-all override")
 		}
 	}
 
@@ -2094,22 +2098,27 @@ func TestApplyRules_VMMode_MangleForwarded(t *testing.T) {
 	rules := rec.rulesForChain("mangle_prerouting")
 	require.NotEmpty(t, rules)
 
-	// First rule should be the forwarded UDP marking rule (non-loopback,
-	// non-local-dst scoping) with fwmark but no TPROXY.
+	// First rule should accept established/related forwarded traffic
+	// to prevent TPROXY from intercepting return traffic.
 	firstRule := rules[0]
-	assert.True(t, ruleHasMark(firstRule),
-		"first mangle_prerouting rule should mark forwarded UDP")
-	assert.False(t, ruleHasTProxy(firstRule),
-		"forwarded UDP marking rule should not have TPROXY (just mark)")
+	v, _ := ruleVerdict(firstRule)
+	assert.Equal(t, expr.VerdictAccept, v,
+		"first mangle_prerouting rule should accept established/related")
 
-	// Should also have TPROXY rules after the marking rule.
-	var hasTProxy bool
+	// Should have marking rules (fwmark but no TPROXY) followed
+	// by TPROXY dispatch rules.
+	var hasMark, hasTProxy bool
 	for _, r := range rules[1:] {
+		if ruleHasMark(r) && !ruleHasTProxy(r) {
+			hasMark = true
+		}
+
 		if ruleHasTProxy(r) {
 			hasTProxy = true
 		}
 	}
 
+	assert.True(t, hasMark, "should have forwarded marking rules")
 	assert.True(t, hasTProxy, "should have TPROXY rules after forwarded marking")
 }
 
@@ -2367,15 +2376,18 @@ func TestApplyRules_VMMode_IPv6TPROXY_AllowCIDR(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should have a cidr_tproxy6 chain with per-rule structure.
+	// CIDR chains clear the TPROXY mark and accept, letting the
+	// packet be forwarded directly (the FORWARD chain enforces
+	// the CIDR allowlist).
 	names := rec.chainNames()
 	assert.Contains(t, names, "cidr_tproxy6_0",
-		"should create per-rule allow CIDR TPROXY chain")
+		"should create per-rule allow CIDR chain")
 
 	cidrRules := rec.rulesForChain("cidr_tproxy6_0")
 	require.NotEmpty(t, cidrRules)
 
-	// Chain should have except RETURN before TPROXY dispatch.
-	var hasReturn, hasTProxy bool
+	// Chain should have except RETURN before mark-clear + accept.
+	var hasReturn, hasAccept bool
 
 	for _, r := range cidrRules {
 		v, _ := ruleVerdict(r)
@@ -2383,13 +2395,13 @@ func TestApplyRules_VMMode_IPv6TPROXY_AllowCIDR(t *testing.T) {
 			hasReturn = true
 		}
 
-		if ruleHasTProxy(r) {
-			hasTProxy = true
+		if v == expr.VerdictAccept {
+			hasAccept = true
 		}
 	}
 
-	assert.True(t, hasReturn, "allow CIDR TPROXY chain should have except RETURN")
-	assert.True(t, hasTProxy, "allow CIDR TPROXY chain should have TPROXY dispatch")
+	assert.True(t, hasReturn, "allow CIDR chain should have except RETURN")
+	assert.True(t, hasAccept, "allow CIDR chain should have mark-clear + accept")
 }
 
 func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
