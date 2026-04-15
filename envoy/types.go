@@ -23,13 +23,22 @@ type StaticResources struct {
 // Listener models an Envoy listener with filter chains and optional
 // listener-level filters.
 type Listener struct {
-	DefaultFilterChain *filterChain       `yaml:"default_filter_chain,omitempty"`
-	UDPListenerConfig  *udpListenerConfig `yaml:"udp_listener_config,omitempty"`
-	Name               string             `yaml:"name"`
-	ListenerFilters    []NamedTyped       `yaml:"listener_filters,omitempty"`
-	FilterChains       []filterChain      `yaml:"filter_chains,omitempty"`
-	Address            address            `yaml:"address"`
-	Transparent        bool               `yaml:"transparent,omitempty"`
+	DefaultFilterChain  *filterChain       `yaml:"default_filter_chain,omitempty"`
+	UDPListenerConfig   *udpListenerConfig `yaml:"udp_listener_config,omitempty"`
+	Name                string             `yaml:"name"`
+	ListenerFilters     []NamedTyped       `yaml:"listener_filters,omitempty"`
+	FilterChains        []filterChain      `yaml:"filter_chains,omitempty"`
+	AdditionalAddresses []additionalAddr   `yaml:"additional_addresses,omitempty"`
+	Address             address            `yaml:"address"`
+	Transparent         bool               `yaml:"transparent,omitempty"`
+}
+
+// additionalAddr is an additional address for a [Listener]. Used to
+// bind both IPv4 and IPv6 on a single logical listener. Required for
+// TPROXY because the kernel's IPv4 socket lookup only finds AF_INET
+// sockets, not dual-stack AF_INET6 sockets.
+type additionalAddr struct {
+	Address address `yaml:"address"`
 }
 
 type address struct {

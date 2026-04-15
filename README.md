@@ -379,25 +379,29 @@ locally-originated traffic:
 
 | Chain               | Hook        | Priority | Purpose                                                           |
 | ------------------- | ----------- | -------- | ----------------------------------------------------------------- |
-| `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 DNS (UDP + TCP) to `127.0.0.1:53`             |
-| `mangle_prerouting` | PREROUTING  | -150     | Mark forwarded UDP + TCP for TPROXY; dispatch to Envoy/DNS proxy  |
-| `forward`           | FORWARD     | 0        | Policy-evaluate non-intercepted forwarded traffic (ICMP)          |
+| `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 DNS + per-port TCP to Envoy on `127.0.0.1`    |
+| `mangle_prerouting` | PREROUTING  | -150     | Mark forwarded UDP for TPROXY; dispatch to Envoy/DNS proxy        |
+| `forward`           | FORWARD     | 0        | Policy-evaluate forwarded traffic not intercepted by DNAT (ICMP)  |
 | `postrouting_guard` | POSTROUTING | 0        | Catch locally-originated leaks (forwarded traffic passes through) |
 
-All forwarded non-DNS TCP (IPv4 and IPv6) uses TPROXY rather than DNAT. When
-`br_netfilter` is loaded (required for bridge-networked containers), bridged
-frames traverse netfilter inet hooks so terrarium's nftables rules see the
-traffic. However, `br_netfilter` prevents DNAT to 127.0.0.1 for bridge-forwarded
-TCP because the bridge path does not re-route DNATted packets through loopback.
-TPROXY avoids this by intercepting transparently without rewriting the
-destination.
+All forwarded TCP uses DNAT in NAT PREROUTING. When `br_netfilter` is loaded
+(required for bridge-networked containers), bridged frames traverse netfilter
+inet hooks so terrarium's nftables rules see the traffic. DNAT is required
+because `br_nf_pre_routing_finish` (the br_netfilter continuation after inet
+PREROUTING hooks) only re-routes packets locally when DNAT has changed the
+destination address. Without DNAT, the packet receives a fake bridge rtable
+and is L2-forwarded to the original destination, bypassing Envoy entirely.
+TPROXY does not modify the IP header, so it cannot trigger this re-route.
 
-DNS (UDP and TCP port 53) uses DNAT in NAT PREROUTING. The DNS DNAT rules
-intentionally omit the non-local destination check so queries to bridge-local
-resolvers (e.g., BuildKit's embedded DNS on the CNI gateway) are also
-intercepted. For non-local destinations, DNS TCP is already handled by TPROXY
-in mangle PREROUTING (higher priority); the NAT DNAT rule only fires for the
-local-destination case. DNS UDP DNAT requires
+Per-port DNAT rules redirect configured TCP ports to Envoy's proxy listeners
+(ProxyPortBase + port). The non-loopback interface check prevents these rules
+from matching locally-generated TPROXY traffic re-entering PREROUTING on
+loopback. Per-port matching avoids intercepting SSH (port 22).
+
+DNS (UDP and TCP port 53) also uses DNAT in NAT PREROUTING. The DNS DNAT
+rules intentionally omit the non-local destination check so queries to
+bridge-local resolvers (e.g., BuildKit's embedded DNS on the CNI gateway) are
+also intercepted. DNS UDP DNAT requires
 `net.ipv4.conf.default.route_localnet=1` so dynamically-created bridge
 interfaces allow routing to 127.0.0.0/8. Deny CIDRs skip TPROXY so the
 FORWARD chain's terminal DROP applies.
@@ -488,7 +492,13 @@ If the host runs a strict reverse-path filter (the NixOS default), it must be
 relaxed to "loose" mode. With `br_netfilter`, bridged packets enter L3 hooks
 with the bridge port (veth) as iif, but routes point to the bridge master
 (cni0). Strict rpfilter fails because `fib saddr . iif` has no matching route;
-loose mode drops the iif constraint:
+loose mode drops the iif constraint.
+
+The NixOS nftables rpfilter chain (`fib saddr . mark check exists`) also
+needs an exception for TPROXY-marked packets. With fwmark 0x1, the FIB lookup
+uses policy routing table 100 (`local default dev lo`), which changes the
+reverse path result. Without the exception, the rpfilter chain drops
+TPROXY-marked forwarded UDP packets:
 
 ```
 # NixOS: networking.firewall.checkReversePath = "loose";
@@ -503,13 +513,13 @@ etc.) or, in container mode, the container runtime's bridge/port-mapping rules.
 
 The host firewall must accept traffic patterns created by terrarium's NAT and
 TPROXY interception. Without these rules, DNATted bridge-container traffic
-(DNS, HTTP redirected to `127.0.0.1`) and TPROXY-marked forwarded packets
-would be dropped:
+(DNS and TCP redirected to `127.0.0.1`) and TPROXY-marked forwarded UDP
+packets would be dropped:
 
 ```nft
-# Accept DNATted bridge-container traffic.
+# Accept DNATted bridge-container traffic (DNS + TCP).
 ct status dnat accept
-# Accept TPROXY-marked forwarded packets.
+# Accept TPROXY-marked forwarded UDP packets.
 meta mark & 0x1 == 0x1 accept
 ```
 
@@ -523,6 +533,12 @@ networking.firewall = {
   allowedTCPPorts = [ 22 ];  # SSH or other management access
   extraInputRules = ''
     ct status dnat accept
+    meta mark & 0x1 == 0x1 accept
+  '';
+  # TPROXY-marked packets use policy routing table 100, which
+  # changes the FIB reverse path result. Without this exception
+  # the rpfilter chain drops them.
+  extraReversePathFilterRules = ''
     meta mark & 0x1 == 0x1 accept
   '';
 };
@@ -571,7 +587,7 @@ The entire stack is dual-stack. nftables uses a single inet-family table that
 covers both IPv4 and IPv6 (replacing four legacy iptables tables). FQDN IP sets
 are created in pairs: one `TypeIPAddr` set for A records and one `TypeIP6Addr`
 set for AAAA records, both with per-element TTLs. The mangle prerouting chain
-has separate per-AF TPROXY rules for `NFPROTO_IPV4` and `NFPROTO_IPV6`. Policy
+has per-AF UDP TPROXY rules for `NFPROTO_IPV4` and `NFPROTO_IPV6`. Policy
 routing rules and routes are installed for both `AF_INET` and `AF_INET6`. The
 DNS proxy listens on both `127.0.0.1:53` and `[::1]:53`. NAT OUTPUT REDIRECT
 rules intercept port 53 for both address families, so no `/etc/resolv.conf`

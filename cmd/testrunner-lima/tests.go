@@ -1273,6 +1273,151 @@ egressDeny:
 		},
 	},
 
+	// Bridge-to-external FQDN test: same cross-bridge TPROXY path as
+	// vm-container-bridge-external, but with FQDN rules instead of CIDR.
+	// This exercises the socket transparent re-marking path: established
+	// TPROXY packets must carry tproxyMark for policy routing to deliver
+	// them to Envoy. Without the socket transparent rule, established
+	// packets route via the main table and are dropped in FORWARD.
+	{
+		name: "vm-container-bridge-external-fqdn",
+		config: `egress:
+  - toFQDNs:
+      - matchName: "bridge-svc-fqdn"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+`,
+		verify: func(ctx context.Context, t *testing.T, d *driver) {
+			t.Helper()
+
+			confPath := "/tmp/bridge-svc-fqdn-nginx.conf"
+			conf := "error_log /dev/null;\nevents {}\nhttp {\naccess_log /dev/null;\nserver { listen 80; location / { return 200 'ok'; } }\n}\n"
+
+			err := d.writeFile(ctx, confPath, conf)
+			require.NoError(t, err)
+
+			_, err = d.shell(ctx, "sudo", "nerdctl", "rm", "-f", "bridge-svc-fqdn")
+			if err != nil {
+				t.Logf("removing stale bridge-svc-fqdn container: %v", err)
+			}
+
+			t.Cleanup(func() {
+				_, err := d.shell(ctx, "sudo", "nerdctl", "rm", "-f", "bridge-svc-fqdn")
+				if err != nil {
+					t.Logf("cleanup: removing bridge-svc-fqdn container: %v", err)
+				}
+			})
+
+			// Remove stale 172.21.0.0/16 routes from interfaces
+			// other than br-tproxy (same cleanup as bridge-external).
+			_, err = d.shell(ctx, "sudo", "ip", "route", "flush", "172.21.0.0/16", "dev", "cni1")
+			if err != nil {
+				t.Logf("flushing cni1 routes: %v", err)
+			}
+
+			routeOut, err := d.shell(ctx, "ip", "route", "show", "172.21.0.0/16")
+			if err != nil {
+				t.Logf("listing routes for 172.21.0.0/16: %v", err)
+			}
+
+			for line := range strings.SplitSeq(routeOut, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.Contains(line, "br-tproxy") {
+					continue
+				}
+
+				parts := strings.Fields(line)
+				for i, p := range parts {
+					if p == "dev" && i+1 < len(parts) {
+						_, err = d.shell(
+							ctx, "sudo", "ip", "route", "flush",
+							"172.21.0.0/16", "dev", parts[i+1],
+						)
+						if err != nil {
+							t.Logf("flushing route for dev %s: %v", parts[i+1], err)
+						}
+					}
+				}
+			}
+
+			// Start nginx on the tproxy-test network.
+			_, err = d.shell(ctx, "sudo", "nerdctl", "run", "-d",
+				"--name", "bridge-svc-fqdn",
+				"--network", "tproxy-test",
+				"-v", confPath+":/etc/nginx/nginx.conf:ro",
+				"terrarium-test:latest",
+				"nginx", "-c", "/etc/nginx/nginx.conf", "-g", "daemon off;")
+			require.NoError(t, err)
+
+			// Discover bridge-svc-fqdn's IP on the tproxy-test network.
+			ipOut, err := d.shell(ctx, "sudo", "nerdctl", "inspect",
+				"-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", "bridge-svc-fqdn")
+			require.NoError(t, err)
+
+			ip := strings.TrimSpace(ipOut)
+			require.NotEmpty(t, ip, "bridge-svc-fqdn container has no IP")
+
+			// Write dnsmasq entry so the terrarium DNS proxy can
+			// resolve the FQDN to the container's cross-bridge IP.
+			err = d.writeFile(ctx, "/etc/dnsmasq-hosts",
+				fmt.Sprintf("%s bridge-svc-fqdn\n", ip))
+			require.NoError(t, err)
+
+			_, err = d.shell(ctx, "sudo", "systemctl", "reload", "dnsmasq")
+			require.NoError(t, err, "reloading dnsmasq after adding bridge-svc-fqdn entry")
+
+			// Wait for nginx to be listening.
+			var readyErr error
+			for range 10 {
+				_, readyErr = d.shell(ctx, "sudo", "nerdctl", "exec",
+					"bridge-svc-fqdn", "curl", "-sf", "--max-time", "1",
+					"http://127.0.0.1:80/")
+				if readyErr == nil {
+					break
+				}
+
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			require.NoError(t, readyErr, "nginx not listening in bridge-svc-fqdn")
+
+			// Curl the service by hostname from a bridge container.
+			// DNS resolves to 172.21.x.x, traffic is L3-routed
+			// through TPROXY. Without the socket transparent rule,
+			// the TCP handshake never completes.
+			out, err := d.runInBridgeContainer(ctx,
+				"172.20.0.1",
+				"curl", "-sf", "--max-time", "10",
+				"http://bridge-svc-fqdn:80/")
+			if err != nil {
+				nft, nftErr := d.shell(ctx, "sudo", "nft",
+					"list", "table", "inet", "terrarium")
+				routes, routesErr := d.shell(ctx, "ip", "route", "show", "table", "all")
+				ipRules, ipRulesErr := d.shell(ctx, "ip", "rule", "show")
+				ss, ssErr := d.shell(ctx, "sudo", "ss", "-tlnp")
+				ct, ctErr := d.shell(ctx, "sudo", "conntrack", "-L")
+				arp, arpErr := d.shell(ctx, "ip", "neigh", "show")
+
+				for name, derr := range map[string]error{
+					"nft": nftErr, "routes": routesErr, "ip rule": ipRulesErr,
+					"ss": ssErr, "conntrack": ctErr, "neigh": arpErr,
+				} {
+					if derr != nil {
+						t.Logf("diagnostic %s: %v", name, derr)
+					}
+				}
+
+				t.Errorf("bridge-external-fqdn: curl failed: %v\noutput: %s"+
+					"\n\nnft terrarium:\n%s"+
+					"\nip route:\n%s\nip rule:\n%s\nss:\n%s"+
+					"\nconntrack:\n%s\nneigh:\n%s",
+					err, out, nft, routes, ipRules, ss, ct, arp)
+			}
+		},
+	},
+
 	// VM-specific tests (not in container suite).
 	{
 		name: "vm-multi-uid",

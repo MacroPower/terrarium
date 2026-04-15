@@ -13,22 +13,29 @@ const (
 	// container mode (non-transparent) listeners.
 	loopbackAddr = "127.0.0.1"
 
-	// dualStackAddr is the listener bind address for VM mode
-	// (transparent) listeners. Dual-stack [::] accepts both IPv4
-	// and IPv6 connections.
-	dualStackAddr = "::"
+	// ipv4AnyAddr is the wildcard IPv4 address for VM mode
+	// transparent listeners. TPROXY requires AF_INET sockets
+	// because the kernel's nf_tproxy_get_sock_v4 only searches
+	// the IPv4 socket hash; dual-stack AF_INET6 sockets are
+	// invisible to it.
+	ipv4AnyAddr = "0.0.0.0"
+
+	// ipv6AnyAddr is the wildcard IPv6 address, used as an
+	// additional bind address alongside [ipv4AnyAddr] for
+	// transparent listeners so IPv6 TPROXY can find the socket.
+	ipv6AnyAddr = "::"
 )
 
-// listenSocketAddr returns the socket address for a listener based on
-// the transparent flag. When transparent is true, the address binds to
-// dual-stack [::] with ipv4_compat enabled so envoy accepts both IPv4
-// and IPv6 connections on a single socket.
+// listenSocketAddr returns the primary socket address for a listener.
+// When transparent is true, the address is 0.0.0.0 (IPv4 wildcard)
+// so the kernel's TPROXY IPv4 socket lookup can find the socket.
+// Callers should also add an IPv6 additional address via
+// [listenAdditionalAddrs] for IPv6 TPROXY support.
 func listenSocketAddr(transparent bool, port int) socketAddress {
 	if transparent {
 		return socketAddress{
-			Address:    dualStackAddr,
-			PortValue:  port,
-			Ipv4Compat: true,
+			Address:   ipv4AnyAddr,
+			PortValue: port,
 		}
 	}
 
@@ -36,6 +43,22 @@ func listenSocketAddr(transparent bool, port int) socketAddress {
 		Address:   loopbackAddr,
 		PortValue: port,
 	}
+}
+
+// listenAdditionalAddrs returns additional addresses for transparent
+// listeners: an IPv6 wildcard socket so IPv6 TPROXY dispatch rules
+// can find the listener. Returns nil for non-transparent listeners.
+func listenAdditionalAddrs(transparent bool, port int) []additionalAddr {
+	if !transparent {
+		return nil
+	}
+
+	return []additionalAddr{{
+		Address: address{SocketAddress: socketAddress{
+			Address:   ipv6AnyAddr,
+			PortValue: port,
+		}},
+	}}
 }
 
 // BuildTLSListener creates a TLS listener that matches connections by
@@ -134,10 +157,11 @@ func BuildTLSListener(
 	defaultChain := buildDefaultRejectFilterChain(statPrefix)
 
 	return Listener{
-		Name:               name,
-		Address:            address{SocketAddress: listenSocketAddr(transparent, listenPort)},
-		Transparent:        transparent,
-		DefaultFilterChain: &defaultChain,
+		Name:                name,
+		Address:             address{SocketAddress: listenSocketAddr(transparent, listenPort)},
+		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
+		Transparent:         transparent,
+		DefaultFilterChain:  &defaultChain,
 		ListenerFilters: []NamedTyped{{
 			Name: "envoy.filters.listener.tls_inspector",
 			TypedConfig: typeOnly{
@@ -207,9 +231,10 @@ func BuildHTTPForwardListener(
 	}
 
 	return Listener{
-		Name:        "http_forward",
-		Address:     address{SocketAddress: listenSocketAddr(transparent, 15080)},
-		Transparent: transparent,
+		Name:                "http_forward",
+		Address:             address{SocketAddress: listenSocketAddr(transparent, 15080)},
+		AdditionalAddresses: listenAdditionalAddrs(transparent, 15080),
+		Transparent:         transparent,
 		FilterChains: []filterChain{{
 			Filters: []filter{{
 				Name: "envoy.filters.network.http_connection_manager",
@@ -247,9 +272,10 @@ func BuildTCPForwardListener(
 	transparent bool,
 ) Listener {
 	return Listener{
-		Name:        name,
-		Address:     address{SocketAddress: listenSocketAddr(transparent, listenPort)},
-		Transparent: transparent,
+		Name:                name,
+		Address:             address{SocketAddress: listenSocketAddr(transparent, listenPort)},
+		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
+		Transparent:         transparent,
 		FilterChains: []filterChain{{
 			Filters: []filter{{
 				Name: "envoy.filters.network.tcp_proxy",
@@ -285,9 +311,10 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, 
 	}
 
 	return Listener{
-		Name:        "catch_all_tcp",
-		Address:     address{SocketAddress: listenSocketAddr(transparent, listenPort)},
-		Transparent: transparent,
+		Name:                "catch_all_tcp",
+		Address:             address{SocketAddress: listenSocketAddr(transparent, listenPort)},
+		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
+		Transparent:         transparent,
 		ListenerFilters: []NamedTyped{{
 			Name: "envoy.filters.listener.original_dst",
 			TypedConfig: typeOnly{
@@ -319,9 +346,10 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, 
 // IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
 func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog, transparent bool) Listener {
 	return Listener{
-		Name:        "cidr_catch_all",
-		Address:     address{SocketAddress: listenSocketAddr(transparent, listenPort)},
-		Transparent: transparent,
+		Name:                "cidr_catch_all",
+		Address:             address{SocketAddress: listenSocketAddr(transparent, listenPort)},
+		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
+		Transparent:         transparent,
 		ListenerFilters: []NamedTyped{
 			{
 				Name: "envoy.filters.listener.original_dst",
@@ -358,23 +386,31 @@ func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog, transparen
 // TCP-only); the ORIGINAL_DST cluster recovers the destination from
 // the transparent socket address instead.
 func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []AccessLog, transparent bool) Listener {
-	// UDP listener is always transparent. In VM mode, bind to [::] for
-	// dual-stack TPROXY; otherwise bind to 0.0.0.0.
+	// UDP listener is always transparent. Bind to 0.0.0.0 so the
+	// kernel's IPv4 TPROXY socket lookup finds this socket. In VM
+	// mode, an additional IPv6 address handles IPv6 TPROXY.
 	udpSockAddr := socketAddress{
 		Address:   "0.0.0.0",
 		Protocol:  "UDP",
 		PortValue: port,
 	}
 
+	var additionalAddrs []additionalAddr
 	if transparent {
-		udpSockAddr.Address = dualStackAddr
-		udpSockAddr.Ipv4Compat = true
+		additionalAddrs = []additionalAddr{{
+			Address: address{SocketAddress: socketAddress{
+				Address:   ipv6AnyAddr,
+				Protocol:  "UDP",
+				PortValue: port,
+			}},
+		}}
 	}
 
 	return Listener{
-		Name:        "catch_all_udp",
-		Address:     address{SocketAddress: udpSockAddr},
-		Transparent: true,
+		Name:                "catch_all_udp",
+		Address:             address{SocketAddress: udpSockAddr},
+		AdditionalAddresses: additionalAddrs,
+		Transparent:         true,
 		UDPListenerConfig: &udpListenerConfig{
 			DownstreamSocketConfig: downstreamSocketConfig{
 				PreferGRO: true,

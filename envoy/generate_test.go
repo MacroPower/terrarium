@@ -128,10 +128,14 @@ func TestBuildTLSListener_Transparent(t *testing.T) {
 		nil, true, nil, "", true,
 	)
 
-	assert.Equal(t, "::", l.Address.SocketAddress.Address,
-		"transparent listener should bind to ::")
+	assert.Equal(t, "0.0.0.0", l.Address.SocketAddress.Address,
+		"transparent listener should bind to 0.0.0.0 for IPv4 TPROXY")
 	assert.True(t, l.Transparent,
 		"transparent listener should have Transparent=true")
+	require.Len(t, l.AdditionalAddresses, 1,
+		"transparent listener should have IPv6 additional address")
+	assert.Equal(t, "::", l.AdditionalAddresses[0].Address.SocketAddress.Address,
+		"additional address should be :: for IPv6 TPROXY")
 }
 
 func TestBuildTLSListener_NonTransparent(t *testing.T) {
@@ -153,8 +157,10 @@ func TestBuildHTTPForwardListener_Transparent(t *testing.T) {
 
 	l := envoy.BuildHTTPForwardListener(nil, true, nil, true)
 
-	assert.Equal(t, "::", l.Address.SocketAddress.Address)
+	assert.Equal(t, "0.0.0.0", l.Address.SocketAddress.Address)
 	assert.True(t, l.Transparent)
+	require.Len(t, l.AdditionalAddresses, 1)
+	assert.Equal(t, "::", l.AdditionalAddresses[0].Address.SocketAddress.Address)
 }
 
 func TestBuildCatchAllTCPListener_Transparent(t *testing.T) {
@@ -162,8 +168,10 @@ func TestBuildCatchAllTCPListener_Transparent(t *testing.T) {
 
 	l := envoy.BuildCatchAllTCPListener(15001, true, nil, true)
 
-	assert.Equal(t, "::", l.Address.SocketAddress.Address)
+	assert.Equal(t, "0.0.0.0", l.Address.SocketAddress.Address)
 	assert.True(t, l.Transparent)
+	require.Len(t, l.AdditionalAddresses, 1)
+	assert.Equal(t, "::", l.AdditionalAddresses[0].Address.SocketAddress.Address)
 }
 
 func TestBuildCatchAllTCPListener_NonTransparent(t *testing.T) {
@@ -180,8 +188,10 @@ func TestBuildCIDRCatchAllListener_Transparent(t *testing.T) {
 
 	l := envoy.BuildCIDRCatchAllListener(15003, nil, true)
 
-	assert.Equal(t, "::", l.Address.SocketAddress.Address)
+	assert.Equal(t, "0.0.0.0", l.Address.SocketAddress.Address)
 	assert.True(t, l.Transparent)
+	require.Len(t, l.AdditionalAddresses, 1)
+	assert.Equal(t, "::", l.AdditionalAddresses[0].Address.SocketAddress.Address)
 }
 
 func TestBuildCatchAllUDPListener_Transparent(t *testing.T) {
@@ -189,9 +199,12 @@ func TestBuildCatchAllUDPListener_Transparent(t *testing.T) {
 
 	l := envoy.BuildCatchAllUDPListener(15002, 60*time.Second, nil, true)
 
-	assert.Equal(t, "::", l.Address.SocketAddress.Address,
-		"transparent UDP listener should bind to ::")
+	assert.Equal(t, "0.0.0.0", l.Address.SocketAddress.Address,
+		"transparent UDP listener should bind to 0.0.0.0 for IPv4 TPROXY")
 	assert.True(t, l.Transparent)
+	require.Len(t, l.AdditionalAddresses, 1,
+		"transparent UDP listener should have IPv6 additional address")
+	assert.Equal(t, "::", l.AdditionalAddresses[0].Address.SocketAddress.Address)
 }
 
 func TestBuildCatchAllUDPListener_NonTransparent(t *testing.T) {
@@ -209,8 +222,10 @@ func TestBuildTCPForwardListener_Transparent(t *testing.T) {
 
 	l := envoy.BuildTCPForwardListener("tcp_fwd_8080", 23080, "tcp_fwd_8080", nil, true)
 
-	assert.Equal(t, "::", l.Address.SocketAddress.Address)
+	assert.Equal(t, "0.0.0.0", l.Address.SocketAddress.Address)
 	assert.True(t, l.Transparent)
+	require.Len(t, l.AdditionalAddresses, 1)
+	assert.Equal(t, "::", l.AdditionalAddresses[0].Address.SocketAddress.Address)
 }
 
 func TestBuildTCPForwardListener_NonTransparent(t *testing.T) {

@@ -336,6 +336,8 @@ func matchMark(mark uint32) []expr.Any {
 // bit(s) set: (mark & bit) == 0. Used to exclude locally-generated
 // traffic (identified by [guardMark]) from TPROXY marking in
 // mangle PREROUTING when br_netfilter re-enters the hook.
+//
+//nolint:unparam // mark is parameterized for symmetry with matchMark.
 func notMatchMark(mark uint32) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
@@ -401,6 +403,17 @@ func matchHasSocketOwner() []expr.Any {
 	}
 }
 
+// matchSocketTransparent matches packets belonging to a socket with
+// IP_TRANSPARENT set. TPROXY-established connections use transparent
+// sockets; this identifies return/data packets that need re-marking
+// for policy routing delivery to Envoy.
+func matchSocketTransparent() []expr.Any {
+	return []expr.Any{
+		&expr.Socket{Key: expr.SocketKeyTransparent, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(1)},
+	}
+}
+
 // dnatToLocal returns expressions that DNAT to 127.0.0.1 on the given
 // port. IPv4 only -- there is no route_localnet equivalent for IPv6.
 // Uses register 1 for the address and register 2 for the port.
@@ -420,25 +433,6 @@ func dnatToLocal(port uint16) []expr.Any {
 			RegAddrMin:  1,
 			RegProtoMin: 2,
 			Specified:   true,
-		},
-	}
-}
-
-// matchLocalDst matches packets whose destination address is locally
-// owned. Uses fib daddr type to check the address type against the
-// routing table. Used in NAT PREROUTING to intercept bridge-container
-// traffic destined for the VM's own IPs.
-func matchLocalDst() []expr.Any {
-	return []expr.Any{
-		&expr.Fib{
-			Register:       1,
-			FlagDADDR:      true,
-			ResultADDRTYPE: true,
-		},
-		&expr.Cmp{
-			Op:       expr.CmpOpEq,
-			Register: 1,
-			Data:     binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL),
 		},
 	}
 }

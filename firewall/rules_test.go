@@ -853,6 +853,18 @@ func ruleHasTProxy(r *nftables.Rule) bool {
 	return false
 }
 
+// ruleHasSocketTransparent reports whether a rule contains a Socket
+// expression with SocketKeyTransparent.
+func ruleHasSocketTransparent(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if s, ok := e.(*expr.Socket); ok && s.Key == expr.SocketKeyTransparent {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ruleHasMark reports whether a rule contains a Meta expression that
 // sets or reads the fwmark.
 func ruleHasMark(r *nftables.Rule) bool {
@@ -2098,17 +2110,23 @@ func TestApplyRules_VMMode_MangleForwarded(t *testing.T) {
 	rules := rec.rulesForChain("mangle_prerouting")
 	require.NotEmpty(t, rules)
 
-	// First rule should accept established/related forwarded traffic
+	// First rule should re-mark established TPROXY packets via
+	// socket transparent match.
+	assert.True(t, ruleHasSocketTransparent(rules[0]),
+		"first mangle_prerouting rule should match socket transparent")
+	assert.True(t, ruleHasMark(rules[0]),
+		"first mangle_prerouting rule should set tproxy mark")
+
+	// Second rule should accept established/related forwarded traffic
 	// to prevent TPROXY from intercepting return traffic.
-	firstRule := rules[0]
-	v, _ := ruleVerdict(firstRule)
+	v, _ := ruleVerdict(rules[1])
 	assert.Equal(t, expr.VerdictAccept, v,
-		"first mangle_prerouting rule should accept established/related")
+		"second mangle_prerouting rule should accept established/related")
 
 	// Should have marking rules (fwmark but no TPROXY) followed
 	// by TPROXY dispatch rules.
 	var hasMark, hasTProxy bool
-	for _, r := range rules[1:] {
+	for _, r := range rules[2:] {
 		if ruleHasMark(r) && !ruleHasTProxy(r) {
 			hasMark = true
 		}
@@ -2227,33 +2245,26 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 		}
 	}
 
-	// Should have 4 marking rules: IPv4 UDP, IPv6 UDP, IPv4 TCP, IPv6 TCP.
-	require.Len(t, markRules, 4,
-		"VM mode should have 4 marking rules (IPv4 UDP, IPv6 UDP, IPv4 TCP, IPv6 TCP)")
+	// Should have 3 marking rules: socket transparent + IPv4 UDP + IPv6 UDP.
+	// Forwarded TCP uses DNAT in NAT PREROUTING, not TPROXY marking.
+	require.Len(t, markRules, 3,
+		"VM mode should have 3 marking rules (socket transparent, IPv4 UDP, IPv6 UDP)")
 
-	// First marking rule: IPv4 forwarded UDP (excludes DNS port 53).
-	assert.True(t, ruleMatchesNFProto(markRules[0], 2),
-		"first mark rule should be IPv4")
-	assert.True(t, ruleMatchesL4Proto(markRules[0], 17),
-		"first mark rule should be UDP")
+	// First marking rule: socket transparent re-mark.
+	assert.True(t, ruleHasSocketTransparent(markRules[0]),
+		"first mark rule should match socket transparent")
 
-	// Second marking rule: IPv6 forwarded UDP (includes DNS).
-	assert.True(t, ruleMatchesNFProto(markRules[1], 10),
-		"second mark rule should be IPv6")
+	// Second marking rule: IPv4 forwarded UDP (excludes DNS port 53).
+	assert.True(t, ruleMatchesNFProto(markRules[1], 2),
+		"second mark rule should be IPv4")
 	assert.True(t, ruleMatchesL4Proto(markRules[1], 17),
 		"second mark rule should be UDP")
 
-	// Third marking rule: IPv4 forwarded TCP.
-	assert.True(t, ruleMatchesNFProto(markRules[2], 2),
-		"third mark rule should be IPv4")
-	assert.True(t, ruleMatchesL4Proto(markRules[2], 6),
-		"third mark rule should be TCP")
-
-	// Fourth marking rule: IPv6 forwarded TCP.
-	assert.True(t, ruleMatchesNFProto(markRules[3], 10),
-		"fourth mark rule should be IPv6")
-	assert.True(t, ruleMatchesL4Proto(markRules[3], 6),
-		"fourth mark rule should be TCP")
+	// Third marking rule: IPv6 forwarded UDP (includes DNS).
+	assert.True(t, ruleMatchesNFProto(markRules[2], 10),
+		"third mark rule should be IPv6")
+	assert.True(t, ruleMatchesL4Proto(markRules[2], 17),
+		"third mark rule should be UDP")
 
 	// Should have IPv6 TPROXY dispatch rules.
 	var ipv6TProxyCount int
@@ -2263,10 +2274,9 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 		}
 	}
 
-	// At least: 2 DNS (UDP+TCP), 1 per-port 443, 1 catch-all TCP,
-	// plus the generic IPv6 UDP TPROXY.
-	assert.GreaterOrEqual(t, ipv6TProxyCount, 4,
-		"should have IPv6 TPROXY dispatch rules for DNS, per-port, and catch-all")
+	// 2 DNS (UDP+TCP) plus the generic IPv6 UDP TPROXY.
+	assert.GreaterOrEqual(t, ipv6TProxyCount, 3,
+		"should have IPv6 TPROXY dispatch rules for DNS and UDP catch-all")
 }
 
 func TestApplyRules_VMMode_IPv6TPROXY_NotInContainerMode(t *testing.T) {
@@ -2445,12 +2455,12 @@ func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 1, ipv6TCPMarkCount,
-		"unrestricted VM mode should mark IPv6 forwarded TCP")
+	assert.Equal(t, 0, ipv6TCPMarkCount,
+		"unrestricted VM mode should not mark forwarded TCP (uses DNAT)")
 	assert.Equal(t, 1, ipv6UDPMarkCount,
 		"unrestricted VM mode should mark IPv6 forwarded UDP")
-	assert.GreaterOrEqual(t, ipv6TCPTProxy, 3,
-		"unrestricted VM mode should have IPv6 TCP TPROXY dispatch (80, 443, catch-all)")
+	assert.GreaterOrEqual(t, ipv6TCPTProxy, 1,
+		"unrestricted VM mode should have IPv6 DNS TCP TPROXY")
 	assert.GreaterOrEqual(t, ipv6DNSTProxy, 1,
 		"unrestricted VM mode should have IPv6 DNS TPROXY dispatch")
 }

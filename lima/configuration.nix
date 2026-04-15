@@ -57,6 +57,13 @@ in
       ct status dnat accept
       meta mark & 0x1 == 0x1 accept
     '';
+    # TPROXY-marked forwarded packets use policy routing table 100
+    # (local default dev lo), which changes the FIB reverse path
+    # result. Without this exception, the rpfilter chain drops them
+    # because fib saddr . mark resolves via table 100 instead of main.
+    extraReversePathFilterRules = ''
+      meta mark & 0x1 == 0x1 accept
+    '';
   };
 
   # CNI bridge network for test containers. ipMasq is disabled to
