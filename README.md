@@ -581,6 +581,61 @@ isolated filesystems and need separate configuration:
 - Non-L7 rules: if rules only use FQDN/CIDR selectors without L7 matchers
   (paths/methods/headers), no MITM occurs and no CA is needed
 
+#### Workload confinement
+
+Daemon-mode workloads sometimes need real kernel root (raw sockets, certain
+syscalls that user namespaces mediate away), which rules out the
+UID/capability model that container mode uses. `terrarium jail` is a launcher
+that arms an AppArmor profile transition and execs the workload under it:
+
+```sh
+terrarium jail -- my-workload arg1 arg2
+```
+
+The `terrarium.workload` profile denies writes under `/var/lib/terrarium/**`,
+`/etc/terrarium/**`, and the MITM CA directory; reads of process `environ`
+and direct memory access via `/proc/*/mem`; writes under `/etc/nixos/**`,
+`/nix/store/**`, `/boot/**`, and systemd/dbus sockets (no rebuild path);
+`/dev/mem`, `/dev/kmem`, and module loads; and writes to
+`/proc/self/attr/**`, `/proc/thread-self/attr/**`, and
+`/sys/kernel/security/apparmor/**` (no tampering with the policy itself).
+Capability mediation uses an explicit allow-list -- `sys_module`,
+`sys_admin`, `net_admin`, `mac_admin`, `bpf`, and other dangerous caps are
+absent, so AppArmor's implicit-deny handles them (nftables mutation, for
+example, requires `CAP_NET_ADMIN` and is blocked by that omission).
+
+Granted caps include `net_bind_service`, `net_raw`, `sys_resource`,
+`sys_ptrace`, `syslog`, and `perfmon` (plus the usual DAC/kill/setuid
+set) so same-profile debugging, kernel-log observability, and userspace
+profiling keep working; cross-profile ptrace and writes to the sysctls
+that widen ptrace/dmesg/perf access for unconfined neighbors remain
+denied. See `lima/terrarium-workload.profile` for the authoritative list.
+
+The boundary is the profile transition at exec, not the subcommand name.
+Admin paths outside `terrarium jail` (e.g., `nixos-rebuild switch` from the
+host) stay unconfined and keep working. `terrarium jail` must be called
+before any privilege drop, and does not compose with `terrarium init` in
+either order: init needs `CAP_NET_ADMIN` (not granted by the profile) to
+spawn Envoy, and a post-drop process cannot transition into a new profile
+without `CAP_MAC_ADMIN`.
+
+Requirements: AppArmor enabled in the kernel, the `terrarium.workload`
+profile loaded, and `lockdown=integrity` on the kernel command line
+(lockdown backstops the `/dev/mem` and module-load denies). On NixOS:
+
+```nix
+security.apparmor = {
+  enable = true;
+  policies."terrarium.workload".profile = builtins.readFile ./terrarium-workload.profile;
+};
+boot.kernelParams = [ "lockdown=integrity" ];
+```
+
+An example profile ships at `lima/terrarium-workload.profile`. Because
+`lockdown=integrity` is a boot parameter, activating it requires a fresh
+boot with the new kernel command line -- `nixos-rebuild switch` alone
+does not reload it.
+
 ### IPv6
 
 The entire stack is dual-stack. nftables uses a single inet-family table that

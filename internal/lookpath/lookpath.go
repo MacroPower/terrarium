@@ -1,4 +1,8 @@
-package privdrop
+// Package lookpath resolves command names to executable paths without
+// importing os/exec (which pulls in sync, context, and friends). Both
+// [privdrop] and [jail] use it to locate argv[0] before handing the
+// path to execve on the same OS thread.
+package lookpath
 
 import (
 	"errors"
@@ -8,12 +12,15 @@ import (
 	"strings"
 )
 
-// lookPath searches for an executable in the directories listed in the
+// Find searches for an executable in the directories listed in the
 // PATH environment variable. If name contains a slash, it is returned
-// directly after verifying it is executable. This is a minimal
-// reimplementation of exec.LookPath that avoids importing os/exec
-// (which pulls in sync, context, etc.).
-func lookPath(name string) (string, error) {
+// directly after verifying it is executable. An empty name is
+// rejected with a distinct error.
+func Find(name string) (string, error) {
+	if name == "" {
+		return "", errors.New("empty command name")
+	}
+
 	if strings.Contains(name, "/") {
 		err := isExecutable(name)
 		if err != nil {
@@ -33,11 +40,11 @@ func lookPath(name string) (string, error) {
 			dir = "."
 		}
 
-		path := filepath.Join(dir, name)
+		p := filepath.Join(dir, name)
 
-		err := isExecutable(path)
+		err := isExecutable(p)
 		if err == nil {
-			return path, nil
+			return p, nil
 		}
 	}
 
@@ -54,7 +61,6 @@ func isExecutable(path string) error {
 		return errors.New("is a directory")
 	}
 
-	// Check if any execute bit is set.
 	if info.Mode()&0o111 == 0 {
 		return errors.New("not executable")
 	}

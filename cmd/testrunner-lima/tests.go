@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +101,63 @@ func systemctlActive(unit, desc string) assertion {
 func multiUIDDenied(url, uid, desc string) assertion {
 	return assertion{Type: "multi_uid_denied", URL: url, UID: uid, Desc: desc}
 }
+
+func jailProfileAttached(profile, desc string) assertion {
+	return assertion{Type: "jail_profile_attached", Expected: profile, Desc: desc}
+}
+
+func jailPathDenied(path, op, desc string) assertion {
+	return assertion{Type: "jail_path_denied", File: path, Op: op, Desc: desc}
+}
+
+func jailSignalDenied(cmd, desc string) assertion {
+	return assertion{Type: "jail_signal_denied", Cmd: cmd, Desc: desc}
+}
+
+func jailNftDenied(args []string, desc string) assertion {
+	return assertion{Type: "jail_nft_denied", Args: args, Desc: desc}
+}
+
+func jailExecDenied(cmd, desc string) assertion {
+	return assertion{Type: "jail_exec_denied", Cmd: cmd, Desc: desc}
+}
+
+func jailExecAllowed(cmd, desc string) assertion {
+	return assertion{Type: "jail_exec_allowed", Cmd: cmd, Desc: desc}
+}
+
+func jailSelfProcReadAllowed(desc string) assertion {
+	return assertion{Type: "jail_self_proc_read_allowed", Desc: desc}
+}
+
+func jailRefusesNesting(desc string) assertion {
+	return assertion{Type: "jail_refuses_nesting", Desc: desc}
+}
+
+func apparmorProfileParses(path, desc string) assertion {
+	return assertion{Type: "apparmor_profile_parses", File: path, Desc: desc}
+}
+
+func lockdownIntegrityMode(desc string) assertion {
+	return assertion{Type: "lockdown_integrity_mode", Desc: desc}
+}
+
+func lockdownModprobeDenied(desc string) assertion {
+	return assertion{Type: "lockdown_modprobe_denied", Desc: desc}
+}
+
+func lockdownDevmemDenied(desc string) assertion {
+	return assertion{Type: "lockdown_devmem_denied", Desc: desc}
+}
+
+func initSubcommandRegistered(desc string) assertion {
+	return assertion{Type: "init_subcommand_registered", Desc: desc}
+}
+
+// profilePath is the deterministic location of the terrarium.workload
+// profile source file inside the VM, populated via
+// [environment.etc] in configuration.nix.
+const profilePath = "/etc/terrarium/terrarium-workload.profile"
 
 // vmTests defines all Lima VM e2e test cases run by the
 // testrunner-lima command. Tests cover deny-all, FQDN exact/wildcard,
@@ -1580,6 +1638,290 @@ egressDeny:
 			}
 
 			return nil
+		},
+	},
+
+	// --- AppArmor / lockdown confinement tests for `terrarium jail`.
+	// The assertions below mirror the threat model the profile
+	// defends: terrarium state writes, CA key reads, process memory
+	// introspection, signal/kill of the terrarium daemon, nftables
+	// mutation, kernel module loads, and systemd/nixos rebuild paths.
+	{
+		name:   "vm-jail-profile-parses",
+		config: ``,
+		rootAssertions: []assertion{
+			apparmorProfileParses(profilePath,
+				"jail-profile-parses: apparmor_parser -Q -r accepts profile"),
+		},
+	},
+	{
+		name:   "vm-jail-lockdown-active",
+		config: ``,
+		rootAssertions: []assertion{
+			lockdownIntegrityMode("jail-lockdown: kernel lockdown=integrity"),
+			lockdownModprobeDenied("jail-lockdown: modprobe dummy denied by lockdown"),
+			lockdownDevmemDenied("jail-lockdown: reading /dev/mem denied by lockdown"),
+		},
+	},
+	{
+		name:   "vm-jail-profile-loaded",
+		config: ``,
+		rootAssertions: []assertion{
+			jailProfileAttached("terrarium.workload",
+				"jail-profile-loaded: jailed process runs under terrarium.workload"),
+		},
+	},
+	{
+		name:   "vm-jail-confinement",
+		config: ``,
+		setup: func(ctx context.Context, d *driver) error {
+			// Pre-create /etc/shadow- and /etc/security/opasswd so the
+			// deny-read assertions see EACCES from AppArmor rather than
+			// ENOENT. Without this, a regression that loosens the rule
+			// from `shadow*` to `shadow` (or drops the opasswd deny
+			// entirely) would still pass because cat exits nonzero on a
+			// missing file.
+			_, err := d.shell(ctx, "sudo", "sh", "-c",
+				"mkdir -p /etc/security && touch /etc/shadow- /etc/security/opasswd")
+			if err != nil {
+				return fmt.Errorf("pre-creating shadow-/opasswd: %w", err)
+			}
+
+			return nil
+		},
+		teardown: func(ctx context.Context, d *driver) error {
+			_, err := d.shell(ctx, "sudo", "rm", "-f",
+				"/etc/shadow-", "/etc/security/opasswd")
+			if err != nil {
+				return fmt.Errorf("removing shadow-/opasswd: %w", err)
+			}
+
+			return nil
+		},
+		rootAssertions: []assertion{
+			// Writes to terrarium state + config + apparmor controls.
+			jailPathDenied("/var/lib/terrarium/config.yaml", "write",
+				"jail-confinement: write /var/lib/terrarium/config.yaml denied"),
+			jailPathDenied("/etc/nixos/configuration.nix", "write",
+				"jail-confinement: write /etc/nixos/configuration.nix denied"),
+			jailPathDenied("/sys/kernel/security/apparmor/.remove", "write",
+				"jail-confinement: write apparmor .remove denied"),
+			// Reads of sensitive material / process introspection.
+			jailPathDenied("/var/lib/terrarium/ca/ca.key", "read",
+				"jail-confinement: read CA key denied"),
+			jailPathDenied("/proc/mainpid:terrarium/environ", "read",
+				"jail-confinement: read terrarium environ denied"),
+			jailPathDenied("/proc/mainpid:terrarium/mem", "read",
+				"jail-confinement: read terrarium mem denied"),
+			// Password-hash files. AppArmor /** r bypasses file-mode
+			// protection, so an explicit deny is the only backstop.
+			jailPathDenied("/etc/shadow", "read",
+				"jail-confinement: read /etc/shadow denied"),
+			jailPathDenied("/etc/gshadow", "read",
+				"jail-confinement: read /etc/gshadow denied"),
+			jailPathDenied("/etc/security/opasswd", "read",
+				"jail-confinement: read /etc/security/opasswd denied"),
+			jailPathDenied("/etc/shadow-", "read",
+				"jail-confinement: read /etc/shadow- (glob sibling) denied"),
+			// Signals to the terrarium daemon.
+			jailSignalDenied("kill -9 mainpid:terrarium",
+				"jail-confinement: SIGKILL to terrarium denied"),
+			// nftables mutation. Protected by CAP_NET_ADMIN omission,
+			// not by a netlink deny -- these assertions guard against
+			// the cap allow-list regressing.
+			jailNftDenied([]string{"list", "tables"},
+				"jail-confinement: nft list tables denied"),
+			jailNftDenied([]string{"flush", "table", "inet", "terrarium"},
+				"jail-confinement: nft flush terrarium denied"),
+			// Rebuild / kernel / systemd escape hatches.
+			jailExecDenied("nixos-rebuild switch",
+				"jail-confinement: nixos-rebuild denied"),
+			jailExecDenied("modprobe dummy",
+				"jail-confinement: modprobe denied"),
+			jailExecDenied("cat /dev/mem",
+				"jail-confinement: cat /dev/mem denied"),
+			jailExecDenied("systemctl stop terrarium",
+				"jail-confinement: systemctl stop terrarium denied"),
+			jailExecDenied("systemd-run --user true",
+				"jail-confinement: systemd-run --user denied"),
+			// Deny pairs for the newly-granted sys_ptrace/syslog/perfmon
+			// caps. Each sysctl write is the escalation the cap
+			// complement defends against (lowering ptrace_scope,
+			// dmesg_restrict, or perf_event_paranoid to widen access
+			// for unconfined neighbors).
+			jailExecDenied("echo 1 > /proc/sys/kernel/perf_event_paranoid",
+				"jail-confinement: write perf_event_paranoid denied"),
+			jailExecDenied("echo 1 > /proc/sys/kernel/dmesg_restrict",
+				"jail-confinement: write dmesg_restrict denied"),
+			jailExecDenied("echo 0 > /proc/sys/kernel/yama/ptrace_scope",
+				"jail-confinement: write yama/ptrace_scope denied"),
+			// Cross-profile ptrace must still be denied. The peer
+			// rule in the profile (not the cap grant) is the
+			// boundary; strace against the daemon's PID must die at
+			// attach. jailExecDenied passes when the script exits
+			// nonzero, so the script exits 0 only on regression
+			// (strace stayed alive attached to the daemon).
+			jailExecDenied(
+				`strace -p mainpid:terrarium -e trace=read -o /dev/null >/dev/null 2>&1 &
+sp=$!
+sleep 1
+if [ -d "/proc/$sp" ] && ! grep -q '^State:[[:space:]]*Z' "/proc/$sp/status" 2>/dev/null; then
+  kill -9 "$sp" 2>/dev/null
+  wait 2>/dev/null
+  exit 0
+fi
+wait 2>/dev/null
+exit 1`,
+				"jail-confinement: cross-profile ptrace of terrarium daemon denied"),
+			// Positive regression guards. If a future edit over-reaches
+			// (e.g., re-adds `deny /proc/[0-9]*/fd/** r` or a netlink
+			// read deny), these fail and force a deliberate revisit.
+			jailSelfProcReadAllowed(
+				"jail-confinement: readlink /proc/self/fd/0 allowed"),
+			jailExecAllowed("ip -4 route show",
+				"jail-confinement: ip -4 route show allowed (netlink read)"),
+			// Pos guards for sys_ptrace/syslog/perfmon caps. Pinned
+			// sysctls (configuration.nix) ensure these only pass when
+			// the cap is actually granted.
+			//
+			// sys_ptrace: strace attaches to a sibling non-descendant
+			// sleep. Under ptrace_scope=1 PTRACE_ATTACH to a
+			// non-ancestor requires CAP_SYS_PTRACE. A live strace is
+			// State: S (sleeping for tracee events); a dead/EPERM'd
+			// strace is Z or gone -- reading status avoids the kill -0
+			// zombie race.
+			jailExecAllowed(
+				`sleep 30 >/dev/null 2>&1 &
+tp=$!
+strace -p "$tp" -e trace=clock_nanosleep -o /dev/null >/dev/null 2>&1 &
+sp=$!
+sleep 1
+state=$(awk '/^State:/ {print $2; exit}' "/proc/$sp/status" 2>/dev/null || echo Z)
+kill -9 "$sp" "$tp" 2>/dev/null
+wait 2>/dev/null
+case "$state" in S|R|D|t) exit 0 ;; *) exit 1 ;; esac`,
+				"jail-confinement: strace attach to sibling allowed (sys_ptrace)"),
+			// syslog: dmesg -c issues SYSLOG_ACTION_READ_ALL +
+			// SYSLOG_ACTION_CLEAR; CLEAR is cap-gated regardless of
+			// dmesg_restrict.
+			jailExecAllowed("dmesg -c >/dev/null 2>&1",
+				"jail-confinement: dmesg -c allowed (syslog)"),
+			// perfmon: perf_event_paranoid=2 blocks kernel/CPU events
+			// for unprivileged callers; CAP_PERFMON restores userspace
+			// event access. PATH-resolved `true` (NixOS does not
+			// guarantee /bin/true).
+			jailExecAllowed("perf stat -e cycles -- true >/dev/null 2>&1",
+				"jail-confinement: perf stat -e cycles allowed (perfmon)"),
+		},
+	},
+	{
+		// Hard gate #5: parent->child SIGTERM inside the jail must
+		// succeed, and the kernel audit log must not record any
+		// apparmor DENIED signal events tied to the workload profile
+		// (namespaced or bare). If this ever fails, fix the peer
+		// qualifier in lima/terrarium-workload.profile -- do not
+		// relax the test.
+		name:   "vm-jail-same-profile-signals",
+		config: ``,
+		verify: func(ctx context.Context, t *testing.T, d *driver) {
+			t.Helper()
+
+			// Capture a journal cursor so the grep sees only the
+			// audit records this subtest produced.
+			cursorOut, err := d.shell(ctx, "sudo", "journalctl", "-k", "-n", "1",
+				"--show-cursor", "--no-pager")
+			require.NoError(t, err, "capturing journal cursor")
+
+			var cursor string
+
+			for line := range strings.SplitSeq(cursorOut, "\n") {
+				if _, after, ok := strings.Cut(line, "cursor: "); ok {
+					cursor = strings.TrimSpace(after)
+				}
+			}
+
+			require.NotEmpty(t, cursor, "journal cursor not found in output")
+
+			// Parent->child SIGTERM inside the jail. Child sleeps 2s
+			// in a shell that traps TERM and exits 0. Parent sends
+			// TERM after 200ms. Both must exit 0.
+			script := `set -e
+(trap 'exit 0' TERM; sleep 2) & child=$!
+(sleep 0.2; kill -TERM "$child") &
+wait "$child"`
+
+			out, err := d.shell(ctx, "sudo", "terrarium", "jail", "--",
+				"sh", "-c", script)
+			require.NoError(t, err, "parent->child SIGTERM failed: %s", out)
+
+			// Run a noop Go binary (/bin/true via jail) for ~2s to
+			// give the kernel time to emit any audit events.
+			_, err = d.shell(ctx, "sudo", "terrarium", "jail", "--",
+				"sh", "-c", "sleep 2 & wait")
+			require.NoError(t, err)
+
+			auditOut, err := d.shell(ctx, "sudo", "journalctl", "-k",
+				"--after-cursor="+cursor, "--no-pager")
+			require.NoError(t, err, "reading journal after cursor")
+
+			re := regexp.MustCompile(`DENIED.*signal.*profile="(:root://)?terrarium\.workload"`)
+			if re.MatchString(auditOut) {
+				t.Errorf("jail-same-profile-signals: audit log shows DENIED signal for terrarium.workload peer\n%s",
+					auditOut)
+			}
+		},
+	},
+	{
+		name:   "vm-jail-fail-closed",
+		config: ``,
+		rootAssertions: []assertion{
+			jailRefusesNesting("jail-fail-closed: nested jail refused with ErrAlreadyConfined"),
+		},
+	},
+	{
+		name:   "vm-jail-fail-closed-missing-profile",
+		config: ``,
+		setup: func(ctx context.Context, d *driver) error {
+			// Unload the terrarium.workload profile to force the
+			// missing-profile error path. Teardown restores it.
+			_, err := d.shell(ctx, "sudo", "sh", "-c",
+				`echo -n 'terrarium.workload' > /sys/kernel/security/apparmor/.remove`)
+			if err != nil {
+				return fmt.Errorf("removing profile: %w", err)
+			}
+
+			return nil
+		},
+		teardown: func(ctx context.Context, d *driver) error {
+			// apparmor reloads the full policy set from disk on
+			// restart, restoring the profile.
+			_, err := d.shell(ctx, "sudo", "systemctl", "restart", "apparmor")
+			if err != nil {
+				return fmt.Errorf("restarting apparmor: %w", err)
+			}
+
+			return nil
+		},
+		verify: func(ctx context.Context, t *testing.T, d *driver) {
+			t.Helper()
+
+			out, err := d.shell(ctx, "sudo", "terrarium", "jail", "--", "/bin/true")
+			if err == nil {
+				t.Errorf("jail-missing-profile: expected nonzero exit, got success: %s", out)
+				return
+			}
+
+			if !strings.Contains(out, "profile not loaded") {
+				t.Errorf("jail-missing-profile: expected 'profile not loaded' in stderr, got:\n%s", out)
+			}
+		},
+	},
+	{
+		name:   "vm-jail-admin-paths-unaffected",
+		config: ``,
+		rootAssertions: []assertion{
+			initSubcommandRegistered(
+				"jail-admin-paths: terrarium init --help still registered (jail dispatch did not swallow init)"),
 		},
 	},
 }

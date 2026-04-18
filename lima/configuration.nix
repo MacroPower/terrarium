@@ -1,4 +1,5 @@
 {
+  config,
   lib,
   pkgs,
   terrarium,
@@ -26,7 +27,7 @@ let
   };
 in
 {
-  environment.systemPackages = [ terrarium pkgs.envoy-bin pkgs.nginx pkgs.socat pkgs.openssl pkgs.curl pkgs.nerdctl pkgs.cni-plugins pkgs.conntrack-tools ];
+  environment.systemPackages = [ terrarium pkgs.envoy-bin pkgs.nginx pkgs.socat pkgs.openssl pkgs.curl pkgs.nerdctl pkgs.cni-plugins pkgs.conntrack-tools pkgs.strace config.boot.kernelPackages.perf ];
 
   # Containerd for running bridge-networked test containers.
   virtualisation.containerd.enable = true;
@@ -42,6 +43,13 @@ in
     # (cni0, veth*) inherit the setting. Required for DNAT to 127.0.0.1
     # on bridge interfaces.
     "net.ipv4.conf.default.route_localnet" = 1;
+    # Pinned for jail confinement assertions. Without these, a future
+    # kernel default change (e.g., ptrace_scope=0) could mask a silent
+    # regression where a positive cap test passes without the cap
+    # actually being granted.
+    "kernel.yama.ptrace_scope" = 1;
+    "kernel.dmesg_restrict" = 1;
+    "kernel.perf_event_paranoid" = 2;
   };
 
   # Terrarium handles egress only; the host firewall manages inbound
@@ -319,4 +327,49 @@ in
   # Install the e2e test CA into the system trust store so Envoy's MITM
   # DFP cluster validates upstream TLS connections signed by this CA.
   security.pki.certificateFiles = [ ./test-ca.pem ];
+
+  # AppArmor profile for workloads launched via `terrarium jail`. The
+  # profile transition attaches on execve, not UID, so admin paths like
+  # lima-init and `nixos-rebuild switch` stay unconfined. See
+  # lima/terrarium-workload.profile for the policy body.
+  #
+  # killUnconfinedConfinables = false avoids killing already-running
+  # processes when AppArmor first activates. This matters for
+  # `task lima:rebuild` against an existing VM (terrarium and envoy
+  # are already running); fresh-boot paths (task lima:image ->
+  # limactl delete terrarium -> task lima:create) have no
+  # pre-existing confinable processes, so the flag is irrelevant there.
+  security.apparmor = {
+    enable = true;
+    killUnconfinedConfinables = false;
+    policies."terrarium.workload" = {
+      profile = builtins.readFile ./terrarium-workload.profile;
+      state = "enforce";
+    };
+  };
+
+  # Expose the profile source at a deterministic path so the e2e
+  # `apparmor_profile_parses` assertion has a stable file to lint.
+  environment.etc."terrarium/terrarium-workload.profile".source =
+    ./terrarium-workload.profile;
+
+  # Kernel integrity lockdown is required to backstop the profile's
+  # defense against /dev/mem, /dev/kmem, and kernel-module loads. This
+  # is a *boot* parameter -- `nixos-rebuild switch` does not reload it.
+  # Activating it requires `task lima:image` -> `limactl delete terrarium`
+  # -> `task lima:create`.
+  boot.kernelParams = [ "lockdown=integrity" ];
+
+  # Fail activation if the terrarium.workload profile did not load --
+  # otherwise a silent AppArmor syntax regression would ship a VM
+  # without the confinement available.
+  system.activationScripts.verifyTerrariumProfile = {
+    text = ''
+      if ! ${pkgs.apparmor-utils}/bin/aa-status | ${pkgs.gnugrep}/bin/grep -q 'terrarium.workload'; then
+        echo "terrarium.workload AppArmor profile did not load" >&2
+        exit 1
+      fi
+    '';
+    deps = [ "apparmor" ];
+  };
 }

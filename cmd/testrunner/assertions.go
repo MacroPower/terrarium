@@ -118,6 +118,32 @@ func runAssertion(ctx context.Context, a assertion) result {
 		return assertSystemctlActive(ctx, a)
 	case "multi_uid_denied":
 		return assertMultiUIDDenied(ctx, a)
+	case "jail_profile_attached":
+		return assertJailProfileAttached(ctx, a)
+	case "jail_path_denied":
+		return assertJailPathDenied(ctx, a)
+	case "jail_signal_denied":
+		return assertJailSignalDenied(ctx, a)
+	case "jail_nft_denied":
+		return assertJailNftDenied(ctx, a)
+	case "jail_exec_denied":
+		return assertJailExecDenied(ctx, a)
+	case "jail_exec_allowed":
+		return assertJailExecAllowed(ctx, a)
+	case "jail_self_proc_read_allowed":
+		return assertJailSelfProcReadAllowed(ctx, a)
+	case "jail_refuses_nesting":
+		return assertJailRefusesNesting(ctx, a)
+	case "apparmor_profile_parses":
+		return assertApparmorProfileParses(ctx, a)
+	case "lockdown_integrity_mode":
+		return assertLockdownIntegrityMode(ctx, a)
+	case "lockdown_modprobe_denied":
+		return assertLockdownModprobeDenied(ctx, a)
+	case "lockdown_devmem_denied":
+		return assertLockdownDevmemDenied(ctx, a)
+	case "init_subcommand_registered":
+		return assertInitSubcommandRegistered(ctx, a)
 	default:
 		return result{
 			Status: statusFail, Desc: a.Desc,

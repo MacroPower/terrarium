@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.jacobcolvin.com/terrarium/internal/testspec"
 )
 
 // driver orchestrates test execution inside a Lima VM via limactl.
@@ -253,25 +255,10 @@ func (d *driver) stopDaemon(ctx context.Context) error {
 	return err
 }
 
-// assertion mirrors the testrunner's assertion struct for JSON
-// serialization. Fields are populated based on the assertion type;
-// unused fields are omitted from the JSON spec via omitempty tags.
-type assertion struct {
-	Type     string `json:"type"`
-	URL      string `json:"url,omitempty"`
-	Method   string `json:"method,omitempty"`
-	Header   string `json:"header,omitempty"`
-	Body     string `json:"body,omitempty"`
-	Host     string `json:"host,omitempty"`
-	Addr     string `json:"addr,omitempty"`
-	Expected string `json:"expected,omitempty"`
-	File     string `json:"file,omitempty"`
-	Pattern  string `json:"pattern,omitempty"`
-	Domain   string `json:"domain,omitempty"`
-	UID      string `json:"uid,omitempty"`
-	Desc     string `json:"desc"`
-	Port     int    `json:"port,omitempty"`
-}
+// assertion is an alias for the shared JSON shape in [testspec]. The
+// canonical definition lives there; aliasing keeps builder signatures
+// terse while guaranteeing the driver and testrunner cannot drift.
+type assertion = testspec.Assertion
 
 // daemonSpec is the JSON test specification written to the VM for the
 // testrunner to execute. Assertions run as a non-root user;

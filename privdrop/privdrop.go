@@ -5,6 +5,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"go.jacobcolvin.com/terrarium/internal/lookpath"
 )
 
 // Options controls the privilege-drop behavior before execve.
@@ -218,7 +220,7 @@ func clearInheritableOnly() error {
 // execvp resolves the command path and calls unix.Exec (execve).
 // Does not return on success.
 func execvp(argv []string) error {
-	bin, err := lookPath(argv[0])
+	bin, err := lookpath.Find(argv[0])
 	if err != nil {
 		return fmt.Errorf("resolving %s: %w", argv[0], err)
 	}
