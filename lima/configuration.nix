@@ -32,6 +32,33 @@ in
   # Containerd for running bridge-networked test containers.
   virtualisation.containerd.enable = true;
 
+  # Docker (rootful + rootless). Rootless uses rootlesskit's pasta
+  # network driver by default; pasta's built-in DNS forwarder
+  # (--dns-forward=10.0.2.3) drops queries under rate (upstream:
+  # containers/podman#21947). Pointing the daemon at a non-loopback IP
+  # other than 10.0.2.3 routes container queries through pasta's
+  # general UDP flow tracker instead of the buggy DNS-forwarder.
+  # Terrarium's nat_prerouting DNATs any non-loopback DNS query to
+  # 127.0.0.1:53 regardless (firewall/chains.go:1357-1368), so the
+  # specific IP is cosmetic -- 1.1.1.1 is convenient. Both daemons
+  # get the same setting for symmetry even though rootful (kernel
+  # bridge) does not hit the pasta bug.
+  #
+  # Rootful dockerd attaches to the system containerd socket above
+  # (moby/daemon.go systemContainerdRunning check) using the "moby"
+  # namespace, so nerdctl's "default"-namespace test fixtures stay
+  # isolated. Rootless runs its own bundled containerd under
+  # /run/user/<uid>/docker/containerd/containerd.sock.
+  virtualisation.docker = {
+    enable = true;
+    daemon.settings.dns = [ "1.1.1.1" ];
+    rootless = {
+      enable = true;
+      setSocketVariable = true;
+      daemon.settings.dns = [ "1.1.1.1" ];
+    };
+  };
+
   # br_netfilter forces bridged L2 frames through netfilter inet hooks
   # so terrarium's nftables rules see container-to-container traffic.
   boot.kernelModules = [ "br_netfilter" ];
