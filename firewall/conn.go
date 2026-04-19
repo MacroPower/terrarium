@@ -2,13 +2,16 @@ package firewall
 
 import "github.com/google/nftables"
 
-const tableName = "terrarium"
+// TableName is the nftables table that holds terrarium's policy
+// rules. The table is replaced atomically on each
+// [ApplyRules] invocation.
+const TableName = "terrarium"
 
-// guardTableName is the separate nftables table that provides
+// GuardTableName is the separate nftables table that provides
 // deny-all egress when the daemon's table is absent (restart gaps,
 // crashes). Created externally by the host (e.g., NixOS
 // networking.nftables.tables) and never modified by the daemon.
-const guardTableName = "terrarium-guard"
+const GuardTableName = "terrarium-guard"
 
 // UIDs holds the numeric user IDs that nftables rules use to
 // distinguish infrastructure traffic from policy-evaluated traffic.

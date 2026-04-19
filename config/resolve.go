@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"regexp"
 	"sort"
@@ -78,15 +77,45 @@ func sortHTTPRules(rules []ResolvedHTTPRule) {
 	})
 }
 
+// Prefixes for nftables set names. Set names are built by
+// concatenating one of these prefixes with the rule's 0-indexed
+// position. Exported so external callers (e.g. terrarium status) can
+// bucket sets back to their rule family without re-deriving the
+// naming scheme.
+const (
+	// FQDNSetPrefix4 prefixes IPv4 set names for FQDN-bearing rules
+	// with non-TCP ports.
+	FQDNSetPrefix4 = "terrarium_fqdn4_"
+
+	// FQDNSetPrefix6 prefixes IPv6 set names for FQDN-bearing rules
+	// with non-TCP ports.
+	FQDNSetPrefix6 = "terrarium_fqdn6_"
+
+	// ICMPFQDNSetPrefix4 prefixes IPv4 set names for ICMP+FQDN rules.
+	ICMPFQDNSetPrefix4 = "terrarium_fqdnicmp4_"
+
+	// ICMPFQDNSetPrefix6 prefixes IPv6 set names for ICMP+FQDN rules.
+	ICMPFQDNSetPrefix6 = "terrarium_fqdnicmp6_"
+
+	// CatchAllFQDNSetPrefix4 prefixes IPv4 set names for catch-all
+	// FQDN rules (no toPorts or wildcard port 0).
+	CatchAllFQDNSetPrefix4 = "terrarium_fqdnca4_"
+
+	// CatchAllFQDNSetPrefix6 prefixes IPv6 set names for catch-all
+	// FQDN rules (no toPorts or wildcard port 0).
+	CatchAllFQDNSetPrefix6 = "terrarium_fqdnca6_"
+)
+
 // FQDNSetName returns the nftables set name for a FQDN rule index
 // and address family. Names follow terrarium_fqdn{4,6}_R where R is
 // the 0-indexed position among FQDN-bearing rules with non-TCP ports.
 func FQDNSetName(ruleIdx int, ipv6 bool) string {
+	prefix := FQDNSetPrefix4
 	if ipv6 {
-		return fmt.Sprintf("terrarium_fqdn6_%d", ruleIdx)
+		prefix = FQDNSetPrefix6
 	}
 
-	return fmt.Sprintf("terrarium_fqdn4_%d", ruleIdx)
+	return prefix + strconv.Itoa(ruleIdx)
 }
 
 // ICMPFQDNSetName returns the nftables set name for an ICMP FQDN
@@ -94,11 +123,12 @@ func FQDNSetName(ruleIdx int, ipv6 bool) string {
 // terrarium_fqdnicmp{4,6}_R where R is the 0-indexed position among
 // ICMP+FQDN rules.
 func ICMPFQDNSetName(ruleIdx int, ipv6 bool) string {
+	prefix := ICMPFQDNSetPrefix4
 	if ipv6 {
-		return fmt.Sprintf("terrarium_fqdnicmp6_%d", ruleIdx)
+		prefix = ICMPFQDNSetPrefix6
 	}
 
-	return fmt.Sprintf("terrarium_fqdnicmp4_%d", ruleIdx)
+	return prefix + strconv.Itoa(ruleIdx)
 }
 
 // CatchAllFQDNSetName returns the nftables set name for a catch-all
@@ -106,11 +136,12 @@ func ICMPFQDNSetName(ruleIdx int, ipv6 bool) string {
 // terrarium_fqdnca{4,6}_R where R is the 0-indexed position among
 // catch-all FQDN rules (those without toPorts or with wildcard port 0).
 func CatchAllFQDNSetName(ruleIdx int, ipv6 bool) string {
+	prefix := CatchAllFQDNSetPrefix4
 	if ipv6 {
-		return fmt.Sprintf("terrarium_fqdnca6_%d", ruleIdx)
+		prefix = CatchAllFQDNSetPrefix6
 	}
 
-	return fmt.Sprintf("terrarium_fqdnca4_%d", ruleIdx)
+	return prefix + strconv.Itoa(ruleIdx)
 }
 
 // TCPForwardHosts returns a deduplicated, sorted list of hostnames from

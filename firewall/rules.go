@@ -21,7 +21,7 @@ import (
 // escape unfiltered during restart gaps. This is purely diagnostic:
 // warnings are logged but startup is not blocked.
 func CheckBootTables(ctx context.Context, conn *nftables.Conn) {
-	for _, name := range []string{tableName, guardTableName} {
+	for _, name := range []string{TableName, GuardTableName} {
 		_, err := conn.ListTableOfFamily(name, nftables.TableFamilyINet)
 		if err != nil {
 			slog.WarnContext(ctx,
@@ -39,7 +39,7 @@ func CheckBootTables(ctx context.Context, conn *nftables.Conn) {
 // iptables tables (nat/filter x IPv4/IPv6).
 func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) error {
 	conn.DelTable(&nftables.Table{
-		Name:   tableName,
+		Name:   TableName,
 		Family: nftables.TableFamilyINet,
 	})
 	// Best-effort: table may not exist yet on first run.
@@ -49,7 +49,7 @@ func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) e
 	}
 
 	table := conn.AddTable(&nftables.Table{
-		Name:   tableName,
+		Name:   TableName,
 		Family: nftables.TableFamilyINet,
 	})
 
@@ -77,7 +77,7 @@ func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) e
 // rules, and sets.
 func Cleanup(ctx context.Context, conn Conn) error {
 	conn.DelTable(&nftables.Table{
-		Name:   tableName,
+		Name:   TableName,
 		Family: nftables.TableFamilyINet,
 	})
 
@@ -94,7 +94,7 @@ func Cleanup(ctx context.Context, conn Conn) error {
 // own [*nftables.Conn] to avoid batching conflicts with rule setup.
 func UpdateFQDNSet(conn *nftables.Conn, setName string, ips []net.IP, ttl time.Duration) error {
 	table := &nftables.Table{
-		Name:   tableName,
+		Name:   TableName,
 		Family: nftables.TableFamilyINet,
 	}
 

@@ -731,6 +731,12 @@ const (
 	// and Envoy access logs.
 	DefaultLogFormat = "logfmt"
 
+	// DefaultPIDFile is the path where the `terrarium daemon` process
+	// records its PID. The daemon writes and removes this file;
+	// `terrarium daemon reload` and `terrarium status` read it to
+	// locate the running process.
+	DefaultPIDFile = "/run/terrarium/terrarium.pid"
+
 	// DefaultEnvoyLogLevel is the Envoy --log-level flag value used
 	// when [Config.EnvoyLogLevel] returns a default.
 	DefaultEnvoyLogLevel = "warning"

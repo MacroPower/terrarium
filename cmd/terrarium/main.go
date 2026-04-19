@@ -75,7 +75,7 @@ func main() {
 	}
 
 	daemonCmd.PersistentFlags().StringVar(&pidFile, "pid-file",
-		"/run/terrarium/terrarium.pid", "path to PID file")
+		config.DefaultPIDFile, "path to PID file")
 
 	daemonCmd.AddCommand(&cobra.Command{
 		Use:   "reload",
@@ -105,6 +105,7 @@ func main() {
 			},
 		},
 		daemonCmd,
+		statusCmd(usr),
 	)
 
 	err = fang.Execute(context.Background(), rootCmd,
