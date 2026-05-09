@@ -27,7 +27,7 @@ func statusCmd(usr *config.User) *cobra.Command {
 		Long: "Print a snapshot of the running terrarium daemon: " +
 			"process liveness, firewall state, DNS proxy, Envoy listeners, and recent logs. " +
 			"Status reads from the same path flags the running daemon was started with; " +
-			"override --pid-file, --envoy-config, --envoy-log, or --envoy-access-log here " +
+			"override --pid-file, --envoy-config, or --envoy-log here " +
 			"if the daemon used non-defaults. " +
 			"Exit status 0 when the daemon is running, 3 when it is not.",
 		Args: cobra.NoArgs,
@@ -44,7 +44,7 @@ func statusCmd(usr *config.User) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.NoLogs, "no-logs", false,
 		"skip envoy log tailing entirely")
 	cmd.Flags().BoolVar(&opts.ProbeDNS, "probe-dns", false,
-		"actively probe the local DNS proxy (pollutes the access log)")
+		"actively probe the local DNS proxy")
 
 	return cmd
 }
@@ -56,7 +56,6 @@ func runStatus(ctx context.Context, cmd *cobra.Command, usr *config.User, pidFil
 	opts.ConfigPath = usr.ConfigPath
 	opts.EnvoyConfigPath = usr.EnvoyConfigPath
 	opts.EnvoyLogPath = usr.EnvoyLogPath
-	opts.EnvoyAccessLogPath = usr.EnvoyAccessLogPath
 
 	report := status.Collect(ctx, opts)
 

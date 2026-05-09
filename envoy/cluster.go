@@ -7,6 +7,13 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 )
 
+// MissingSNIBlackholeCluster is the static-no-endpoints cluster name
+// used as the upstream for catch-all TCP traffic that should be
+// denied. Routing here yields NoHealthyUpstream (response_flags=NH)
+// without an ECONNREFUSED at the kernel layer; the access log
+// translator keys on that to recognize a TCP deny.
+const MissingSNIBlackholeCluster = "missing_sni_blackhole"
+
 func hasMITMRules(rules []config.ResolvedRule) bool {
 	for _, r := range rules {
 		if r.IsRestricted() {
@@ -32,7 +39,7 @@ func BuildClusters(
 	// are immediately reset (no healthy upstream), which is the desired
 	// behavior for missing-SNI connections after the access log fires.
 	clusters := []cluster{{
-		Name:           "missing_sni_blackhole",
+		Name:           MissingSNIBlackholeCluster,
 		ConnectTimeout: "1s",
 		Type:           "STATIC",
 		LBPolicy:       "ROUND_ROBIN",
@@ -110,7 +117,7 @@ func BuildClusters(
 						AutoSNI:           true,
 						AutoSANValidation: true,
 					},
-					AutoConfig: autoConfig{},
+					AutoConfig: &autoConfig{},
 				},
 			},
 		})

@@ -64,6 +64,10 @@ type Config struct {
 	Envoy *EnvoySettings `yaml:"envoy,omitempty"`
 	// Logging controls per-service logging behavior. See [LoggingConfig].
 	Logging *LoggingConfig `yaml:"logging,omitempty"`
+	// Stats configures the embedded SQLite event store and gRPC ALS
+	// surface that feeds it. A nil pointer means stats ingestion is
+	// disabled. See [Stats].
+	Stats *Stats `yaml:"stats,omitempty"`
 	// TCPForwards lists non-TLS TCP port-to-host mappings. Each entry
 	// creates a plain TCP proxy listener forwarding to the specified host.
 	TCPForwards []TCPForward `yaml:"tcpForwards,omitempty"`
@@ -612,18 +616,42 @@ type DNSLogging struct {
 	Enabled bool   `yaml:"enabled"`
 }
 
-// EnvoyLogging controls Envoy process and access logging.
+// EnvoyLogging controls Envoy process logging. Access events are
+// captured by the [Stats] event store. The legacy accessLog nested
+// block was removed and now produces a migration error pointing at
+// the top-level `stats` block.
 type EnvoyLogging struct {
-	AccessLog *EnvoyAccessLog `yaml:"accessLog,omitempty"`
-	Level     string          `yaml:"level,omitempty"`
-	Path      string          `yaml:"path,omitempty"`
+	Level string `yaml:"level,omitempty"`
+	Path  string `yaml:"path,omitempty"`
 }
 
-// EnvoyAccessLog controls Envoy file access log output.
-type EnvoyAccessLog struct {
-	Format  string `yaml:"format,omitempty"`
-	Path    string `yaml:"path,omitempty"`
-	Enabled bool   `yaml:"enabled"`
+// UnmarshalYAML implements custom decoding so legacy
+// `logging.envoy.accessLog` values fail loudly with a pointer to the
+// new top-level `stats` block.
+func (e *EnvoyLogging) UnmarshalYAML(unmarshal func(any) error) error {
+	var raw map[string]any
+
+	err := unmarshal(&raw)
+	if err != nil {
+		return err
+	}
+
+	if _, ok := raw["accessLog"]; ok {
+		return ErrEnvoyAccessLogRemoved
+	}
+
+	type alias EnvoyLogging
+
+	var a alias
+
+	err = unmarshal(&a)
+	if err != nil {
+		return err
+	}
+
+	*e = EnvoyLogging(a)
+
+	return nil
 }
 
 // FirewallLogging controls nftables LOG target generation.
@@ -631,62 +659,126 @@ type FirewallLogging struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+// Stats configures the embedded SQLite event store. The store is
+// opened by `terrarium init` or `terrarium daemon` when Enabled is
+// true; `terrarium stats` reads the same DB.
+//
+// Two transports feed the store: the in-process DNS proxy (one
+// [eventstore.Event] per terminal branch) and Envoy via a gRPC
+// AccessLog Service over a Unix domain socket at Socket.
+type Stats struct {
+	// Retention bounds the size of the events table. A nil pointer
+	// applies the built-in defaults; an explicit empty value
+	// (`retention: {}`) opts out of bounds entirely.
+	Retention *StatsRetention `yaml:"retention,omitempty"`
+	// Path is the SQLite database file. When empty, the default
+	// resolves via the user data dir (`$XDG_DATA_HOME/terrarium/stats.db`).
+	Path string `yaml:"path,omitempty"`
+	// Socket is the Unix domain socket path Envoy connects to for
+	// the gRPC AccessLog Service. Defaults to
+	// [DefaultStatsSocket] when empty.
+	Socket string `yaml:"socket,omitempty"`
+	// BufferBytes is the Envoy gRPC ALS client buffer; events past
+	// the watermark are dropped client-side. Defaults to
+	// [DefaultStatsBufferBytes] when zero.
+	BufferBytes uint32 `yaml:"bufferBytes,omitempty"`
+	// FlushIntervalMs is the Envoy gRPC ALS flush interval. Defaults
+	// to [DefaultStatsFlushIntervalMs] when zero.
+	FlushIntervalMs uint32 `yaml:"flushIntervalMs,omitempty"`
+	// Enabled gates DNS emission and the Envoy gRPC ALS bootstrap.
+	// When false, no access events are recorded.
+	Enabled bool `yaml:"enabled"`
+}
+
+// StatsRetention bounds the events table. A zero MaxAge or MaxRows
+// disables that bound.
+type StatsRetention struct {
+	// MaxAge prunes events older than time.Now()-MaxAge. Defaults
+	// to 720h (30 days) when the parent [Stats] is enabled and
+	// this field is unset via a nil [*StatsRetention].
+	MaxAge Duration `yaml:"maxAge,omitempty"`
+	// MaxRows caps the events row count. Defaults to 1,000,000
+	// when the parent [Stats] is enabled and this field is unset
+	// via a nil [*StatsRetention].
+	MaxRows int64 `yaml:"maxRows,omitempty"`
+}
+
+// Stats default constants.
+const (
+	// DefaultStatsSocket is the gRPC ALS UDS path used when
+	// [Stats.Socket] is empty.
+	DefaultStatsSocket = "/run/terrarium/accesslog.sock"
+
+	// DefaultStatsBufferBytes is the Envoy gRPC ALS client buffer
+	// size used when [Stats.BufferBytes] is zero.
+	DefaultStatsBufferBytes uint32 = 16384
+
+	// DefaultStatsFlushIntervalMs is the Envoy gRPC ALS flush
+	// interval used when [Stats.FlushIntervalMs] is zero.
+	DefaultStatsFlushIntervalMs uint32 = 1000
+
+	// DefaultStatsRetentionMaxAge is the default events maximum
+	// age used when [Stats.Retention] is nil.
+	DefaultStatsRetentionMaxAge = 720 * time.Hour
+
+	// DefaultStatsRetentionMaxRows is the default events row cap
+	// used when [Stats.Retention] is nil.
+	DefaultStatsRetentionMaxRows int64 = 1_000_000
+)
+
 // UserFlags holds the CLI flag names for each [User] field. Override
 // individual names before calling [User.RegisterFlags] to customize
 // the flag interface. Create instances with [NewUser].
 type UserFlags struct {
-	UID                string
-	GID                string
-	EnvoyUID           string
-	ExcludeDNSUIDs     string
-	Username           string
-	HomeDir            string
-	ConfigPath         string
-	CertsDir           string
-	CADir              string
-	EnvoyConfigPath    string
-	EnvoyLogPath       string
-	EnvoyAccessLogPath string
-	ReadyFile          string
+	UID             string
+	GID             string
+	EnvoyUID        string
+	ExcludeDNSUIDs  string
+	Username        string
+	HomeDir         string
+	ConfigPath      string
+	CertsDir        string
+	CADir           string
+	EnvoyConfigPath string
+	EnvoyLogPath    string
+	ReadyFile       string
 }
 
 // User holds identity and path values for the terrarium container user.
 // These values are passed from the CLI entrypoint so library packages
 // have no baked-in assumptions. Create instances with [NewUser].
 type User struct {
-	Flags              UserFlags
-	ConfigPath         string
-	GID                string
-	EnvoyUID           string
-	Username           string
-	HomeDir            string
-	CertsDir           string
-	CADir              string
-	EnvoyConfigPath    string
-	EnvoyLogPath       string
-	EnvoyAccessLogPath string
-	ReadyFile          string
-	UID                string
-	ExcludeDNSUIDs     []uint
+	Flags           UserFlags
+	ConfigPath      string
+	GID             string
+	EnvoyUID        string
+	Username        string
+	HomeDir         string
+	CertsDir        string
+	CADir           string
+	EnvoyConfigPath string
+	EnvoyLogPath    string
+	ReadyFile       string
+	UID             string
+	ExcludeDNSUIDs  []uint
 }
 
 // NewUser creates a new [*User] with default flag names.
 func NewUser() *User {
 	return &User{
 		Flags: UserFlags{
-			UID:                "uid",
-			GID:                "gid",
-			EnvoyUID:           "envoy-uid",
-			ExcludeDNSUIDs:     "exclude-dns-uids",
-			Username:           "username",
-			HomeDir:            "home-dir",
-			ConfigPath:         "config",
-			CertsDir:           "certs-dir",
-			CADir:              "ca-dir",
-			EnvoyConfigPath:    "envoy-config",
-			EnvoyLogPath:       "envoy-log",
-			EnvoyAccessLogPath: "envoy-access-log",
-			ReadyFile:          "ready-file",
+			UID:             "uid",
+			GID:             "gid",
+			EnvoyUID:        "envoy-uid",
+			ExcludeDNSUIDs:  "exclude-dns-uids",
+			Username:        "username",
+			HomeDir:         "home-dir",
+			ConfigPath:      "config",
+			CertsDir:        "certs-dir",
+			CADir:           "ca-dir",
+			EnvoyConfigPath: "envoy-config",
+			EnvoyLogPath:    "envoy-log",
+			ReadyFile:       "ready-file",
 		},
 	}
 }
@@ -713,8 +805,6 @@ func (u *User) RegisterFlags(flags *pflag.FlagSet) {
 		envoyConfigDefault(), "Envoy config output path")
 	flags.StringVar(&u.EnvoyLogPath, u.Flags.EnvoyLogPath,
 		envoyLogDefault(), "Envoy process log file path")
-	flags.StringVar(&u.EnvoyAccessLogPath, u.Flags.EnvoyAccessLogPath,
-		envoyAccessLogDefault(), "Envoy access log file path")
 	flags.StringVar(&u.ReadyFile, u.Flags.ReadyFile,
 		"", "path to create when init is ready")
 }
@@ -854,12 +944,6 @@ func (c *Config) DNSLogPath() string {
 	return "/dev/stderr"
 }
 
-// EnvoyAccessLogEnabled reports whether Envoy file access logs are enabled.
-func (c *Config) EnvoyAccessLogEnabled() bool {
-	return c.Logging != nil && c.Logging.Envoy != nil &&
-		c.Logging.Envoy.AccessLog != nil && c.Logging.Envoy.AccessLog.Enabled
-}
-
 // EnvoyLogLevel returns the Envoy process log level, defaulting to "warning".
 func (c *Config) EnvoyLogLevel() string {
 	if c.Logging != nil && c.Logging.Envoy != nil && c.Logging.Envoy.Level != "" {
@@ -867,17 +951,6 @@ func (c *Config) EnvoyLogLevel() string {
 	}
 
 	return DefaultEnvoyLogLevel
-}
-
-// EnvoyAccessLogFormat returns the Envoy access log format,
-// defaulting to [DefaultLogFormat].
-func (c *Config) EnvoyAccessLogFormat() string {
-	if c.Logging != nil && c.Logging.Envoy != nil &&
-		c.Logging.Envoy.AccessLog != nil && c.Logging.Envoy.AccessLog.Format != "" {
-		return c.Logging.Envoy.AccessLog.Format
-	}
-
-	return DefaultLogFormat
 }
 
 // EnvoyLogPath returns the Envoy process log path. When the YAML config
@@ -891,16 +964,82 @@ func (c *Config) EnvoyLogPath(fallback string) string {
 	return fallback
 }
 
-// EnvoyAccessLogPath returns the Envoy access log file path. When the
-// YAML config specifies a path, it takes priority; otherwise fallback
-// (typically from CLI flags via [User]) is used.
-func (c *Config) EnvoyAccessLogPath(fallback string) string {
-	if c.Logging != nil && c.Logging.Envoy != nil &&
-		c.Logging.Envoy.AccessLog != nil && c.Logging.Envoy.AccessLog.Path != "" {
-		return c.Logging.Envoy.AccessLog.Path
+// StatsEnabled reports whether stats ingestion is enabled.
+func (c *Config) StatsEnabled() bool {
+	return c.Stats != nil && c.Stats.Enabled
+}
+
+// StatsPath returns the configured SQLite path, or fallback when
+// the YAML omits it. Use [StatsDBDefault] to compute the operational
+// fallback.
+func (c *Config) StatsPath(fallback string) string {
+	if c.Stats != nil && c.Stats.Path != "" {
+		return c.Stats.Path
 	}
 
 	return fallback
+}
+
+// StatsSocket returns the configured Envoy gRPC ALS socket path,
+// or [DefaultStatsSocket] when unset.
+func (c *Config) StatsSocket() string {
+	if c.Stats != nil && c.Stats.Socket != "" {
+		return c.Stats.Socket
+	}
+
+	return DefaultStatsSocket
+}
+
+// StatsBufferBytes returns the Envoy gRPC ALS client buffer size,
+// or [DefaultStatsBufferBytes] when unset.
+func (c *Config) StatsBufferBytes() uint32 {
+	if c.Stats != nil && c.Stats.BufferBytes > 0 {
+		return c.Stats.BufferBytes
+	}
+
+	return DefaultStatsBufferBytes
+}
+
+// StatsFlushIntervalMs returns the Envoy gRPC ALS flush interval,
+// or [DefaultStatsFlushIntervalMs] when unset.
+func (c *Config) StatsFlushIntervalMs() uint32 {
+	if c.Stats != nil && c.Stats.FlushIntervalMs > 0 {
+		return c.Stats.FlushIntervalMs
+	}
+
+	return DefaultStatsFlushIntervalMs
+}
+
+// StatsRetentionMaxAge returns the events MaxAge bound, applying
+// [DefaultStatsRetentionMaxAge] when [Stats.Retention] is nil. When
+// the user sets `retention: {}` (non-nil empty struct), zero is
+// returned to opt out of age-based pruning.
+func (c *Config) StatsRetentionMaxAge() time.Duration {
+	if c.Stats == nil {
+		return 0
+	}
+
+	if c.Stats.Retention == nil {
+		return DefaultStatsRetentionMaxAge
+	}
+
+	return c.Stats.Retention.MaxAge.Duration
+}
+
+// StatsRetentionMaxRows returns the events MaxRows bound, applying
+// [DefaultStatsRetentionMaxRows] when [Stats.Retention] is nil. When
+// the user sets `retention: {}` (non-nil empty struct), zero is
+// returned to opt out of row-based pruning.
+func (c *Config) StatsRetentionMaxRows() int64 {
+	if c.Stats == nil {
+		return 0
+	}
+
+	if c.Stats.Retention == nil {
+		return DefaultStatsRetentionMaxRows
+	}
+
+	return c.Stats.Retention.MaxRows
 }
 
 // Duration wraps [time.Duration] with YAML string unmarshaling.
@@ -955,14 +1094,8 @@ func normalizeLogging(c *Config) {
 		c.Logging.DNS.Format = strings.ToLower(c.Logging.DNS.Format)
 	}
 
-	if c.Logging.Envoy != nil {
-		if c.Logging.Envoy.Level != "" {
-			c.Logging.Envoy.Level = strings.ToLower(c.Logging.Envoy.Level)
-		}
-
-		if c.Logging.Envoy.AccessLog != nil && c.Logging.Envoy.AccessLog.Format != "" {
-			c.Logging.Envoy.AccessLog.Format = strings.ToLower(c.Logging.Envoy.AccessLog.Format)
-		}
+	if c.Logging.Envoy != nil && c.Logging.Envoy.Level != "" {
+		c.Logging.Envoy.Level = strings.ToLower(c.Logging.Envoy.Level)
 	}
 }
 

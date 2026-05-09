@@ -25,9 +25,10 @@ const (
 	// state fallback resolves to this path.
 	envoyLogPath = "/root/.local/state/terrarium/envoy.log"
 
-	// envoyAccessLogPath is the default Envoy access log file path
-	// inside the container.
-	envoyAccessLogPath = "/root/.local/state/terrarium/envoy-access.log"
+	// statsDBPath is the default SQLite event store path inside the
+	// container. terrarium stats is invoked against this file to
+	// assert access events were recorded.
+	statsDBPath = "/root/.local/share/terrarium/stats.db"
 )
 
 // testCACert and testCAKey are a static CA used to sign upstream
@@ -430,11 +431,28 @@ func withPostExec(fn func(ctx context.Context, variant string, ctr *dagger.Conta
 	})
 }
 
-// accessLogContains returns a [withPostExec] callback that reads the
-// Envoy access log file from the container and checks that it contains
-// the given substring.
-func accessLogContains(substr, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
-	return fileContains(envoyAccessLogPath, substr, msg)
+// statsListContains runs `terrarium stats list --format json` against
+// the SQLite event store inside the container and checks the output
+// for the given substring. Replaces the file-tail-based access log
+// assertions used before the gRPC ALS event store landed.
+func statsListContains(substr, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		out, err := ctr.WithExec([]string{
+			"/usr/local/bin/terrarium", "stats", "list",
+			"--db", statsDBPath,
+			"--format", "json",
+			"--limit", "200",
+		}).Stdout(ctx)
+		if err != nil {
+			return fmt.Errorf("running terrarium stats list: %w", err)
+		}
+
+		if !strings.Contains(out, substr) {
+			return fmt.Errorf("%s\nstats list output:\n%s", msg, out)
+		}
+
+		return nil
+	}
 }
 
 // envoyLogContains returns a [withPostExec] callback that reads the

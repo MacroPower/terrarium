@@ -11,63 +11,59 @@ import (
 	"go.jacobcolvin.com/terrarium/envoy"
 )
 
-func TestBuildAccessLog(t *testing.T) {
+func TestBuildGrpcAccessLog_HTTP(t *testing.T) {
 	t.Parallel()
 
-	tests := map[string]struct {
-		logging  bool
-		wantLen  int
-		wantName string
-	}{
-		"disabled": {logging: false},
-		"enabled":  {logging: true, wantLen: 1, wantName: "envoy.access_loggers.file"},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			logs := envoy.BuildAccessLog(tt.logging, "logfmt", "/tmp/access.log")
-			if tt.wantLen == 0 {
-				assert.Nil(t, logs)
-				return
-			}
-
-			require.Len(t, logs, tt.wantLen)
-			assert.Equal(t, tt.wantName, logs[0].Name)
-		})
-	}
-}
-
-func TestBuildAccessLog_JSONFormat(t *testing.T) {
-	t.Parallel()
-
-	logs := envoy.BuildAccessLog(true, "json", "/tmp/access.log")
+	logs := envoy.BuildHTTPGrpcAccessLog("http_forward", 16384, 1000)
 	require.Len(t, logs, 1)
+	assert.Equal(t, "envoy.access_loggers.http_grpc", logs[0].Name)
 
 	out, err := yaml.Marshal(logs)
 	require.NoError(t, err)
 
 	y := string(out)
-	assert.Contains(t, y, "json_format")
-	assert.Contains(t, y, "time:")
-	assert.Contains(t, y, "method:")
-	assert.NotContains(t, y, "text_format_source")
+	assert.Contains(t, y, "HttpGrpcAccessLogConfig")
+	assert.Contains(t, y, "log_name: http_forward")
+	assert.Contains(t, y, "cluster_name: terrarium_accesslog")
+	assert.Contains(t, y, "buffer_size_bytes: 16384")
+	// buffer_flush_interval must be a proto Duration string (not
+	// a raw integer) — Envoy rejects the integer form.
+	assert.Contains(t, y, "buffer_flush_interval: 1.000s")
+	assert.NotContains(t, y, "transport_api_version",
+		"transport_api_version is deprecated; should not appear in output")
 }
 
-func TestBuildAccessLog_LogfmtFormat(t *testing.T) {
+func TestBuildGrpcAccessLog_TCP(t *testing.T) {
 	t.Parallel()
 
-	logs := envoy.BuildAccessLog(true, "logfmt", "/tmp/access.log")
+	logs := envoy.BuildTCPGrpcAccessLog("tls_passthrough", 16384, 1000)
 	require.Len(t, logs, 1)
+	assert.Equal(t, "envoy.access_loggers.tcp_grpc", logs[0].Name)
 
 	out, err := yaml.Marshal(logs)
 	require.NoError(t, err)
 
 	y := string(out)
-	assert.Contains(t, y, "text_format_source")
-	assert.Contains(t, y, "time=%START_TIME%")
-	assert.NotContains(t, y, "json_format")
+	assert.Contains(t, y, "TcpGrpcAccessLogConfig")
+	assert.Contains(t, y, "log_name: tls_passthrough")
+	assert.Contains(t, y, "cluster_name: terrarium_accesslog")
+}
+
+func TestBuildAccessLogCluster(t *testing.T) {
+	t.Parallel()
+
+	c := envoy.BuildAccessLogCluster("/run/terrarium/als.sock")
+
+	out, err := yaml.Marshal(c)
+	require.NoError(t, err)
+
+	y := string(out)
+	assert.Contains(t, y, "name: terrarium_accesslog")
+	assert.Contains(t, y, "type: STATIC")
+	assert.Contains(t, y, "pipe:")
+	assert.Contains(t, y, "path: /run/terrarium/als.sock")
+	assert.Contains(t, y, "explicit_http_config:")
+	assert.Contains(t, y, "http2_protocol_options:")
 }
 
 func TestBuildCatchAllUDPListener(t *testing.T) {
@@ -103,21 +99,20 @@ func TestBuildCatchAllUDPListener(t *testing.T) {
 	assert.NotContains(t, y, "filter_chains")
 }
 
-func TestBuildCatchAllUDPListener_WithAccessLog(t *testing.T) {
+func TestBuildCatchAllUDPListener_NoAccessLog(t *testing.T) {
 	t.Parallel()
 
-	accessLog := envoy.BuildAccessLog(true, "logfmt", "/tmp/access.log")
-	l := envoy.BuildCatchAllUDPListener(15002, 120*time.Second, accessLog, false)
-
-	require.Len(t, l.ListenerFilters, 1)
-	assert.Equal(t, "envoy.filters.udp_listener.udp_proxy", l.ListenerFilters[0].Name)
+	l := envoy.BuildCatchAllUDPListener(15002, 120*time.Second, nil, false)
 
 	out, err := yaml.Marshal(l)
 	require.NoError(t, err)
 
 	y := string(out)
 	assert.Contains(t, y, "idle_timeout: 120s")
-	assert.Contains(t, y, "envoy.access_loggers.file")
+	assert.NotContains(t, y, "envoy.access_loggers.file",
+		"UDP listener should not emit access events in v1")
+	assert.NotContains(t, y, "envoy.access_loggers.http_grpc")
+	assert.NotContains(t, y, "envoy.access_loggers.tcp_grpc")
 }
 
 func TestBuildTLSListener_Transparent(t *testing.T) {
@@ -125,7 +120,7 @@ func TestBuildTLSListener_Transparent(t *testing.T) {
 
 	l := envoy.BuildTLSListener(
 		"tls_test", 15443, 443, "tls_test",
-		nil, true, nil, "", true,
+		nil, true, nil, nil, "", true,
 	)
 
 	assert.Equal(t, "0.0.0.0", l.Address.SocketAddress.Address,
@@ -143,7 +138,7 @@ func TestBuildTLSListener_NonTransparent(t *testing.T) {
 
 	l := envoy.BuildTLSListener(
 		"tls_test", 15443, 443, "tls_test",
-		nil, true, nil, "", false,
+		nil, true, nil, nil, "", false,
 	)
 
 	assert.Equal(t, "127.0.0.1", l.Address.SocketAddress.Address,

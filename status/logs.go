@@ -110,13 +110,12 @@ func splitTailLines(buffer []byte) []string {
 	return lines
 }
 
-// collectLogs tails the Envoy process and access log files. When cfg
-// is non-nil, [Config.EnvoyLogPath] and [Config.EnvoyAccessLogPath]
-// are consulted so a YAML override takes priority over the CLI
-// fallback. When cfg is nil (config missing or unreadable), the CLI
-// fallbacks from opts are used directly. A permission or parse error
-// from the config load is preserved on the [LogsSection] so the
-// renderer can annotate why it fell back.
+// collectLogs tails the Envoy process log. When cfg is non-nil,
+// [Config.EnvoyLogPath] is consulted so a YAML override takes
+// priority over the CLI fallback. When cfg is nil (config missing
+// or unreadable), the CLI fallback from opts is used directly. A
+// permission or parse error from the config load is preserved on
+// the [LogsSection] so the renderer can annotate why it fell back.
 func collectLogs(cfg *config.Config, cfgErr error, opts Options) LogsSection {
 	s := LogsSection{Requested: opts.LogLines}
 
@@ -130,26 +129,20 @@ func collectLogs(cfg *config.Config, cfgErr error, opts Options) LogsSection {
 	}
 
 	envoyLog := opts.EnvoyLogPath
-	accessLog := opts.EnvoyAccessLogPath
-
 	if cfg != nil {
 		envoyLog = cfg.EnvoyLogPath(opts.EnvoyLogPath)
-		accessLog = cfg.EnvoyAccessLogPath(opts.EnvoyAccessLogPath)
 	}
 
 	s.EnvoyLog = LogTail{Path: envoyLog}
-	s.EnvoyAccessLog = LogTail{Path: accessLog}
 
 	if cfgErr != nil {
 		// Permission/parse errors from the config read surface as
-		// annotations on both log tails so the renderer can explain
+		// annotations on the log tail so the renderer can explain
 		// the fallback without a full-section Err.
 		s.EnvoyLog.Err = fmt.Errorf("config: %w", cfgErr)
-		s.EnvoyAccessLog.Err = fmt.Errorf("config: %w", cfgErr)
 	}
 
 	s.EnvoyLog.Lines, s.EnvoyLog.Err = tailOrKeepErr(envoyLog, s.Requested, s.EnvoyLog.Err)
-	s.EnvoyAccessLog.Lines, s.EnvoyAccessLog.Err = tailOrKeepErr(accessLog, s.Requested, s.EnvoyAccessLog.Err)
 
 	return s
 }

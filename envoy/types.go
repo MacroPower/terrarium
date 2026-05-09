@@ -42,7 +42,8 @@ type additionalAddr struct {
 }
 
 type address struct {
-	SocketAddress socketAddress `yaml:"socket_address"`
+	SocketAddress socketAddress `yaml:"socket_address,omitempty"`
+	Pipe          *pipeAddress  `yaml:"pipe,omitempty"`
 }
 
 type socketAddress struct {
@@ -177,13 +178,57 @@ type stderrAccessLogConfig struct {
 	AtType    string                    `yaml:"@type"`
 }
 
-// fileAccessLogConfig models the FileAccessLog typed config that writes
-// access log entries to a file on disk.
-type fileAccessLogConfig struct {
-	LogFormat *substitutionFormatString `yaml:"log_format,omitempty"`
-	AtType    string                    `yaml:"@type"`
-	Path      string                    `yaml:"path"`
+// httpGrpcAccessLogConfig models Envoy's HttpGrpcAccessLogConfig.
+type httpGrpcAccessLogConfig struct {
+	AtType       string                  `yaml:"@type"`
+	CommonConfig commonGrpcAccessLogConfig `yaml:"common_config"`
 }
+
+// tcpGrpcAccessLogConfig models Envoy's TcpGrpcAccessLogConfig.
+type tcpGrpcAccessLogConfig struct {
+	AtType       string                  `yaml:"@type"`
+	CommonConfig commonGrpcAccessLogConfig `yaml:"common_config"`
+}
+
+// commonGrpcAccessLogConfig is the shared config message both
+// HttpGrpcAccessLog and TcpGrpcAccessLog reference.
+//
+// BufferFlushInterval encodes Envoy's google.protobuf.Duration as a
+// duration string (e.g. "1s", "0.5s"). Envoy rejects integer
+// milliseconds here.
+type commonGrpcAccessLogConfig struct {
+	LogName             string            `yaml:"log_name"`
+	GrpcService         grpcServiceConfig `yaml:"grpc_service"`
+	BufferSizeBytes     uint32            `yaml:"buffer_size_bytes,omitempty"`
+	BufferFlushInterval string            `yaml:"buffer_flush_interval,omitempty"`
+}
+
+// grpcServiceConfig models Envoy's core.GrpcService message. The
+// envoy_grpc field references a cluster name; that cluster carries
+// the access logs over the wire.
+type grpcServiceConfig struct {
+	EnvoyGrpc envoyGrpcConfig `yaml:"envoy_grpc"`
+}
+
+// envoyGrpcConfig is the cluster reference for a gRPC service.
+type envoyGrpcConfig struct {
+	ClusterName string `yaml:"cluster_name"`
+}
+
+// pipeAddress models Envoy's core.Pipe address: a Unix domain socket
+// path the gRPC ALS cluster points to.
+type pipeAddress struct {
+	Path string `yaml:"path"`
+}
+
+// explicitHTTPConfig wraps the HTTP/2 options used by the gRPC ALS
+// cluster. gRPC requires HTTP/2.
+type explicitHTTPConfig struct {
+	HTTP2Options *http2Options `yaml:"http2_protocol_options,omitempty"`
+}
+
+// http2Options is an empty placeholder. Its presence is the signal.
+type http2Options struct{}
 
 // substitutionFormatString models Envoy's SubstitutionFormatString
 // with text_format_source and json_format fields for command-operator
@@ -383,7 +428,8 @@ type clusterDFPConfig struct {
 
 type httpProtocolOptions struct {
 	UpstreamHTTPProtocolOptions *upstreamHTTPProtocolOptions `yaml:"upstream_http_protocol_options,omitempty"`
-	AutoConfig                  autoConfig                   `yaml:"auto_config"`
+	ExplicitHTTPConfig          *explicitHTTPConfig          `yaml:"explicit_http_config,omitempty"`
+	AutoConfig                  *autoConfig                  `yaml:"auto_config,omitempty"`
 	AtType                      string                       `yaml:"@type"`
 }
 

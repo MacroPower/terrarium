@@ -1778,25 +1778,6 @@ func TestValidate(t *testing.T) {
 				},
 			},
 		},
-		"invalid envoy access log format": {
-			cfg: &config.Config{
-				Logging: &config.LoggingConfig{
-					Envoy: &config.EnvoyLogging{
-						AccessLog: &config.EnvoyAccessLog{Format: "csv"},
-					},
-				},
-			},
-			err: config.ErrInvalidLogFormat,
-		},
-		"valid envoy access log format json": {
-			cfg: &config.Config{
-				Logging: &config.LoggingConfig{
-					Envoy: &config.EnvoyLogging{
-						AccessLog: &config.EnvoyAccessLog{Format: "json"},
-					},
-				},
-			},
-		},
 		"negative drain timeout": {
 			cfg: &config.Config{
 				Envoy: &config.EnvoySettings{DrainTimeout: config.Duration{Duration: -1 * time.Second}},

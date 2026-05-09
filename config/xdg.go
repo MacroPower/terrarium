@@ -69,13 +69,10 @@ func envoyLogDefault() string {
 	return filepath.Join(userStateDir(), "terrarium", "envoy.log")
 }
 
-// envoyAccessLogDefault returns the default Envoy access log file path.
-// It prefers $XDG_RUNTIME_DIR/terrarium/envoy-access.log, falling back
-// to the state directory.
-func envoyAccessLogDefault() string {
-	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
-		return filepath.Join(d, "terrarium", "envoy-access.log")
-	}
-
-	return filepath.Join(userStateDir(), "terrarium", "envoy-access.log")
+// StatsDBDefault returns the default SQLite event store path. It
+// follows XDG conventions ($XDG_DATA_HOME/terrarium/stats.db) so the
+// store sits alongside the CA and certs directories.
+func StatsDBDefault() string {
+	return filepath.Join(userDataDir(), "terrarium", "stats.db")
 }
+

@@ -29,6 +29,7 @@ func Render(w io.Writer, r Report) error {
 	keepErr(renderFirewall(w, r.Firewall))
 	keepErr(renderDNS(w, r.DNS))
 	keepErr(renderEnvoy(w, r.Envoy))
+	keepErr(renderStats(w, r.Stats))
 	keepErr(renderLogs(w, r.Logs))
 
 	if r.NonRoot && anyPermissionError(r) {
@@ -39,14 +40,16 @@ func Render(w io.Writer, r Report) error {
 	return firstErr
 }
 
-// newTabwriter returns a tabwriter configured for status output.
-// Minimum column width of 1, tab width of 8, padding of 2, no flags.
-func newTabwriter(w io.Writer) *tabwriter.Writer {
+// NewTabwriter returns a tabwriter configured for terrarium CLI
+// output. Minimum column width of 1, tab width of 8, padding of 2,
+// no flags. The status renderer and the stats CLI share this
+// configuration so column rendering stays consistent.
+func NewTabwriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
 }
 
 func renderProcess(w io.Writer, s ProcessSection) error {
-	tw := newTabwriter(w)
+	tw := NewTabwriter(w)
 
 	fmt.Fprintln(tw, "PROCESS")
 
@@ -103,7 +106,7 @@ func renderProcess(w io.Writer, s ProcessSection) error {
 }
 
 func renderFirewall(w io.Writer, s FirewallSection) error {
-	tw := newTabwriter(w)
+	tw := NewTabwriter(w)
 
 	fmt.Fprintln(tw, "FIREWALL")
 
@@ -157,7 +160,7 @@ func renderFirewall(w io.Writer, s FirewallSection) error {
 }
 
 func renderDNS(w io.Writer, s DNSSection) error {
-	tw := newTabwriter(w)
+	tw := NewTabwriter(w)
 
 	fmt.Fprintln(tw, "DNS")
 
@@ -197,7 +200,7 @@ func renderDNS(w io.Writer, s DNSSection) error {
 }
 
 func renderEnvoy(w io.Writer, s EnvoySection) error {
-	tw := newTabwriter(w)
+	tw := NewTabwriter(w)
 
 	fmt.Fprintln(tw, "ENVOY")
 
@@ -228,17 +231,57 @@ func renderEnvoy(w io.Writer, s EnvoySection) error {
 	return err
 }
 
+// renderStats prints the event store summary. When stats is disabled,
+// the section heading is suppressed entirely so the output stays
+// compact for the off-by-default case.
+func renderStats(w io.Writer, s StatsSection) error {
+	if !s.Enabled {
+		return nil
+	}
+
+	tw := NewTabwriter(w)
+
+	fmt.Fprintln(tw, "STATS")
+	fmt.Fprintf(tw, "  db:\t%s\n", s.DBPath)
+
+	if s.Err != nil {
+		fmt.Fprintf(tw, "  error:\t%s\n", s.Err)
+
+		err := tw.Flush()
+		if err != nil {
+			return err
+		}
+
+		_, err = fmt.Fprintln(w)
+
+		return err
+	}
+
+	if s.LastEvent.IsZero() {
+		fmt.Fprintln(tw, "  last event:\t(none)")
+	} else {
+		fmt.Fprintf(tw, "  last event:\t%s ago\n", humanDuration(time.Since(s.LastEvent)))
+	}
+
+	fmt.Fprintf(tw, "  events 24h:\t%d\n", s.Events24h)
+	fmt.Fprintf(tw, "  db size:\t%d bytes\n", s.DBSizeBytes)
+
+	err := tw.Flush()
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(w)
+
+	return err
+}
+
 func renderLogs(w io.Writer, s LogsSection) error {
 	if s.Skipped {
 		return nil
 	}
 
-	err := renderLogTail(w, "ENVOY LOG", s.EnvoyLog, s.Requested)
-	if err != nil {
-		return err
-	}
-
-	return renderLogTail(w, "ENVOY ACCESS LOG", s.EnvoyAccessLog, s.Requested)
+	return renderLogTail(w, "ENVOY LOG", s.EnvoyLog, s.Requested)
 }
 
 func renderLogTail(w io.Writer, heading string, t LogTail, requested int) error {
@@ -284,7 +327,6 @@ func anyPermissionError(r Report) bool {
 		r.DNS.Err,
 		r.Envoy.Err,
 		r.Logs.EnvoyLog.Err,
-		r.Logs.EnvoyAccessLog.Err,
 	}
 
 	for _, e := range errs {

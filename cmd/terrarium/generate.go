@@ -59,14 +59,7 @@ func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Confi
 	}
 
 	caBundlePath := certs.FindCABundle()
-	envoyConf, err := GenerateEnvoyFromConfig(
-		ctx,
-		cfg,
-		certsDir,
-		caBundlePath,
-		cfg.EnvoyAccessLogPath(usr.EnvoyAccessLogPath),
-		vmMode,
-	)
+	envoyConf, err := GenerateEnvoyFromConfig(ctx, cfg, certsDir, caBundlePath, vmMode)
 	if err != nil {
 		return nil, fmt.Errorf("generating envoy config: %w", err)
 	}
@@ -84,6 +77,40 @@ func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Confi
 	return cfg, nil
 }
 
+// alsConfig captures the shared gRPC ALS config used by every
+// listener. Empty values mean stats is disabled and no access loggers
+// are emitted.
+type alsConfig struct {
+	socket   string
+	bufBytes uint32
+	flushMs  uint32
+	enabled  bool
+}
+
+// httpListenerLog returns the per-listener HttpGrpcAccessLog slice.
+// logName distinguishes listeners on the receiving side. When stats is
+// disabled, an empty slice is returned and Envoy emits no access
+// events.
+func (a alsConfig) httpListenerLog(logName string) []envoy.AccessLog {
+	if !a.enabled {
+		return nil
+	}
+
+	return envoy.BuildHTTPGrpcAccessLog(logName, a.bufBytes, a.flushMs)
+}
+
+// tcpListenerLog returns the per-listener TcpGrpcAccessLog slice.
+// logName distinguishes listeners on the receiving side. When stats is
+// disabled, an empty slice is returned and Envoy emits no access
+// events.
+func (a alsConfig) tcpListenerLog(logName string) []envoy.AccessLog {
+	if !a.enabled {
+		return nil
+	}
+
+	return envoy.BuildTCPGrpcAccessLog(logName, a.bufBytes, a.flushMs)
+}
+
 // GenerateEnvoyFromConfig builds an Envoy bootstrap YAML configuration
 // using per-port rule resolution. Port 443 traffic is matched by TLS
 // SNI, port 80 by HTTP Host header. Domains with path restrictions
@@ -94,10 +121,15 @@ func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Confi
 func GenerateEnvoyFromConfig(
 	ctx context.Context,
 	cfg *config.Config,
-	certsDir, caBundlePath, accessLogPath string,
+	certsDir, caBundlePath string,
 	vmMode bool,
 ) (string, error) {
-	accessLog := envoy.BuildAccessLog(cfg.EnvoyAccessLogEnabled(), cfg.EnvoyAccessLogFormat(), accessLogPath)
+	als := alsConfig{
+		enabled:  cfg.StatsEnabled(),
+		socket:   cfg.StatsSocket(),
+		bufBytes: cfg.StatsBufferBytes(),
+		flushMs:  cfg.StatsFlushIntervalMs(),
+	}
 
 	resolvedPorts := cfg.ResolvePorts(ctx)
 
@@ -119,8 +151,8 @@ func GenerateEnvoyFromConfig(
 	// catch-all TCP listener for centralized access logging.
 	if !cfg.IsEgressBlocked() {
 		listeners = append(listeners,
-			buildTLSPassthroughListener(ctx, cfg, resolvedPortSet, openPortSet, accessLog, certsDir, vmMode),
-			buildHTTPForwardListener(ctx, cfg, resolvedPortSet, openPortSet, accessLog, vmMode),
+			buildTLSPassthroughListener(ctx, cfg, resolvedPortSet, openPortSet, als, certsDir, vmMode),
+			buildHTTPForwardListener(ctx, cfg, resolvedPortSet, openPortSet, als, vmMode),
 		)
 	}
 
@@ -128,7 +160,8 @@ func GenerateEnvoyFromConfig(
 		name := fmt.Sprintf("tcp_forward_%d", fwd.Port)
 		listeners = append(
 			listeners,
-			envoy.BuildTCPForwardListener(name, config.ProxyPortBase+fwd.Port, name, accessLog, vmMode),
+			envoy.BuildTCPForwardListener(name, config.ProxyPortBase+fwd.Port, name,
+				als.tcpListenerLog(name), vmMode),
 		)
 	}
 
@@ -144,11 +177,19 @@ func GenerateEnvoyFromConfig(
 			rulesP = envoy.StripL7Restrictions(rulesP)
 		}
 
+		name := fmt.Sprintf("tls_passthrough_%d", p)
+		mitmName := fmt.Sprintf("tls_mitm_%d", p)
+		// TLS listeners surface both TCP (passthrough chains) and
+		// HTTP (MITM chains via HCM) access events. Distinct
+		// log_names let the receiver tell them apart.
 		listeners = append(listeners, envoy.BuildTLSListener(
-			fmt.Sprintf("tls_passthrough_%d", p),
+			name,
 			config.ProxyPortBase+p, p,
-			fmt.Sprintf("tls_passthrough_%d", p),
-			rulesP, openPortSet[p], accessLog, certsDir, vmMode,
+			name,
+			rulesP, openPortSet[p],
+			als.tcpListenerLog(name),
+			als.httpListenerLog(mitmName),
+			certsDir, vmMode,
 		))
 	}
 
@@ -157,7 +198,8 @@ func GenerateEnvoyFromConfig(
 	// NAT chain redirects matching TCP to this listener.
 	if cfg.HasCIDRRules() {
 		listeners = append(listeners,
-			envoy.BuildCIDRCatchAllListener(config.CIDRCatchAllPort, accessLog, vmMode))
+			envoy.BuildCIDRCatchAllListener(config.CIDRCatchAllPort,
+				als.tcpListenerLog("cidr_catch_all"), vmMode))
 	}
 
 	envoySettings := cfg.EnvoyDefaults()
@@ -165,14 +207,21 @@ func GenerateEnvoyFromConfig(
 	// Catch-all TCP and UDP listeners for non-blocked modes.
 	if !cfg.IsEgressBlocked() {
 		listeners = append(listeners,
-			envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, cfg.IsEgressUnrestricted(), accessLog, vmMode),
+			envoy.BuildCatchAllTCPListener(config.CatchAllProxyPort, cfg.IsEgressUnrestricted(),
+				als.tcpListenerLog("catch_all_tcp"), vmMode),
+			// UDP access events are not captured in v1 — pass nil.
 			envoy.BuildCatchAllUDPListener(
-				config.CatchAllUDPProxyPort, envoySettings.UDPIdleTimeout.Duration, accessLog, vmMode),
+				config.CatchAllUDPProxyPort, envoySettings.UDPIdleTimeout.Duration, nil, vmMode),
 		)
 	}
 
 	// Use global rules for cluster determination.
 	allRules := cfg.ResolveRules(ctx)
+
+	clusters := envoy.BuildClusters(allRules, cfg.TCPForwards, len(listeners) > 0, caBundlePath)
+	if als.enabled {
+		clusters = append(clusters, envoy.BuildAccessLogCluster(als.socket))
+	}
 
 	bs := envoy.Bootstrap{
 		OverloadManager: envoy.OverloadManager{
@@ -186,7 +235,7 @@ func GenerateEnvoyFromConfig(
 		},
 		StaticResources: envoy.StaticResources{
 			Listeners: listeners,
-			Clusters:  envoy.BuildClusters(allRules, cfg.TCPForwards, len(listeners) > 0, caBundlePath),
+			Clusters:  clusters,
 		},
 	}
 
@@ -207,7 +256,7 @@ func buildTLSPassthroughListener(
 	ctx context.Context,
 	cfg *config.Config,
 	resolvedPortSet, openPortSet map[int]bool,
-	accessLog []envoy.AccessLog,
+	als alsConfig,
 	certsDir string,
 	transparent bool,
 ) envoy.Listener {
@@ -224,7 +273,10 @@ func buildTLSPassthroughListener(
 
 	return envoy.BuildTLSListener(
 		"tls_passthrough", 15443, 443, "tls_passthrough",
-		rules, open, accessLog, certsDir, transparent,
+		rules, open,
+		als.tcpListenerLog("tls_passthrough"),
+		als.httpListenerLog("tls_mitm"),
+		certsDir, transparent,
 	)
 }
 
@@ -235,7 +287,7 @@ func buildHTTPForwardListener(
 	ctx context.Context,
 	cfg *config.Config,
 	resolvedPortSet, openPortSet map[int]bool,
-	accessLog []envoy.AccessLog,
+	als alsConfig,
 	transparent bool,
 ) envoy.Listener {
 	rules := cfg.ResolveRulesForPort(ctx, 80)
@@ -248,5 +300,6 @@ func buildHTTPForwardListener(
 		rules = envoy.StripL7Restrictions(rules)
 	}
 
-	return envoy.BuildHTTPForwardListener(rules, open, accessLog, transparent)
+	return envoy.BuildHTTPForwardListener(rules, open,
+		als.httpListenerLog("http_forward"), transparent)
 }

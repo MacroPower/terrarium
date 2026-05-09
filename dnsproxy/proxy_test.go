@@ -2,9 +2,11 @@ package dnsproxy_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,9 +16,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	_ "modernc.org/sqlite"
+
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/dnstest"
+	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
 func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
@@ -989,4 +994,146 @@ func TestProxyICMPFQDNPopulatesIPSet(t *testing.T) {
 	}
 
 	assert.True(t, hasICMPSet, "should populate ICMP FQDN set")
+}
+
+func TestProxyEmitsEvents(t *testing.T) {
+	t.Parallel()
+
+	upstream := dnstest.StartServer(t, "10.0.0.4")
+
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchName: "match.example.com"}},
+			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+		}),
+	}
+
+	dir := t.TempDir()
+	store, err := eventstore.Open(t.Context(), filepath.Join(dir, "stats.db"),
+		eventstore.WithBatchSize(1),
+		eventstore.WithBatchInterval(20*time.Millisecond))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		dnsproxy.WithEventStore(store),
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
+
+	client := &dns.Client{Net: "udp"}
+
+	// Allow path: emits decision=allow, source=dns.
+	allowMsg := new(dns.Msg)
+	allowMsg.SetQuestion("match.example.com.", dns.TypeA)
+
+	resp, _, err := client.Exchange(allowMsg, proxy.Addr)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+
+	// Deny path: emits decision=deny, reason=not-allowlisted.
+	denyMsg := new(dns.Msg)
+	denyMsg.SetQuestion("nomatch.example.com.", dns.TypeA)
+
+	resp2, _, err := client.Exchange(denyMsg, proxy.Addr)
+	require.NoError(t, err)
+	require.NotNil(t, resp2)
+
+	// Wait for the writer goroutine to flush.
+	require.NoError(t, store.Close())
+
+	db, err := eventstore.OpenReadOnly(filepath.Join(dir, "stats.db"))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+
+	rows, err := db.Query(`SELECT source, decision, domain, reason FROM events ORDER BY id`)
+	require.NoError(t, err)
+
+	var events []struct {
+		source, decision, domain, reason string
+	}
+
+	for rows.Next() {
+		var ev struct {
+			source, decision, domain, reason string
+		}
+
+		var domain, reason sql.NullString
+
+		require.NoError(t, rows.Scan(&ev.source, &ev.decision, &domain, &reason))
+		ev.domain = domain.String
+		ev.reason = reason.String
+
+		events = append(events, ev)
+	}
+
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+
+	require.Len(t, events, 2)
+
+	// Allow event from match.example.com.
+	assert.Equal(t, "dns", events[0].source)
+	assert.Equal(t, "allow", events[0].decision)
+	assert.Equal(t, "match.example.com", events[0].domain)
+
+	// Deny event from nomatch.example.com.
+	assert.Equal(t, "dns", events[1].source)
+	assert.Equal(t, "deny", events[1].decision)
+	assert.Equal(t, "nomatch.example.com", events[1].domain)
+	assert.Equal(t, "not-allowlisted", events[1].reason)
+}
+
+func TestProxyBlockedModeEmitsDeny(t *testing.T) {
+	t.Parallel()
+
+	upstream := dnstest.StartServer(t, "10.0.0.5")
+
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{}),
+	}
+
+	dir := t.TempDir()
+	store, err := eventstore.Open(t.Context(), filepath.Join(dir, "stats.db"),
+		eventstore.WithBatchSize(1),
+		eventstore.WithBatchInterval(20*time.Millisecond))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		dnsproxy.WithEventStore(store),
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
+
+	client := &dns.Client{Net: "udp"}
+	msg := new(dns.Msg)
+	msg.SetQuestion("anything.example.com.", dns.TypeA)
+
+	resp, _, err := client.Exchange(msg, proxy.Addr)
+	require.NoError(t, err)
+	assert.Equal(t, dns.RcodeRefused, resp.Rcode)
+
+	require.NoError(t, store.Close())
+
+	db, err := eventstore.OpenReadOnly(filepath.Join(dir, "stats.db"))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+
+	var (
+		decision, reason string
+	)
+
+	err = db.QueryRow(`SELECT decision, reason FROM events LIMIT 1`).Scan(&decision, &reason)
+	require.NoError(t, err)
+
+	assert.Equal(t, "deny", decision)
+	assert.Equal(t, "blocked-mode", reason)
 }

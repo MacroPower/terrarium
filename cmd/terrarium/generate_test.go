@@ -114,7 +114,7 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 	envoyResults := make([]string, iterations)
 
 	for i := range iterations {
-		envoy, err := GenerateEnvoyFromConfig(t.Context(), cfg, "", "", "", false)
+		envoy, err := GenerateEnvoyFromConfig(t.Context(), cfg, "", "", false)
 		require.NoError(t, err)
 
 		envoyResults[i] = envoy
@@ -200,17 +200,19 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			})},
 			notWant: []string{"tcp_forward", "STRICT_DNS"},
 		},
-		"logging enabled": {
+		"stats enabled emits grpc accesslog cluster": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				}),
-				Logging: &config.LoggingConfig{
-					Envoy: &config.EnvoyLogging{AccessLog: &config.EnvoyAccessLog{Enabled: true}},
-				},
+				Stats: &config.Stats{Enabled: true},
 			},
-			want: []string{"envoy.access_loggers.file"},
+			want: []string{
+				"terrarium_accesslog",
+				"envoy.access_loggers.http_grpc",
+				"envoy.access_loggers.tcp_grpc",
+			},
 		},
 		"path restricted domain gets direct response": {
 			cfg: &config.Config{Egress: egressRules(
@@ -1032,7 +1034,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			conf, err := GenerateEnvoyFromConfig(t.Context(), tt.cfg, tt.certsDir, "", "", false)
+			conf, err := GenerateEnvoyFromConfig(t.Context(), tt.cfg, tt.certsDir, "", false)
 			require.NoError(t, err)
 
 			for _, s := range tt.want {

@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
 const (
@@ -58,6 +59,7 @@ type Proxy struct {
 	logger           *slog.Logger
 	cancel           context.CancelFunc
 	fqdnSetFunc      func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error
+	eventStore       *eventstore.Store
 	udp4             *dns.Server
 	udp6             *dns.Server
 	tcp4             *dns.Server
@@ -82,6 +84,7 @@ type Proxy struct {
 //   - [WithClientTimeout]
 //   - [WithFQDNSetFunc]
 //   - [WithVMMode]
+//   - [WithEventStore]
 type Option func(*Proxy)
 
 // WithClientTimeout overrides the default 10-second upstream DNS
@@ -110,6 +113,16 @@ func WithFQDNSetFunc(
 func WithVMMode() Option {
 	return func(p *Proxy) {
 		p.vmMode = true
+	}
+}
+
+// WithEventStore wires the proxy to an [*eventstore.Store] so each
+// terminal branch in handleQuery emits an [eventstore.Event]. A nil
+// store disables emission (the data plane is never blocked). An
+// [Option].
+func WithEventStore(s *eventstore.Store) Option {
+	return func(p *Proxy) {
+		p.eventStore = s
 	}
 }
 
@@ -414,6 +427,8 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 			)
 		}
 
+		p.emitDNS(eventstore.DecisionDeny, qname, eventstore.ReasonBlockedMode)
+
 		err := w.WriteMsg(resp)
 		if err != nil {
 			slog.Warn("writing dns refusal", slog.Any("err", err))
@@ -434,6 +449,8 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 				slog.String("name", qname),
 			)
 		}
+
+		p.emitDNS(eventstore.DecisionDeny, qname, eventstore.ReasonNotAllowlisted)
 
 		err := w.WriteMsg(resp)
 		if err != nil {
@@ -459,6 +476,8 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return
 		}
+
+		p.emitDNS(eventstore.DecisionError, qname, eventstore.ReasonUpstream)
 
 		fail := new(dns.Msg)
 		fail.SetRcode(r, dns.RcodeServerFailure)
@@ -495,6 +514,8 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 		)
 	}
 
+	p.emitDNS(eventstore.DecisionAllow, qname, "")
+
 	// Compress oversized UDP responses to avoid unnecessary TCP
 	// retries. Matches Cilium's shouldCompressResponse logic:
 	// inspect EDNS0 UDPSize() (or 512 bytes when absent).
@@ -511,6 +532,25 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 	if err != nil {
 		slog.Warn("writing dns response", slog.Any("err", err))
 	}
+}
+
+// emitDNS records a terminal-branch decision into the event store
+// when one is configured. The early-return guard avoids the
+// per-query [strings.TrimSuffix] allocation when stats is disabled
+// (the default), since the trimmed name and the [eventstore.Event]
+// struct are otherwise built only to be discarded.
+func (p *Proxy) emitDNS(decision eventstore.Decision, qname string, reason eventstore.Reason) {
+	if p.eventStore == nil {
+		return
+	}
+
+	p.eventStore.Emit(eventstore.Event{
+		Source:   eventstore.SourceDNS,
+		Decision: decision,
+		Domain:   strings.TrimSuffix(qname, "."),
+		Protocol: eventstore.ProtocolDNS,
+		Reason:   reason,
+	})
 }
 
 // domainAllowed reports whether qname matches any domain in the

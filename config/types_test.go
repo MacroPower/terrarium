@@ -150,40 +150,30 @@ func TestLoggingConvenienceMethods(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg                  *config.Config
-		wantFirewall         bool
-		wantDNS              bool
-		wantDNSFormat        string
-		wantDNSPath          string
-		wantAccessLog        bool
-		wantEnvoyLevel       string
-		wantAccessLogFormat  string
-		wantEnvoyPath        string
-		wantAccessLogPath    string
-		envoyPathFallback    string
-		accessLogPathFallack string
+		cfg               *config.Config
+		wantFirewall      bool
+		wantDNS           bool
+		wantDNSFormat     string
+		wantDNSPath       string
+		wantEnvoyLevel    string
+		wantEnvoyPath     string
+		envoyPathFallback string
 	}{
 		"nil logging": {
-			cfg:                  &config.Config{},
-			wantDNSFormat:        "logfmt",
-			wantDNSPath:          "/dev/stderr",
-			wantEnvoyLevel:       "warning",
-			wantAccessLogFormat:  "logfmt",
-			wantEnvoyPath:        "/fallback/envoy.log",
-			wantAccessLogPath:    "/fallback/access.log",
-			envoyPathFallback:    "/fallback/envoy.log",
-			accessLogPathFallack: "/fallback/access.log",
+			cfg:               &config.Config{},
+			wantDNSFormat:     "logfmt",
+			wantDNSPath:       "/dev/stderr",
+			wantEnvoyLevel:    "warning",
+			wantEnvoyPath:     "/fallback/envoy.log",
+			envoyPathFallback: "/fallback/envoy.log",
 		},
 		"empty logging": {
-			cfg:                  &config.Config{Logging: &config.LoggingConfig{}},
-			wantDNSFormat:        "logfmt",
-			wantDNSPath:          "/dev/stderr",
-			wantEnvoyLevel:       "warning",
-			wantAccessLogFormat:  "logfmt",
-			wantEnvoyPath:        "/fallback/envoy.log",
-			wantAccessLogPath:    "/fallback/access.log",
-			envoyPathFallback:    "/fallback/envoy.log",
-			accessLogPathFallack: "/fallback/access.log",
+			cfg:               &config.Config{Logging: &config.LoggingConfig{}},
+			wantDNSFormat:     "logfmt",
+			wantDNSPath:       "/dev/stderr",
+			wantEnvoyLevel:    "warning",
+			wantEnvoyPath:     "/fallback/envoy.log",
+			envoyPathFallback: "/fallback/envoy.log",
 		},
 		"fully populated": {
 			cfg: &config.Config{Logging: &config.LoggingConfig{
@@ -193,39 +183,28 @@ func TestLoggingConvenienceMethods(t *testing.T) {
 				Envoy: &config.EnvoyLogging{
 					Level: "debug",
 					Path:  "/var/log/envoy.log",
-					AccessLog: &config.EnvoyAccessLog{
-						Enabled: true, Format: "json", Path: "/var/log/access.log",
-					},
 				},
 				Firewall: &config.FirewallLogging{Enabled: true},
 			}},
-			wantFirewall:         true,
-			wantDNS:              true,
-			wantDNSFormat:        "json",
-			wantDNSPath:          "/var/log/dns.log",
-			wantAccessLog:        true,
-			wantEnvoyLevel:       "debug",
-			wantAccessLogFormat:  "json",
-			wantEnvoyPath:        "/var/log/envoy.log",
-			wantAccessLogPath:    "/var/log/access.log",
-			envoyPathFallback:    "/ignored",
-			accessLogPathFallack: "/ignored",
+			wantFirewall:      true,
+			wantDNS:           true,
+			wantDNSFormat:     "json",
+			wantDNSPath:       "/var/log/dns.log",
+			wantEnvoyLevel:    "debug",
+			wantEnvoyPath:     "/var/log/envoy.log",
+			envoyPathFallback: "/ignored",
 		},
 		"yaml path overrides fallback": {
 			cfg: &config.Config{Logging: &config.LoggingConfig{
 				Envoy: &config.EnvoyLogging{
-					Path:      "/yaml/envoy.log",
-					AccessLog: &config.EnvoyAccessLog{Path: "/yaml/access.log"},
+					Path: "/yaml/envoy.log",
 				},
 			}},
-			wantDNSFormat:        "logfmt",
-			wantDNSPath:          "/dev/stderr",
-			wantEnvoyLevel:       "warning",
-			wantAccessLogFormat:  "logfmt",
-			wantEnvoyPath:        "/yaml/envoy.log",
-			wantAccessLogPath:    "/yaml/access.log",
-			envoyPathFallback:    "/cli/envoy.log",
-			accessLogPathFallack: "/cli/access.log",
+			wantDNSFormat:     "logfmt",
+			wantDNSPath:       "/dev/stderr",
+			wantEnvoyLevel:    "warning",
+			wantEnvoyPath:     "/yaml/envoy.log",
+			envoyPathFallback: "/cli/envoy.log",
 		},
 	}
 
@@ -237,11 +216,8 @@ func TestLoggingConvenienceMethods(t *testing.T) {
 			assert.Equal(t, tt.wantDNS, tt.cfg.DNSLoggingEnabled())
 			assert.Equal(t, tt.wantDNSFormat, tt.cfg.DNSLogFormat())
 			assert.Equal(t, tt.wantDNSPath, tt.cfg.DNSLogPath())
-			assert.Equal(t, tt.wantAccessLog, tt.cfg.EnvoyAccessLogEnabled())
 			assert.Equal(t, tt.wantEnvoyLevel, tt.cfg.EnvoyLogLevel())
-			assert.Equal(t, tt.wantAccessLogFormat, tt.cfg.EnvoyAccessLogFormat())
 			assert.Equal(t, tt.wantEnvoyPath, tt.cfg.EnvoyLogPath(tt.envoyPathFallback))
-			assert.Equal(t, tt.wantAccessLogPath, tt.cfg.EnvoyAccessLogPath(tt.accessLogPathFallack))
 		})
 	}
 }

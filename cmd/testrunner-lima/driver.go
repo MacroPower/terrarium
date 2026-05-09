@@ -105,29 +105,40 @@ func (d *driver) vmIP(ctx context.Context) (string, error) {
 	return fields[0], nil
 }
 
-// defaultLogging is prepended to every test config to ensure all
-// sub-process logs are available for debugging failures.
-const defaultLogging = `logging:
+// defaultLoggingBlock is prepended to test configs that lack a
+// `logging:` section so every test has access to DNS / Envoy /
+// firewall sub-process logs.
+const defaultLoggingBlock = `logging:
   dns:
     enabled: true
     path: /var/lib/terrarium/dns.log
   envoy:
     level: info
     path: /var/lib/terrarium/envoy.log
-    accessLog:
-      enabled: true
-      path: /var/lib/terrarium/envoy-access.log
   firewall:
     enabled: true
 `
 
+// defaultStatsBlock is prepended to test configs that lack a
+// `stats:` section so access events land in the SQLite event store
+// at a known path. Tests inspect events via `terrarium stats`.
+const defaultStatsBlock = `stats:
+  enabled: true
+  path: /var/lib/terrarium/stats.db
+`
+
 // writeConfig writes a terrarium YAML config to the mutable config
-// path inside the VM. If the config does not already contain a
-// logging section, [defaultLogging] is prepended so that sub-process
-// logs are always available for failure diagnostics.
+// path inside the VM. The default logging and stats blocks are
+// prepended independently when the test YAML lacks them, so a test
+// that only overrides `stats:` still gets the default sub-process
+// log paths (and vice versa).
 func (d *driver) writeConfig(ctx context.Context, yaml string) error {
 	if !strings.Contains(yaml, "logging:") {
-		yaml = defaultLogging + yaml
+		yaml = defaultLoggingBlock + yaml
+	}
+
+	if !strings.Contains(yaml, "stats:") {
+		yaml = defaultStatsBlock + yaml
 	}
 
 	return d.writeFile(ctx, "/var/lib/terrarium/config.yaml", yaml)
@@ -150,10 +161,17 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 
 	_, err = d.shell(ctx, "sudo", "truncate", "-s", "0",
 		"/var/lib/terrarium/envoy.log",
-		"/var/lib/terrarium/envoy-access.log",
 		"/var/lib/terrarium/dns.log")
 	if err != nil {
 		slog.DebugContext(ctx, "truncating log files", slog.String("error", err.Error()))
+	}
+
+	_, err = d.shell(ctx, "sudo", "rm", "-f",
+		"/var/lib/terrarium/stats.db",
+		"/var/lib/terrarium/stats.db-wal",
+		"/var/lib/terrarium/stats.db-shm")
+	if err != nil {
+		slog.DebugContext(ctx, "removing stats db", slog.String("error", err.Error()))
 	}
 
 	_, err = d.shell(ctx, "sudo", "dmesg", "--clear")
@@ -386,7 +404,6 @@ func (d *driver) tailLogs(ctx context.Context) string {
 		path  string
 	}{
 		{"envoy log", "/var/lib/terrarium/envoy.log"},
-		{"envoy access log", "/var/lib/terrarium/envoy-access.log"},
 		{"dns log", "/var/lib/terrarium/dns.log"},
 	}
 

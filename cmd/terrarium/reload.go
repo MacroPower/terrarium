@@ -17,6 +17,7 @@ import (
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
+	"go.jacobcolvin.com/terrarium/eventstore"
 	"go.jacobcolvin.com/terrarium/firewall"
 	"go.jacobcolvin.com/terrarium/sysctl"
 )
@@ -201,6 +202,20 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 			return firewall.UpdateFQDNSet(dnsConn, setName, ips, ttl)
 		}),
 		dnsproxy.WithVMMode(),
+		// Reuse the existing eventstore handle. stats.path,
+		// stats.socket, stats.enabled are startup-only.
+		dnsproxy.WithEventStore(inf.eventStore),
+	}
+
+	warnStartupOnlyStatsChanges(ctx, inf.boundStats, cfg)
+
+	// Apply any retention changes from the new config to the
+	// existing store (lock-free swap on the writer goroutine).
+	if inf.eventStore != nil {
+		inf.eventStore.SetRetention(eventstore.Retention{
+			MaxAge:  cfg.StatsRetentionMaxAge(),
+			MaxRows: cfg.StatsRetentionMaxRows(),
+		})
 	}
 
 	dnsProxy, err := dnsproxy.Start(ctx, cfg, net.JoinHostPort(upstream, "53"), "127.0.0.1:53", ipv6Disabled,
@@ -237,6 +252,34 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	inf.drainTimeout = envoySettings.DrainTimeout.Duration
 
 	slog.InfoContext(ctx, "terrarium configuration reloaded successfully")
+}
+
+// warnStartupOnlyStatsChanges logs a warning when the new YAML
+// changes a stats field the running process cannot adopt without a
+// restart: the SQLite path, the gRPC ALS UDS, or whether stats is
+// enabled at all. Retention values are runtime-mutable and are not
+// flagged here.
+func warnStartupOnlyStatsChanges(ctx context.Context, bound boundStats, cfg *config.Config) {
+	newEnabled := cfg.StatsEnabled()
+	if bound.enabled != newEnabled {
+		slog.WarnContext(ctx,
+			"reload: stats.enabled change ignored (restart required)",
+			slog.Bool("bound", bound.enabled), slog.Bool("requested", newEnabled))
+	}
+
+	newPath := cfg.StatsPath(config.StatsDBDefault())
+	if bound.enabled && bound.path != newPath {
+		slog.WarnContext(ctx,
+			"reload: stats.path change ignored (restart required)",
+			slog.String("bound", bound.path), slog.String("requested", newPath))
+	}
+
+	newSocket := cfg.StatsSocket()
+	if bound.enabled && bound.socket != newSocket {
+		slog.WarnContext(ctx,
+			"reload: stats.socket change ignored (restart required)",
+			slog.String("bound", bound.socket), slog.String("requested", newSocket))
+	}
 }
 
 // writePIDFile writes the current process ID to the given path.

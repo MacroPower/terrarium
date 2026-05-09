@@ -56,10 +56,6 @@ func reportFixture() status.Report {
 				Path:  "/var/log/envoy.log",
 				Lines: []string{"[info] started", "[warn] drain"},
 			},
-			EnvoyAccessLog: status.LogTail{
-				Path:  "/var/log/envoy-access.log",
-				Lines: []string{"GET /healthz 200", "POST /v1/chat 403"},
-			},
 		},
 	}
 }
@@ -95,7 +91,6 @@ func TestRenderHappyPath(t *testing.T) {
 	assert.Contains(t, out, "ENVOY LOG")
 	assert.Contains(t, out, "  [info] started")
 	assert.Contains(t, out, "  [warn] drain")
-	assert.Contains(t, out, "ENVOY ACCESS LOG")
 	assert.NotContains(t, out, "re-run as root")
 }
 
@@ -130,8 +125,6 @@ func TestRenderPermissionErrors(t *testing.T) {
 	r.Firewall.Err = fs.ErrPermission
 	r.Logs.EnvoyLog.Err = fs.ErrPermission
 	r.Logs.EnvoyLog.Lines = nil
-	r.Logs.EnvoyAccessLog.Err = fs.ErrPermission
-	r.Logs.EnvoyAccessLog.Lines = nil
 
 	out := render(t, r)
 

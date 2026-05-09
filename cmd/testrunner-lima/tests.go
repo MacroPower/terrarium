@@ -348,10 +348,9 @@ var vmTests = []vmTest{
 	},
 	{
 		name: "vm-cidr-logging",
-		config: `logging:
-  envoy:
-    accessLog:
-      enabled: true
+		config: `stats:
+  enabled: true
+logging:
   firewall:
     enabled: true
 egress:
@@ -761,10 +760,8 @@ egress:
 	},
 	{
 		name: "vm-logging",
-		config: `logging:
-  envoy:
-    accessLog:
-      enabled: true
+		config: `stats:
+  enabled: true
 egress:
   - toFQDNs:
       - matchName: "target-allow"
@@ -854,10 +851,8 @@ tcpForwards:
 	},
 	{
 		name: "vm-udp-logging",
-		config: `logging:
-  envoy:
-    accessLog:
-      enabled: true
+		config: `stats:
+  enabled: true
 `,
 		services: []serviceSpec{
 			udpEchoService("target-udp", 5000),

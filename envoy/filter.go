@@ -250,7 +250,7 @@ func buildDefaultRejectFilterChain(statPrefix string) filterChain {
 			TypedConfig: tcpProxyConfig{
 				AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
 				StatPrefix: statPrefix + "_no_sni",
-				Cluster:    "missing_sni_blackhole",
+				Cluster:    MissingSNIBlackholeCluster,
 				AccessLog: []AccessLog{{
 					Name: "envoy.access_loggers.stderr",
 					TypedConfig: stderrAccessLogConfig{

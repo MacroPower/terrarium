@@ -339,16 +339,16 @@ func (m *Tests) TestEgressCidrAllow(ctx context.Context) error {
 }
 
 // TestEgressCidrLogging verifies that CIDR TCP traffic routed through
-// Envoy's CIDR catch-all listener produces access log entries. The test
-// enables logging and makes an HTTP request to a CIDR-allowed target,
-// then checks the access log file for the upstream host:port.
+// Envoy's CIDR catch-all listener produces stats events. The test
+// enables stats and makes an HTTP request to a CIDR-allowed target,
+// then checks the SQLite event store via `terrarium stats list` for
+// an envoy-source allow event on port 80.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-cidr-logging
 func (m *Tests) TestEgressCidrLogging(ctx context.Context) error {
-	return newTestCase("cidr-logging", `logging:
-  envoy:
-    accessLog:
-      enabled: true
+	return newTestCase("cidr-logging", `stats:
+  enabled: true
+logging:
   firewall:
     enabled: true
 egress:
@@ -363,13 +363,11 @@ egress:
 		withAssertions(
 			httpAllowed("http://target-cidr:80/", "cidr-logging: HTTP to target-cidr"),
 		),
-		// CIDR TCP goes through the CIDR catch-all listener
-		// (TCP proxy with original_dst). The access log line
-		// contains the upstream host IP:port in the upstream=
-		// field. Since the request goes to port 80, the log
-		// entry will contain ":80" in the upstream.
-		withPostExec(accessLogContains(":80",
-			"access log does not contain entries for CIDR TCP traffic")),
+		// CIDR TCP goes through the CIDR catch-all listener.
+		// The stats event records the upstream port; we look
+		// for `"port":80,` in the JSON output.
+		withPostExec(statsListContains(`"port": 80`,
+			"stats list does not contain events for CIDR TCP traffic")),
 	).run(ctx)
 }
 
@@ -992,15 +990,14 @@ func (m *Tests) TestEgressExitCodePropagation(ctx context.Context) error {
 	return g.Wait()
 }
 
-// TestEgressLogging verifies that enabling access logging produces Envoy
-// access log entries in the access log file for proxied traffic.
+// TestEgressLogging verifies that enabling stats produces SQLite event
+// store entries for proxied traffic. Replaces the previous file-based
+// access log assertion.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-logging
 func (m *Tests) TestEgressLogging(ctx context.Context) error {
-	return newTestCase("logging", `logging:
-  envoy:
-    accessLog:
-      enabled: true
+	return newTestCase("logging", `stats:
+  enabled: true
 egress:
   - toFQDNs:
       - matchName: "target-allow"
@@ -1015,8 +1012,8 @@ egress:
 			httpAllowed("https://target-allow:443/", "logging: HTTPS to target-allow"),
 			networkDenied("https://target-deny:443/", "logging: HTTPS to target-deny"),
 		),
-		withPostExec(accessLogContains("target-allow",
-			"access log does not contain entries for target-allow")),
+		withPostExec(statsListContains("target-allow",
+			"stats list does not contain entries for target-allow")),
 	).run(ctx)
 }
 
@@ -1084,25 +1081,22 @@ func (m *Tests) TestEgressUdpFiltered(ctx context.Context) error {
 	).run(ctx)
 }
 
-// TestEgressUdpLogging verifies that Envoy access logs contain evidence
-// of UDP traffic when logging is enabled. The UDP datagram is sent as
-// UID 1000 so it goes through the mangle/TPROXY path and reaches Envoy.
-// Envoy logs the connection attempt even though the ORIGINAL_DST cluster
-// cannot recover the destination from the transparent socket (upstream
-// Envoy issue with TPROXY'd UDP).
+// TestEgressUdpLogging verifies UDP traffic still surfaces in the
+// Envoy process log even though the v1 stats event store does not
+// capture UDP access events.
 //
 //	dagger call -m toolchains/terrarium/tests test-egress-udp-logging
 func (m *Tests) TestEgressUdpLogging(ctx context.Context) error {
-	return newTestCase("udp-logging", `logging:
-  envoy:
-    accessLog:
-      enabled: true
+	return newTestCase("udp-logging", `stats:
+  enabled: true
 `,
 		udpEchoService("target-udp", 5000),
 		withoutEnvoy(),
 		withAssertions(
 			udpSend("target-udp", 5000, "udp-logging: send UDP datagram"),
 		),
+		// UDP access events are not captured in v1; we still
+		// expect the Envoy process log to mention the UDP cluster.
 		withPostExec(envoyLogContains("original_dst",
 			"envoy log does not contain entries for UDP traffic")),
 	).run(ctx)

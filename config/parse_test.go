@@ -354,6 +354,181 @@ func TestMarshalConfigRoundtrip(t *testing.T) {
 	}
 }
 
+func TestEnvoyAccessLogMigration(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		err  error
+	}{
+		"legacy accessLog block surfaced as migration error": {
+			yaml: `
+logging:
+  envoy:
+    accessLog:
+      enabled: true
+`,
+			err: config.ErrEnvoyAccessLogRemoved,
+		},
+		"plain envoy logging block parses": {
+			yaml: `
+logging:
+  envoy:
+    level: warning
+`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestParseStats(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml          string
+		err           error
+		want          *config.Stats
+		wantMaxAge    time.Duration
+		wantMaxRows   int64
+		wantEnabled   bool
+		wantDBPath    string
+		wantSocket    string
+		wantBufBytes  uint32
+		wantFlushMs   uint32
+		retentionWasSet bool
+	}{
+		"absent": {
+			yaml:        `{}`,
+			wantEnabled: false,
+		},
+		"enabled with all defaults": {
+			yaml: `
+stats:
+  enabled: true
+`,
+			wantEnabled:  true,
+			wantMaxAge:   720 * time.Hour,
+			wantMaxRows:  1_000_000,
+			wantSocket:   "/run/terrarium/accesslog.sock",
+			wantBufBytes: 16384,
+			wantFlushMs:  1000,
+		},
+		"explicit retention values": {
+			yaml: `
+stats:
+  enabled: true
+  path: /var/lib/terrarium/stats.db
+  socket: /tmp/als.sock
+  retention:
+    maxAge: 24h
+    maxRows: 5000
+  bufferBytes: 4096
+  flushIntervalMs: 500
+`,
+			wantEnabled:     true,
+			wantMaxAge:      24 * time.Hour,
+			wantMaxRows:     5000,
+			wantDBPath:      "/var/lib/terrarium/stats.db",
+			wantSocket:      "/tmp/als.sock",
+			wantBufBytes:    4096,
+			wantFlushMs:     500,
+			retentionWasSet: true,
+		},
+		"empty retention opts out": {
+			yaml: `
+stats:
+  enabled: true
+  retention: {}
+`,
+			wantEnabled:     true,
+			wantMaxAge:      0,
+			wantMaxRows:     0,
+			wantSocket:      "/run/terrarium/accesslog.sock",
+			wantBufBytes:    16384,
+			wantFlushMs:     1000,
+			retentionWasSet: true,
+		},
+		"relative path rejected": {
+			yaml: `
+stats:
+  enabled: true
+  path: stats.db
+`,
+			err: config.ErrStatsPathNotAbsolute,
+		},
+		"relative socket rejected": {
+			yaml: `
+stats:
+  enabled: true
+  socket: als.sock
+`,
+			err: config.ErrStatsSocketNotAbsolute,
+		},
+		"negative maxAge rejected": {
+			yaml: `
+stats:
+  enabled: true
+  retention:
+    maxAge: -1h
+`,
+			err: config.ErrStatsRetentionInvalid,
+		},
+		"negative maxRows rejected": {
+			yaml: `
+stats:
+  enabled: true
+  retention:
+    maxRows: -1
+`,
+			err: config.ErrStatsRetentionInvalid,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantEnabled, cfg.StatsEnabled())
+
+			if tt.wantEnabled {
+				assert.Equal(t, tt.wantMaxAge, cfg.StatsRetentionMaxAge())
+				assert.Equal(t, tt.wantMaxRows, cfg.StatsRetentionMaxRows())
+				assert.Equal(t, tt.wantSocket, cfg.StatsSocket())
+				assert.Equal(t, tt.wantBufBytes, cfg.StatsBufferBytes())
+				assert.Equal(t, tt.wantFlushMs, cfg.StatsFlushIntervalMs())
+
+				if tt.wantDBPath != "" {
+					assert.Equal(t, tt.wantDBPath, cfg.StatsPath("/fallback"))
+				} else {
+					assert.Equal(t, "/fallback", cfg.StatsPath("/fallback"))
+				}
+			}
+
+			_ = tt.want
+		})
+	}
+}
+
 func TestParseEnvoySettings(t *testing.T) {
 	t.Parallel()
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -205,7 +206,42 @@ func (c *Config) Validate(ctx context.Context) error {
 		return err
 	}
 
+	err = validateStats(c.Stats)
+	if err != nil {
+		return err
+	}
+
 	return c.validateEnvoySettings()
+}
+
+// validateStats checks that the stats block is internally consistent:
+// the socket path is absolute, the path (when set) is absolute, and
+// retention values are non-negative. The Duration parser already
+// validates [StatsRetention.MaxAge] format.
+func validateStats(s *Stats) error {
+	if s == nil {
+		return nil
+	}
+
+	if s.Path != "" && !filepath.IsAbs(s.Path) {
+		return fmt.Errorf("%w: stats.path %q", ErrStatsPathNotAbsolute, s.Path)
+	}
+
+	if s.Socket != "" && !filepath.IsAbs(s.Socket) {
+		return fmt.Errorf("%w: stats.socket %q", ErrStatsSocketNotAbsolute, s.Socket)
+	}
+
+	if s.Retention != nil {
+		if s.Retention.MaxAge.Duration < 0 {
+			return fmt.Errorf("%w: %v", ErrStatsRetentionInvalid, s.Retention.MaxAge)
+		}
+
+		if s.Retention.MaxRows < 0 {
+			return fmt.Errorf("%w: %d", ErrStatsRetentionInvalid, s.Retention.MaxRows)
+		}
+	}
+
+	return nil
 }
 
 // validateEnvoySettings checks that envoy settings contain valid values.
@@ -241,16 +277,8 @@ func validateLogging(l *LoggingConfig) error {
 		}
 	}
 
-	if l.Envoy != nil {
-		if l.Envoy.Level != "" && !validEnvoyLogLevels[l.Envoy.Level] {
-			return fmt.Errorf("%w: %q", ErrInvalidEnvoyLogLevel, l.Envoy.Level)
-		}
-
-		if l.Envoy.AccessLog != nil && l.Envoy.AccessLog.Format != "" {
-			if l.Envoy.AccessLog.Format != DefaultLogFormat && l.Envoy.AccessLog.Format != "json" {
-				return fmt.Errorf("%w: envoy access log format %q", ErrInvalidLogFormat, l.Envoy.AccessLog.Format)
-			}
-		}
+	if l.Envoy != nil && l.Envoy.Level != "" && !validEnvoyLogLevels[l.Envoy.Level] {
+		return fmt.Errorf("%w: %q", ErrInvalidEnvoyLogLevel, l.Envoy.Level)
 	}
 
 	return nil

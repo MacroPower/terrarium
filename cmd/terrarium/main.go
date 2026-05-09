@@ -106,6 +106,7 @@ func main() {
 		},
 		daemonCmd,
 		statusCmd(usr),
+		statsCmd(usr),
 	)
 
 	err = fang.Execute(context.Background(), rootCmd,

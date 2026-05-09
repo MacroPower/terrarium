@@ -28,10 +28,6 @@ type Options struct {
 	// when the YAML config does not override it.
 	EnvoyLogPath string
 
-	// EnvoyAccessLogPath is the fallback path for the Envoy access
-	// log when the YAML config does not override it.
-	EnvoyAccessLogPath string
-
 	// LogLines is the number of lines to tail from each log file.
 	// Values <= 0 produce empty log sections but a heading is still
 	// rendered.
@@ -54,6 +50,7 @@ type Report struct {
 	Firewall FirewallSection
 	DNS      DNSSection
 	Envoy    EnvoySection
+	Stats    StatsSection
 	Logs     LogsSection
 
 	// NonRoot is true when [Collect] ran as a non-root user. The
@@ -218,10 +215,45 @@ type EnvoySection struct {
 	NotGenerated bool
 }
 
-// LogsSection holds the tailed envoy process and access logs.
+// StatsSection summarizes the SQLite event store: the configured
+// path, the most recent event timestamp, and the event count over
+// the last 24 hours.
+//
+// Real ingestion-health visibility (per-process drop counter,
+// last-successful-write wall clock) lives on [eventstore.Store]
+// inside the daemon. The standalone `terrarium status` CLI cannot
+// read it across process boundaries. When that becomes important,
+// add a heartbeat row that the daemon writes periodically.
+type StatsSection struct {
+	// DBPath is the path the collector resolved from config and
+	// XDG defaults. Empty when stats is disabled.
+	DBPath string
+
+	// Enabled mirrors [Config.StatsEnabled] so the renderer can
+	// distinguish "disabled" from "enabled but unreadable".
+	Enabled bool
+
+	// Err carries any error encountered while reading the DB.
+	Err error
+
+	// LastEvent is the timestamp of the most recent event. Zero
+	// when no events have been written. Sourced from
+	// MAX(events.ts), which is set producer-side, so a healthy
+	// daemon with no traffic will still report this as "old".
+	LastEvent time.Time
+
+	// Events24h is the total event count in the last 24 hours.
+	Events24h int64
+
+	// DBSizeBytes is the on-disk size of the DB file, excluding
+	// WAL/SHM siblings.
+	DBSizeBytes int64
+}
+
+// LogsSection holds the tailed envoy process log. Access events are
+// captured by the [Stats] event store, not a tailable log file.
 type LogsSection struct {
-	EnvoyLog       LogTail
-	EnvoyAccessLog LogTail
+	EnvoyLog LogTail
 
 	// Requested is the number of lines [Collect] attempted to read
 	// per log. Mirrors [Options.LogLines] after clamping to zero.
@@ -250,23 +282,25 @@ func Collect(ctx context.Context, opts Options) Report {
 
 	// Read terrarium config (best-effort) so log paths can be
 	// resolved the same way the daemon resolves them.
-	cfg, cfgErr := loadConfig(ctx, opts.ConfigPath)
+	cfg, cfgErr := LoadConfig(ctx, opts.ConfigPath)
 
 	r.Process = collectProcess(opts.PIDFile)
 	r.Firewall = collectFirewall()
 	r.DNS = collectDNS(opts, r.Process.Daemon.State)
 	r.Envoy = collectEnvoy(opts.EnvoyConfigPath)
+	r.Stats = collectStats(ctx, cfg)
 	r.Logs = collectLogs(cfg, cfgErr, opts)
 
 	return r
 }
 
-// loadConfig reads and parses the terrarium YAML config at path.
+// LoadConfig reads and parses the terrarium YAML config at path.
 // Missing files are not an error -- status must be useful before
-// generate has been run -- so loadConfig returns (nil, nil) for
+// generate has been run -- so LoadConfig returns (nil, nil) for
 // [fs.ErrNotExist]. Other errors (permissions, parse failures) are
 // returned so callers can surface them on the appropriate section.
-func loadConfig(ctx context.Context, path string) (*config.Config, error) {
+// The stats CLI uses it too so both surfaces fall back the same way.
+func LoadConfig(ctx context.Context, path string) (*config.Config, error) {
 	if path == "" {
 		return nil, nil //nolint:nilnil // absent config is a valid state.
 	}

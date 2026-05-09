@@ -5,13 +5,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"go.jacobcolvin.com/terrarium/config"
-	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/firewall"
 )
 
@@ -89,22 +87,33 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 	watchdogCancel()
 
 	// Shut down Envoy and DNS proxy but intentionally leave nftables
-	// rules and policy routes in place for fail-closed behavior.
-	daemonShutdown(ctx, inf.envoyCmd, inf.dnsProxy, inf.drainTimeout)
+	// rules and policy routes in place for fail-closed behavior. The
+	// stats DB still closes — the persistent on-disk state is the
+	// fail-closed mechanism, not stats ingestion.
+	daemonShutdown(ctx, inf)
 
 	return nil
 }
 
-// daemonShutdown stops Envoy and the DNS proxy without removing
-// nftables rules or policy routes. The firewall rules persist in
-// the kernel so the VM remains fail-closed after the daemon exits.
-func daemonShutdown(
-	ctx context.Context, envoyCmd *exec.Cmd,
-	dnsProxy *dnsproxy.Proxy, drainTimeout time.Duration,
-) {
-	// Stop Envoy first so DNS remains available during drain.
-	stopEnvoy(ctx, envoyCmd, drainTimeout)
-	stopDNSProxy(ctx, dnsProxy)
+// daemonShutdown stops Envoy, the gRPC access-log server, and the
+// DNS proxy without removing nftables rules or policy routes. The
+// firewall rules persist in the kernel so the VM remains
+// fail-closed after the daemon exits. The stats event store closes
+// regardless so any final batched writes flush. A nil [*infra] is
+// a no-op.
+func daemonShutdown(ctx context.Context, inf *infra) {
+	if inf == nil {
+		return
+	}
+
+	stopEnvoy(ctx, inf.envoyCmd, inf.drainTimeout)
+	shutdownAccessLog(ctx, inf.accessLog)
+	stopDNSProxy(ctx, inf.dnsProxy)
+
+	err := inf.eventStore.Close()
+	if err != nil {
+		slog.DebugContext(ctx, "closing event store on daemon shutdown", slog.Any("err", err))
+	}
 }
 
 // sdNotify sends a notification to systemd via the NOTIFY_SOCKET.

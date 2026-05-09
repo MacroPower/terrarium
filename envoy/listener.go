@@ -65,13 +65,18 @@ func listenAdditionalAddrs(transparent bool, port int) []additionalAddr {
 // SNI, with passthrough, wildcard RBAC, and MITM filter chains. When
 // transparent is true, the listener binds to [::] (dual-stack) with
 // IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
+//
+// tcpAL is the access log slice for the TCP-level chains (passthrough
+// and wildcard passthrough); httpAL is the access log slice for the
+// HCM-based MITM chain. Pass distinct slices when stats is enabled
+// so receivers can tell passthrough events from MITM events.
 func BuildTLSListener(
 	name string,
 	listenPort, upstreamPort int,
 	statPrefix string,
 	rules []config.ResolvedRule,
 	open bool,
-	accessLog []AccessLog,
+	tcpAL, httpAL []AccessLog,
 	certsDir string,
 	transparent bool,
 ) Listener {
@@ -116,7 +121,7 @@ func BuildTLSListener(
 
 	var chains []filterChain
 	if len(exactDomains) > 0 {
-		chains = append(chains, buildPassthroughFilterChain(upstreamPort, statPrefix, exactDomains, accessLog, nil))
+		chains = append(chains, buildPassthroughFilterChain(upstreamPort, statPrefix, exactDomains, tcpAL, nil))
 	}
 
 	if len(wildcardDomains) > 0 {
@@ -129,7 +134,7 @@ func BuildTLSListener(
 
 		chains = append(
 			chains,
-			buildPassthroughFilterChain(upstreamPort, statPrefix+"_wildcard", envoyNames, accessLog, &rbac),
+			buildPassthroughFilterChain(upstreamPort, statPrefix+"_wildcard", envoyNames, tcpAL, &rbac),
 		)
 	}
 
@@ -140,12 +145,12 @@ func BuildTLSListener(
 			httpRBAC = &f
 		}
 
-		chains = append(chains, buildMITMFilterChain(r, accessLog, certsDir, httpRBAC))
+		chains = append(chains, buildMITMFilterChain(r, httpAL, certsDir, httpRBAC))
 	}
 
 	// Open ports get a catch-all passthrough chain (no SNI restriction).
 	if open {
-		chains = append(chains, buildPassthroughFilterChain(upstreamPort, statPrefix+"_open", nil, accessLog, nil))
+		chains = append(chains, buildPassthroughFilterChain(upstreamPort, statPrefix+"_open", nil, tcpAL, nil))
 	}
 
 	// Default filter chain catches connections without SNI (e.g., TLS
@@ -305,7 +310,7 @@ func BuildTCPForwardListener(
 // listener binds to [::] (dual-stack) with IP_TRANSPARENT for
 // TPROXY-delivered traffic in VM mode.
 func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, transparent bool) Listener {
-	cluster := "missing_sni_blackhole"
+	cluster := MissingSNIBlackholeCluster
 	if open {
 		cluster = "original_dst"
 	}

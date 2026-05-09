@@ -19,9 +19,11 @@ import (
 
 	"github.com/google/nftables"
 
+	"go.jacobcolvin.com/terrarium/accesslog"
 	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
+	"go.jacobcolvin.com/terrarium/eventstore"
 	"go.jacobcolvin.com/terrarium/firewall"
 	"go.jacobcolvin.com/terrarium/sysctl"
 )
@@ -78,8 +80,26 @@ func ParseUpstreamDNS(resolvConf string) string {
 type infra struct {
 	envoyCmd     *exec.Cmd
 	dnsProxy     *dnsproxy.Proxy
+	eventStore   *eventstore.Store
+	accessLog    *accesslog.Server
 	conn         firewall.Conn
 	drainTimeout time.Duration
+
+	// boundStats records the stats config the [eventstore.Store]
+	// and [accesslog.Server] were bound to at process start. Reload
+	// diffs against it and warns on path/socket/enabled changes,
+	// which require a process restart.
+	boundStats boundStats
+}
+
+// boundStats holds the startup-only fields of the stats config: path
+// and socket name the on-disk database and gRPC ALS UDS, which a
+// running process cannot rebind, and enabled gates both. Buffer
+// sizing is omitted because reload always restarts Envoy.
+type boundStats struct {
+	enabled bool
+	path    string
+	socket  string
 }
 
 // setupInfrastructure performs the shared initialization sequence:
@@ -232,11 +252,49 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		return nil, fmt.Errorf("creating DNS proxy nftables connection: %w", err)
 	}
 
+	// Open the event store before starting the DNS proxy so the
+	// first terminal-branch query is captured. A failure here logs
+	// and disables ingestion; the data plane never blocks on
+	// stats.
+	store := openEventStore(ctx, cfg, usr, uids)
+
+	var storeCleanedUp bool
+
+	defer func() {
+		if storeCleanedUp {
+			return
+		}
+
+		closeErr := store.Close()
+		if closeErr != nil {
+			slog.DebugContext(ctx, "closing event store on init failure", slog.Any("err", closeErr))
+		}
+	}()
+
+	// Bind the gRPC ALS UDS before Envoy boots so its first stream
+	// connect succeeds. A failure here logs and disables ingestion;
+	// the bootstrap will be regenerated without an access logger.
+	accessLogSrv := openAccessLog(ctx, cfg, store)
+
+	var accessLogCleanedUp bool
+
+	defer func() {
+		if accessLogCleanedUp || accessLogSrv == nil {
+			return
+		}
+
+		alsCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+
+		accessLogSrv.Shutdown(alsCtx)
+	}()
+
 	// Start DNS proxy with nftables set update function.
 	dnsOpts := []dnsproxy.Option{
 		dnsproxy.WithFQDNSetFunc(func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			return firewall.UpdateFQDNSet(dnsConn, setName, ips, ttl)
 		}),
+		dnsproxy.WithEventStore(store),
 	}
 
 	if uids.VMMode {
@@ -279,6 +337,8 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	// From this point, cleanup is handled by the caller via shutdown.
 	firewallCleanedUp = true
 	dnsProxyCleanedUp = true
+	accessLogCleanedUp = true
+	storeCleanedUp = true
 
 	// Signal readiness by creating a file at the requested path.
 	if usr.ReadyFile != "" {
@@ -296,9 +356,91 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	return &infra{
 		envoyCmd:     envoyCmd,
 		dnsProxy:     dnsProxy,
+		eventStore:   store,
+		accessLog:    accessLogSrv,
 		conn:         conn,
 		drainTimeout: envoySettings.DrainTimeout.Duration,
+		boundStats: boundStats{
+			enabled: cfg.StatsEnabled(),
+			path:    cfg.StatsPath(config.StatsDBDefault()),
+			socket:  cfg.StatsSocket(),
+		},
 	}, nil
+}
+
+// openAccessLog binds the gRPC AccessLog UDS when stats is enabled.
+// On failure it logs and returns nil so the rest of init proceeds;
+// the data plane is never blocked by stats ingestion.
+func openAccessLog(
+	ctx context.Context, cfg *config.Config, store *eventstore.Store,
+) *accesslog.Server {
+	if !cfg.StatsEnabled() || store == nil {
+		return nil
+	}
+
+	socket := cfg.StatsSocket()
+
+	srv, err := accesslog.Start(ctx, socket, store)
+	if err != nil {
+		slog.WarnContext(ctx, "stats: opening accesslog socket, ingestion disabled",
+			slog.String("socket", socket), slog.Any("err", err))
+
+		return nil
+	}
+
+	slog.InfoContext(ctx, "stats: accesslog socket open",
+		slog.String("socket", socket))
+
+	return srv
+}
+
+// openEventStore opens the SQLite event store when stats is enabled.
+// On failure it logs and returns nil so [Store] receivers behave as
+// no-ops; the data plane is never blocked by stats ingestion. The
+// caller owns the returned store via the infra struct.
+func openEventStore(
+	ctx context.Context, cfg *config.Config, usr *config.User, uids firewall.UIDs,
+) *eventstore.Store {
+	if !cfg.StatsEnabled() {
+		return nil
+	}
+
+	path := cfg.StatsPath(config.StatsDBDefault())
+
+	mode := eventstore.ModeInit
+	if uids.VMMode {
+		mode = eventstore.ModeDaemon
+	}
+
+	terrariumUID, err := parseUID(usr.UID)
+	if err != nil {
+		slog.WarnContext(ctx, "stats: parsing UID", slog.Any("err", err))
+	}
+
+	opts := []eventstore.Option{
+		eventstore.WithMode(mode),
+		eventstore.WithRetention(eventstore.Retention{
+			MaxAge:  cfg.StatsRetentionMaxAge(),
+			MaxRows: cfg.StatsRetentionMaxRows(),
+		}),
+	}
+
+	if terrariumUID > 0 {
+		opts = append(opts, eventstore.WithUID(int(terrariumUID)))
+	}
+
+	store, err := eventstore.Open(ctx, path, opts...)
+	if err != nil {
+		slog.WarnContext(ctx, "stats: opening event store, ingestion disabled",
+			slog.String("path", path), slog.Any("err", err))
+
+		return nil
+	}
+
+	slog.InfoContext(ctx, "stats: event store opened",
+		slog.String("path", path), slog.String("instance", store.InstanceID()))
+
+	return store
 }
 
 // Init performs the full terrarium initialization sequence for
@@ -397,7 +539,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		waitErr = <-waitCh
 	}
 
-	shutdown(ctx, inf.envoyCmd, inf.dnsProxy, inf.conn, inf.drainTimeout)
+	shutdown(ctx, inf)
 
 	// Reap any remaining zombie children (PID 1 responsibility).
 	for {
@@ -422,30 +564,52 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	return &ExitError{Code: exitCode}
 }
 
-// shutdown performs the full cleanup sequence in the correct order:
-// Envoy first (with drain wait), then DNS proxy, then nftables.
-// Stopping Envoy before DNS ensures in-flight requests can still
-// resolve during Envoy's drain period.
-func shutdown(
-	ctx context.Context, envoyCmd *exec.Cmd, dnsProxy *dnsproxy.Proxy,
-	conn firewall.Conn, drainTimeout time.Duration,
-) {
-	// Stop Envoy first so DNS remains available during drain.
-	stopEnvoy(ctx, envoyCmd, drainTimeout)
-	stopDNSProxy(ctx, dnsProxy)
+// shutdown performs the full cleanup sequence in order: Envoy first
+// (with drain wait), then the gRPC access-log server so no late
+// stream pushes events into a stale store, then DNS proxy, then
+// nftables, and finally the event store so any final batched writes
+// flush. Stopping Envoy before DNS lets in-flight requests resolve
+// during Envoy's drain period. A nil [*infra] is a no-op.
+func shutdown(ctx context.Context, inf *infra) {
+	if inf == nil {
+		return
+	}
+
+	stopEnvoy(ctx, inf.envoyCmd, inf.drainTimeout)
+	shutdownAccessLog(ctx, inf.accessLog)
+	stopDNSProxy(ctx, inf.dnsProxy)
 
 	// Remove policy routes before the nftables table so that
 	// TPROXY rules are inactive when routes are removed.
 	firewall.CleanupPolicyRouting(ctx)
 
-	// Delete the nftables table so a restart in the same network
-	// namespace does not fail on pre-existing resources.
-	if conn != nil {
-		err := firewall.Cleanup(ctx, conn)
+	if inf.conn != nil {
+		err := firewall.Cleanup(ctx, inf.conn)
 		if err != nil {
 			slog.DebugContext(ctx, "cleaning up firewall on shutdown", slog.Any("err", err))
 		}
 	}
+
+	// Close the event store last so its writer goroutine has time to
+	// drain queued events from in-flight DNS/Envoy emit calls.
+	err := inf.eventStore.Close()
+	if err != nil {
+		slog.DebugContext(ctx, "closing event store on shutdown", slog.Any("err", err))
+	}
+}
+
+// shutdownAccessLog gracefully stops the access-log server with a
+// short deadline. The server should already be quiet because Envoy
+// has exited by the time this runs.
+func shutdownAccessLog(ctx context.Context, srv *accesslog.Server) {
+	if srv == nil {
+		return
+	}
+
+	alsCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	srv.Shutdown(alsCtx)
 }
 
 // stopEnvoy sends SIGTERM to the Envoy process and waits up to
@@ -600,14 +764,8 @@ func startEnvoy(
 	}
 
 	envoyLogPath := cfg.EnvoyLogPath(usr.EnvoyLogPath)
-	accessLogPath := cfg.EnvoyAccessLogPath(usr.EnvoyAccessLogPath)
 
 	err = prepareEnvoyLogFile(envoyLogPath, int(envoyUID))
-	if err != nil {
-		return nil, err
-	}
-
-	err = prepareEnvoyLogFile(accessLogPath, int(envoyUID))
 	if err != nil {
 		return nil, err
 	}

@@ -408,4 +408,26 @@ var (
 	// ErrInvalidEnvoyMaxConnections is returned when
 	// [EnvoySettings.MaxDownstreamConnections] is negative.
 	ErrInvalidEnvoyMaxConnections = errors.New("envoy maxDownstreamConnections must not be negative")
+
+	// ErrStatsPathNotAbsolute is returned when [Stats.Path] is set to
+	// a relative path.
+	ErrStatsPathNotAbsolute = errors.New("stats.path must be absolute")
+
+	// ErrStatsSocketNotAbsolute is returned when [Stats.Socket] is set
+	// to a relative path.
+	ErrStatsSocketNotAbsolute = errors.New("stats.socket must be absolute")
+
+	// ErrStatsRetentionInvalid is returned when a retention bound is
+	// negative.
+	ErrStatsRetentionInvalid = errors.New("stats retention bound must not be negative")
+
+	// ErrEnvoyAccessLogRemoved is returned when a config carries the
+	// retired `logging.envoy.accessLog` block. The replacement is
+	// the top-level `stats:` block, which records every egress
+	// decision into an embedded SQLite event store readable via
+	// `terrarium stats`.
+	ErrEnvoyAccessLogRemoved = errors.New(
+		"logging.envoy.accessLog has been removed; configure access events " +
+			"via the top-level `stats` block",
+	)
 )
