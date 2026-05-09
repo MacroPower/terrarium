@@ -373,40 +373,49 @@ effective value is `max(conf.all, conf.<iface>)` and both must be loose.
 
 ### Stats event store
 
-Every egress decision (DNS allow/deny/error, Envoy HTTP/TCP allow/deny) can be
-recorded into an embedded SQLite database. The `terrarium stats` CLI surfaces
-the data; the daemon never reads the DB itself.
+Every egress decision (DNS allow/deny/error, Envoy HTTP/TCP allow/deny,
+firewall allow/deny/leak) can be recorded into an embedded SQLite database.
+The `terrarium stats` CLI surfaces the data; the daemon never reads the DB
+itself.
 
 ```yaml
 stats:
-  enabled: true                                     # opt-in; default off
-  path: $XDG_DATA_HOME/terrarium/stats.db           # default
-  socket: /run/terrarium/accesslog.sock             # gRPC ALS UDS
+  enabled: true # opt-in; default off
+  path: $XDG_DATA_HOME/terrarium/stats.db # default
+  socket: /run/terrarium/accesslog.sock # gRPC ALS UDS
+  firewall:
+    nflogGroup: 5000 # netlink group for kernel log emission
   retention:
-    maxAge: 720h                                    # 30 days
+    maxAge: 720h # 30 days
     maxRows: 1000000
-  bufferBytes: 16384                                # envoy gRPC ALS buffer
-  flushIntervalMs: 1000                             # envoy gRPC ALS flush
+    perSource:
+      firewall: 200000 # cap so chatty firewall events do not evict DNS/Envoy
+  bufferBytes: 16384 # envoy gRPC ALS buffer
+  flushIntervalMs: 1000 # envoy gRPC ALS flush
 ```
 
-Two transports feed the store: the in-process DNS proxy (one event per
-terminal branch in `handleQuery`) and Envoy via a gRPC AccessLog Service over
-the UDS at `socket`. Neither path can block the data plane. Terrarium's writer
-channel uses non-blocking sends with a drop counter; Envoy buffers internally.
+Three transports feed the store: the in-process DNS proxy (one event per
+terminal branch in `handleQuery`), Envoy via a gRPC AccessLog Service over
+the UDS at `socket`, and an nflog reader bound to the kernel's `log group N`
+emissions when `logging.firewall.enabled` is also true. None of these paths
+can block the data plane. Terrarium's writer channel uses non-blocking sends
+with a drop counter; Envoy buffers internally; the nflog reader translates
+kernel log records to events and emits through the same drop-on-full channel.
 
 Read events with the CLI:
 
 ```
-terrarium stats                              # last-24h summary
-terrarium stats top  [--denied|--allowed]    # top-N by domain (default --denied)
-terrarium stats top --by sni                 # group by TLS SNI
-terrarium stats top --by path                # group by HTTP path (query string stripped)
-terrarium stats list                         # raw events; --cursor for pagination
+terrarium stats                                          # last-24h summary
+terrarium stats top  [--denied|--allowed]                # top-N by domain (default --denied)
+terrarium stats top --by sni                             # group by TLS SNI
+terrarium stats top --by path                            # group by HTTP path (query string stripped)
+terrarium stats list                                     # raw events; --cursor for pagination
+terrarium stats list --source firewall --since 1h        # firewall-source events only
 ```
 
 Flags shared across subcommands: `--since`, `--until`, `--limit`,
-`--source dns|envoy`, `--instance ID`, `--format table|json|csv`, `--db PATH`.
-The CLI opens the DB read-only, so it has no daemon dependency.
+`--source dns|envoy|firewall`, `--instance ID`, `--format table|json|csv`,
+`--db PATH`. The CLI opens the DB read-only, so it has no daemon dependency.
 
 ### Daemon mode
 

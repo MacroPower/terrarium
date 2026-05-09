@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +42,11 @@ type Cache struct {
 	entries map[netip.Addr]*entry
 	lru     *list.List
 	stopCh  chan struct{}
+
+	// evictions counts qname-level FIFO evictions (per-IP cap) plus
+	// IP-level LRU evictions (global cap). Read through
+	// [Cache.Evictions] for cross-goroutine access.
+	evictions atomic.Uint64
 
 	stopWG     sync.WaitGroup
 	mu         sync.Mutex
@@ -173,6 +179,8 @@ func (c *Cache) Add(ip netip.Addr, qname string, ttl time.Duration) {
 	}
 
 	if len(e.records) >= c.maxPerIP {
+		c.evictions.Add(1)
+
 		e.records = e.records[1:]
 	}
 
@@ -211,6 +219,36 @@ func (c *Cache) Lookup(ip netip.Addr) (string, bool) {
 	return "", false
 }
 
+// Size returns the current number of cached IPs. Locks the same
+// mutex as [Cache.Add] and [Cache.Lookup]; concurrent callers
+// serialize with cache mutations.
+func (c *Cache) Size() int {
+	if c == nil {
+		return 0
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return len(c.entries)
+}
+
+// Evictions returns the cumulative count of cache evictions. The
+// returned value sums two distinct event types: qname-level FIFO
+// eviction at the per-IP cap (a hot IP cycling through more than
+// [DefaultMaxPerIP] qnames) and IP-level LRU eviction at the global
+// cap (a flood pushing the cache past [DefaultMaxEntries]).
+// Operators reading this counter as memory pressure should compare
+// it against [Cache.Size]: a steady-state per-IP churn under a
+// many-domains-per-IP workload is normal and not memory pressure.
+func (c *Cache) Evictions() uint64 {
+	if c == nil {
+		return 0
+	}
+
+	return c.evictions.Load()
+}
+
 // Close stops the background expiry sweeper. Idempotent. After
 // Close returns, [Cache.Add] is a no-op and [Cache.Lookup] returns
 // ok=false.
@@ -241,6 +279,7 @@ func (c *Cache) evictGlobalLocked() {
 
 		c.lru.Remove(back)
 		delete(c.entries, back.Value.(netip.Addr))
+		c.evictions.Add(1)
 	}
 }
 

@@ -110,6 +110,13 @@ func daemonShutdown(ctx context.Context, inf *infra) {
 	shutdownAccessLog(ctx, inf.accessLog)
 	stopDNSProxy(ctx, inf.dnsProxy)
 
+	// Stop the heartbeat goroutine before closing the event store so
+	// the final shutdown snapshot can still send through the writer
+	// channel.
+	if inf.heartbeatStop != nil {
+		inf.heartbeatStop()
+	}
+
 	err := inf.eventStore.Close()
 	if err != nil {
 		slog.DebugContext(ctx, "closing event store on daemon shutdown", slog.Any("err", err))

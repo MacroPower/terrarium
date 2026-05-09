@@ -222,6 +222,76 @@ func TestCloseIdempotent(t *testing.T) {
 	assert.NotPanics(t, func() { c.Close() })
 }
 
+func TestSizeReflectsEntries(t *testing.T) {
+	t.Parallel()
+
+	c := dnscache.New()
+	t.Cleanup(c.Close)
+
+	assert.Equal(t, 0, c.Size())
+
+	c.Add(netip.MustParseAddr("10.0.0.1"), "a.example.com.", time.Hour)
+	assert.Equal(t, 1, c.Size())
+
+	c.Add(netip.MustParseAddr("10.0.0.2"), "b.example.com.", time.Hour)
+	assert.Equal(t, 2, c.Size())
+
+	// Adding more qnames to an existing IP does not change the
+	// IP-keyed entry count.
+	c.Add(netip.MustParseAddr("10.0.0.1"), "c.example.com.", time.Hour)
+	assert.Equal(t, 2, c.Size())
+}
+
+func TestEvictionsCountsGlobalLRU(t *testing.T) {
+	t.Parallel()
+
+	c := dnscache.New(dnscache.WithMaxEntries(1))
+	t.Cleanup(c.Close)
+
+	assert.Equal(t, uint64(0), c.Evictions())
+
+	c.Add(netip.MustParseAddr("10.0.0.1"), "a.example.com.", time.Hour)
+	assert.Equal(t, uint64(0), c.Evictions())
+
+	// Forces global LRU eviction.
+	c.Add(netip.MustParseAddr("10.0.0.2"), "b.example.com.", time.Hour)
+	assert.Equal(t, uint64(1), c.Evictions())
+
+	c.Add(netip.MustParseAddr("10.0.0.3"), "c.example.com.", time.Hour)
+	assert.Equal(t, uint64(2), c.Evictions())
+}
+
+func TestEvictionsCountsPerIPFIFO(t *testing.T) {
+	t.Parallel()
+
+	c := dnscache.New(dnscache.WithMaxPerIP(1))
+	t.Cleanup(c.Close)
+
+	ip := netip.MustParseAddr("10.0.0.1")
+
+	assert.Equal(t, uint64(0), c.Evictions())
+
+	c.Add(ip, "a.example.com.", time.Hour)
+	assert.Equal(t, uint64(0), c.Evictions())
+
+	// Distinct qname on the same IP forces FIFO eviction (the
+	// existing-qname branch returns early before the FIFO check).
+	c.Add(ip, "b.example.com.", time.Hour)
+	assert.Equal(t, uint64(1), c.Evictions())
+
+	c.Add(ip, "c.example.com.", time.Hour)
+	assert.Equal(t, uint64(2), c.Evictions())
+}
+
+func TestNilCacheAccessors(t *testing.T) {
+	t.Parallel()
+
+	var c *dnscache.Cache
+
+	assert.Equal(t, 0, c.Size())
+	assert.Equal(t, uint64(0), c.Evictions())
+}
+
 func TestConcurrentAddLookup(t *testing.T) {
 	t.Parallel()
 

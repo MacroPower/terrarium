@@ -19,7 +19,7 @@ import (
 
 // schemaVersion is the current `PRAGMA user_version` written by [Open].
 // Bumping this requires a migration step in [Store.applySchema].
-const schemaVersion = 1
+const schemaVersion = 2
 
 // pruneChunkSize caps the per-call DELETE size for both the global
 // and per-source pruners. Bounded chunks keep WAL fsync cost off the
@@ -55,9 +55,26 @@ func OpenReadOnly(path string) (*sql.DB, error) {
 // refuses to open rather than risk corrupting future schema.
 var ErrSchemaTooNew = errors.New("eventstore: db schema is newer than supported")
 
+// instanceMetricsTableSQL creates the `instance_metrics` table. Used
+// by the v0 fresh-schema path (concatenated into [schemaSQL]) and the
+// v1 -> v2 migration; one source of truth keeps the two paths in sync.
+const instanceMetricsTableSQL = `
+CREATE TABLE instance_metrics (
+  instance_id            TEXT PRIMARY KEY REFERENCES instances(id),
+  recorded_at            INTEGER NOT NULL,
+  nflog_kernel_drops     INTEGER NOT NULL DEFAULT 0,
+  nflog_parse_errors     INTEGER NOT NULL DEFAULT 0,
+  nflog_last_event_unix  INTEGER NOT NULL DEFAULT 0,
+  dnscache_size          INTEGER NOT NULL DEFAULT 0,
+  dnscache_evictions     INTEGER NOT NULL DEFAULT 0,
+  eventstore_drop_count  INTEGER NOT NULL DEFAULT 0,
+  eventstore_last_write_unix INTEGER NOT NULL DEFAULT 0
+);
+`
+
 // schemaSQL is applied once on a fresh database (user_version=0).
 // Subsequent versions add ALTER statements branched on user_version.
-const schemaSQL = `
+var schemaSQL = `
 CREATE TABLE events (
   id          INTEGER PRIMARY KEY,
   ts          INTEGER NOT NULL,
@@ -87,7 +104,7 @@ CREATE TABLE instances (
   ended_at   INTEGER,
   mode       TEXT NOT NULL
 );
-`
+` + instanceMetricsTableSQL
 
 // Store owns a SQLite database and a writer goroutine that drains
 // events from a buffered channel into batched inserts. Producers call
@@ -96,13 +113,14 @@ CREATE TABLE instances (
 //
 // Create instances with [Open].
 type Store struct {
-	db         *sql.DB
-	insertStmt *sql.Stmt
-	ch         chan Event
-	done       chan struct{}
-	logger     *slog.Logger
-	instanceID string
-	opts       storeOptions
+	db          *sql.DB
+	insertStmt  *sql.Stmt
+	ch          chan Event
+	heartbeatCh chan Heartbeat
+	done        chan struct{}
+	logger      *slog.Logger
+	instanceID  string
+	opts        storeOptions
 
 	// retention is read by the writer goroutine. Replaced via
 	// SetRetention so reload can swap the policy without races.
@@ -169,11 +187,12 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	s := &Store{
-		db:     db,
-		ch:     make(chan Event, o.chanSize),
-		done:   make(chan struct{}),
-		logger: o.logger,
-		opts:   o,
+		db:          db,
+		ch:          make(chan Event, o.chanSize),
+		heartbeatCh: make(chan Heartbeat, 1),
+		done:        make(chan struct{}),
+		logger:      o.logger,
+		opts:        o,
 	}
 	s.retention.Store(&o.retention)
 
@@ -234,8 +253,16 @@ INSERT INTO events (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
-// applySchema reads the user_version pragma and either applies the
-// initial schema (version 0 -> 1) or refuses to open a future version.
+// applySchema reads the user_version pragma and applies any pending
+// migrations. A version 0 (fresh) database lands on [schemaVersion] in
+// one step via [schemaSQL]; version 1 databases migrate forward to
+// version 2 by creating the `instance_metrics` table. Future versions
+// refuse to open with [ErrSchemaTooNew].
+//
+// Each migration step is a DDL exec followed by a `PRAGMA
+// user_version` write. The two statements are not bundled in a
+// transaction; a crash between them leaves the database with the new
+// schema and the old version, which the next open will retry.
 func (s *Store) applySchema(ctx context.Context) error {
 	var version int
 
@@ -255,16 +282,32 @@ func (s *Store) applySchema(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("setting user_version: %w", err)
 		}
+
+		return nil
+
+	case version == 1:
+		_, err = s.db.ExecContext(ctx, instanceMetricsTableSQL)
+		if err != nil {
+			return fmt.Errorf("migrating to schema 2: %w", err)
+		}
+
+		_, err = s.db.ExecContext(ctx, `PRAGMA user_version = 2`)
+		if err != nil {
+			return fmt.Errorf("setting user_version: %w", err)
+		}
+
+		return nil
+
 	case version == schemaVersion:
 		return nil
+
 	case version > schemaVersion:
 		return fmt.Errorf("%w: db version %d > supported %d",
 			ErrSchemaTooNew, version, schemaVersion)
+
 	default:
 		return fmt.Errorf("eventstore: unexpected user_version %d", version)
 	}
-
-	return nil
 }
 
 // InstanceID returns the 16-hex-character ID assigned to this open
@@ -301,6 +344,160 @@ func (s *Store) LastWriteTime() time.Time {
 	}
 
 	return time.UnixMicro(usec)
+}
+
+// Heartbeat is a periodic snapshot of daemon-internal counters that
+// the daemon writes to the `instance_metrics` table. The
+// `terrarium status` CLI reads it through [LatestHeartbeat] to
+// surface ingestion health it cannot observe through the
+// process boundary.
+type Heartbeat struct {
+	// RecordedAt is the wall-clock time the snapshot was taken.
+	RecordedAt time.Time
+
+	// NFLogLastEvent is the wall-clock time of the most recent
+	// firewall event the nflog reader emitted, or the zero time
+	// when none has been emitted yet.
+	NFLogLastEvent time.Time
+
+	// EventStoreLastWrite mirrors [Store.LastWriteTime].
+	EventStoreLastWrite time.Time
+
+	// NFLogKernelDrops is the cumulative count of nflog seq gaps
+	// observed (kernel-side drops).
+	NFLogKernelDrops uint64
+
+	// NFLogParseErrors is the cumulative count of malformed nflog
+	// packets and undecodable prefixes.
+	NFLogParseErrors uint64
+
+	// DNSCacheEvictions is the cumulative count of qname-level FIFO
+	// and IP-level LRU evictions in the reverse cache.
+	DNSCacheEvictions uint64
+
+	// DNSCacheSize is the current entry count in the reverse cache.
+	DNSCacheSize int64
+
+	// EventStoreDropCount mirrors [Store.DropCount].
+	EventStoreDropCount int64
+}
+
+// HeartbeatInterval is the production cadence at which the daemon
+// snapshots a [Heartbeat] into the `instance_metrics` table.
+// Consumers gauging heartbeat-row staleness (e.g. `terrarium status`)
+// reference this constant so a daemon-side change cannot drift from
+// the staleness threshold readers compare against.
+const HeartbeatInterval = 60 * time.Second
+
+// RecordHeartbeat sends h to the writer goroutine for upsert into the
+// `instance_metrics` table. The send is non-blocking with a 1-buffer
+// channel: if the writer is busy and a previous heartbeat is still
+// pending, the new value is dropped so a hot tick never stalls the
+// caller. A nil receiver is a no-op.
+func (s *Store) RecordHeartbeat(_ context.Context, h Heartbeat) error {
+	if s == nil {
+		return nil
+	}
+
+	if h.RecordedAt.IsZero() {
+		h.RecordedAt = time.Now()
+	}
+
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+
+	if s.closed {
+		return nil
+	}
+
+	select {
+	case s.heartbeatCh <- h:
+	default:
+	}
+
+	return nil
+}
+
+// LatestHeartbeat reads the most recent `instance_metrics` row for
+// instanceID. Returns ok=false on a fresh database or when no
+// heartbeat has been written for the given instance. db must be a
+// handle opened by [OpenReadOnly] or [Open]. Used by the
+// `terrarium status` CLI which holds a read-only handle.
+func LatestHeartbeat(ctx context.Context, db *sql.DB, instanceID string) (Heartbeat, bool, error) {
+	if instanceID == "" {
+		return Heartbeat{}, false, nil
+	}
+
+	var (
+		recordedAt, nflogLast, esLast       int64
+		kernelDrops, parseErrors, evictions int64
+		dnsCacheSize, dropCount             int64
+	)
+
+	err := db.QueryRowContext(ctx, `
+		SELECT recorded_at,
+		       nflog_kernel_drops,
+		       nflog_parse_errors,
+		       nflog_last_event_unix,
+		       dnscache_size,
+		       dnscache_evictions,
+		       eventstore_drop_count,
+		       eventstore_last_write_unix
+		FROM instance_metrics
+		WHERE instance_id = ?
+	`, instanceID).Scan(
+		&recordedAt, &kernelDrops, &parseErrors, &nflogLast,
+		&dnsCacheSize, &evictions, &dropCount, &esLast,
+	)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Heartbeat{}, false, nil
+	case err != nil:
+		return Heartbeat{}, false, fmt.Errorf("reading heartbeat: %w", err)
+	}
+
+	h := Heartbeat{
+		RecordedAt:          time.UnixMicro(recordedAt),
+		NFLogKernelDrops:    uint64(kernelDrops), //nolint:gosec // counter persisted as int64; never negative.
+		NFLogParseErrors:    uint64(parseErrors), //nolint:gosec // counter persisted as int64; never negative.
+		DNSCacheSize:        dnsCacheSize,
+		DNSCacheEvictions:   uint64(evictions), //nolint:gosec // counter persisted as int64; never negative.
+		EventStoreDropCount: dropCount,
+	}
+
+	if nflogLast != 0 {
+		h.NFLogLastEvent = time.UnixMicro(nflogLast)
+	}
+
+	if esLast != 0 {
+		h.EventStoreLastWrite = time.UnixMicro(esLast)
+	}
+
+	return h, true, nil
+}
+
+// LatestInstanceID returns the most recent in-progress instance ID,
+// falling back to the most recent overall instance when no run is in
+// progress. Returns ok=false when the `instances` table is empty.
+// db must be a handle opened by [OpenReadOnly] or [Open].
+func LatestInstanceID(ctx context.Context, db *sql.DB) (string, bool, error) {
+	var id string
+
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM instances
+		 ORDER BY (ended_at IS NULL) DESC, started_at DESC
+		 LIMIT 1`,
+	).Scan(&id)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("querying instances: %w", err)
+	}
+
+	return id, true, nil
 }
 
 // SetRetention atomically replaces the retention policy. The new
@@ -434,6 +631,8 @@ func (s *Store) run() {
 		case e, ok := <-s.ch:
 			if !ok {
 				flush()
+				s.drainHeartbeats()
+
 				return
 			}
 
@@ -441,12 +640,82 @@ func (s *Store) run() {
 			if len(batch) >= s.opts.batchSize {
 				flush()
 			}
+
 		case <-timer.C:
 			flush()
+
 		case <-pruneTicker.C:
 			s.pruneByAge()
+
+		case h := <-s.heartbeatCh:
+			s.upsertHeartbeat(h)
 		}
 	}
+}
+
+// drainHeartbeats consumes any pending heartbeat snapshot before
+// the writer goroutine returns. The channel is buffer-1, so this
+// loop runs at most once per close. Exists so a final shutdown
+// snapshot lands in the database before the connection closes.
+func (s *Store) drainHeartbeats() {
+	for {
+		select {
+		case h := <-s.heartbeatCh:
+			s.upsertHeartbeat(h)
+		default:
+			return
+		}
+	}
+}
+
+// upsertHeartbeat writes h into the `instance_metrics` table using
+// the writer goroutine's connection. Upsert keyed on instance_id so
+// each daemon has at most one row.
+func (s *Store) upsertHeartbeat(h Heartbeat) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO instance_metrics (
+			instance_id, recorded_at,
+			nflog_kernel_drops, nflog_parse_errors, nflog_last_event_unix,
+			dnscache_size, dnscache_evictions,
+			eventstore_drop_count, eventstore_last_write_unix
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(instance_id) DO UPDATE SET
+			recorded_at               = excluded.recorded_at,
+			nflog_kernel_drops        = excluded.nflog_kernel_drops,
+			nflog_parse_errors        = excluded.nflog_parse_errors,
+			nflog_last_event_unix     = excluded.nflog_last_event_unix,
+			dnscache_size             = excluded.dnscache_size,
+			dnscache_evictions        = excluded.dnscache_evictions,
+			eventstore_drop_count     = excluded.eventstore_drop_count,
+			eventstore_last_write_unix = excluded.eventstore_last_write_unix
+	`,
+		s.instanceID,
+		h.RecordedAt.UnixMicro(),
+		int64(h.NFLogKernelDrops), //nolint:gosec // counters fit comfortably in int64.
+		int64(h.NFLogParseErrors), //nolint:gosec // counters fit comfortably in int64.
+		unixMicroOrZero(h.NFLogLastEvent),
+		h.DNSCacheSize,
+		int64(h.DNSCacheEvictions), //nolint:gosec // counters fit comfortably in int64.
+		h.EventStoreDropCount,
+		unixMicroOrZero(h.EventStoreLastWrite),
+	)
+	if err != nil {
+		s.logger.Warn("eventstore heartbeat upsert", slog.Any("err", err))
+	}
+}
+
+// unixMicroOrZero returns t.UnixMicro() or 0 for the zero time. The
+// caller-side equivalent of `IF unix == 0` decoding in
+// [LatestHeartbeat]; matches the column DEFAULT 0.
+func unixMicroOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+
+	return t.UnixMicro()
 }
 
 // insertBatch writes one transaction's worth of events using the

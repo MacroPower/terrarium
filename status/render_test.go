@@ -200,6 +200,70 @@ func TestRenderProbeFailure(t *testing.T) {
 	assert.Contains(t, out, "failed (i/o timeout)")
 }
 
+func TestRenderStatsHeartbeatSubsections(t *testing.T) {
+	t.Parallel()
+
+	r := reportFixture()
+	r.Stats = status.StatsSection{
+		Enabled:                  true,
+		DBPath:                   "/var/lib/terrarium/events.db",
+		LastEvent:                time.Now().Add(-3 * time.Second),
+		Events24h:                1827,
+		DBSizeBytes:              409600,
+		EventStoreDropCount:      0,
+		EventStoreLastWrite:      time.Now().Add(-time.Second),
+		HeartbeatRecordedAt:      time.Now().Add(-5 * time.Second),
+		NFLogKernelDrops:         0,
+		NFLogParseErrors:         0,
+		NFLogLastEvent:           time.Now().Add(-3 * time.Second),
+		DNSCacheSize:             42,
+		DNSCacheEvictions:        0,
+		FirewallEvents1h:         24,
+		FirewallNullDomain1h:     3,
+		FirewallNullDomainRate1h: 0.125,
+	}
+
+	out := render(t, r)
+
+	assert.Contains(t, out, "STATS")
+	assert.Contains(t, out, "eventstore drops:")
+	assert.Contains(t, out, "eventstore last write:")
+	assert.Contains(t, out, "heartbeat:")
+	assert.NotContains(t, out, "(stale)")
+	assert.NotContains(t, out, "(none yet)")
+
+	assert.Contains(t, out, "NFLOG")
+	assert.Contains(t, out, "kernel drops:")
+	assert.Contains(t, out, "parse errors:")
+
+	assert.Contains(t, out, "DNS CACHE")
+	assert.Contains(t, out, "entries:")
+	assert.Contains(t, out, "evictions:")
+
+	assert.Contains(t, out, "FIREWALL EVENTS (1h)")
+	assert.Contains(t, out, "null domain rate:")
+	assert.Contains(t, out, "12.5% (3 / 24)")
+}
+
+func TestRenderStatsHeartbeatNoneYet(t *testing.T) {
+	t.Parallel()
+
+	r := reportFixture()
+	r.Stats = status.StatsSection{
+		Enabled:   true,
+		DBPath:    "/var/lib/terrarium/events.db",
+		LastEvent: time.Now().Add(-3 * time.Second),
+		Events24h: 1827,
+	}
+
+	out := render(t, r)
+
+	assert.Contains(t, out, "(none yet)")
+	assert.NotContains(t, out, "NFLOG")
+	assert.NotContains(t, out, "DNS CACHE")
+	assert.NotContains(t, out, "FIREWALL EVENTS")
+}
+
 func TestHumanDurationFormat(t *testing.T) {
 	t.Parallel()
 

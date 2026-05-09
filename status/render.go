@@ -8,6 +8,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
 // Render writes a sectioned plain-text representation of r to w. The
@@ -231,6 +233,12 @@ func renderEnvoy(w io.Writer, s EnvoySection) error {
 	return err
 }
 
+// heartbeatStaleAfter is the staleness window past which the
+// renderer flags a heartbeat row as stale. Twice the daemon's tick
+// cadence so one missed tick is forgiven and two missed ticks raise
+// the flag.
+var heartbeatStaleAfter = 2 * eventstore.HeartbeatInterval
+
 // renderStats prints the event store summary. When stats is disabled,
 // the section heading is suppressed entirely so the output stays
 // compact for the off-by-default case.
@@ -265,6 +273,117 @@ func renderStats(w io.Writer, s StatsSection) error {
 
 	fmt.Fprintf(tw, "  events 24h:\t%d\n", s.Events24h)
 	fmt.Fprintf(tw, "  db size:\t%d bytes\n", s.DBSizeBytes)
+
+	writeHeartbeatLines(tw, s)
+
+	err := tw.Flush()
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(w)
+	if err != nil {
+		return err
+	}
+
+	if s.HeartbeatRecordedAt.IsZero() {
+		return nil
+	}
+
+	err = renderNFLog(w, s)
+	if err != nil {
+		return err
+	}
+
+	err = renderDNSCache(w, s)
+	if err != nil {
+		return err
+	}
+
+	return renderFirewallEvents1h(w, s)
+}
+
+// writeHeartbeatLines emits the eventstore drops / last-write /
+// heartbeat lines into tw. When the heartbeat row is absent only
+// the "(none yet)" placeholder line is emitted; the caller suppresses
+// the NFLOG / DNS CACHE / FIREWALL EVENTS sub-sections in that case.
+func writeHeartbeatLines(tw io.Writer, s StatsSection) {
+	if s.HeartbeatRecordedAt.IsZero() {
+		fmt.Fprintln(tw, "  heartbeat:\t(none yet)")
+		return
+	}
+
+	fmt.Fprintf(tw, "  eventstore drops:\t%d\n", s.EventStoreDropCount)
+
+	if s.EventStoreLastWrite.IsZero() {
+		fmt.Fprintln(tw, "  eventstore last write:\t(none)")
+	} else {
+		fmt.Fprintf(tw, "  eventstore last write:\t%s ago\n",
+			humanDuration(time.Since(s.EventStoreLastWrite)))
+	}
+
+	hbAgo := time.Since(s.HeartbeatRecordedAt)
+	if hbAgo > heartbeatStaleAfter {
+		fmt.Fprintf(tw, "  heartbeat:\t%s ago (stale)\n", humanDuration(hbAgo))
+		return
+	}
+
+	fmt.Fprintf(tw, "  heartbeat:\t%s ago\n", humanDuration(hbAgo))
+}
+
+// renderNFLog prints the NFLOG sub-section (kernel drops, parse
+// errors, last event) of [renderStats].
+func renderNFLog(w io.Writer, s StatsSection) error {
+	tw := NewTabwriter(w)
+
+	fmt.Fprintln(tw, "NFLOG")
+	fmt.Fprintf(tw, "  kernel drops:\t%d\n", s.NFLogKernelDrops)
+	fmt.Fprintf(tw, "  parse errors:\t%d\n", s.NFLogParseErrors)
+
+	if s.NFLogLastEvent.IsZero() {
+		fmt.Fprintln(tw, "  last event:\t(none)")
+	} else {
+		fmt.Fprintf(tw, "  last event:\t%s ago\n",
+			humanDuration(time.Since(s.NFLogLastEvent)))
+	}
+
+	err := tw.Flush()
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(w)
+
+	return err
+}
+
+// renderDNSCache prints the DNS CACHE sub-section (entries,
+// evictions) of [renderStats].
+func renderDNSCache(w io.Writer, s StatsSection) error {
+	tw := NewTabwriter(w)
+
+	fmt.Fprintln(tw, "DNS CACHE")
+	fmt.Fprintf(tw, "  entries:\t%d\n", s.DNSCacheSize)
+	fmt.Fprintf(tw, "  evictions:\t%d\n", s.DNSCacheEvictions)
+
+	err := tw.Flush()
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(w)
+
+	return err
+}
+
+// renderFirewallEvents1h prints the FIREWALL EVENTS (1h)
+// sub-section of [renderStats].
+func renderFirewallEvents1h(w io.Writer, s StatsSection) error {
+	tw := NewTabwriter(w)
+
+	fmt.Fprintln(tw, "FIREWALL EVENTS (1h)")
+	fmt.Fprintf(tw, "  null domain rate:\t%.1f%% (%d / %d)\n",
+		s.FirewallNullDomainRate1h*100, s.FirewallNullDomain1h, s.FirewallEvents1h)
 
 	err := tw.Flush()
 	if err != nil {

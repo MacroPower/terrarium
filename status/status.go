@@ -219,11 +219,10 @@ type EnvoySection struct {
 // path, the most recent event timestamp, and the event count over
 // the last 24 hours.
 //
-// Real ingestion-health visibility (per-process drop counter,
-// last-successful-write wall clock) lives on [eventstore.Store]
-// inside the daemon. The standalone `terrarium status` CLI cannot
-// read it across process boundaries. When that becomes important,
-// add a heartbeat row that the daemon writes periodically.
+// Ingestion-health counters live on the running daemon's
+// [eventstore.Store] / [nflog.Reader] / [dnscache.Cache]; the CLI
+// reads them through the heartbeat row written into
+// `instance_metrics` (see [eventstore.LatestHeartbeat]).
 type StatsSection struct {
 	// DBPath is the path the collector resolved from config and
 	// XDG defaults. Empty when stats is disabled.
@@ -242,12 +241,65 @@ type StatsSection struct {
 	// daemon with no traffic will still report this as "old".
 	LastEvent time.Time
 
+	// HeartbeatRecordedAt is the wall-clock time of the most
+	// recent heartbeat row for the current instance. Zero when no
+	// heartbeat has been written yet (fresh daemon, never ticked).
+	// The renderer uses [time.Since] against this to decide
+	// staleness.
+	HeartbeatRecordedAt time.Time
+
+	// NFLogLastEvent is the most recent firewall event time as
+	// recorded by the nflog reader.
+	NFLogLastEvent time.Time
+
+	// EventStoreLastWrite is [eventstore.Store.LastWriteTime] at
+	// the moment the heartbeat fired.
+	EventStoreLastWrite time.Time
+
+	// NFLogKernelDrops is the cumulative kernel-side drop count
+	// observed via FlagSeq gaps.
+	NFLogKernelDrops uint64
+
+	// NFLogParseErrors is the cumulative count of malformed
+	// packets and undecodable prefixes.
+	NFLogParseErrors uint64
+
+	// DNSCacheEvictions is the cumulative count of qname-level
+	// FIFO and IP-level LRU evictions.
+	DNSCacheEvictions uint64
+
 	// Events24h is the total event count in the last 24 hours.
 	Events24h int64
 
 	// DBSizeBytes is the on-disk size of the DB file, excluding
 	// WAL/SHM siblings.
 	DBSizeBytes int64
+
+	// DNSCacheSize is the dnscache entry count at the moment the
+	// heartbeat fired.
+	DNSCacheSize int64
+
+	// EventStoreDropCount is [eventstore.Store.DropCount] at the
+	// moment the heartbeat fired.
+	EventStoreDropCount int64
+
+	// FirewallNullDomainRate1h is the fraction of `source =
+	// firewall` events in the last hour with `domain IS NULL`.
+	// Renderer formats as a percentage. Range [0, 1].
+	FirewallNullDomainRate1h float64
+
+	// FirewallNullDomain1h is the numerator behind
+	// [FirewallNullDomainRate1h]: count of `source = firewall`
+	// events in the last hour with `domain IS NULL`. Carried
+	// alongside the rate so the renderer prints exact integers
+	// instead of reconstructing them from `rate * total`.
+	FirewallNullDomain1h int64
+
+	// FirewallEvents1h is the denominator for
+	// [FirewallNullDomainRate1h] (total firewall events in the
+	// last hour). Surfaced so a 0/0 rate renders cleanly without a
+	// divide-by-zero artifact.
+	FirewallEvents1h int64
 }
 
 // LogsSection holds the tailed envoy process log. Access events are

@@ -80,14 +80,15 @@ func ParseUpstreamDNS(resolvConf string) string {
 // infra holds the running infrastructure components started by
 // [setupInfrastructure]. The caller owns cleanup via [shutdown].
 type infra struct {
-	envoyCmd    *exec.Cmd
-	dnsProxy    *dnsproxy.Proxy
-	eventStore  *eventstore.Store
-	accessLog   *accesslog.Server
-	conn        firewall.Conn
-	dnsCache    *dnscache.Cache
-	nflogReader *nflog.Reader
-	nflogCancel context.CancelFunc
+	envoyCmd      *exec.Cmd
+	dnsProxy      *dnsproxy.Proxy
+	eventStore    *eventstore.Store
+	accessLog     *accesslog.Server
+	conn          firewall.Conn
+	dnsCache      *dnscache.Cache
+	nflogReader   *nflog.Reader
+	nflogCancel   context.CancelFunc
+	heartbeatStop context.CancelFunc
 
 	// boundStats records the stats config the [eventstore.Store]
 	// and [accesslog.Server] were bound to at process start. Reload
@@ -411,7 +412,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		}
 	}
 
-	return &infra{
+	inf := &infra{
 		envoyCmd:     envoyCmd,
 		dnsProxy:     dnsProxy,
 		eventStore:   store,
@@ -427,7 +428,15 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 			socket:     cfg.StatsSocket(),
 			nflogGroup: cfg.StatsFirewallNFLogGroup(),
 		},
-	}, nil
+	}
+
+	// Heartbeat is peer-lifetime to the event store and dns cache:
+	// reload does not restart it. The goroutine reads through the
+	// same [*infra] reference, so reload-time component swaps are
+	// picked up automatically on the next tick.
+	inf.heartbeatStop = startHeartbeat(ctx, inf)
+
+	return inf, nil
 }
 
 // openNflog binds the nfnetlink_log reader when stats and firewall
@@ -692,7 +701,8 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 // shutdown performs cleanup in order: Envoy first (with drain wait),
 // then the gRPC access-log server so no late stream pushes events
 // into a stale store, then DNS proxy, then nftables, then the nflog
-// reader so it sees no further kernel events, and finally the event
+// reader so it sees no further kernel events, then the heartbeat
+// goroutine (one final snapshot before exit), and finally the event
 // store so any pending batched writes flush. Stopping Envoy before
 // DNS lets in-flight requests resolve during Envoy's drain period.
 // A nil [*infra] is a no-op.
@@ -727,6 +737,13 @@ func shutdown(ctx context.Context, inf *infra) {
 		if err != nil {
 			slog.DebugContext(ctx, "closing nflog reader on shutdown", slog.Any("err", err))
 		}
+	}
+
+	// Stop the heartbeat goroutine before closing the event store so
+	// the final shutdown snapshot can still send through the writer
+	// channel.
+	if inf.heartbeatStop != nil {
+		inf.heartbeatStop()
 	}
 
 	// Close the event store last so its writer goroutine has time to

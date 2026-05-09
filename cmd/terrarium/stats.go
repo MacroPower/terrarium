@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -56,8 +55,10 @@ func parseSource(s string) (eventstore.Source, error) {
 		return eventstore.SourceDNS, nil
 	case eventstore.SourceEnvoy:
 		return eventstore.SourceEnvoy, nil
+	case eventstore.SourceFirewall:
+		return eventstore.SourceFirewall, nil
 	default:
-		return "", fmt.Errorf("unsupported --source %q (expected: dns, envoy)", s)
+		return "", fmt.Errorf("unsupported --source %q (expected: dns, envoy, firewall)", s)
 	}
 }
 
@@ -81,7 +82,7 @@ func (f *statsFlags) register(cmd *cobra.Command) {
 		"end of the time window (RFC3339; defaults to now)")
 	cmd.Flags().IntVar(&f.limit, "limit", 20, "maximum rows returned")
 	cmd.Flags().StringVar(&f.source, "source", "",
-		"filter by event source (dns or envoy)")
+		"filter by event source (dns, envoy, firewall)")
 	cmd.Flags().StringVar(&f.instance, "instance", "",
 		"filter by instance id (defaults to most-recent run)")
 	cmd.Flags().StringVar(&f.format, "format", "table",
@@ -190,26 +191,17 @@ func openStatsDB(path string) (*sql.DB, error) {
 
 // resolveInstance returns the instance ID to filter on. Empty input
 // means the most recent in-progress run, falling back to the most
-// recent overall row when no run is in progress. The combined ORDER
-// BY puts in-progress rows first so a single query covers both.
+// recent overall row when no run is in progress. Defers to
+// [eventstore.LatestInstanceID] so the stats CLI and the status
+// renderer agree on which instance is "latest".
 func resolveInstance(ctx context.Context, db *sql.DB, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
 
-	var id string
-
-	err := db.QueryRowContext(ctx,
-		`SELECT id FROM instances
-		 ORDER BY (ended_at IS NULL) DESC, started_at DESC
-		 LIMIT 1`,
-	).Scan(&id)
-
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return "", nil
-	case err != nil:
-		return "", fmt.Errorf("querying instances: %w", err)
+	id, _, err := eventstore.LatestInstanceID(ctx, db)
+	if err != nil {
+		return "", err
 	}
 
 	return id, nil
