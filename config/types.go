@@ -671,6 +671,9 @@ type Stats struct {
 	// applies the built-in defaults; an explicit empty value
 	// (`retention: {}`) opts out of bounds entirely.
 	Retention *StatsRetention `yaml:"retention,omitempty"`
+	// Firewall configures the nfnetlink_log ingestion path. A nil
+	// pointer applies the built-in defaults.
+	Firewall *StatsFirewall `yaml:"firewall,omitempty"`
 	// Path is the SQLite database file. When empty, the default
 	// resolves via the user data dir (`$XDG_DATA_HOME/terrarium/stats.db`).
 	Path string `yaml:"path,omitempty"`
@@ -690,6 +693,16 @@ type Stats struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+// StatsFirewall configures nfnetlink_log emission and ingestion. The
+// kernel emits log events via `log group N prefix "..."` rules; the
+// userspace reader binds to the same group `N`.
+type StatsFirewall struct {
+	// NFLogGroup is the nfnetlink_log group number used by both the
+	// `log group N` rule directive and the userspace reader's bind.
+	// Defaults to [DefaultStatsFirewallNFLogGroup] when zero.
+	NFLogGroup uint16 `yaml:"nflogGroup,omitempty"`
+}
+
 // StatsRetention bounds the events table. A zero MaxAge or MaxRows
 // disables that bound.
 type StatsRetention struct {
@@ -697,10 +710,29 @@ type StatsRetention struct {
 	// to 720h (30 days) when the parent [Stats] is enabled and
 	// this field is unset via a nil [*StatsRetention].
 	MaxAge Duration `yaml:"maxAge,omitempty"`
+	// PerSource caps individual event sources before the global
+	// MaxRows bound. A nil pointer applies the built-in defaults
+	// (firewall=200000, dns=0, envoy=0). An explicit empty value
+	// (`perSource: {}`) opts every source out of per-source pruning.
+	PerSource *PerSourceRetention `yaml:"perSource,omitempty"`
 	// MaxRows caps the events row count. Defaults to 1,000,000
 	// when the parent [Stats] is enabled and this field is unset
 	// via a nil [*StatsRetention].
 	MaxRows int64 `yaml:"maxRows,omitempty"`
+}
+
+// PerSourceRetention caps the row count contributed by each event
+// source. Zero on a field means that source has no per-source cap and
+// only the global [StatsRetention.MaxRows] applies.
+type PerSourceRetention struct {
+	// Firewall caps rows where `source='firewall'`. Defaults to
+	// [DefaultStatsRetentionFirewall] when [StatsRetention.PerSource]
+	// is nil; explicit zero opts out.
+	Firewall int64 `yaml:"firewall,omitempty"`
+	// DNS caps rows where `source='dns'`. Defaults to 0 (uncapped).
+	DNS int64 `yaml:"dns,omitempty"`
+	// Envoy caps rows where `source='envoy'`. Defaults to 0 (uncapped).
+	Envoy int64 `yaml:"envoy,omitempty"`
 }
 
 // Stats default constants.
@@ -724,6 +756,17 @@ const (
 	// DefaultStatsRetentionMaxRows is the default events row cap
 	// used when [Stats.Retention] is nil.
 	DefaultStatsRetentionMaxRows int64 = 1_000_000
+
+	// DefaultStatsRetentionFirewall is the default per-source row
+	// cap on `source='firewall'` when [StatsRetention.PerSource] is
+	// nil. Bounds the chatty firewall stream so it cannot evict DNS
+	// or Envoy events under the shared [DefaultStatsRetentionMaxRows]
+	// bound.
+	DefaultStatsRetentionFirewall int64 = 200_000
+
+	// DefaultStatsFirewallNFLogGroup is the nfnetlink_log group
+	// number used when [StatsFirewall.NFLogGroup] is zero.
+	DefaultStatsFirewallNFLogGroup uint16 = 5000
 )
 
 // UserFlags holds the CLI flag names for each [User] field. Override
@@ -1040,6 +1083,35 @@ func (c *Config) StatsRetentionMaxRows() int64 {
 	}
 
 	return c.Stats.Retention.MaxRows
+}
+
+// StatsRetentionPerSource returns the per-source row caps, applying
+// the built-in defaults when [StatsRetention.PerSource] is nil. A
+// non-nil empty struct (`perSource: {}` in YAML) returns zero on
+// every field, leaving each source uncapped under the global
+// [StatsRetentionMaxRows].
+func (c *Config) StatsRetentionPerSource() PerSourceRetention {
+	if c.Stats == nil || c.Stats.Retention == nil {
+		return PerSourceRetention{Firewall: DefaultStatsRetentionFirewall}
+	}
+
+	if c.Stats.Retention.PerSource == nil {
+		return PerSourceRetention{Firewall: DefaultStatsRetentionFirewall}
+	}
+
+	return *c.Stats.Retention.PerSource
+}
+
+// StatsFirewallNFLogGroup returns the nfnetlink_log group, applying
+// [DefaultStatsFirewallNFLogGroup] when [Stats.Firewall] is nil or
+// [StatsFirewall.NFLogGroup] is zero. The kernel rule emitter and the
+// userspace reader bind to the same value.
+func (c *Config) StatsFirewallNFLogGroup() uint16 {
+	if c.Stats == nil || c.Stats.Firewall == nil || c.Stats.Firewall.NFLogGroup == 0 {
+		return DefaultStatsFirewallNFLogGroup
+	}
+
+	return c.Stats.Firewall.NFLogGroup
 }
 
 // Duration wraps [time.Duration] with YAML string unmarshaling.

@@ -159,6 +159,15 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	needsEnvoy := !cfg.IsEgressBlocked()
 	envoySettings := cfg.EnvoyDefaults()
 
+	// Reject startup-only changes the running process cannot adopt.
+	// Validate before ApplyRules so the firewall is never updated
+	// to emit on a group the running reader is not bound to.
+	err = validateStartupOnlyStatsChanges(ctx, inf.boundStats, cfg)
+	if err != nil {
+		slog.ErrorContext(ctx, "reload: rejected", slog.Any("err", err))
+		return
+	}
+
 	// Apply nftables rules atomically.
 	conn, err := nftables.New()
 	if err != nil {
@@ -215,9 +224,15 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	// Apply any retention changes from the new config to the
 	// existing store (lock-free swap on the writer goroutine).
 	if inf.eventStore != nil {
+		perSource := cfg.StatsRetentionPerSource()
 		inf.eventStore.SetRetention(eventstore.Retention{
 			MaxAge:  cfg.StatsRetentionMaxAge(),
 			MaxRows: cfg.StatsRetentionMaxRows(),
+			PerSource: eventstore.PerSourceCaps{
+				Firewall: perSource.Firewall,
+				DNS:      perSource.DNS,
+				Envoy:    perSource.Envoy,
+			},
 		})
 	}
 
@@ -257,11 +272,38 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	slog.InfoContext(ctx, "terrarium configuration reloaded successfully")
 }
 
+// ErrReloadNFLogGroupChanged is returned by
+// [validateStartupOnlyStatsChanges] when the new config requests a
+// different nflog group than the running reader is bound to.
+var ErrReloadNFLogGroupChanged = fmt.Errorf("reload: stats.firewall.nflogGroup change requires restart")
+
+// validateStartupOnlyStatsChanges returns an error when the new
+// config requests a value for a startup-only stats field that the
+// running process cannot rebind without dropping events. Only
+// `stats.firewall.nflogGroup` is fatal here; path, socket, and
+// enabled keep the warn-and-continue semantics in
+// [warnStartupOnlyStatsChanges] because they bind to the eventstore
+// handle and gRPC ALS UDS, which the running process cannot rebind.
+//
+// Called before [firewall.ApplyRules] so a rejected reload never
+// updates the running rules. The reader continues consuming on the
+// originally-bound group; restart to adopt a new value.
+func validateStartupOnlyStatsChanges(_ context.Context, bound boundStats, cfg *config.Config) error {
+	if bound.enabled && bound.nflogGroup != cfg.StatsFirewallNFLogGroup() {
+		return fmt.Errorf("%w: bound=%d requested=%d",
+			ErrReloadNFLogGroupChanged,
+			bound.nflogGroup, cfg.StatsFirewallNFLogGroup())
+	}
+
+	return nil
+}
+
 // warnStartupOnlyStatsChanges logs a warning when the new YAML
 // changes a stats field the running process cannot adopt without a
 // restart: the SQLite path, the gRPC ALS UDS, or whether stats is
 // enabled at all. Retention values are runtime-mutable and are not
-// flagged here.
+// flagged here. The nflog group is enforced fatally by
+// [validateStartupOnlyStatsChanges] before this runs.
 func warnStartupOnlyStatsChanges(ctx context.Context, bound boundStats, cfg *config.Config) {
 	newEnabled := cfg.StatsEnabled()
 	if bound.enabled != newEnabled {

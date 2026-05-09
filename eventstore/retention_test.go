@@ -85,11 +85,14 @@ func TestRetention_MaxAgePrunes(t *testing.T) {
 			return false
 		}
 
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		var n int
 
-		_ = db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n)
+		err = db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events`).Scan(&n)
+		if err != nil {
+			return false
+		}
 
 		return n == 2
 	}, 2*time.Second, 20*time.Millisecond)
@@ -127,6 +130,113 @@ func TestStore_DropCountReflectsOverflow(t *testing.T) {
 	}
 
 	assert.Positive(t, store.DropCount())
+}
+
+func TestRetention_PerSourceCapsFirewall(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stats.db")
+
+	// Tight per-source firewall cap, very loose global cap. The
+	// per-source pass should kick in before the global pass.
+	store, err := eventstore.Open(t.Context(), path,
+		eventstore.WithChanSize(8192),
+		eventstore.WithBatchSize(50),
+		eventstore.WithBatchInterval(20*time.Millisecond),
+		eventstore.WithRetention(eventstore.Retention{
+			MaxRows: 1_000_000,
+			PerSource: eventstore.PerSourceCaps{
+				Firewall: 100,
+			},
+		}),
+	)
+	require.NoError(t, err)
+
+	// Insert 5000 firewall events and 50 DNS events (100:1 ratio).
+	for range 50 {
+		store.Emit(eventstore.Event{
+			Source:   eventstore.SourceDNS,
+			Decision: eventstore.DecisionAllow,
+			Domain:   "dns.example",
+		})
+
+		for range 100 {
+			store.Emit(eventstore.Event{
+				Source:   eventstore.SourceFirewall,
+				Decision: eventstore.DecisionDeny,
+			})
+		}
+	}
+
+	require.NoError(t, store.Close())
+	require.Zerof(t, store.DropCount(),
+		"channel overflow during the test would invalidate the per-source assertion (drop count %d)",
+		store.DropCount())
+
+	db, err := eventstore.OpenReadOnly(path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+
+	var firewallCount, dnsCount int64
+
+	err = db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM events WHERE source='firewall'`).Scan(&firewallCount)
+	require.NoError(t, err)
+
+	err = db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM events WHERE source='dns'`).Scan(&dnsCount)
+	require.NoError(t, err)
+
+	// Without per-source pruning the firewall stream would land at
+	// 5000 (the full insert count); with a per-source cap of 100 and
+	// a 1000-row prune chunk, the count is bounded above by the
+	// chunk overshoot. The cap itself is the floor: the pruner never
+	// deletes below the configured limit.
+	assert.LessOrEqualf(t, firewallCount, int64(2000),
+		"per-source pruning should keep firewall row count near the 100 cap (got %d)", firewallCount)
+	assert.GreaterOrEqualf(t, firewallCount, int64(100),
+		"per-source pruner must not delete below the configured cap (got %d)", firewallCount)
+	assert.Equalf(t, int64(50), dnsCount,
+		"DNS rows must not be touched by firewall per-source pruning (got %d)", dnsCount)
+}
+
+func TestRetention_SetRetentionRaceFreeWithPerSource(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stats.db")
+
+	store, err := eventstore.Open(t.Context(), path,
+		eventstore.WithBatchSize(10),
+		eventstore.WithBatchInterval(20*time.Millisecond),
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+	// Concurrent writes against retention swaps. -race confirms the
+	// pointer swap is lock-free.
+	go func() {
+		for range 200 {
+			store.Emit(eventstore.Event{
+				Source:   eventstore.SourceFirewall,
+				Decision: eventstore.DecisionDeny,
+			})
+		}
+	}()
+
+	for i := range 200 {
+		store.SetRetention(eventstore.Retention{
+			MaxRows: int64(1000 + i),
+			PerSource: eventstore.PerSourceCaps{
+				Firewall: int64(100 + i),
+				DNS:      int64(50 + i),
+				Envoy:    int64(25 + i),
+			},
+		})
+	}
 }
 
 func TestStore_LastWriteTimeUpdates(t *testing.T) {

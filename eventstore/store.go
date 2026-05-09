@@ -21,6 +21,11 @@ import (
 // Bumping this requires a migration step in [Store.applySchema].
 const schemaVersion = 1
 
+// pruneChunkSize caps the per-call DELETE size for both the global
+// and per-source pruners. Bounded chunks keep WAL fsync cost off the
+// writer's hot path; the next batch tick drains any remaining excess.
+const pruneChunkSize int64 = 1000
+
 // readOnlyDSNSuffix is the query string appended to the SQLite path by
 // [OpenReadOnly].
 const readOnlyDSNSuffix = "?mode=ro&_pragma=busy_timeout(2000)"
@@ -117,6 +122,12 @@ type Store struct {
 	// table every batch.
 	rowCount atomic.Int64
 
+	// firewallRowCount, dnsRowCount, envoyRowCount partition
+	// [rowCount] by [Source] for [Retention.PerSource] caps.
+	firewallRowCount atomic.Int64
+	dnsRowCount      atomic.Int64
+	envoyRowCount    atomic.Int64
+
 	// closeMu serializes [Close] against [Emit]. Emit takes the
 	// read lock so concurrent producers do not block each other.
 	// Close takes the write lock and sets closed before closing the
@@ -193,17 +204,13 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("preparing insert: %w", err)
 	}
 
-	var rowCount int64
-
-	err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&rowCount)
+	err = s.seedRowCounts(ctx)
 	if err != nil {
 		_ = s.insertStmt.Close()
 		_ = db.Close()
 
 		return nil, fmt.Errorf("counting rows: %w", err)
 	}
-
-	s.rowCount.Store(rowCount)
 
 	if o.uid >= 0 {
 		err = chownDBFiles(path, o.uid)
@@ -406,6 +413,7 @@ func (s *Store) run() {
 		} else {
 			s.lastWriteUnix.Store(time.Now().UnixMicro())
 			s.rowCount.Add(int64(len(batch)))
+			s.addPerSourceCounts(batch, +1)
 			s.pruneByRowsAfterInsert()
 		}
 
@@ -495,53 +503,62 @@ func (s *Store) insertBatch(batch []Event) error {
 // cycle's WAL fsync cost off the writer's hot path. Reading
 // [Store.rowCount] avoids a `SELECT COUNT(*)` per batch.
 //
-// If a DELETE succeeds but [sql.Result.RowsAffected] returns an error
-// the counter is left untouched. The next [Open] reseeds it from a
-// COUNT, and over-counting only makes the next prune fire sooner; it
-// never under-prunes.
+// After the global pass, a per-source pass enforces
+// [Retention.PerSource] caps so a chatty source (typically firewall)
+// cannot evict events from quieter sources. Both passes use
+// `DELETE ... RETURNING source` so the per-source counters stay in
+// lockstep with [Store.rowCount].
 func (s *Store) pruneByRowsAfterInsert() {
 	r := s.retention.Load()
-	if r == nil || r.MaxRows <= 0 {
+	if r == nil {
 		return
 	}
 
-	excess := s.rowCount.Load() - r.MaxRows
+	if r.MaxRows > 0 {
+		excess := s.rowCount.Load() - r.MaxRows
+		if excess > 0 {
+			s.deleteOldestGlobal(min(excess, pruneChunkSize))
+		}
+	}
+
+	s.pruneByPerSource(r.PerSource)
+}
+
+// pruneByPerSource enforces per-source caps. For each source whose
+// counter exceeds its cap, deletes one chunk of the oldest rows for
+// that source. The next batch tick drains the rest.
+func (s *Store) pruneByPerSource(caps PerSourceCaps) {
+	if caps == (PerSourceCaps{}) {
+		return
+	}
+
+	s.pruneSourceIfOver(SourceFirewall, caps.Firewall, &s.firewallRowCount)
+	s.pruneSourceIfOver(SourceDNS, caps.DNS, &s.dnsRowCount)
+	s.pruneSourceIfOver(SourceEnvoy, caps.Envoy, &s.envoyRowCount)
+}
+
+// pruneSourceIfOver deletes one chunk of oldest rows for source when
+// its counter exceeds limit. A non-positive limit leaves the source
+// uncapped and the function is a no-op.
+func (s *Store) pruneSourceIfOver(source Source, limit int64, count *atomic.Int64) {
+	if limit <= 0 {
+		return
+	}
+
+	excess := count.Load() - limit
 	if excess <= 0 {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	chunk := int64(1000)
-	if excess < chunk {
-		chunk = excess
-	}
-
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM events WHERE id IN (
-			SELECT id FROM events ORDER BY ts ASC LIMIT ?
-		)`,
-		chunk,
-	)
-	if err != nil {
-		s.logger.Debug("retention: pruning by rows", slog.Any("err", err))
-		return
-	}
-
-	n, err := res.RowsAffected()
-	if err != nil || n == 0 {
-		return
-	}
-
-	s.rowCount.Add(-n)
+	s.deleteOldestBySource(source, min(excess, pruneChunkSize))
 }
 
 // pruneByAge runs on a 60s ticker. It probes for any expired row
 // before issuing the DELETE so the common case of "no rows past
 // MaxAge" skips a write transaction (and its WAL fsync). When a
 // match exists, it deletes a single chunk per tick so the writer is
-// never starved.
+// never starved. The DELETE returns each pruned row's source so the
+// per-source counters stay aligned with [Store.rowCount].
 func (s *Store) pruneByAge() {
 	r := s.retention.Load()
 	if r == nil || r.MaxAge <= 0 || s.rowCount.Load() == 0 {
@@ -567,21 +584,186 @@ func (s *Store) pruneByAge() {
 		return
 	}
 
-	res, err := s.db.ExecContext(ctx,
+	rows, err := s.db.QueryContext(ctx,
 		`DELETE FROM events WHERE id IN (
-			SELECT id FROM events WHERE ts < ? ORDER BY ts ASC LIMIT 1000
-		)`,
-		cutoff,
+			SELECT id FROM events WHERE ts < ? ORDER BY ts ASC LIMIT ?
+		) RETURNING source`,
+		cutoff, pruneChunkSize,
 	)
 	if err != nil {
 		s.logger.Debug("retention: pruning by age", slog.Any("err", err))
 		return
 	}
 
-	n, err := res.RowsAffected()
-	if err == nil && n > 0 {
-		s.rowCount.Add(-n)
+	s.applyDeletedRows(rows)
+}
+
+// deleteOldestGlobal deletes the chunk-many oldest rows across all
+// sources, decrementing both [rowCount] and the matching per-source
+// counter for each returned row.
+func (s *Store) deleteOldestGlobal(chunk int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx,
+		`DELETE FROM events WHERE id IN (
+			SELECT id FROM events ORDER BY ts ASC LIMIT ?
+		) RETURNING source`,
+		chunk,
+	)
+	if err != nil {
+		s.logger.Debug("retention: pruning by rows", slog.Any("err", err))
+		return
 	}
+
+	s.applyDeletedRows(rows)
+}
+
+// deleteOldestBySource deletes the chunk-many oldest rows for a single
+// source, decrementing both [rowCount] and the matching per-source
+// counter.
+func (s *Store) deleteOldestBySource(source Source, chunk int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx,
+		`DELETE FROM events WHERE id IN (
+			SELECT id FROM events WHERE source = ? ORDER BY id ASC LIMIT ?
+		) RETURNING source`,
+		string(source), chunk,
+	)
+	if err != nil {
+		s.logger.Debug("retention: pruning by per-source rows",
+			slog.String("source", string(source)),
+			slog.Any("err", err),
+		)
+
+		return
+	}
+
+	s.applyDeletedRows(rows)
+}
+
+// sourceCounter returns the per-source row counter for source, or
+// nil for unknown sources. Single point of mapping from the public
+// [Source] enum onto the [Store]'s internal counters.
+func (s *Store) sourceCounter(source Source) *atomic.Int64 {
+	switch source {
+	case SourceFirewall:
+		return &s.firewallRowCount
+	case SourceDNS:
+		return &s.dnsRowCount
+	case SourceEnvoy:
+		return &s.envoyRowCount
+	}
+
+	return nil
+}
+
+// applyDeletedRows iterates over the source values of a DELETE ...
+// RETURNING source result and decrements the matching counters.
+// Closes rows on return.
+func (s *Store) applyDeletedRows(rows *sql.Rows) {
+	defer func() { _ = rows.Close() }()
+
+	var total int64
+
+	for rows.Next() {
+		var source string
+
+		err := rows.Scan(&source)
+		if err != nil {
+			s.logger.Debug("retention: scanning pruned row source", slog.Any("err", err))
+			continue
+		}
+
+		total++
+
+		if c := s.sourceCounter(Source(source)); c != nil {
+			c.Add(-1)
+		}
+	}
+
+	err := rows.Err()
+	if err != nil {
+		s.logger.Debug("retention: iterating pruned rows", slog.Any("err", err))
+	}
+
+	if total > 0 {
+		s.rowCount.Add(-total)
+	}
+}
+
+// addPerSourceCounts increments (delta=+1) or decrements (delta=-1)
+// the per-source counters for every event in batch. Tallies locally
+// first so each counter takes one atomic op per batch instead of one
+// per event.
+func (s *Store) addPerSourceCounts(batch []Event, delta int64) {
+	var firewall, dns, envoy int64
+
+	for i := range batch {
+		switch batch[i].Source {
+		case SourceFirewall:
+			firewall++
+		case SourceDNS:
+			dns++
+		case SourceEnvoy:
+			envoy++
+		}
+	}
+
+	if firewall > 0 {
+		s.firewallRowCount.Add(delta * firewall)
+	}
+
+	if dns > 0 {
+		s.dnsRowCount.Add(delta * dns)
+	}
+
+	if envoy > 0 {
+		s.envoyRowCount.Add(delta * envoy)
+	}
+}
+
+// seedRowCounts populates the global and per-source row counters from
+// SQLite's current state. Called at [Open]; all four counters start at
+// zero before this returns successfully.
+func (s *Store) seedRowCounts(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT source, COUNT(*) FROM events GROUP BY source`)
+	if err != nil {
+		return fmt.Errorf("querying row counts by source: %w", err)
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	var total int64
+
+	for rows.Next() {
+		var (
+			source string
+			count  int64
+		)
+
+		err := rows.Scan(&source, &count)
+		if err != nil {
+			return fmt.Errorf("scanning row count: %w", err)
+		}
+
+		total += count
+
+		if c := s.sourceCounter(Source(source)); c != nil {
+			c.Store(count)
+		}
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return fmt.Errorf("iterating row counts: %w", err)
+	}
+
+	s.rowCount.Store(total)
+
+	return nil
 }
 
 // mintInstanceID generates a 16-hex-character ID from 8 random bytes.

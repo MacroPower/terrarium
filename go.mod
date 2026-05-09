@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/charmbracelet/fang v1.0.0
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
+	github.com/florianl/go-nflog/v2 v2.3.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/nftables v0.3.0
 	github.com/miekg/dns v1.1.72
@@ -45,8 +46,8 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
-	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
-	github.com/mdlayher/socket v0.5.0 // indirect
+	github.com/mdlayher/netlink v1.9.1-0.20260312172110-2a932c0fc1ae // indirect
+	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/mango v0.1.0 // indirect
 	github.com/muesli/mango-cobra v1.2.0 // indirect

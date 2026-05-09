@@ -8,6 +8,7 @@ import (
 	"github.com/google/nftables/expr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/firewall"
@@ -78,15 +79,20 @@ func ruleHasCtState(r *nftables.Rule) bool {
 	return false
 }
 
-// ruleHasLog reports whether a rule contains a Log expression.
-func ruleHasLog(r *nftables.Rule) bool {
+// findLog returns the *expr.Log expression in r, or nil if absent.
+func findLog(r *nftables.Rule) *expr.Log {
 	for _, e := range r.Exprs {
-		if _, ok := e.(*expr.Log); ok {
-			return true
+		if l, ok := e.(*expr.Log); ok {
+			return l
 		}
 	}
 
-	return false
+	return nil
+}
+
+// ruleHasLog reports whether a rule contains a Log expression.
+func ruleHasLog(r *nftables.Rule) bool {
+	return findLog(r) != nil
 }
 
 func TestApplyRules_Unrestricted(t *testing.T) {
@@ -2579,3 +2585,136 @@ func TestMatchMark_Bitmask(t *testing.T) {
 	assert.True(t, foundBitmaskMark,
 		"mangle_prerouting chain should have a bitmask mark match rule")
 }
+
+func TestApplyRules_LogRules_GateOnCtStateNew(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg *config.Config
+	}{
+		"unrestricted with logging": {
+			cfg: &config.Config{
+				Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}},
+			},
+		},
+		"blocked with logging": {
+			cfg: &config.Config{
+				Egress:  egressRules(config.EgressRule{}),
+				Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}},
+			},
+		},
+		"filtered with logging": {
+			cfg: &config.Config{
+				Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}},
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				}),
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tt.cfg, testUIDs)
+			require.NoError(t, err)
+
+			var logRules []*nftables.Rule
+			for _, r := range rec.rules {
+				if ruleHasLog(r) {
+					logRules = append(logRules, r)
+				}
+			}
+
+			require.NotEmpty(t, logRules,
+				"logging-enabled config must produce at least one log rule")
+
+			for i, r := range logRules {
+				assert.True(t, ruleHasCtState(r),
+					"log rule %d must gate on ct state new", i)
+			}
+		})
+	}
+}
+
+func TestApplyRules_LogRules_SyslogVsNFLog(t *testing.T) {
+	t.Parallel()
+
+	loggingOn := &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}}
+
+	tests := map[string]struct {
+		cfg          *config.Config
+		wantUseGroup bool
+		wantGroup    uint16
+	}{
+		"logging only -> syslog": {
+			cfg:          &config.Config{Logging: loggingOn},
+			wantUseGroup: false,
+		},
+		"stats + logging -> default group": {
+			cfg: &config.Config{
+				Logging: loggingOn,
+				Stats:   &config.Stats{Enabled: true},
+			},
+			wantUseGroup: true,
+			wantGroup:    config.DefaultStatsFirewallNFLogGroup,
+		},
+		"stats + logging + override -> custom group": {
+			cfg: &config.Config{
+				Logging: loggingOn,
+				Stats: &config.Stats{
+					Enabled:  true,
+					Firewall: &config.StatsFirewall{NFLogGroup: 9999},
+				},
+			},
+			wantUseGroup: true,
+			wantGroup:    9999,
+		},
+		"stats only without firewall logging -> no log rules": {
+			cfg:          &config.Config{Stats: &config.Stats{Enabled: true}},
+			wantUseGroup: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tt.cfg, testUIDs)
+			require.NoError(t, err)
+
+			var found bool
+			for _, r := range rec.rules {
+				log := findLog(r)
+				if log == nil {
+					continue
+				}
+
+				found = true
+
+				if tt.wantUseGroup {
+					assert.NotZero(t, log.Key&(1<<unix.NFTA_LOG_GROUP),
+						"NFLog mode must set NFTA_LOG_GROUP")
+					assert.Equal(t, tt.wantGroup, log.Group)
+				} else {
+					assert.Zero(t, log.Key&(1<<unix.NFTA_LOG_GROUP),
+						"syslog mode must not set NFTA_LOG_GROUP")
+					assert.Zero(t, log.Group)
+				}
+			}
+
+			if tt.cfg.Logging != nil && tt.cfg.Logging.Firewall != nil && tt.cfg.Logging.Firewall.Enabled {
+				assert.True(t, found, "logging-enabled config must emit log rules")
+			} else {
+				assert.False(t, found, "logging-disabled config must not emit log rules")
+			}
+		})
+	}
+}
+

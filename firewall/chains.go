@@ -1231,7 +1231,7 @@ func addCatchAllFQDNRules(
 // traffic (Envoy UID, root DNS proxy) passes through unaffected.
 // In VM mode, explicit Envoy and root ACCEPT rules are added
 // because matchFilteredTraffic matches all UIDs.
-func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UIDs) {
+func addPostroutingGuard(conn Conn, table *nftables.Table, emitter logEmitter, uids UIDs) {
 	policy := nftables.ChainPolicyAccept
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "postrouting_guard",
@@ -1296,16 +1296,8 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 		})
 	}
 
-	if logging {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				trafficMatch,
-				notMatchOIFName("lo"),
-				logPrefix(logprefix.Encode(logprefix.KindLeak, -1)),
-			),
-		})
-	}
+	emitter.emit(conn, table, chain, logprefix.KindLeak, -1,
+		trafficMatch, notMatchOIFName("lo"))
 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,

@@ -495,6 +495,51 @@ stats:
 `,
 			err: config.ErrStatsRetentionInvalid,
 		},
+		"firewall nflogGroup explicit": {
+			yaml: `
+stats:
+  enabled: true
+  firewall:
+    nflogGroup: 9999
+`,
+			wantEnabled:  true,
+			wantMaxAge:   720 * time.Hour,
+			wantMaxRows:  1_000_000,
+			wantSocket:   "/run/terrarium/accesslog.sock",
+			wantBufBytes: 16384,
+			wantFlushMs:  1000,
+		},
+		"perSource explicit caps": {
+			yaml: `
+stats:
+  enabled: true
+  retention:
+    perSource:
+      firewall: 50000
+      dns: 100
+      envoy: 200
+`,
+			wantEnabled:     true,
+			wantMaxAge:      0,
+			wantMaxRows:     0,
+			wantSocket:      "/run/terrarium/accesslog.sock",
+			wantBufBytes:    16384,
+			wantFlushMs:     1000,
+			retentionWasSet: true,
+		},
+		"explicit empty perSource opts out": {
+			yaml: `
+stats:
+  enabled: true
+  retention:
+    perSource: {}
+`,
+			wantEnabled:     true,
+			wantSocket:      "/run/terrarium/accesslog.sock",
+			wantBufBytes:    16384,
+			wantFlushMs:     1000,
+			retentionWasSet: true,
+		},
 	}
 
 	for name, tt := range tests {
@@ -525,6 +570,146 @@ stats:
 			}
 
 			_ = tt.want
+		})
+	}
+}
+
+func TestStatsFirewallNFLogGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		want uint16
+	}{
+		"absent stats -> default": {
+			yaml: `{}`,
+			want: config.DefaultStatsFirewallNFLogGroup,
+		},
+		"absent firewall -> default": {
+			yaml: `
+stats:
+  enabled: true
+`,
+			want: config.DefaultStatsFirewallNFLogGroup,
+		},
+		"explicit zero falls back to default": {
+			yaml: `
+stats:
+  enabled: true
+  firewall:
+    nflogGroup: 0
+`,
+			want: config.DefaultStatsFirewallNFLogGroup,
+		},
+		"explicit value": {
+			yaml: `
+stats:
+  enabled: true
+  firewall:
+    nflogGroup: 12345
+`,
+			want: 12345,
+		},
+		"max uint16": {
+			yaml: `
+stats:
+  enabled: true
+  firewall:
+    nflogGroup: 65535
+`,
+			want: 65535,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.StatsFirewallNFLogGroup())
+		})
+	}
+}
+
+func TestStatsFirewallNFLogGroupOverflowRejected(t *testing.T) {
+	t.Parallel()
+
+	yaml := `
+stats:
+  enabled: true
+  firewall:
+    nflogGroup: 65536
+`
+
+	_, err := config.ParseConfig(t.Context(), []byte(yaml))
+	require.Error(t, err, "uint16 overflow must be rejected at parse time")
+}
+
+func TestStatsRetentionPerSource(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		want config.PerSourceRetention
+	}{
+		"absent retention defaults firewall=200000": {
+			yaml: `
+stats:
+  enabled: true
+`,
+			want: config.PerSourceRetention{Firewall: config.DefaultStatsRetentionFirewall},
+		},
+		"retention without perSource defaults firewall=200000": {
+			yaml: `
+stats:
+  enabled: true
+  retention:
+    maxAge: 24h
+`,
+			want: config.PerSourceRetention{Firewall: config.DefaultStatsRetentionFirewall},
+		},
+		"explicit empty perSource opts out": {
+			yaml: `
+stats:
+  enabled: true
+  retention:
+    perSource: {}
+`,
+			want: config.PerSourceRetention{},
+		},
+		"explicit firewall=0 opts firewall out": {
+			yaml: `
+stats:
+  enabled: true
+  retention:
+    perSource:
+      firewall: 0
+      dns: 100
+`,
+			want: config.PerSourceRetention{DNS: 100},
+		},
+		"all sources set": {
+			yaml: `
+stats:
+  enabled: true
+  retention:
+    perSource:
+      firewall: 1000
+      dns: 2000
+      envoy: 3000
+`,
+			want: config.PerSourceRetention{Firewall: 1000, DNS: 2000, Envoy: 3000},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.StatsRetentionPerSource())
 		})
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/eventstore"
 	"go.jacobcolvin.com/terrarium/firewall"
+	"go.jacobcolvin.com/terrarium/nflog"
 	"go.jacobcolvin.com/terrarium/sysctl"
 )
 
@@ -79,29 +80,38 @@ func ParseUpstreamDNS(resolvConf string) string {
 // infra holds the running infrastructure components started by
 // [setupInfrastructure]. The caller owns cleanup via [shutdown].
 type infra struct {
-	envoyCmd     *exec.Cmd
-	dnsProxy     *dnsproxy.Proxy
-	eventStore   *eventstore.Store
-	accessLog    *accesslog.Server
-	conn         firewall.Conn
-	dnsCache     *dnscache.Cache
-	drainTimeout time.Duration
+	envoyCmd    *exec.Cmd
+	dnsProxy    *dnsproxy.Proxy
+	eventStore  *eventstore.Store
+	accessLog   *accesslog.Server
+	conn        firewall.Conn
+	dnsCache    *dnscache.Cache
+	nflogReader *nflog.Reader
+	nflogCancel context.CancelFunc
 
 	// boundStats records the stats config the [eventstore.Store]
 	// and [accesslog.Server] were bound to at process start. Reload
 	// diffs against it and warns on path/socket/enabled changes,
 	// which require a process restart.
 	boundStats boundStats
+
+	drainTimeout time.Duration
 }
 
-// boundStats holds the startup-only fields of the stats config: path
+// boundStats holds the startup-only fields of the stats config. path
 // and socket name the on-disk database and gRPC ALS UDS, which a
-// running process cannot rebind, and enabled gates both. Buffer
-// sizing is omitted because reload always restarts Envoy.
+// running process cannot rebind; enabled gates both. Buffer sizing is
+// omitted because reload always restarts Envoy.
+//
+// nflogGroup is captured from [config.Config.StatsFirewallNFLogGroup]
+// at bind time. A running reader cannot rebind the netlink socket
+// without dropping events, so reload rejects the new config when this
+// changes.
 type boundStats struct {
-	enabled bool
-	path    string
-	socket  string
+	path       string
+	socket     string
+	nflogGroup uint16
+	enabled    bool
 }
 
 // setupInfrastructure performs the shared initialization sequence:
@@ -187,11 +197,73 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		return nil, fmt.Errorf("creating nftables connection: %w", err)
 	}
 
-	// VM mode: verify boot-time tables exist before ApplyRules
-	// deletes and recreates the terrarium table.
+	// VM mode: verify boot-time tables exist before any rule swap.
+	// Run before ApplyRules deletes and recreates the terrarium table.
 	if uids.VMMode {
 		firewall.CheckBootTables(ctx, conn)
 	}
+
+	// Open the event store before binding nflog or applying rules.
+	// A failure here logs and disables ingestion. The data plane
+	// never blocks on stats.
+	store := openEventStore(ctx, cfg, usr, uids)
+
+	var storeCleanedUp bool
+
+	defer func() {
+		if storeCleanedUp {
+			return
+		}
+
+		closeErr := store.Close()
+		if closeErr != nil {
+			slog.DebugContext(ctx, "closing event store on init failure", slog.Any("err", closeErr))
+		}
+	}()
+
+	// Reverse-attribution cache for nflog ingestion. Lives on
+	// [*infra] so it survives reload (the recreated DNS proxy gets
+	// the same cache reference).
+	dnsCache := dnscache.New()
+
+	var dnsCacheCleanedUp bool
+
+	defer func() {
+		if dnsCacheCleanedUp {
+			return
+		}
+
+		dnsCache.Close()
+	}()
+
+	// Bind the nflog reader before ApplyRules so the kernel has a
+	// netlink listener as soon as the new `log group N prefix`
+	// rules go live. Without it, early packets are silently
+	// dropped. Bind failure is fatal in daemon mode (vmMode=true)
+	// and tolerated in init mode.
+	nflogReader, nflogCancel, err := openNflog(ctx, cfg, store, dnsCache, uids.VMMode)
+	if err != nil {
+		return nil, fmt.Errorf("opening nflog reader: %w", err)
+	}
+
+	var nflogCleanedUp bool
+
+	defer func() {
+		if nflogCleanedUp {
+			return
+		}
+
+		if nflogCancel != nil {
+			nflogCancel()
+		}
+
+		if nflogReader != nil {
+			closeErr := nflogReader.Close()
+			if closeErr != nil {
+				slog.DebugContext(ctx, "closing nflog reader on init failure", slog.Any("err", closeErr))
+			}
+		}
+	}()
 
 	slog.InfoContext(ctx, "applying nftables firewall rules")
 
@@ -253,40 +325,6 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	if err != nil {
 		return nil, fmt.Errorf("creating DNS proxy nftables connection: %w", err)
 	}
-
-	// Open the event store before starting the DNS proxy so the
-	// first terminal-branch query is captured. A failure here logs
-	// and disables ingestion; the data plane never blocks on
-	// stats.
-	store := openEventStore(ctx, cfg, usr, uids)
-
-	var storeCleanedUp bool
-
-	defer func() {
-		if storeCleanedUp {
-			return
-		}
-
-		closeErr := store.Close()
-		if closeErr != nil {
-			slog.DebugContext(ctx, "closing event store on init failure", slog.Any("err", closeErr))
-		}
-	}()
-
-	// Reverse-attribution cache for nflog ingestion. Lives on
-	// [*infra] so it survives reload (the recreated DNS proxy gets
-	// the same cache reference).
-	dnsCache := dnscache.New()
-
-	var dnsCacheCleanedUp bool
-
-	defer func() {
-		if dnsCacheCleanedUp {
-			return
-		}
-
-		dnsCache.Close()
-	}()
 
 	// Bind the gRPC ALS UDS before Envoy boots so its first stream
 	// connect succeeds. A failure here logs and disables ingestion;
@@ -358,6 +396,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	accessLogCleanedUp = true
 	storeCleanedUp = true
 	dnsCacheCleanedUp = true
+	nflogCleanedUp = true
 
 	// Signal readiness by creating a file at the requested path.
 	if usr.ReadyFile != "" {
@@ -379,13 +418,73 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		accessLog:    accessLogSrv,
 		conn:         conn,
 		dnsCache:     dnsCache,
+		nflogReader:  nflogReader,
+		nflogCancel:  nflogCancel,
 		drainTimeout: envoySettings.DrainTimeout.Duration,
 		boundStats: boundStats{
-			enabled: cfg.StatsEnabled(),
-			path:    cfg.StatsPath(config.StatsDBDefault()),
-			socket:  cfg.StatsSocket(),
+			enabled:    cfg.StatsEnabled(),
+			path:       cfg.StatsPath(config.StatsDBDefault()),
+			socket:     cfg.StatsSocket(),
+			nflogGroup: cfg.StatsFirewallNFLogGroup(),
 		},
 	}, nil
+}
+
+// openNflog binds the nfnetlink_log reader when stats and firewall
+// logging are both enabled. Returns (nil, nil, nil) when either is
+// disabled. On bind failure, returns an error in daemon mode
+// (`vmMode=true`) so the system-wide host fails fast. In init mode it
+// logs and returns (nil, nil, nil) so the per-container workload
+// still starts when CAP_NET_ADMIN is flaky.
+//
+// The asymmetry has a side effect worth knowing about: the firewall's
+// `log group N` directive does not consult the bind status, so an
+// init-mode bind failure with stats enabled drops firewall events on
+// the floor. The result is a startup warning and no event rows.
+//
+// The returned [context.CancelFunc] stops the goroutine running
+// [Reader.Run].
+func openNflog(
+	ctx context.Context, cfg *config.Config, store *eventstore.Store,
+	resolver nflog.Resolver, vmMode bool,
+) (*nflog.Reader, context.CancelFunc, error) {
+	if !cfg.StatsEnabled() || !cfg.FirewallLoggingEnabled() {
+		return nil, nil, nil
+	}
+
+	group := cfg.StatsFirewallNFLogGroup()
+
+	reader, err := nflog.New(group, store, resolver)
+	if err != nil {
+		if vmMode {
+			return nil, nil, fmt.Errorf("binding nflog group %d: %w", group, err)
+		}
+
+		slog.WarnContext(ctx, "stats: opening nflog reader, firewall ingestion disabled",
+			slog.Uint64("group", uint64(group)),
+			slog.Any("err", err),
+		)
+
+		return nil, nil, nil
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+
+	go func() {
+		runErr := reader.Run(runCtx)
+		if runErr != nil {
+			slog.WarnContext(runCtx, "nflog reader exited",
+				slog.Uint64("group", uint64(group)),
+				slog.Any("err", runErr),
+			)
+		}
+	}()
+
+	slog.InfoContext(ctx, "stats: nflog reader bound",
+		slog.Uint64("group", uint64(group)),
+	)
+
+	return reader, cancel, nil
 }
 
 // openAccessLog binds the gRPC AccessLog UDS when stats is enabled.
@@ -437,11 +536,17 @@ func openEventStore(
 		slog.WarnContext(ctx, "stats: parsing UID", slog.Any("err", err))
 	}
 
+	perSource := cfg.StatsRetentionPerSource()
 	opts := []eventstore.Option{
 		eventstore.WithMode(mode),
 		eventstore.WithRetention(eventstore.Retention{
 			MaxAge:  cfg.StatsRetentionMaxAge(),
 			MaxRows: cfg.StatsRetentionMaxRows(),
+			PerSource: eventstore.PerSourceCaps{
+				Firewall: perSource.Firewall,
+				DNS:      perSource.DNS,
+				Envoy:    perSource.Envoy,
+			},
 		}),
 	}
 
@@ -584,12 +689,13 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	return &ExitError{Code: exitCode}
 }
 
-// shutdown performs the full cleanup sequence in order: Envoy first
-// (with drain wait), then the gRPC access-log server so no late
-// stream pushes events into a stale store, then DNS proxy, then
-// nftables, and finally the event store so any final batched writes
-// flush. Stopping Envoy before DNS lets in-flight requests resolve
-// during Envoy's drain period. A nil [*infra] is a no-op.
+// shutdown performs cleanup in order: Envoy first (with drain wait),
+// then the gRPC access-log server so no late stream pushes events
+// into a stale store, then DNS proxy, then nftables, then the nflog
+// reader so it sees no further kernel events, and finally the event
+// store so any pending batched writes flush. Stopping Envoy before
+// DNS lets in-flight requests resolve during Envoy's drain period.
+// A nil [*infra] is a no-op.
 func shutdown(ctx context.Context, inf *infra) {
 	if inf == nil {
 		return
@@ -607,6 +713,19 @@ func shutdown(ctx context.Context, inf *infra) {
 		err := firewall.Cleanup(ctx, inf.conn)
 		if err != nil {
 			slog.DebugContext(ctx, "cleaning up firewall on shutdown", slog.Any("err", err))
+		}
+	}
+
+	// Stop the nflog reader after the firewall is torn down so the
+	// kernel emits no further events into a closing socket.
+	if inf.nflogCancel != nil {
+		inf.nflogCancel()
+	}
+
+	if inf.nflogReader != nil {
+		err := inf.nflogReader.Close()
+		if err != nil {
+			slog.DebugContext(ctx, "closing nflog reader on shutdown", slog.Any("err", err))
 		}
 	}
 

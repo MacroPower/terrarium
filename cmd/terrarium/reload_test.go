@@ -81,6 +81,67 @@ func TestDaemonReloadMissingPIDFile(t *testing.T) {
 	assert.ErrorContains(t, err, "reading PID file")
 }
 
+func TestValidateStartupOnlyStatsChanges(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		bound boundStats
+		cfg   *config.Config
+		want  error
+	}{
+		"stats disabled, group differs, no error": {
+			bound: boundStats{enabled: false, nflogGroup: 5000},
+			cfg: &config.Config{
+				Stats: &config.Stats{
+					Enabled:  false,
+					Firewall: &config.StatsFirewall{NFLogGroup: 6000},
+				},
+			},
+			want: nil,
+		},
+		"stats enabled, group matches, no error": {
+			bound: boundStats{enabled: true, nflogGroup: 5000},
+			cfg: &config.Config{
+				Stats: &config.Stats{
+					Enabled:  true,
+					Firewall: &config.StatsFirewall{NFLogGroup: 5000},
+				},
+			},
+			want: nil,
+		},
+		"stats enabled, group changed, error": {
+			bound: boundStats{enabled: true, nflogGroup: 5000},
+			cfg: &config.Config{
+				Stats: &config.Stats{
+					Enabled:  true,
+					Firewall: &config.StatsFirewall{NFLogGroup: 7000},
+				},
+			},
+			want: ErrReloadNFLogGroupChanged,
+		},
+		"stats enabled, default vs explicit default match": {
+			bound: boundStats{enabled: true, nflogGroup: config.DefaultStatsFirewallNFLogGroup},
+			cfg: &config.Config{
+				Stats: &config.Stats{Enabled: true},
+			},
+			want: nil,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateStartupOnlyStatsChanges(t.Context(), tt.bound, tt.cfg)
+			if tt.want != nil {
+				require.ErrorIs(t, err, tt.want)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestDaemonReloadStalePID(t *testing.T) {
 	t.Parallel()
 

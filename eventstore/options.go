@@ -52,6 +52,26 @@ type Retention struct {
 
 	// MaxRows caps the row count after each batch insert.
 	MaxRows int64
+
+	// PerSource caps row counts per [Source] before the global
+	// MaxRows bound. A zero on a field means that source has no
+	// per-source cap.
+	PerSource PerSourceCaps
+}
+
+// PerSourceCaps is the row cap for each event [Source]. A zero leaves
+// that source uncapped, subject only to the global [Retention.MaxRows];
+// a positive value caps that source independently regardless of the
+// global bound.
+type PerSourceCaps struct {
+	// Firewall caps rows where source = [SourceFirewall].
+	Firewall int64
+
+	// DNS caps rows where source = [SourceDNS].
+	DNS int64
+
+	// Envoy caps rows where source = [SourceEnvoy].
+	Envoy int64
 }
 
 // Default option values.

@@ -15,6 +15,56 @@ import (
 	"go.jacobcolvin.com/terrarium/firewall/logprefix"
 )
 
+// logEmitter selects the destination for a firewall log expression:
+// syslog via `log prefix "..."`, or nfnetlink_log group N via
+// `log group N prefix "..."` (consumed by [nflog.Reader] in userspace).
+//
+// Built once at [ApplyRules] entry from the parsed [*config.Config]
+// and threaded through the per-mode rule helpers.
+type logEmitter struct {
+	enabled  bool
+	useGroup bool
+	group    uint16
+}
+
+// expr returns the nftables log expressions for prefix. Callers gate
+// emission on [logEmitter.enabled] before calling.
+func (le logEmitter) expr(prefix string) []expr.Any {
+	if le.useGroup {
+		return logGroupPrefix(le.group, prefix)
+	}
+
+	return logPrefix(prefix)
+}
+
+// emit appends a `ct state new` log rule for kind+ruleIdx to chain
+// when the emitter is enabled. extra match expressions are prepended
+// for rules that need extra scoping (e.g. the postrouting guard's
+// UID and non-loopback predicates). No-op when the emitter is disabled.
+// ruleIdx<0 encodes a catch-all (no `rule=N` segment in the
+// [logprefix] payload).
+//
+//nolint:unparam // ruleIdx is part of the [logprefix] contract; current call sites are catch-alls.
+func (le logEmitter) emit(
+	conn Conn, table *nftables.Table, chain *nftables.Chain,
+	kind logprefix.Kind, ruleIdx int, extra ...[]expr.Any,
+) {
+	if !le.enabled {
+		return
+	}
+
+	groups := append([]([]expr.Any){}, extra...)
+	groups = append(groups,
+		matchCtState(expr.CtStateBitNEW),
+		le.expr(logprefix.Encode(kind, ruleIdx)),
+	)
+
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(groups...),
+	})
+}
+
 // CheckBootTables verifies that both boot-time nftables tables exist
 // before the daemon replaces them with policy rules. In VM mode, the
 // host is expected to create these tables at boot (e.g., via NixOS
@@ -54,13 +104,19 @@ func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) e
 		Family: nftables.TableFamilyINet,
 	})
 
+	emitter := logEmitter{
+		enabled:  cfg.FirewallLoggingEnabled(),
+		useGroup: cfg.StatsEnabled() && cfg.FirewallLoggingEnabled(),
+		group:    cfg.StatsFirewallNFLogGroup(),
+	}
+
 	switch {
 	case cfg.IsEgressUnrestricted():
-		addUnrestrictedRules(conn, table, cfg, uids)
+		addUnrestrictedRules(conn, table, cfg, uids, emitter)
 	case cfg.IsEgressBlocked():
-		addBlockedRules(conn, table, cfg, uids)
+		addBlockedRules(conn, table, cfg, uids, emitter)
 	default:
-		err := addFilterRules(ctx, conn, table, cfg, uids)
+		err := addFilterRules(ctx, conn, table, cfg, uids, emitter)
 		if err != nil {
 			return err
 		}
@@ -132,7 +188,7 @@ func UpdateFQDNSet(conn *nftables.Conn, setName string, ips []net.IP, ttl time.D
 	return nil
 }
 
-func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
+func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs, emitter logEmitter) {
 	policy := nftables.ChainPolicyDrop
 	outputChain := conn.AddChain(&nftables.Chain{
 		Name:     "output",
@@ -146,12 +202,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	addOutputBaseRules(conn, table, outputChain, 0)
 	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
-	if cfg.FirewallLoggingEnabled() {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix(logprefix.Encode(logprefix.KindAllow, -1))),
-		})
-	}
+	emitter.emit(conn, table, outputChain, logprefix.KindAllow, -1)
 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: outputChain,
@@ -174,10 +225,10 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
-	addPostroutingGuard(conn, table, cfg.FirewallLoggingEnabled(), uids)
+	addPostroutingGuard(conn, table, emitter, uids)
 }
 
-func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
+func addBlockedRules(conn Conn, table *nftables.Table, _ *config.Config, uids UIDs, emitter logEmitter) {
 	// VM mode: FORWARD chain with only established/related ACCEPT
 	// (all new forwarded traffic is dropped for fail-closed semantics).
 	if uids.VMMode {
@@ -210,12 +261,7 @@ func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids 
 
 	addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 
-	if cfg.FirewallLoggingEnabled() {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix(logprefix.Encode(logprefix.KindDeny, -1))),
-		})
-	}
+	emitter.emit(conn, table, outputChain, logprefix.KindDeny, -1)
 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: outputChain,
@@ -252,7 +298,10 @@ type setRef struct {
 	set4, set6 *nftables.Set
 }
 
-func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) error {
+func addFilterRules(
+	ctx context.Context, conn Conn, table *nftables.Table,
+	cfg *config.Config, uids UIDs, emitter logEmitter,
+) error {
 	resolvedPorts := cfg.ResolvePorts(ctx)
 	cidr4, cidr6 := cfg.ResolveCIDRRules(ctx)
 	allCIDRs := slices.Concat(cidr4, cidr6)
@@ -414,12 +463,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 		addOutputEstablishedAndICMP(conn, table, outputChain, uids)
 	}
 
-	if cfg.FirewallLoggingEnabled() {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix(logprefix.Encode(logprefix.KindDeny, -1))),
-		})
-	}
+	emitter.emit(conn, table, outputChain, logprefix.KindDeny, -1)
 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: outputChain,
@@ -471,12 +515,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 			catchAllFQDNRules, catchAllSets, uids)
 	}
 
-	if cfg.FirewallLoggingEnabled() {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: terrariumChain,
-			Exprs: flatExprs(logPrefix(logprefix.Encode(logprefix.KindDeny, -1))),
-		})
-	}
+	emitter.emit(conn, table, terrariumChain, logprefix.KindDeny, -1)
 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: terrariumChain,
@@ -499,7 +538,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
-	addPostroutingGuard(conn, table, cfg.FirewallLoggingEnabled(), uids)
+	addPostroutingGuard(conn, table, emitter, uids)
 
 	return nil
 }

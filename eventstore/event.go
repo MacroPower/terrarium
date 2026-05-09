@@ -12,6 +12,10 @@ const (
 
 	// SourceEnvoy marks an event emitted by Envoy via gRPC ALS.
 	SourceEnvoy Source = "envoy"
+
+	// SourceFirewall marks an event emitted by the nflog reader
+	// from a kernel `log group` directive.
+	SourceFirewall Source = "firewall"
 )
 
 // Decision categorizes the policy outcome captured by an [Event].
@@ -46,6 +50,12 @@ const (
 	// ReasonUpstream is set on DNS error events when the upstream
 	// resolver returned a non-timeout error.
 	ReasonUpstream Reason = "upstream"
+
+	// ReasonPostroutingGuard is set on firewall deny events captured
+	// by the postrouting leak guard chain (traffic that escaped the
+	// NAT REDIRECT / TPROXY redirection and tried to leave on a
+	// non-loopback interface).
+	ReasonPostroutingGuard Reason = "postrouting-guard"
 )
 
 // Protocol is the upper-layer protocol tag written to [Event.Protocol].
@@ -64,6 +74,17 @@ const (
 	// ProtocolTCP marks events translated from Envoy
 	// TCPAccessLogEntry messages.
 	ProtocolTCP Protocol = "tcp"
+
+	// ProtocolUDP marks UDP traffic captured by the nflog reader.
+	ProtocolUDP Protocol = "udp"
+
+	// ProtocolICMP marks IPv4 ICMP traffic captured by the nflog
+	// reader.
+	ProtocolICMP Protocol = "icmp"
+
+	// ProtocolICMPv6 marks IPv6 ICMP traffic captured by the nflog
+	// reader.
+	ProtocolICMPv6 Protocol = "icmpv6"
 )
 
 // Event is one captured egress decision. Fields mirror the columns of
