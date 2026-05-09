@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -60,6 +61,7 @@ type Proxy struct {
 	cancel           context.CancelFunc
 	fqdnSetFunc      func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error
 	eventStore       *eventstore.Store
+	reverseCache     ReverseCache
 	udp4             *dns.Server
 	udp6             *dns.Server
 	tcp4             *dns.Server
@@ -77,6 +79,21 @@ type Proxy struct {
 	vmMode           bool
 }
 
+// ReverseCache is the subset of the dnscache.Cache surface the DNS
+// proxy needs. The interface lives here so the proxy can populate
+// the cache without importing dnscache, which would otherwise pull
+// in the netlink-adjacent firewall set update path through reload
+// wiring.
+//
+// Implementations must be safe for concurrent use. The proxy calls
+// [ReverseCache.Add] from each handler goroutine.
+type ReverseCache interface {
+	// Add records that ip resolved to qname for at least ttl. The
+	// proxy passes [netip.Addr.Unmap]'d keys, so implementations may
+	// assume the canonical 4-byte form for v4 addresses.
+	Add(ip netip.Addr, qname string, ttl time.Duration)
+}
+
 // Option configures optional behavior of a [Proxy].
 //
 // The following options are available:
@@ -85,6 +102,7 @@ type Proxy struct {
 //   - [WithFQDNSetFunc]
 //   - [WithVMMode]
 //   - [WithEventStore]
+//   - [WithReverseCache]
 type Option func(*Proxy)
 
 // WithClientTimeout overrides the default 10-second upstream DNS
@@ -123,6 +141,16 @@ func WithVMMode() Option {
 func WithEventStore(s *eventstore.Store) Option {
 	return func(p *Proxy) {
 		p.eventStore = s
+	}
+}
+
+// WithReverseCache wires the proxy to a [ReverseCache]. The proxy
+// populates it synchronously on every successful resolution, before
+// the answer is written to the client. A nil cache disables
+// population. An [Option].
+func WithReverseCache(c ReverseCache) Option {
+	return func(p *Proxy) {
+		p.reverseCache = c
 	}
 }
 
@@ -631,6 +659,25 @@ func (p *Proxy) populateFQDNSets(qname string, resp *dns.Msg, ruleIndices []int,
 
 	if len(v4IPs) == 0 && len(v6IPs) == 0 {
 		return
+	}
+
+	// Populate the reverse-attribution cache before mutating any
+	// nftables set so a downstream consumer attributing logged
+	// packets sees the qname for the workload's first SYN. This
+	// runs synchronously on the handler goroutine, before WriteMsg
+	// in handleQuery.
+	if p.reverseCache != nil {
+		for _, ip := range v4IPs {
+			if a, ok := netip.AddrFromSlice(ip.To4()); ok {
+				p.reverseCache.Add(a.Unmap(), qname, ttl)
+			}
+		}
+
+		for _, ip := range v6IPs {
+			if a, ok := netip.AddrFromSlice(ip.To16()); ok {
+				p.reverseCache.Add(a.Unmap(), qname, ttl)
+			}
+		}
 	}
 
 	// Update each matching rule's sets.

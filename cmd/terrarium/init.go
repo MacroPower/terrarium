@@ -22,6 +22,7 @@ import (
 	"go.jacobcolvin.com/terrarium/accesslog"
 	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/dnscache"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/eventstore"
 	"go.jacobcolvin.com/terrarium/firewall"
@@ -83,6 +84,7 @@ type infra struct {
 	eventStore   *eventstore.Store
 	accessLog    *accesslog.Server
 	conn         firewall.Conn
+	dnsCache     *dnscache.Cache
 	drainTimeout time.Duration
 
 	// boundStats records the stats config the [eventstore.Store]
@@ -271,6 +273,21 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		}
 	}()
 
+	// Reverse-attribution cache for nflog ingestion. Lives on
+	// [*infra] so it survives reload (the recreated DNS proxy gets
+	// the same cache reference).
+	dnsCache := dnscache.New()
+
+	var dnsCacheCleanedUp bool
+
+	defer func() {
+		if dnsCacheCleanedUp {
+			return
+		}
+
+		dnsCache.Close()
+	}()
+
 	// Bind the gRPC ALS UDS before Envoy boots so its first stream
 	// connect succeeds. A failure here logs and disables ingestion;
 	// the bootstrap will be regenerated without an access logger.
@@ -295,6 +312,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 			return firewall.UpdateFQDNSet(dnsConn, setName, ips, ttl)
 		}),
 		dnsproxy.WithEventStore(store),
+		dnsproxy.WithReverseCache(dnsCache),
 	}
 
 	if uids.VMMode {
@@ -339,6 +357,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	dnsProxyCleanedUp = true
 	accessLogCleanedUp = true
 	storeCleanedUp = true
+	dnsCacheCleanedUp = true
 
 	// Signal readiness by creating a file at the requested path.
 	if usr.ReadyFile != "" {
@@ -359,6 +378,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		eventStore:   store,
 		accessLog:    accessLogSrv,
 		conn:         conn,
+		dnsCache:     dnsCache,
 		drainTimeout: envoySettings.DrainTimeout.Duration,
 		boundStats: boundStats{
 			enabled: cfg.StatsEnabled(),
@@ -595,6 +615,10 @@ func shutdown(ctx context.Context, inf *infra) {
 	err := inf.eventStore.Close()
 	if err != nil {
 		slog.DebugContext(ctx, "closing event store on shutdown", slog.Any("err", err))
+	}
+
+	if inf.dnsCache != nil {
+		inf.dnsCache.Close()
 	}
 }
 

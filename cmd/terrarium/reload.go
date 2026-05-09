@@ -205,6 +205,9 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 		// Reuse the existing eventstore handle. stats.path,
 		// stats.socket, stats.enabled are startup-only.
 		dnsproxy.WithEventStore(inf.eventStore),
+		// Reuse the existing reverse cache so attribution state
+		// survives reload. The cache is never recreated here.
+		dnsproxy.WithReverseCache(inf.dnsCache),
 	}
 
 	warnStartupOnlyStatsChanges(ctx, inf.boundStats, cfg)

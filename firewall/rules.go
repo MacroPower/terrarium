@@ -12,6 +12,7 @@ import (
 	"github.com/google/nftables/expr"
 
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/firewall/logprefix"
 )
 
 // CheckBootTables verifies that both boot-time nftables tables exist
@@ -148,7 +149,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	if cfg.FirewallLoggingEnabled() {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix("TERRARIUM_ALLOW: ")),
+			Exprs: flatExprs(logPrefix(logprefix.Encode(logprefix.KindAllow, -1))),
 		})
 	}
 
@@ -212,7 +213,7 @@ func addBlockedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids 
 	if cfg.FirewallLoggingEnabled() {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
+			Exprs: flatExprs(logPrefix(logprefix.Encode(logprefix.KindDeny, -1))),
 		})
 	}
 
@@ -416,7 +417,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 	if cfg.FirewallLoggingEnabled() {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: outputChain,
-			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
+			Exprs: flatExprs(logPrefix(logprefix.Encode(logprefix.KindDeny, -1))),
 		})
 	}
 
@@ -473,7 +474,7 @@ func addFilterRules(ctx context.Context, conn Conn, table *nftables.Table, cfg *
 	if cfg.FirewallLoggingEnabled() {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: terrariumChain,
-			Exprs: flatExprs(logPrefix("TERRARIUM_DROP: ")),
+			Exprs: flatExprs(logPrefix(logprefix.Encode(logprefix.KindDeny, -1))),
 		})
 	}
 

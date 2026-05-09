@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/firewall/logprefix"
 )
 
 // matchFilteredTraffic returns UID-match expressions that scope a
@@ -1301,7 +1302,7 @@ func addPostroutingGuard(conn Conn, table *nftables.Table, logging bool, uids UI
 			Exprs: flatExprs(
 				trafficMatch,
 				notMatchOIFName("lo"),
-				logPrefix("TERRARIUM_EGRESS_LEAK: "),
+				logPrefix(logprefix.Encode(logprefix.KindLeak, -1)),
 			),
 		})
 	}

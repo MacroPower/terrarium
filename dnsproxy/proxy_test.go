@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1136,4 +1137,77 @@ func TestProxyBlockedModeEmitsDeny(t *testing.T) {
 
 	assert.Equal(t, "deny", decision)
 	assert.Equal(t, "blocked-mode", reason)
+}
+
+// fakeReverseCache records [dnsproxy.ReverseCache.Add] calls.
+type fakeReverseCache struct {
+	mu    sync.Mutex
+	calls []reverseCall
+}
+
+type reverseCall struct {
+	ip    netip.Addr
+	qname string
+	ttl   time.Duration
+}
+
+func (f *fakeReverseCache) Add(ip netip.Addr, qname string, ttl time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.calls = append(f.calls, reverseCall{ip: ip, qname: qname, ttl: ttl})
+}
+
+func (f *fakeReverseCache) snapshot() []reverseCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]reverseCall, len(f.calls))
+	copy(out, f.calls)
+
+	return out
+}
+
+func TestProxyPopulatesReverseCache(t *testing.T) {
+	t.Parallel()
+
+	upstream := dnstest.StartServer(t, "10.20.30.40")
+
+	cfg := &config.Config{
+		Egress: egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchName: "rev.example.com"}},
+			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "UDP"}}}},
+		}),
+	}
+
+	cache := &fakeReverseCache{}
+
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+		dnsproxy.WithFQDNSetFunc(func(_ context.Context, _ string, _ []net.IP, _ time.Duration) error {
+			return nil
+		}),
+		dnsproxy.WithReverseCache(cache),
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
+
+	// TCP to avoid UDP flakes some sandboxes exhibit on loopback.
+	client := &dns.Client{Net: "tcp"}
+	msg := new(dns.Msg)
+	msg.SetQuestion("rev.example.com.", dns.TypeA)
+
+	resp, _, err := client.Exchange(msg, proxy.Addr)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+	require.Len(t, resp.Answer, 1)
+
+	calls := cache.snapshot()
+	require.Len(t, calls, 1)
+
+	want := netip.MustParseAddr("10.20.30.40")
+	assert.Equal(t, want, calls[0].ip, "stored ip must be Unmap-canonical v4 form")
+	assert.Equal(t, "rev.example.com.", calls[0].qname, "stored qname is the as-received DNS name")
+	assert.Greater(t, calls[0].ttl, time.Duration(0), "ttl must be positive")
 }
