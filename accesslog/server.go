@@ -26,20 +26,23 @@ import (
 //
 //   - [WithLogger]
 //   - [WithSocketMode]
+//   - [WithSocketOwner]
 type Option func(*serverOptions)
 
 // serverOptions holds resolved values configured by [Option] funcs.
 type serverOptions struct {
-	logger     *slog.Logger
-	socketMode os.FileMode
+	logger         *slog.Logger
+	socketMode     os.FileMode
+	socketOwnerUID int
 }
 
 // defaultServerOptions returns the option set used when [Start] is
 // called without explicit options.
 func defaultServerOptions() serverOptions {
 	return serverOptions{
-		logger:     slog.Default(),
-		socketMode: 0o755,
+		logger:         slog.Default(),
+		socketMode:     0o660,
+		socketOwnerUID: -1,
 	}
 }
 
@@ -52,11 +55,20 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithSocketMode overrides the default 0o755 socket file mode. An
+// WithSocketMode overrides the default 0o660 socket file mode. An
 // [Option].
 func WithSocketMode(m os.FileMode) Option {
 	return func(o *serverOptions) {
 		o.socketMode = m
+	}
+}
+
+// WithSocketOwner chowns the socket file to uid:uid after bind so a
+// non-root Envoy can connect. Negative values disable chowning. An
+// [Option].
+func WithSocketOwner(uid int) Option {
+	return func(o *serverOptions) {
+		o.socketOwnerUID = uid
 	}
 }
 
@@ -111,6 +123,14 @@ func Start(ctx context.Context, socket string, store *eventstore.Store, opts ...
 	if err != nil {
 		_ = ln.Close()
 		return nil, fmt.Errorf("chmod %s: %w", socket, err)
+	}
+
+	if o.socketOwnerUID >= 0 {
+		err = os.Chown(socket, o.socketOwnerUID, o.socketOwnerUID)
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("chown %s: %w", socket, err)
+		}
 	}
 
 	// Permit Envoy keepalives at the documented 30s default; without

@@ -102,6 +102,7 @@ var e2eTestFuncs = []struct {
 	{"header-match-mismatch", (*Tests).TestEgressHeaderMatchMismatch},
 	{"server-name-bare-wildcard", (*Tests).TestEgressServerNameBareWildcard},
 	{"fqdn-wildcard-http-rbac", (*Tests).TestEgressFqdnWildcardHttpRbac},
+	{"event-attribution", (*Tests).TestEgressEventAttribution},
 }
 
 // TestEgressAll runs all egress E2E tests across all e2e variants.
@@ -1014,6 +1015,135 @@ egress:
 		),
 		withPostExec(statsListContains("target-allow",
 			"stats list does not contain entries for target-allow")),
+	).run(ctx)
+}
+
+// TestEgressEventAttribution verifies the cross-package wiring
+// between traffic generation, the three event sources (Envoy ALS,
+// DNS proxy, nflog firewall reader), the dnscache reverse-attribution
+// cache, and the `terrarium stats` CLI surfaces (list, top, summary,
+// CSV, cursor pagination). Existing tests assert a single substring;
+// this test pins down decision, source, http_status, domain
+// attribution, group-by paths, and CSV/cursor output across one
+// container boot.
+//
+//	dagger call -m toolchains/terrarium/tests test-egress-event-attribution
+func (m *Tests) TestEgressEventAttribution(ctx context.Context) error {
+	return newTestCase("event-attribution", `stats:
+  enabled: true
+logging:
+  firewall:
+    enabled: true
+egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+        rules:
+          http:
+            - method: "GET"
+              path: "/allowed/.*"
+  - toFQDNs:
+      - matchName: "target-l7"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		// target-allow runs the L7 nginx so /allowed/ and /denied/
+		// paths return distinct bodies.
+		targetService("target-allow", l7NginxConf),
+		// target-l7 has no L7 rule so traffic is TLS passthrough,
+		// surfacing as a TCP+SNI access-log entry. The body content
+		// is irrelevant; the assertion only needs the SNI bucket.
+		targetService("target-l7", defaultNginxConf),
+		withAssertions(
+			// Envoy HTTP allow path: terminates TLS, RBAC matches
+			// `/allowed/.*`, request forwarded with 200. The query
+			// string exercises the path-stripping logic in
+			// `stats top --by path`.
+			l7Allowed("https://target-allow:443/allowed/resource?session=abc",
+				"GET", "ALLOWED_PATH",
+				"event-attribution: GET /allowed/resource allowed via L7"),
+			// Envoy HTTP deny path: RBAC rejects with 403.
+			l7Denied("https://target-allow:443/denied/resource", "GET",
+				"event-attribution: GET /denied/resource denied by L7"),
+			// DNS proxy deny: `blocked-fqdn` is not in the FQDN
+			// allowlist, so the proxy returns NXDOMAIN and emits a
+			// DecisionDeny / ReasonNotAllowlisted row.
+			networkDenied("https://blocked-fqdn:443/",
+				"event-attribution: blocked-fqdn denied by DNS proxy"),
+			// TCP+SNI passthrough path: target-l7 has no L7 rule,
+			// so Envoy emits a TCPAccessLogEntry with SNI=target-l7.
+			httpsPassthrough("https://target-l7:443/", "OK",
+				"event-attribution: target-l7 HTTPS passthrough (TCP+SNI)"),
+		),
+		withPostExec(combinePostExec(
+			// Envoy allow row with http_status=200 from the
+			// /allowed/ request (proves the gRPC ALS round-trip
+			// completes for the allow path, not just the 403
+			// RBAC path).
+			statsListMatchesField("envoy", map[string]any{
+				"decision":    "allow",
+				"http_status": 200,
+			}, "event-attribution: no envoy allow row with http_status=200"),
+			// Envoy deny row with http_status=403 from the
+			// /denied/ request (RBAC rejection).
+			statsListMatchesField("envoy", map[string]any{
+				"decision":    "deny",
+				"http_status": 403,
+			}, "event-attribution: no envoy deny row with http_status=403"),
+			// DNS proxy deny row for blocked-fqdn (proves
+			// dnsproxy.emitDNS fires with ReasonNotAllowlisted).
+			statsListMatchesField("dns", map[string]any{
+				"decision": "deny",
+				"domain":   "blocked-fqdn",
+			}, "event-attribution: no dns deny row for blocked-fqdn"),
+			// At least one firewall row carries a non-empty
+			// domain field (proves dnscache reverse-attribution).
+			statsListNonEmptyDomain("firewall",
+				"event-attribution: no firewall row with non-empty domain"),
+			// `stats top --denied --by domain` returns a bucket
+			// for the denied FQDN.
+			statsTopReturns([]string{"--denied", "--by", "domain"},
+				"blocked-fqdn",
+				"event-attribution: top --denied --by domain missing blocked-fqdn"),
+			// `stats top --allowed --by domain` returns a bucket
+			// for the allowed target.
+			statsTopReturns([]string{"--allowed", "--by", "domain"},
+				"target-allow",
+				"event-attribution: top --allowed --by domain missing target-allow"),
+			// `stats top --by sni` returns at least one row,
+			// exercising the SNI grouping branch in stats.go
+			// that filters to protocol=tcp.
+			statsTopReturns([]string{"--allowed", "--by", "sni"}, "",
+				"event-attribution: top --allowed --by sni returned no rows"),
+			// `stats top --by path` strips the query string from
+			// the /allowed/resource?session=abc request, so the
+			// bucket should equal the path-only portion.
+			statsTopReturns([]string{"--allowed", "--by", "path"},
+				"/allowed/resource",
+				"event-attribution: top --by path did not strip query string"),
+			// 24-hour summary returns at least one non-zero
+			// count.
+			statsSummaryNonZero(
+				"event-attribution: stats summary returned no rows"),
+			// `stats list --format csv` begins with the
+			// canonical RFC-4180 header line.
+			statsListCSVHeader(
+				"event-attribution: stats list CSV missing header"),
+			// `stats top --format csv` begins with the
+			// `<groupBy>,count` header (separate CSV code path
+			// from list).
+			statsTopCSVHeader(
+				"event-attribution: stats top CSV missing header"),
+			// `stats list --cursor` pagination returns a
+			// distinct second page.
+			statsListCursor(
+				"event-attribution: stats list cursor pagination broken"),
+		)),
 	).run(ctx)
 }
 

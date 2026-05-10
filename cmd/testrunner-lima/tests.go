@@ -2,14 +2,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
 // Assertion builder functions construct [assertion] values that match
@@ -1919,4 +1926,552 @@ wait "$child"`
 				"jail-admin-paths: terrarium init --help still registered (jail dispatch did not swallow init)"),
 		},
 	},
+
+	// vm-daemon-reload-cli exercises the `terrarium daemon reload`
+	// CLI's pre-validation and SIGHUP plumbing. Companion to
+	// vm-config-reload, which goes through systemctl reload and
+	// bypasses the CLI's pre-validation.
+	{
+		name: "vm-daemon-reload-cli",
+		config: `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		services: []serviceSpec{
+			nginxService("target-allow", defaultNginxConf),
+			nginxService("target-b", defaultNginxConf),
+		},
+		assertions: []assertion{
+			httpAllowed("https://target-allow:443/",
+				"daemon-reload-cli: target-allow reachable under config A"),
+			networkDenied("https://target-b:443/",
+				"daemon-reload-cli: target-b denied under config A"),
+		},
+		teardown: runDaemonReloadCliTeardown,
+	},
+
+	// vm-stats-firewall-events proves the kernel-side nflog binding
+	// actually works in VM mode (where openNflog is fatal on bind
+	// failure). Generates HTTP traffic and asserts a
+	// firewall-source allow row with a non-empty domain field.
+	{
+		name: "vm-stats-firewall-events",
+		config: `stats:
+  enabled: true
+logging:
+  firewall:
+    enabled: true
+egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		services: []serviceSpec{
+			nginxService("target-allow", defaultNginxConf),
+		},
+		assertions: []assertion{
+			httpAllowed("https://target-allow:443/",
+				"stats-firewall-events: HTTPS to target-allow allowed"),
+		},
+		verify: verifyVMStatsFirewallEvents,
+	},
+
+	// vm-status-stats-section asserts `terrarium status --no-logs`
+	// renders the STATS section after traffic, with a non-zero
+	// 24-hour event count and a parseable last-event timestamp.
+	{
+		name: "vm-status-stats-section",
+		config: `stats:
+  enabled: true
+egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		services: []serviceSpec{
+			nginxService("target-allow", defaultNginxConf),
+		},
+		assertions: []assertion{
+			httpAllowed("https://target-allow:443/",
+				"status-stats: HTTPS to target-allow allowed"),
+		},
+		verify: verifyVMStatusStatsSection,
+	},
+
+	// vm-heartbeat-on-shutdown exercises the eventstore shutdown
+	// drain. The heartbeat goroutine's final snapshot is pushed
+	// onto the buffer-1 channel during cancel; the writer
+	// goroutine drains heartbeats before closing s.done. By the
+	// time `systemctl stop terrarium` returns the row must exist
+	// in the DB.
+	{
+		name: "vm-heartbeat-on-shutdown",
+		config: `stats:
+  enabled: true
+logging:
+  firewall:
+    enabled: true
+egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		services: []serviceSpec{
+			nginxService("target-allow", defaultNginxConf),
+		},
+		assertions: []assertion{
+			httpAllowed("https://target-allow:443/",
+				"heartbeat-shutdown: HTTPS to target-allow allowed"),
+		},
+		verify: verifyVMHeartbeatOnShutdown,
+	},
+}
+
+// runDaemonReloadCliTeardown drives the daemon-reload-CLI sub-cases
+// sequentially: invalid YAML rejected by pre-validation, dead PID
+// rejected by the liveness probe, then valid config B succeeds.
+// Each sub-case is a distinct rejection path inside [DaemonReload]
+// (cmd/terrarium/reload.go); a single test exercises all three to
+// avoid additional VM boots.
+func runDaemonReloadCliTeardown(ctx context.Context, d *driver) error {
+	configA := `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`
+
+	// Bad YAML must be rejected by pre-validation; config A stays
+	// in effect because the CLI never sent SIGHUP. Restore config
+	// A on disk before continuing.
+	err := d.writeConfig(ctx, "egress: { this is not valid yaml")
+	if err != nil {
+		return fmt.Errorf("writing invalid config: %w", err)
+	}
+
+	exitCode, stdout, stderr, err := d.reloadDaemonViaCli(ctx)
+	if err != nil {
+		return fmt.Errorf("running daemon reload (invalid yaml): %w", err)
+	}
+
+	if exitCode == 0 {
+		return fmt.Errorf("daemon-reload-cli: expected nonzero exit for invalid YAML, got 0\nstdout:\n%s\nstderr:\n%s",
+			stdout, stderr)
+	}
+
+	// Pre-validation must surface as a YAML parse error, not as
+	// "config not found". The latter would mean the CLI read the
+	// wrong path (sudo HOME stripping) and the test never
+	// exercised pre-validation.
+	if !strings.Contains(stderr, "parsing config") && !strings.Contains(stdout, "parsing config") {
+		return fmt.Errorf("daemon-reload-cli: expected 'parsing config' in output, got:\nstdout:\n%s\nstderr:\n%s",
+			stdout, stderr)
+	}
+
+	// Restore config A on disk for hygiene before the next
+	// sub-case. The daemon is still running with config A in
+	// memory because pre-validation never sent SIGHUP, so this
+	// writeConfig is a file-only operation -- not a load step.
+	err = d.writeConfig(ctx, configA)
+	if err != nil {
+		return fmt.Errorf("restoring config A: %w", err)
+	}
+
+	err = runDaemonReloadCliConfigACheck(ctx, d)
+	if err != nil {
+		return fmt.Errorf("after invalid YAML rejection: %w", err)
+	}
+
+	// PID file points at a dead process. Save the real PID file
+	// aside, swap in an unused PID, run the CLI, expect the
+	// ErrDaemonNotRunning sentinel. Restore the real PID file
+	// before the next sub-case.
+	const pidFile = "/run/terrarium/terrarium.pid"
+
+	const pidBackup = "/tmp/terrarium-real.pid"
+
+	_, err = d.shell(ctx, "sudo", "cp", pidFile, pidBackup)
+	if err != nil {
+		return fmt.Errorf("backing up PID file: %w", err)
+	}
+
+	// Best-effort cleanup of the staged backup so a crashed run
+	// doesn't leave an orphaned file at a stable path.
+	defer func() {
+		_, rmErr := d.shell(ctx, "sudo", "rm", "-f", pidBackup)
+		if rmErr != nil {
+			slog.DebugContext(ctx, "removing pid backup",
+				slog.String("error", rmErr.Error()))
+		}
+	}()
+
+	deadPID, err := unusedVMPID(ctx, d)
+	if err != nil {
+		return fmt.Errorf("finding unused PID: %w", err)
+	}
+
+	err = d.writeFile(ctx, pidFile, deadPID+"\n")
+	if err != nil {
+		return fmt.Errorf("overwriting PID file: %w", err)
+	}
+
+	exitCode, stdout, stderr, err = d.reloadDaemonViaCli(ctx)
+	if err != nil {
+		return fmt.Errorf("running daemon reload (dead PID): %w", err)
+	}
+
+	if exitCode == 0 {
+		return fmt.Errorf("daemon-reload-cli: expected nonzero exit for dead PID, got 0\nstdout:\n%s\nstderr:\n%s",
+			stdout, stderr)
+	}
+
+	combined := stdout + stderr
+	if !strings.Contains(combined, "daemon not running") {
+		return fmt.Errorf("daemon-reload-cli: expected 'daemon not running', got:\nstdout:\n%s\nstderr:\n%s",
+			stdout, stderr)
+	}
+
+	_, err = d.shell(ctx, "sudo", "cp", pidBackup, pidFile)
+	if err != nil {
+		return fmt.Errorf("restoring PID file: %w", err)
+	}
+
+	// Valid config B replaces config A; reload must succeed and
+	// the config-B assertions must pass.
+	configB := `egress:
+  - toFQDNs:
+      - matchName: "target-b"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`
+
+	err = d.writeConfig(ctx, configB)
+	if err != nil {
+		return fmt.Errorf("writing config B: %w", err)
+	}
+
+	exitCode, stdout, stderr, err = d.reloadDaemonViaCli(ctx)
+	if err != nil {
+		return fmt.Errorf("running daemon reload (config B): %w", err)
+	}
+
+	if exitCode != 0 {
+		return fmt.Errorf("daemon-reload-cli: expected exit 0 for config B, got %d\nstdout:\n%s\nstderr:\n%s",
+			exitCode, stdout, stderr)
+	}
+
+	// Restart nscd to clear stale DNS failures from config A.
+	_, nscdErr := d.shell(ctx, "sudo", "systemctl", "restart", "nscd")
+	if nscdErr != nil {
+		slog.DebugContext(ctx, "restarting nscd", slog.String("error", nscdErr.Error()))
+	}
+
+	specB := daemonSpec{
+		DaemonMode: true,
+		Assertions: []assertion{
+			httpAllowed("https://target-b:443/",
+				"daemon-reload-cli: target-b reachable under config B"),
+			networkDenied("https://target-allow:443/",
+				"daemon-reload-cli: target-allow denied under config B"),
+		},
+	}
+
+	err = d.writeSpec(ctx, specB)
+	if err != nil {
+		return fmt.Errorf("writing config B spec: %w", err)
+	}
+
+	exitCode, output, err := d.runTestrunner(ctx)
+	if err != nil {
+		return fmt.Errorf("running config B testrunner: %w\noutput:\n%s", err, output)
+	}
+
+	fmt.Print(output)
+
+	if exitCode != 0 {
+		return fmt.Errorf("config B assertions failed (exit %d)", exitCode)
+	}
+
+	return nil
+}
+
+// unusedVMPID returns a PID-shaped string guaranteed not to map to a
+// live process inside the VM. Reads /proc/sys/kernel/pid_max and
+// returns its value: by definition the kernel never allocates a PID
+// at or above pid_max, so kill(0) on it returns ESRCH every time.
+// This avoids the small-but-real risk that a hardcoded large PID
+// (e.g. 999999) collides with a live process on a busy system.
+func unusedVMPID(ctx context.Context, d *driver) (string, error) {
+	out, err := d.shell(ctx, "cat", "/proc/sys/kernel/pid_max")
+	if err != nil {
+		return "", fmt.Errorf("reading pid_max: %w", err)
+	}
+
+	v := strings.TrimSpace(out)
+	if v == "" {
+		return "", fmt.Errorf("pid_max returned empty")
+	}
+
+	return v, nil
+}
+
+// runDaemonReloadCliConfigACheck re-runs the config-A assertions
+// (target-allow allowed, target-b denied) inside the testrunner.
+// Used to confirm that pre-validation prevented a bad config from
+// reaching the daemon.
+func runDaemonReloadCliConfigACheck(ctx context.Context, d *driver) error {
+	specA := daemonSpec{
+		DaemonMode: true,
+		Assertions: []assertion{
+			httpAllowed("https://target-allow:443/",
+				"daemon-reload-cli: target-allow still reachable after invalid-yaml rejection"),
+			networkDenied("https://target-b:443/",
+				"daemon-reload-cli: target-b still denied after invalid-yaml rejection"),
+		},
+	}
+
+	err := d.writeSpec(ctx, specA)
+	if err != nil {
+		return fmt.Errorf("writing config A re-check spec: %w", err)
+	}
+
+	exitCode, output, err := d.runTestrunner(ctx)
+	if err != nil {
+		return fmt.Errorf("running config A re-check: %w\noutput:\n%s", err, output)
+	}
+
+	fmt.Print(output)
+
+	if exitCode != 0 {
+		return fmt.Errorf("config A re-check failed (exit %d)", exitCode)
+	}
+
+	return nil
+}
+
+// verifyVMStatsFirewallEvents queries `terrarium stats list --source
+// firewall` and asserts at least one row carries decision=allow with
+// a non-empty domain field, then confirms the daemon is still
+// active. This proves the kernel-side nflog binding worked
+// end-to-end -- in VM mode openNflog (cmd/terrarium/init.go) is
+// fatal on bind failure, so a working bind plus a
+// dnscache-attributed row is the integration signal that unit tests
+// cannot produce.
+func verifyVMStatsFirewallEvents(ctx context.Context, t *testing.T, d *driver) {
+	t.Helper()
+
+	exitCode, stdout, stderr, err := d.runTerrarium(ctx,
+		"stats", "list",
+		"--db", VMTerrariumStatsDB,
+		"--source", "firewall",
+		"--format", "json",
+		"--limit", "200",
+	)
+	require.NoError(t, err, "running terrarium stats list")
+	require.Equal(t, 0, exitCode, "stats list exit code\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+
+	type row struct {
+		Decision string `json:"decision"`
+		Domain   string `json:"domain"`
+	}
+
+	var rows []row
+
+	err = json.Unmarshal([]byte(stdout), &rows)
+	require.NoError(t, err, "decoding stats list\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+
+	found := false
+
+	for _, r := range rows {
+		if r.Decision == "allow" && r.Domain != "" {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("stats-firewall-events: no firewall row with decision=allow and non-empty domain\noutput:\n%s",
+			stdout)
+	}
+
+	active, err := d.shell(ctx, "systemctl", "is-active", "terrarium")
+	require.NoError(t, err, "checking systemctl is-active: %s", active)
+	require.Equal(t, "active", strings.TrimSpace(active),
+		"stats-firewall-events: daemon must still be active after nflog ingest")
+}
+
+// verifyVMStatusStatsSection asserts `terrarium status --no-logs`
+// exits 0 and prints a STATS section that mentions the resolved DB
+// path, a last-event line, and the events-24h counter. Uses a regex
+// on the count line because [status.NewTabwriter] expands tabs to a
+// variable number of padding spaces.
+//
+// The empty-DB render path (events 24h: 0, last event: (none)) is
+// covered by status/stats_test.go and status/render_test.go at the
+// unit level. Reproducing it as a black-box VM check would require
+// stopping the daemon, blowing away stats.db, restarting, and
+// invoking status before any DNS or testrunner traffic landed --
+// which is fragile because the daemon emits a startup heartbeat row
+// and DNS resolution for the test services hits the proxy
+// immediately.
+func verifyVMStatusStatsSection(ctx context.Context, t *testing.T, d *driver) {
+	t.Helper()
+
+	exitCode, stdout, stderr, err := d.runTerrarium(ctx, "status", "--no-logs")
+	require.NoError(t, err, "running terrarium status")
+	require.Equal(t, 0, exitCode, "status --no-logs exit code\nstdout:\n%s\nstderr:\n%s",
+		stdout, stderr)
+
+	for _, want := range []string{
+		"STATS",
+		VMTerrariumStatsDB,
+		"last event:",
+		"events 24h:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("status-stats-section: missing %q in stdout:\n%s", want, stdout)
+		}
+	}
+
+	// Match `events 24h:` followed by any whitespace and a count,
+	// then ensure the count is non-zero.
+	re := regexp.MustCompile(`events 24h:\s+(\d+)`)
+
+	matches := re.FindStringSubmatch(stdout)
+	if len(matches) < 2 {
+		t.Errorf("status-stats-section: could not parse events 24h count\nstdout:\n%s", stdout)
+		return
+	}
+
+	if matches[1] == "0" {
+		t.Errorf("status-stats-section: events 24h count is zero after generating traffic\nstdout:\n%s",
+			stdout)
+	}
+}
+
+// verifyVMHeartbeatOnShutdown stops the daemon, copies stats.db to
+// the host, and reads the most recent instance_metrics row through
+// [eventstore.LatestHeartbeat]. Asserts the writer drained the final
+// snapshot before Close returned (eventstore_last_write_unix > 0,
+// recorded_at > 0).
+//
+// Going through the eventstore API rather than raw sqlite3 keeps the
+// test decoupled from the schema column names and avoids requiring
+// sqlite3 in the lima VM image. SQLite checkpoints the WAL on the
+// final connection close, so by the time `systemctl stop terrarium`
+// returns the main DB file is complete and a copy of just the .db
+// file is sufficient.
+func verifyVMHeartbeatOnShutdown(ctx context.Context, t *testing.T, d *driver) {
+	t.Helper()
+
+	// Stop the daemon so the heartbeat goroutine's cancel path
+	// runs and the writer drains heartbeats before closing.
+	err := d.stopDaemon(ctx)
+	require.NoError(t, err, "stopping daemon")
+
+	// Copy the DB out of the VM. With the daemon stopped, SQLite
+	// has checkpointed the WAL into the main DB file, so the .db
+	// alone is a complete snapshot.
+	hbHostPath := copyStatsDBFromVM(ctx, t, d)
+	defer func() {
+		err := os.RemoveAll(filepath.Dir(hbHostPath))
+		if err != nil {
+			t.Logf("removing temp dir: %v", err)
+		}
+	}()
+
+	db, err := eventstore.OpenReadOnly(hbHostPath)
+	require.NoError(t, err, "opening stats db read-only")
+
+	defer func() {
+		closeErr := db.Close()
+		if closeErr != nil {
+			t.Logf("closing db: %v", closeErr)
+		}
+	}()
+
+	instanceID, _, err := eventstore.LatestInstanceID(ctx, db)
+	require.NoError(t, err, "resolving instance id")
+	require.NotEmpty(t, instanceID, "no instance row written; daemon never reached steady state")
+
+	hb, ok, err := eventstore.LatestHeartbeat(ctx, db, instanceID)
+	require.NoError(t, err, "reading latest heartbeat")
+	require.True(t, ok, "no heartbeat row for instance %s after shutdown", instanceID)
+
+	if hb.RecordedAt.IsZero() {
+		t.Errorf("heartbeat-on-shutdown: recorded_at is zero")
+	}
+
+	if hb.EventStoreLastWrite.IsZero() {
+		t.Errorf("heartbeat-on-shutdown: eventstore_last_write is zero (writer did not drain)")
+	}
+
+	// With stats.firewall enabled and traffic generated, nflog
+	// must have observed at least one event before shutdown.
+	if hb.NFLogLastEvent.IsZero() {
+		t.Errorf("heartbeat-on-shutdown: nflog_last_event is zero (firewall ingestion did not run)")
+	}
+
+	// dnscache_size is INTEGER NOT NULL DEFAULT 0; the meaningful
+	// guard is that LatestHeartbeat returned a row at all
+	// (already covered by require.True above).
+	//
+	// No need to restart the daemon here: runVMTest invokes
+	// restartDaemon at the start of each test, and the post-suite
+	// cleanup hook in lima_test.go covers the suite-end case.
+}
+
+// copyStatsDBFromVM copies /var/lib/terrarium/stats.db from the VM
+// into a freshly-created host temp directory and returns the host
+// path. The caller owns removing the parent directory.
+func copyStatsDBFromVM(ctx context.Context, t *testing.T, d *driver) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "terrarium-stats-*")
+	require.NoError(t, err, "creating temp dir")
+
+	// Stage a world-readable copy on the VM so limactl cp can
+	// pull it without sudo.
+	stage := "/tmp/stats-snapshot.db"
+
+	_, err = d.shell(ctx, "sudo", "cp", VMTerrariumStatsDB, stage)
+	require.NoError(t, err, "staging stats db copy")
+
+	_, err = d.shell(ctx, "sudo", "chmod", "644", stage)
+	require.NoError(t, err, "chmod staged db")
+
+	hostPath := filepath.Join(dir, "stats.db")
+
+	cmd := exec.CommandContext(ctx, "limactl", "cp", //nolint:gosec // args controlled by test code.
+		fmt.Sprintf("%s:%s", d.vmName, stage), hostPath)
+
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "limactl cp stats.db: %s", string(out))
+
+	// Best-effort remove the staged file; not fatal if cleanup
+	// fails because subsequent tests run restartDaemon which
+	// truncates the DB anyway.
+	_, rmErr := d.shell(ctx, "sudo", "rm", "-f", stage)
+	if rmErr != nil {
+		t.Logf("removing staged stats db: %v", rmErr)
+	}
+
+	return hostPath
 }

@@ -3,6 +3,7 @@ package accesslog_test
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -121,4 +122,30 @@ func TestServerStreamAccessLogs(t *testing.T) {
 	assert.Equal(t, "allow", decision)
 	assert.Equal(t, "wired.example", domain)
 	assert.Equal(t, 200, status)
+}
+
+func TestServerDefaultSocketMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	socket := filepath.Join(dir, "als.sock")
+
+	store, err := eventstore.Open(t.Context(), filepath.Join(dir, "stats.db"))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+	srv, err := accesslog.Start(t.Context(), socket, store)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		srv.Shutdown(ctx)
+	})
+
+	fi, err := os.Stat(socket)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o660), fi.Mode().Perm())
 }

@@ -330,7 +330,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	// Bind the gRPC ALS UDS before Envoy boots so its first stream
 	// connect succeeds. A failure here logs and disables ingestion;
 	// the bootstrap will be regenerated without an access logger.
-	accessLogSrv := openAccessLog(ctx, cfg, store)
+	accessLogSrv := openAccessLog(ctx, cfg, store, uids.Envoy)
 
 	var accessLogCleanedUp bool
 
@@ -497,10 +497,11 @@ func openNflog(
 }
 
 // openAccessLog binds the gRPC AccessLog UDS when stats is enabled.
+// The socket is chowned to envoyUID so a non-root Envoy can connect.
 // On failure it logs and returns nil so the rest of init proceeds;
 // the data plane is never blocked by stats ingestion.
 func openAccessLog(
-	ctx context.Context, cfg *config.Config, store *eventstore.Store,
+	ctx context.Context, cfg *config.Config, store *eventstore.Store, envoyUID uint32,
 ) *accesslog.Server {
 	if !cfg.StatsEnabled() || store == nil {
 		return nil
@@ -508,7 +509,8 @@ func openAccessLog(
 
 	socket := cfg.StatsSocket()
 
-	srv, err := accesslog.Start(ctx, socket, store)
+	srv, err := accesslog.Start(ctx, socket, store,
+		accesslog.WithSocketOwner(int(envoyUID)))
 	if err != nil {
 		slog.WarnContext(ctx, "stats: opening accesslog socket, ingestion disabled",
 			slog.String("socket", socket), slog.Any("err", err))

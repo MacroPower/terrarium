@@ -584,14 +584,17 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// run is the writer goroutine entry point. It batches up to
-// opts.batchSize events or waits opts.batchInterval before flushing.
-// Retention runs inline on the same goroutine.
+// run is the writer goroutine entry point. Retention runs inline
+// here so writes and pruning share a single serialized owner of
+// the on-disk store.
 func (s *Store) run() {
 	defer close(s.done)
 
-	timer := time.NewTimer(s.opts.batchInterval)
-	defer timer.Stop()
+	// Ticker, not Timer: flush returns early on an empty batch and
+	// never re-arms, so a Timer would disarm permanently on the
+	// first idle tick and partial batches would only flush at Close.
+	flushTicker := time.NewTicker(s.opts.batchInterval)
+	defer flushTicker.Stop()
 
 	pruneTicker := time.NewTicker(60 * time.Second)
 	defer pruneTicker.Stop()
@@ -615,15 +618,6 @@ func (s *Store) run() {
 		}
 
 		batch = batch[:0]
-
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-
-		timer.Reset(s.opts.batchInterval)
 	}
 
 	for {
@@ -641,7 +635,7 @@ func (s *Store) run() {
 				flush()
 			}
 
-		case <-timer.C:
+		case <-flushTicker.C:
 			flush()
 
 		case <-pruneTicker.C:

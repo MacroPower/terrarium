@@ -208,6 +208,48 @@ func TestEmit_RecordsEvent(t *testing.T) {
 	assert.Equal(t, "not-allowlisted", reason)
 }
 
+// TestEmit_FlushesPartialBatchesPeriodically pins the writer
+// goroutine's idle behavior: with BatchSize=64 and a 50ms interval,
+// a single event must reach disk well before Close runs. Guards
+// against a flush path that disarms the interval timer on empty
+// batches, which would defer partial-batch writes until shutdown
+// and hide them from a concurrent `stats list` reader.
+func TestEmit_FlushesPartialBatchesPeriodically(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stats.db")
+
+	store, err := eventstore.Open(t.Context(), path,
+		eventstore.WithBatchSize(64),
+		eventstore.WithBatchInterval(50*time.Millisecond))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+	// Wait long enough for the writer to fire at least one empty
+	// interval tick before any event arrives. The bug was that
+	// the first empty tick disarmed the timer permanently.
+	time.Sleep(200 * time.Millisecond)
+
+	store.Emit(eventstore.Event{
+		Source:   eventstore.SourceEnvoy,
+		Decision: eventstore.DecisionAllow,
+		Domain:   "example.com",
+	})
+
+	require.Eventually(t, func() bool {
+		db := openReadOnly(t, path)
+
+		var count int
+
+		err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count)
+		require.NoError(t, err)
+
+		return count == 1
+	}, 2*time.Second, 25*time.Millisecond)
+}
+
 func TestEmit_NilStoreNoop(t *testing.T) {
 	t.Parallel()
 

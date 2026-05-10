@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 
 	"dagger/tests/internal/dagger"
@@ -431,20 +433,68 @@ func withPostExec(fn func(ctx context.Context, variant string, ctr *dagger.Conta
 	})
 }
 
+// combinePostExec runs the supplied callbacks sequentially against
+// the same container. The first error short-circuits the chain;
+// the chain wraps the error with a dump of the full stats DB so
+// dagger surfaces the whole state, not just the first failed
+// assertion. (dagger captures the returned error; arbitrary stderr
+// writes from this Go process are not surfaced in the call output.)
+func combinePostExec(
+	fns ...func(ctx context.Context, variant string, ctr *dagger.Container) error,
+) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return func(ctx context.Context, variant string, ctr *dagger.Container) error {
+		for _, fn := range fns {
+			err := fn(ctx, variant, ctr)
+			if err != nil {
+				return fmt.Errorf("%w\n--- diagnostic stats dump ---\n%s",
+					err, statsDebugDump(ctx, ctr))
+			}
+		}
+
+		return nil
+	}
+}
+
+// statsDebugDump returns a single multi-line string with the
+// summary and full event list from the container's stats DB.
+// Used by [combinePostExec] to attach DB state to assertion
+// failure messages.
+func statsDebugDump(ctx context.Context, ctr *dagger.Container) string {
+	var b strings.Builder
+
+	if out, err := runTerrarium(ctx, ctr,
+		"stats", "--db", statsDBPath, "--format", "json",
+	); err == nil {
+		fmt.Fprintf(&b, "summary:\n%s\n", out)
+	} else {
+		fmt.Fprintf(&b, "summary: <error: %v>\n", err)
+	}
+
+	if out, err := runTerrarium(ctx, ctr,
+		"stats", "list", "--db", statsDBPath, "--format", "json", "--limit", "200",
+	); err == nil {
+		fmt.Fprintf(&b, "list (all sources):\n%s\n", out)
+	} else {
+		fmt.Fprintf(&b, "list: <error: %v>\n", err)
+	}
+
+	return b.String()
+}
+
 // statsListContains runs `terrarium stats list --format json` against
 // the SQLite event store inside the container and checks the output
 // for the given substring. Replaces the file-tail-based access log
 // assertions used before the gRPC ALS event store landed.
 func statsListContains(substr, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
 	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
-		out, err := ctr.WithExec([]string{
-			"/usr/local/bin/terrarium", "stats", "list",
+		out, err := runTerrarium(ctx, ctr,
+			"stats", "list",
 			"--db", statsDBPath,
 			"--format", "json",
 			"--limit", "200",
-		}).Stdout(ctx)
+		)
 		if err != nil {
-			return fmt.Errorf("running terrarium stats list: %w", err)
+			return err
 		}
 
 		if !strings.Contains(out, substr) {
@@ -453,6 +503,373 @@ func statsListContains(substr, msg string) func(ctx context.Context, variant str
 
 		return nil
 	}
+}
+
+// runTerrarium executes a terrarium subcommand inside the test
+// container and returns the captured stdout. The error already
+// carries the invoked command for context, so callers should not
+// re-wrap it with the same information.
+func runTerrarium(ctx context.Context, ctr *dagger.Container, args ...string) (string, error) {
+	cmd := append([]string{"/usr/local/bin/terrarium"}, args...)
+
+	out, err := ctr.WithExec(cmd).Stdout(ctx)
+	if err != nil {
+		return out, fmt.Errorf("running terrarium %s: %w", strings.Join(args, " "), err)
+	}
+
+	return out, nil
+}
+
+// statsListMatchesField parses the JSON output of `terrarium stats
+// list` and asserts that at least one row has every key=value pair
+// in want. Pass source="" to skip the --source filter; otherwise it
+// becomes `--source <source>`. Keys must use the snake_case JSON
+// tags from listRow in cmd/terrarium/stats.go (e.g. "http_status",
+// "http_path", "domain"). The strictness statsListContains lacks
+// today.
+func statsListMatchesField(source string, want map[string]any, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		args := []string{"stats", "list", "--db", statsDBPath, "--format", "json", "--limit", "200"}
+		if source != "" {
+			args = append(args, "--source", source)
+		}
+
+		out, err := runTerrarium(ctx, ctr, args...)
+		if err != nil {
+			return err
+		}
+
+		var rows []map[string]any
+
+		err = json.Unmarshal([]byte(out), &rows)
+		if err != nil {
+			return fmt.Errorf("decoding stats list: %w\noutput:\n%s", err, out)
+		}
+
+		for _, row := range rows {
+			if rowMatches(row, want) {
+				return nil
+			}
+		}
+
+		return fmt.Errorf("%s\nwant fields: %s\nstats list output:\n%s",
+			msg, formatWantFields(want), out)
+	}
+}
+
+// formatWantFields renders a map[string]any with sorted keys so
+// failure messages diff cleanly across runs (Go map iteration order
+// is intentionally randomized).
+func formatWantFields(want map[string]any) string {
+	keys := make([]string, 0, len(want))
+	for k := range want {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, want[k]))
+	}
+
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// rowMatches reports whether row contains every key=value pair in
+// want. Numeric comparisons coerce JSON numbers (always float64) and
+// expected ints to float64 so callers can pass int literals.
+func rowMatches(row, want map[string]any) bool {
+	for k, w := range want {
+		got, ok := row[k]
+		if !ok {
+			return false
+		}
+
+		if !valueEquals(got, w) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// valueEquals compares JSON-decoded values for the types
+// statsListMatchesField actually accepts: bool, string, int,
+// int64, float64. JSON numbers always decode as float64, so int
+// and int64 literals from callers are coerced via float64
+// comparison. Unknown want types fall back to reflect.DeepEqual,
+// which keeps the helper safe against future map/slice values
+// (rather than panicking on `got == want` for non-comparable types).
+func valueEquals(got, want any) bool {
+	switch w := want.(type) {
+	case int:
+		if g, ok := got.(float64); ok {
+			return g == float64(w)
+		}
+	case int64:
+		if g, ok := got.(float64); ok {
+			return g == float64(w)
+		}
+	case float64:
+		if g, ok := got.(float64); ok {
+			return g == w
+		}
+	case string:
+		if g, ok := got.(string); ok {
+			return g == w
+		}
+	case bool:
+		if g, ok := got.(bool); ok {
+			return g == w
+		}
+	}
+
+	return reflect.DeepEqual(got, want)
+}
+
+// statsListNonEmptyDomain asserts that at least one row from
+// `terrarium stats list --source firewall --format json` has a
+// non-empty `domain` field. Used to verify dnscache reverse
+// attribution populated the firewall row.
+func statsListNonEmptyDomain(source, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		args := []string{"stats", "list", "--db", statsDBPath, "--format", "json", "--limit", "200"}
+		if source != "" {
+			args = append(args, "--source", source)
+		}
+
+		out, err := runTerrarium(ctx, ctr, args...)
+		if err != nil {
+			return err
+		}
+
+		var rows []map[string]any
+
+		err = json.Unmarshal([]byte(out), &rows)
+		if err != nil {
+			return fmt.Errorf("decoding stats list: %w\noutput:\n%s", err, out)
+		}
+
+		for _, row := range rows {
+			if d, _ := row["domain"].(string); d != "" {
+				return nil
+			}
+		}
+
+		return fmt.Errorf("%s\nstats list output:\n%s", msg, out)
+	}
+}
+
+// statsTopReturns runs `terrarium stats top` with the given extra
+// args (the helper supplies --db and --format=json) and asserts the
+// JSON output is a non-empty array. When bucket is non-empty, also
+// asserts at least one row's "bucket" field equals it exactly. Pass
+// bucket="" to assert only that the result set is non-empty.
+func statsTopReturns(args []string, bucket, msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		full := append([]string{"stats", "top", "--db", statsDBPath, "--format", "json"}, args...)
+
+		out, err := runTerrarium(ctx, ctr, full...)
+		if err != nil {
+			return err
+		}
+
+		var rows []topJSONRow
+
+		err = json.Unmarshal([]byte(out), &rows)
+		if err != nil {
+			return fmt.Errorf("decoding stats top: %w\noutput:\n%s", err, out)
+		}
+
+		if len(rows) == 0 {
+			return fmt.Errorf("%s\nempty stats top output for args %v\noutput:\n%s",
+				msg, args, out)
+		}
+
+		if bucket == "" {
+			return nil
+		}
+
+		for _, r := range rows {
+			if r.Bucket == bucket {
+				return nil
+			}
+		}
+
+		return fmt.Errorf("%s\nno bucket %q in stats top output for args %v\noutput:\n%s",
+			msg, bucket, args, out)
+	}
+}
+
+// topJSONRow mirrors the JSON shape of `terrarium stats top` output.
+// Defined here rather than imported from the terrarium binary to
+// keep the e2e module's import surface narrow.
+type topJSONRow struct {
+	Bucket string `json:"bucket"`
+	Count  int    `json:"count"`
+}
+
+// statsSummaryNonZero asserts that the no-subcommand `terrarium
+// stats --format json` summary returns at least one row with a
+// non-zero count. Exercises [runStatsSummary].
+func statsSummaryNonZero(msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		out, err := runTerrarium(ctx, ctr,
+			"stats", "--db", statsDBPath, "--format", "json",
+		)
+		if err != nil {
+			return err
+		}
+
+		var rows []struct {
+			Source   string `json:"source"`
+			Decision string `json:"decision"`
+			Count    int    `json:"count"`
+		}
+
+		err = json.Unmarshal([]byte(out), &rows)
+		if err != nil {
+			return fmt.Errorf("decoding stats summary: %w\noutput:\n%s", err, out)
+		}
+
+		for _, r := range rows {
+			if r.Count > 0 {
+				return nil
+			}
+		}
+
+		return fmt.Errorf("%s\nstats summary output:\n%s", msg, out)
+	}
+}
+
+// statsListCSVHeader asserts that `terrarium stats list --format csv`
+// emits the canonical header row before any data rows. The header
+// must be the lowercase column names from [runStatsList].
+func statsListCSVHeader(msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	want := "time,source,decision,domain,port,protocol,method,path,status,flags,reason"
+
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		out, err := runTerrarium(ctx, ctr,
+			"stats", "list", "--db", statsDBPath, "--format", "csv", "--limit", "5",
+		)
+		if err != nil {
+			return err
+		}
+
+		first, _, _ := strings.Cut(out, "\n")
+		if strings.TrimSpace(first) != want {
+			return fmt.Errorf("%s\nwant first line: %s\ngot:\n%s", msg, want, out)
+		}
+
+		return nil
+	}
+}
+
+// statsTopCSVHeader asserts that `terrarium stats top --format csv`
+// emits the `<groupBy>,count` header. The CSV path is separate from
+// the JSON path in [runStatsTop]; this exercises it.
+func statsTopCSVHeader(msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	want := "domain,count"
+
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		out, err := runTerrarium(ctx, ctr,
+			"stats", "top", "--db", statsDBPath, "--format", "csv", "--by", "domain",
+		)
+		if err != nil {
+			return err
+		}
+
+		first, _, _ := strings.Cut(out, "\n")
+		if strings.TrimSpace(first) != want {
+			return fmt.Errorf("%s\nwant first line: %s\ngot:\n%s", msg, want, out)
+		}
+
+		return nil
+	}
+}
+
+// statsListCursor exercises pagination: list with --limit 1, capture
+// next_cursor from the last row, then re-query with --cursor and
+// confirm the second page returns a different first row id.
+func statsListCursor(msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
+	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
+		out, err := runTerrarium(ctx, ctr,
+			"stats", "list", "--db", statsDBPath, "--format", "json", "--limit", "1",
+		)
+		if err != nil {
+			return err
+		}
+
+		var page1 []map[string]any
+
+		err = json.Unmarshal([]byte(out), &page1)
+		if err != nil {
+			return fmt.Errorf("decoding page 1: %w\noutput:\n%s", err, out)
+		}
+
+		if len(page1) != 1 {
+			return fmt.Errorf("%s: page 1 returned %d rows, want 1\noutput:\n%s",
+				msg, len(page1), out)
+		}
+
+		cursor, _ := page1[0]["next_cursor"].(string)
+		if cursor == "" {
+			return fmt.Errorf("%s: page 1 missing next_cursor\noutput:\n%s", msg, out)
+		}
+
+		out2, err := runTerrarium(ctx, ctr,
+			"stats", "list", "--db", statsDBPath, "--format", "json",
+			"--limit", "1", "--cursor", cursor,
+		)
+		if err != nil {
+			return err
+		}
+
+		var page2 []map[string]any
+
+		err = json.Unmarshal([]byte(out2), &page2)
+		if err != nil {
+			return fmt.Errorf("decoding page 2: %w\noutput:\n%s", err, out2)
+		}
+
+		// The cursor is `WHERE id < cursor` server-side. With many
+		// events generated by this test, page 2 is expected to
+		// have at least one row, and that row cannot equal page
+		// 1's row (different SQL id). Compare on the full row to
+		// avoid false-failing when two events share the same
+		// RFC3339 second.
+		if len(page2) == 0 {
+			return fmt.Errorf("%s: page 2 returned no rows; pagination didn't advance\noutput:\n%s",
+				msg, out2)
+		}
+
+		// Strip next_cursor before comparison: page 1 always
+		// carries it, page 2 only if a third page exists.
+		p1 := withoutKey(page1[0], "next_cursor")
+		p2 := withoutKey(page2[0], "next_cursor")
+
+		if reflect.DeepEqual(p1, p2) {
+			return fmt.Errorf("%s: page 2 row matches page 1 row; cursor did not advance\npage1:\n%s\npage2:\n%s",
+				msg, out, out2)
+		}
+
+		return nil
+	}
+}
+
+// withoutKey returns a shallow copy of m with key removed.
+func withoutKey(m map[string]any, key string) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if k == key {
+			continue
+		}
+
+		out[k] = v
+	}
+
+	return out
 }
 
 // envoyLogContains returns a [withPostExec] callback that reads the

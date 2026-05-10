@@ -273,6 +273,73 @@ func (d *driver) stopDaemon(ctx context.Context) error {
 	return err
 }
 
+// VMTerrariumConfigPath is the canonical mutable terrarium config
+// path inside the lima VM. The systemd unit and the testrunner
+// driver both reference this so `sudo terrarium ...` invocations
+// pick up the same YAML the daemon was started with.
+const VMTerrariumConfigPath = "/var/lib/terrarium/config.yaml"
+
+// VMTerrariumStatsDB is the canonical SQLite event store path inside
+// the lima VM. Tests pass it explicitly so `terrarium stats` does
+// not have to consult the YAML to discover it.
+const VMTerrariumStatsDB = "/var/lib/terrarium/stats.db"
+
+// reloadDaemonViaCli runs `sudo terrarium daemon reload` inside the
+// VM and returns its exit code along with captured stdout and stderr.
+// Distinct from [driver.reloadDaemon] (which shells systemctl)
+// because this path exercises terrarium's own pre-validation and
+// SIGHUP plumbing.
+//
+// On success the daemon stays alive after the SIGHUP; on failure the
+// CLI returns a non-zero exit code and prints a message describing
+// the rejection (invalid YAML, missing PID file, dead daemon) on
+// stderr.
+func (d *driver) reloadDaemonViaCli(ctx context.Context) (exitCode int, stdout, stderr string, err error) {
+	return d.runTerrarium(ctx, "daemon", "reload")
+}
+
+// runTerrarium executes a `sudo terrarium <args>` invocation inside
+// the VM and returns its exit code, captured stdout, and captured
+// stderr. The driver injects `--config <VMTerrariumConfigPath>` as a
+// persistent root flag so the CLI does not resolve usr.ConfigPath
+// against `/root/.config/...` (sudo scrubs HOME / XDG_CONFIG_HOME by
+// default, so without this flag every `terrarium status` and
+// `terrarium daemon reload` reads a non-existent path).
+//
+// Stdout and stderr are kept separate so callers can parse JSON or
+// regex against stdout without a slog line on stderr breaking the
+// match. err is non-nil only on non-exec failures (limactl missing,
+// context canceled); a non-zero terrarium exit is reported via the
+// returned exitCode, not err.
+func (d *driver) runTerrarium(ctx context.Context, args ...string) (exitCode int, stdout, stderr string, err error) {
+	full := append([]string{"sudo", "terrarium", "--config", VMTerrariumConfigPath}, args...)
+	//nolint:gosec // args are controlled by test code.
+	cmd := exec.CommandContext(ctx, "limactl",
+		append([]string{"shell", d.vmName, "--"}, full...)...,
+	)
+
+	var stdoutBuf, stderrBuf strings.Builder
+
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	runErr := cmd.Run()
+
+	stdout = stdoutBuf.String()
+	stderr = stderrBuf.String()
+
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return exitErr.ExitCode(), stdout, stderr, nil
+		}
+
+		return -1, stdout, stderr, runErr
+	}
+
+	return 0, stdout, stderr, nil
+}
+
 // assertion is an alias for the shared JSON shape in [testspec]. The
 // canonical definition lives there; aliasing keeps builder signatures
 // terse while guaranteeing the driver and testrunner cannot drift.
