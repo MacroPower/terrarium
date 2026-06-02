@@ -240,10 +240,11 @@ var platformToFileArch = map[string]string{
 }
 
 // goreleaserBase returns a container with Go, GoReleaser, and module caches.
-// This is the common base shared by [Terrarium.releaserBase] and
-// [Terrarium.goreleaserCheckBase]. Callers are responsible for mounting
-// project source and initializing a git repo with their appropriate remote
-// URL before use.
+// This is the base used by [Terrarium.releaserBase] for the full release
+// toolset. (Config-only validation goes through the shared [Goreleaser]
+// toolchain instead -- see [Terrarium.LintReleaser].) Callers are responsible
+// for mounting project source and initializing a git repo with their
+// appropriate remote URL before use.
 //
 // The container is built on top of [Go.Base], reusing the pre-built Go image
 // with module cache and go mod download already completed.

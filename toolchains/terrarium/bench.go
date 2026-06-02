@@ -145,11 +145,7 @@ func (m *Terrarium) benchmarkStages() []benchmarkStage {
 			return err
 		}},
 		{"lint-releaser", func(ctx context.Context) error {
-			ctr, err := m.goreleaserCheckBase(ctx, terrariumCloneURL)
-			if err != nil {
-				return err
-			}
-			_, err = m.Go.CacheBust(ctr).
+			_, err := m.Go.CacheBust(m.Goreleaser.CheckBase()).
 				WithExec([]string{"goreleaser", "check"}).
 				Sync(ctx)
 			return err

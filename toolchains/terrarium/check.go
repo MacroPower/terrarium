@@ -17,21 +17,15 @@ func (m *Terrarium) TestUnit(ctx context.Context) error {
 	return m.Go.TestUnit(ctx)
 }
 
-// LintReleaser validates the GoReleaser configuration. Uses
-// [Terrarium.goreleaserCheckBase] with the terrarium remote URL because the
+// LintReleaser validates the GoReleaser configuration. Delegates to the
+// shared [Goreleaser] toolchain, which mounts the source over a minimal git
+// repo (the terrarium remote URL is configured at construction) because the
 // goreleaser config references a git remote for homebrew/nix repository
 // resolution.
 //
 // +check
 func (m *Terrarium) LintReleaser(ctx context.Context) error {
-	ctr, err := m.goreleaserCheckBase(ctx, terrariumCloneURL)
-	if err != nil {
-		return err
-	}
-	_, err = ctr.
-		WithExec([]string{"goreleaser", "check"}).
-		Sync(ctx)
-	return err
+	return m.Goreleaser.Check(ctx)
 }
 
 // ReleaseDryRun validates the full release pipeline without publishing.
