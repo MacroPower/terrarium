@@ -1,6 +1,6 @@
 {
   "name": "terrarium",
-  "engineVersion": "v0.20.1",
+  "engineVersion": "v0.20.8",
   "sdk": {
     "source": "go"
   },
@@ -8,7 +8,7 @@
   "dependencies": [
     {
       "name": "go",
-      "source": "../go"
+      "source": "github.com/MacroPower/x/toolchains/go@main"
     }
   ]
 }

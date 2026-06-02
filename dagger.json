@@ -1,14 +1,30 @@
 {
   "name": "terrarium",
-  "engineVersion": "v0.20.1",
+  "engineVersion": "v0.20.8",
   "toolchains": [
     {
       "name": "go",
-      "source": "toolchains/go"
+      "source": "github.com/MacroPower/x/toolchains/go@main",
+      "customizations": [
+        {
+          "argument": "source",
+          "ignore": [".git", ".worktrees", ".workmux", "dist", ".tmp"]
+        },
+        {
+          "argument": "cacheNamespace",
+          "default": "go.jacobcolvin.com/terrarium/toolchains/go"
+        }
+      ]
     },
     {
       "name": "security",
-      "source": "toolchains/security"
+      "source": "github.com/MacroPower/x/toolchains/security@main",
+      "customizations": [
+        {
+          "argument": "source",
+          "ignore": [".git", ".worktrees", ".workmux", "dist", ".tmp"]
+        }
+      ]
     },
     {
       "name": "terrarium-ci",

@@ -8,6 +8,15 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// TestUnit runs the Go unit tests via the go toolchain. The shared go module
+// does not mark TestUnit as a check, so this thin wrapper keeps unit tests in
+// the terrarium check fan-out (dagger check, lefthook pre-commit, and CI).
+//
+// +check
+func (m *Terrarium) TestUnit(ctx context.Context) error {
+	return m.Go.TestUnit(ctx)
+}
+
 // LintReleaser validates the GoReleaser configuration. Uses
 // [Terrarium.goreleaserCheckBase] with the terrarium remote URL because the
 // goreleaser config references a git remote for homebrew/nix repository
