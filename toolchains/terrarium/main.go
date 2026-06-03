@@ -41,6 +41,8 @@ type Terrarium struct {
 	Goreleaser *dagger.Goreleaser // +private
 	// Zizmor toolchain module instance for GitHub Actions linting.
 	Zizmor *dagger.Zizmor // +private
+	// Cosign toolchain module instance for container image signing.
+	Cosign *dagger.Cosign // +private
 }
 
 // New creates a [Terrarium] module with the given project source directory.
@@ -79,6 +81,7 @@ func New(
 			RemoteURL: terrariumCloneURL,
 		}),
 		Zizmor: dag.Zizmor(dagger.ZizmorOpts{Source: source}),
+		Cosign: dag.Cosign(),
 	}
 }
 

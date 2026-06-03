@@ -68,23 +68,6 @@ func optSecretVariable(name string, secret *dagger.Secret) dagger.WithContainerF
 	}
 }
 
-// dockerConfigFile generates a Docker config.json file containing registry
-// credentials. The file is built in a helper container so that the password
-// remains a [dagger.Secret] throughout. The resulting file can be mounted
-// into containers that need to authenticate to the registry (e.g. cosign).
-func dockerConfigFile(host, username string, password *dagger.Secret) *dagger.File {
-	return dag.Container().
-		From("debian:13-slim").
-		WithSecretVariable("REG_PASS", password).
-		WithExec([]string{"sh", "-c",
-			fmt.Sprintf(
-				`printf '{"auths":{"%s":{"auth":"%%s"}}}' "$(printf '%s:%%s' "$REG_PASS" | base64 -w0)" > /tmp/config.json`,
-				host, username,
-			),
-		}).
-		File("/tmp/config.json")
-}
-
 // variantTags applies [variantTag] to each base tag, producing the
 // variant-specific tag list for publishing.
 func variantTags(baseTags []string, variant Variant) []string {
@@ -365,10 +348,11 @@ func (m *Terrarium) publishImages(
 }
 
 // signImages signs published image digests using cosign keyless signing
-// (Fulcio + Rekor). Cosign's built-in GitHub Actions provider uses the
-// request URL and token to fetch fresh OIDC tokens on demand, avoiding
-// expiry issues. Digests are deduplicated before signing since multiple
-// tags often share one manifest. Does nothing when oidcRequestToken is nil.
+// (Fulcio + Rekor) via the shared [Cosign] toolchain. Cosign's built-in
+// GitHub Actions provider uses the request URL and token to fetch fresh OIDC
+// tokens on demand, avoiding expiry issues. Digests are deduplicated before
+// signing since multiple tags often share one manifest. Does nothing when
+// oidcRequestToken is nil.
 func (m *Terrarium) signImages(
 	ctx context.Context,
 	digests []string,
@@ -386,36 +370,18 @@ func (m *Terrarium) signImages(
 		return fmt.Errorf("deduplicate digests: %w", err)
 	}
 
-	cosignCtr := dag.Container().
-		From("gcr.io/projectsigstore/cosign:"+cosignVersion).
-		WithEnvVariable("ACTIONS_ID_TOKEN_REQUEST_URL", oidcRequestURL).
-		WithSecretVariable("ACTIONS_ID_TOKEN_REQUEST_TOKEN", oidcRequestToken)
+	host := ""
 	if registryPassword != nil {
-		// Mount a Docker config.json so cosign can authenticate to the
-		// registry. WithRegistryAuth only covers Dagger/BuildKit operations;
-		// cosign makes its own HTTP requests and reads credentials from the
-		// Docker config.
-		host, err := m.Goreleaser.RegistryHost(ctx, m.Registry)
+		host, err = m.Goreleaser.RegistryHost(ctx, m.Registry)
 		if err != nil {
 			return fmt.Errorf("resolve registry host: %w", err)
 		}
-		cfg := dockerConfigFile(host, registryUsername, registryPassword)
-		cosignCtr = cosignCtr.
-			WithMountedFile("/tmp/docker/config.json", cfg).
-			WithEnvVariable("DOCKER_CONFIG", "/tmp/docker")
 	}
 
-	g, gCtx := errgroup.WithContext(ctx)
-	for _, digest := range toSign {
-		g.Go(func() error {
-			_, err := cosignCtr.
-				WithExec([]string{"cosign", "sign", digest, "--yes"}).
-				Sync(gCtx)
-			if err != nil {
-				return fmt.Errorf("sign image %s: %w", digest, err)
-			}
-			return nil
+	return m.Cosign.SignKeyless(ctx, toSign, oidcRequestURL, oidcRequestToken,
+		dagger.CosignSignKeylessOpts{
+			RegistryHost:     host,
+			RegistryUsername: registryUsername,
+			RegistryPassword: registryPassword,
 		})
-	}
-	return g.Wait()
 }
