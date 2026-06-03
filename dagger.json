@@ -28,7 +28,13 @@
     },
     {
       "name": "terrarium-ci",
-      "source": "toolchains/terrarium"
+      "source": "toolchains/terrarium",
+      "customizations": [
+        {
+          "argument": "source",
+          "ignore": [".git", ".worktrees", ".workmux", "dist", ".tmp"]
+        }
+      ]
     }
   ]
 }

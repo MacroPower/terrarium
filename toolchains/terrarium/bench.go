@@ -16,6 +16,11 @@ func (m *Terrarium) benchSuite(ctx context.Context) (*dagger.Bench, error) {
 		return nil, err
 	}
 
+	prettierPatterns, err := m.Prettier.Patterns(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	return dag.Bench().
 		WithStage("env",
 			m.Go.CacheBust(m.Go.Env(dagger.GoEnvOpts{}))).
@@ -27,7 +32,7 @@ func (m *Terrarium) benchSuite(ctx context.Context) (*dagger.Bench, error) {
 				WithExec([]string{"go", "test", "./..."})).
 		WithStage("lint-prettier",
 			m.Go.CacheBust(m.Prettier.LintBase()).
-				WithExec([]string{"prettier", "--config", "./.prettierrc.yaml", "--check", "."})).
+				WithExec(append([]string{"prettier", "--config", "./.prettierrc.yaml", "--check"}, prettierPatterns...))).
 		WithStage("lint-actions",
 			m.Go.CacheBust(m.Zizmor.LintBase()).
 				WithExec([]string{
