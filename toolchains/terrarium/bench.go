@@ -26,13 +26,8 @@ func (m *Terrarium) benchSuite(ctx context.Context) (*dagger.Bench, error) {
 			m.Go.CacheBust(m.Go.Env(dagger.GoEnvOpts{})).
 				WithExec([]string{"go", "test", "./..."})).
 		WithStage("lint-prettier",
-			m.Go.CacheBust(m.prettierBase()).
-				WithMountedDirectory("/src", m.Source).
-				WithWorkdir("/src").
-				WithExec(append(
-					[]string{"prettier", "--config", "./.prettierrc.yaml", "--check"},
-					defaultPrettierPatterns()...,
-				))).
+			m.Go.CacheBust(m.Prettier.LintBase()).
+				WithExec([]string{"prettier", "--config", "./.prettierrc.yaml", "--check", "."})).
 		WithStage("lint-actions",
 			m.Go.CacheBust(m.Zizmor.LintBase()).
 				WithExec([]string{

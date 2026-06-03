@@ -86,7 +86,9 @@ func (m *Terrarium) ReleaseDryRun(ctx context.Context) error {
 	return g.Wait()
 }
 
-// LintPrettier checks YAML, JSON, and Markdown formatting.
+// LintPrettier checks YAML, JSON, and Markdown formatting. Delegates to the
+// shared [Prettier] toolchain. Empty configPath/patterns let the prettier
+// module apply its defaults.
 //
 // +check
 func (m *Terrarium) LintPrettier(
@@ -98,19 +100,7 @@ func (m *Terrarium) LintPrettier(
 	// +optional
 	patterns []string,
 ) error {
-	if configPath == "" {
-		configPath = "./.prettierrc.yaml"
-	}
-	if len(patterns) == 0 {
-		patterns = defaultPrettierPatterns()
-	}
-	args := append([]string{"prettier", "--config", configPath, "--check"}, patterns...)
-	_, err := m.prettierBase().
-		WithMountedDirectory("/src", m.Source).
-		WithWorkdir("/src").
-		WithExec(args).
-		Sync(ctx)
-	return err
+	return m.Prettier.Lint(ctx, dagger.PrettierLintOpts{ConfigPath: configPath, Patterns: patterns})
 }
 
 // LintActions lints GitHub Actions workflows. Delegates to the shared

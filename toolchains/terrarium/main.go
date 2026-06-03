@@ -13,9 +13,6 @@ import (
 
 const (
 	goreleaserVersion = "v2.13.3" // renovate: datasource=github-releases depName=goreleaser/goreleaser
-	prettierVersion   = "3.5.3"   // renovate: datasource=npm depName=prettier
-	cosignVersion     = "v3.0.4"  // renovate: datasource=github-releases depName=sigstore/cosign
-	syftVersion       = "v1.41.1" // renovate: datasource=github-releases depName=anchore/syft
 	envoyVersion      = "v1.37.1" // renovate: datasource=github-releases depName=envoyproxy/envoy
 
 	terrariumCacheNamespace = "go.jacobcolvin.com/terrarium/toolchains/terrarium"
@@ -43,6 +40,10 @@ type Terrarium struct {
 	Zizmor *dagger.Zizmor // +private
 	// Cosign toolchain module instance for container image signing.
 	Cosign *dagger.Cosign // +private
+	// Prettier toolchain module instance for non-Go formatting and linting.
+	Prettier *dagger.Prettier // +private
+	// Syft toolchain module instance for SBOM generation during releases.
+	Syft *dagger.Syft // +private
 }
 
 // New creates a [Terrarium] module with the given project source directory.
@@ -82,6 +83,11 @@ func New(
 		}),
 		Zizmor: dag.Zizmor(dagger.ZizmorOpts{Source: source}),
 		Cosign: dag.Cosign(),
+		Prettier: dag.Prettier(dagger.PrettierOpts{
+			Source:         source,
+			CacheNamespace: terrariumCacheNamespace,
+		}),
+		Syft: dag.Syft(),
 	}
 }
 
@@ -116,15 +122,6 @@ func (m *Terrarium) TestRunner(
 // Base containers (private)
 // ---------------------------------------------------------------------------
 
-// prettierBase returns a Node container with prettier pre-installed.
-// Callers must mount their source directory and set the workdir.
-func (m *Terrarium) prettierBase() *dagger.Container {
-	return dag.Container().
-		From("node:lts-slim").
-		WithMountedCache("/root/.npm", dag.CacheVolume(terrariumCacheNamespace+":npm")).
-		WithExec([]string{"npm", "install", "-g", "prettier@" + prettierVersion})
-}
-
 // ensureGitRepo initializes a git repository in the container's workdir if
 // one does not already exist, and configures the given remote URL. This is
 // needed by GoReleaser which inspects git state for changelog generation
@@ -138,13 +135,4 @@ func ensureGitRepo(ctr *dagger.Container, remoteURL string) *dagger.Container {
 				"git config user.name 'Dagger CI' && " +
 				"(git remote get-url origin 2>/dev/null || git remote add origin " + remoteURL + ") && " +
 				"git add -A && git diff-index --quiet HEAD -- 2>/dev/null || git commit -q --allow-empty -m 'init'"})
-}
-
-// defaultPrettierPatterns returns the default file patterns for prettier
-// formatting and linting.
-func defaultPrettierPatterns() []string {
-	return []string{
-		"*.yaml", "*.md", "*.json",
-		"**/*.yaml", "**/*.md", "**/*.json",
-	}
 }

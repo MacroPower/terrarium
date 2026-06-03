@@ -220,13 +220,12 @@ func (m *Terrarium) releaserBase(ctx context.Context) (*dagger.Container, error)
 	if err != nil {
 		return nil, err
 	}
+	// Install cosign and syft binaries via the shared toolchains. WithCosign
+	// and WithSyft take and return a container, so they are applied as
+	// statements rather than chained onto the builder.
+	ctr = m.Cosign.WithCosign(ctr)
+	ctr = m.Syft.WithSyft(ctr)
 	ctr = ctr.
-		WithFile("/usr/local/bin/cosign",
-			dag.Container().From("gcr.io/projectsigstore/cosign:"+cosignVersion).
-				File("/ko-app/cosign")).
-		WithFile("/usr/local/bin/syft",
-			dag.Container().From("ghcr.io/anchore/syft:"+syftVersion).
-				File("/syft")).
 		WithNewFile("/usr/local/bin/nix-hash", `#!/bin/sh
 # nix-hash shim -- supports: nix-hash --type sha256 --flat --sri <file>
 file=""
