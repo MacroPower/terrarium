@@ -117,22 +117,3 @@ func (m *Terrarium) TestRunner(
 		Platform:  platform,
 	})
 }
-
-// ---------------------------------------------------------------------------
-// Base containers (private)
-// ---------------------------------------------------------------------------
-
-// ensureGitRepo initializes a git repository in the container's workdir if
-// one does not already exist, and configures the given remote URL. This is
-// needed by GoReleaser which inspects git state for changelog generation
-// and homebrew/nix repository resolution.
-func ensureGitRepo(ctr *dagger.Container, remoteURL string) *dagger.Container {
-	return ctr.
-		WithExec([]string{"sh", "-c",
-			"git init -q /src 2>/dev/null || true && " +
-				"cd /src && " +
-				"git config user.email 'ci@dagger.io' && " +
-				"git config user.name 'Dagger CI' && " +
-				"(git remote get-url origin 2>/dev/null || git remote add origin " + remoteURL + ") && " +
-				"git add -A && git diff-index --quiet HEAD -- 2>/dev/null || git commit -q --allow-empty -m 'init'"})
-}

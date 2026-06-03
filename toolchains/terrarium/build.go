@@ -196,33 +196,16 @@ func withOCILabels(ctr *dagger.Container) *dagger.Container {
 		WithAnnotation("org.opencontainers.image.source", "https://github.com/macropower/terrarium")
 }
 
-// goreleaserBase returns a container with Go, GoReleaser, and module caches.
-// This is the base used by [Terrarium.releaserBase] for the full release
-// toolset. (Config-only validation goes through the shared [Goreleaser]
-// toolchain instead -- see [Terrarium.LintReleaser].) Callers are responsible
-// for mounting project source and initializing a git repo with their
-// appropriate remote URL before use.
-//
-// The container is built on top of [Go.Base], reusing the pre-built Go image
-// with module cache and go mod download already completed.
-func (m *Terrarium) goreleaserBase(_ context.Context) (*dagger.Container, error) {
-	return m.Go.Base().
-		WithFile("/usr/local/bin/goreleaser",
-			dag.Container().From("ghcr.io/goreleaser/goreleaser:"+goreleaserVersion).
-				File("/usr/bin/goreleaser")), nil
-}
-
-// releaserBase extends [Terrarium.goreleaserBase] with cosign, syft, and
-// project source mounted. Provides the release toolset for goreleaser release
-// with signing and SBOM support.
-func (m *Terrarium) releaserBase(ctx context.Context) (*dagger.Container, error) {
-	ctr, err := m.goreleaserBase(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// Install cosign and syft binaries via the shared toolchains. WithCosign
-	// and WithSyft take and return a container, so they are applied as
-	// statements rather than chained onto the builder.
+// releaserBase builds the full release toolset: the shared GoReleaser base
+// (the Go build base plus the goreleaser binary, from the [Goreleaser]
+// toolchain) extended with cosign, syft, a nix-hash shim, project source, and
+// a bootstrapped git repo -- everything goreleaser release needs for signing
+// and SBOMs. Config-only validation goes through the [Goreleaser] toolchain
+// directly -- see [Terrarium.LintReleaser].
+func (m *Terrarium) releaserBase(_ context.Context) (*dagger.Container, error) {
+	// WithCosign/WithSyft take and return a container, so they are applied as
+	// statements rather than chained.
+	ctr := m.Goreleaser.GoreleaserBase()
 	ctr = m.Cosign.WithCosign(ctr)
 	ctr = m.Syft.WithSyft(ctr)
 	ctr = ctr.
@@ -241,6 +224,5 @@ printf 'sha256-%s\n' "$(openssl dgst -sha256 -binary "$file" | base64 -w0)"
 		// Mount source after all tools so that source changes only invalidate
 		// layers from here onward, preserving the tool installation layers above.
 		WithMountedDirectory("/src", m.Source)
-	ctr = ensureGitRepo(ctr, terrariumCloneURL)
-	return ctr, nil
+	return m.Go.EnsureGitRepo(ctr, dagger.GoEnsureGitRepoOpts{RemoteURL: terrariumCloneURL}), nil
 }
