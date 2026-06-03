@@ -134,10 +134,7 @@ func (m *Terrarium) benchmarkStages() []benchmarkStage {
 			return err
 		}},
 		{"lint-actions", func(ctx context.Context) error {
-			_, err := m.Go.CacheBust(dag.Container().
-				From("ghcr.io/zizmorcore/zizmor:"+zizmorVersion)).
-				WithMountedDirectory("/src", m.Source).
-				WithWorkdir("/src").
+			_, err := m.Go.CacheBust(m.Zizmor.LintBase()).
 				WithExec([]string{
 					"zizmor", ".github/workflows", "--config", ".github/zizmor.yaml",
 				}).

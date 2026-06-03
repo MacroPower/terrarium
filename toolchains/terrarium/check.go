@@ -61,7 +61,7 @@ func (m *Terrarium) ReleaseDryRun(ctx context.Context) error {
 	for _, t := range targets {
 		g.Go(func() error {
 			bin := dist.File(t.distDir + "/terrarium")
-			if err := verifyBinaryPlatform(ctx, bin, t.platform); err != nil {
+			if err := m.Goreleaser.VerifyBinaryPlatform(ctx, bin, t.platform); err != nil {
 				return fmt.Errorf("platform verification for %s: %w", t.platform, err)
 			}
 			return nil
@@ -113,31 +113,18 @@ func (m *Terrarium) LintPrettier(
 	return err
 }
 
-// LintActions runs zizmor to lint GitHub Actions workflows.
+// LintActions lints GitHub Actions workflows. Delegates to the shared
+// [Zizmor] toolchain, which mounts the source and runs zizmor with the
+// project's .github/zizmor.yaml config.
 //
 // +check
 func (m *Terrarium) LintActions(ctx context.Context) error {
-	_, err := dag.Container().
-		From("ghcr.io/zizmorcore/zizmor:"+zizmorVersion).
-		WithMountedDirectory("/src", m.Source).
-		WithWorkdir("/src").
-		WithExec([]string{
-			"zizmor", ".github/workflows", "--config", ".github/zizmor.yaml",
-		}).
-		Sync(ctx)
-	return err
+	return m.Zizmor.Lint(ctx)
 }
 
-// LintDeadcode reports unreachable functions in the codebase using the
-// golang.org/x/tools deadcode analyzer. This is an advisory lint that
+// LintDeadcode reports unreachable functions in the codebase. Delegates to
+// the shared [Go] toolchain's deadcode analyzer. This is an advisory lint that
 // is not included in standard checks; invoke via dagger call terrarium lint-deadcode.
 func (m *Terrarium) LintDeadcode(ctx context.Context) error {
-	_, err := m.Go.Env(dagger.GoEnvOpts{}).
-		WithExec([]string{
-			"go", "install",
-			"golang.org/x/tools/cmd/deadcode@" + deadcodeVersion,
-		}).
-		WithExec([]string{"deadcode", "./..."}).
-		Sync(ctx)
-	return err
+	return m.Go.LintDeadcode(ctx)
 }
