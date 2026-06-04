@@ -1,18 +1,18 @@
 {
   "name": "tests",
-  "engineVersion": "v0.20.8",
+  "engineVersion": "v0.21.4",
   "sdk": {
     "source": "go"
   },
   "dependencies": [
     {
-      "name": "terrarium",
-      "source": ".."
-    },
-    {
       "name": "go",
       "source": "github.com/MacroPower/x/toolchains/go@main",
-      "pin": "b81212f76a9a727677530c23aca224d8ccabc88d"
+      "pin": "2ed06b2b3c6908b794d405b0833b4242bd46918a"
+    },
+    {
+      "name": "terrarium",
+      "source": ".."
     }
   ]
 }
