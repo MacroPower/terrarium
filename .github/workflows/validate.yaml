@@ -24,15 +24,21 @@ jobs:
           persist-credentials: false
 
       - name: Run all checks (test + lint in parallel)
-        uses: ./.github/actions/dagger-call
+        uses: dagger/dagger-for-github@v8.4.1
         with:
+          version: "v0.21.4"
           verb: check
-          function: test-unit lint lint-prettier lint-actions lint-releaser
+          args: test-unit lint lint-prettier lint-actions lint-releaser
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: "true"
 
       - name: Export coverage profile
-        uses: ./.github/actions/dagger-call
+        uses: dagger/dagger-for-github@v8.4.1
         with:
-          function: go test-coverage --output=coverage.txt
+          version: "v0.21.4"
+          call: go test-coverage --output=coverage.txt
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: "true"
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
@@ -49,7 +55,10 @@ jobs:
           persist-credentials: false
 
       - name: Run terrarium integration tests
-        uses: ./.github/actions/dagger-call
+        uses: dagger/dagger-for-github@v8.4.1
         with:
+          version: "v0.21.4"
           verb: check
           module: toolchains/terrarium/tests
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: "true"

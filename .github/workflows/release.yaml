@@ -55,9 +55,10 @@ jobs:
         run: echo "request-url=$ACTIONS_ID_TOKEN_REQUEST_URL" >> "$GITHUB_OUTPUT"
 
       - name: Release via Dagger
-        uses: ./.github/actions/dagger-call
+        uses: dagger/dagger-for-github@v8.4.1
         with:
-          function: >-
+          version: "v0.21.4"
+          call: >-
             terrarium-ci release
             --github-token=env://GITHUB_TOKEN
             --registry-username="${{ github.actor }}"
@@ -66,6 +67,8 @@ jobs:
             --oidc-request-url="${{ steps.oidc.outputs.request-url }}"
             --oidc-request-token=env://ACTIONS_ID_TOKEN_REQUEST_TOKEN
             dist --output=./dist
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: "true"
         env:
           GITHUB_TOKEN: "${{ steps.app-token.outputs.token }}"
           REGISTRY_PASSWORD: "${{ secrets.GITHUB_TOKEN }}"
