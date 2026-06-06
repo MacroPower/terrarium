@@ -67,7 +67,7 @@ func proxyCmd(usr *config.User) *cobra.Command {
 	cmd.Flags().StringVar(&opts.bindAddress, "bind-address", "127.0.0.1",
 		"address the proxy listener binds")
 	cmd.Flags().StringVar(&opts.caOut, "ca-out", "",
-		"write the MITM CA certificate PEM to this path")
+		"write the MITM CA certificate PEM to this path (only when the policy has L7 rules)")
 	cmd.Flags().StringSliceVar(&opts.resolvers, "resolver", nil,
 		"DNS resolver ip:port for upstream resolution (default: system resolver)")
 
@@ -101,6 +101,9 @@ func proxyBootstrapPath(usr *config.User) string {
 // certs for restricted rules, writes the proxy-mode Envoy bootstrap,
 // and optionally copies the CA PEM to caOut. It returns the parsed
 // config and the bootstrap path.
+//
+// caOut is honored only when the policy has L7 rules requiring MITM;
+// an FQDN-only policy generates no CA, so there is nothing to export.
 func GenerateProxy(
 	ctx context.Context, usr *config.User, opts proxyOptions,
 ) (*config.Config, string, error) {
@@ -131,7 +134,8 @@ func GenerateProxy(
 		certsDir = usr.CertsDir
 	}
 
-	if opts.caOut != "" && certsDir != "" {
+	switch {
+	case opts.caOut != "" && certsDir != "":
 		err := copyFile(filepath.Join(usr.CADir, "ca.pem"), opts.caOut)
 		if err != nil {
 			return nil, "", fmt.Errorf("writing CA to %s: %w", opts.caOut, err)
@@ -139,6 +143,12 @@ func GenerateProxy(
 
 		slog.InfoContext(ctx, "proxy: CA certificate written",
 			slog.String("path", opts.caOut))
+
+	case opts.caOut != "":
+		// No L7 rules means no MITM and no CA; make the no-op explicit
+		// rather than silently leaving --ca-out unfulfilled.
+		slog.InfoContext(ctx, "proxy: no L7 rules, no MITM CA to export",
+			slog.String("ca_out", opts.caOut))
 	}
 
 	envoyConf, err := GenerateProxyEnvoyFromConfig(ctx, cfg, certsDir, certs.FindCABundle(),

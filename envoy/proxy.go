@@ -246,6 +246,11 @@ func buildFilteredProxyVhosts(p ProxyListenerParams) []virtualHost {
 	}
 
 	if len(p.HTTPDomains) > 0 {
+		// This vhost matches the "host:80" authority form. The CONNECT
+		// route handles HTTPS-to-port-80 tunnels; the forward route
+		// handles a plain HTTP request that carries an explicit ":80"
+		// authority. Bare-authority plain HTTP (the common case) is
+		// caught by the deny vhost's forward route instead.
 		forward := internalHTTPForwardRoute()
 		vhosts = append(vhosts, virtualHost{
 			Name:    "connect_http",
