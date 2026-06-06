@@ -53,7 +53,7 @@ func (le logEmitter) emit(
 		return
 	}
 
-	groups := append([]([]expr.Any){}, extra...)
+	groups := append([][]expr.Any{}, extra...)
 	groups = append(groups,
 		matchCtState(expr.CtStateBitNEW),
 		le.expr(logprefix.Encode(kind, ruleIdx)),
@@ -93,6 +93,7 @@ func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) e
 		Name:   TableName,
 		Family: nftables.TableFamilyINet,
 	})
+
 	// Best-effort: table may not exist yet on first run.
 	err := conn.Flush()
 	if err != nil {
@@ -161,6 +162,7 @@ func UpdateFQDNSet(conn *nftables.Conn, setName string, ips []net.IP, ttl time.D
 	}
 
 	var elements []nftables.SetElement
+
 	for _, ip := range ips {
 		key := ip.To4()
 		if key == nil {
@@ -191,7 +193,7 @@ func UpdateFQDNSet(conn *nftables.Conn, setName string, ips []net.IP, ttl time.D
 func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs, emitter logEmitter) {
 	policy := nftables.ChainPolicyDrop
 	outputChain := conn.AddChain(&nftables.Chain{
-		Name:     "output",
+		Name:     chainOutput,
 		Table:    table,
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookOutput,
@@ -237,7 +239,7 @@ func addBlockedRules(conn Conn, table *nftables.Table, _ *config.Config, uids UI
 
 	policy := nftables.ChainPolicyDrop
 	outputChain := conn.AddChain(&nftables.Chain{
-		Name:     "output",
+		Name:     chainOutput,
 		Table:    table,
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookOutput,
@@ -271,7 +273,7 @@ func addBlockedRules(conn Conn, table *nftables.Table, _ *config.Config, uids UI
 	// NAT: redirect DNS to local proxy even in blocked mode so the
 	// proxy can return REFUSED instead of leaking to external DNS.
 	natChain := conn.AddChain(&nftables.Chain{
-		Name:     "nat_output",
+		Name:     chainNATOutput,
 		Table:    table,
 		Type:     nftables.ChainTypeNAT,
 		Hooknum:  nftables.ChainHookOutput,
@@ -409,7 +411,7 @@ func addFilterRules(
 	// OUTPUT chain (filter).
 	policy := nftables.ChainPolicyDrop
 	outputChain := conn.AddChain(&nftables.Chain{
-		Name:     "output",
+		Name:     chainOutput,
 		Table:    table,
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookOutput,

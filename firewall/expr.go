@@ -14,6 +14,7 @@ import (
 // flatExprs flattens multiple expression slices into one.
 func flatExprs(groups ...[]expr.Any) []expr.Any {
 	var result []expr.Any
+
 	for _, g := range groups {
 		result = append(result, g...)
 	}
@@ -212,6 +213,7 @@ func matchPortProto(pp config.ResolvedPortProto) []expr.Any {
 // looks it up in the given set.
 func setLookupDst(set *nftables.Set) []expr.Any {
 	var offset, addrLen uint32
+
 	if set.KeyType == nftables.TypeIPAddr {
 		offset = 16
 		addrLen = 4

@@ -13,6 +13,13 @@ import (
 	"go.jacobcolvin.com/terrarium/firewall/logprefix"
 )
 
+// nftables chain names shared across the rule and chain builders.
+const (
+	chainOutput    = "output"
+	chainForward   = "forward"
+	chainNATOutput = "nat_output"
+)
+
 // matchFilteredTraffic returns UID-match expressions that scope a
 // rule to policy-evaluated traffic. In container mode this matches
 // the single Terrarium UID; in VM mode it returns nil so the
@@ -540,7 +547,7 @@ func addNATRules(
 	uids UIDs,
 ) {
 	natChain := conn.AddChain(&nftables.Chain{
-		Name:     "nat_output",
+		Name:     chainNATOutput,
 		Table:    table,
 		Type:     nftables.ChainTypeNAT,
 		Hooknum:  nftables.ChainHookOutput,
@@ -616,7 +623,7 @@ func addNATRules(
 // through Envoy for centralized access logging.
 func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, uids UIDs) {
 	natChain := conn.AddChain(&nftables.Chain{
-		Name:     "nat_output",
+		Name:     chainNATOutput,
 		Table:    table,
 		Type:     nftables.ChainTypeNAT,
 		Hooknum:  nftables.ChainHookOutput,
@@ -1052,6 +1059,7 @@ func addICMPVerdictRules(
 
 			// Set lookup for the correct address family.
 			var set *nftables.Set
+
 			if icmp.Family == config.FamilyIPv6 {
 				set = ref.set6
 			} else {
@@ -1667,7 +1675,7 @@ func buildCIDRTCPChains(
 func addForwardChain(conn Conn, table *nftables.Table, terrariumChain *nftables.Chain) {
 	policy := nftables.ChainPolicyDrop
 	chain := conn.AddChain(&nftables.Chain{
-		Name:     "forward",
+		Name:     chainForward,
 		Table:    table,
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookForward,
@@ -1728,7 +1736,7 @@ func addForwardChain(conn Conn, table *nftables.Table, terrariumChain *nftables.
 func addForwardChainUnrestricted(conn Conn, table *nftables.Table) {
 	policy := nftables.ChainPolicyDrop
 	chain := conn.AddChain(&nftables.Chain{
-		Name:     "forward",
+		Name:     chainForward,
 		Table:    table,
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookForward,
@@ -1760,7 +1768,7 @@ func addForwardChainUnrestricted(conn Conn, table *nftables.Table) {
 func addForwardChainBlocked(conn Conn, table *nftables.Table) {
 	policy := nftables.ChainPolicyDrop
 	chain := conn.AddChain(&nftables.Chain{
-		Name:     "forward",
+		Name:     chainForward,
 		Table:    table,
 		Type:     nftables.ChainTypeFilter,
 		Hooknum:  nftables.ChainHookForward,
