@@ -79,11 +79,9 @@ func WithSocketOwner(uid int) Option {
 //
 // Create instances with [Start].
 type Server struct {
-	listener net.Listener
-	grpc     *grpc.Server
-	store    *eventstore.Store
-	logger   *slog.Logger
-	socket   string
+	grpc   *grpc.Server
+	logger *slog.Logger
+	socket string
 
 	wg sync.WaitGroup
 }
@@ -121,14 +119,16 @@ func Start(ctx context.Context, socket string, store *eventstore.Store, opts ...
 
 	err = os.Chmod(socket, o.socketMode)
 	if err != nil {
-		_ = ln.Close()
+		_ = ln.Close() //nolint:errcheck // abandoning listener on setup error; original error is returned.
+
 		return nil, fmt.Errorf("chmod %s: %w", socket, err)
 	}
 
 	if o.socketOwnerUID >= 0 {
 		err = os.Chown(socket, o.socketOwnerUID, o.socketOwnerUID)
 		if err != nil {
-			_ = ln.Close()
+			_ = ln.Close() //nolint:errcheck // abandoning listener on setup error; original error is returned.
+
 			return nil, fmt.Errorf("chown %s: %w", socket, err)
 		}
 	}
@@ -146,23 +146,17 @@ func Start(ctx context.Context, socket string, store *eventstore.Store, opts ...
 	})
 
 	s := &Server{
-		listener: ln,
-		grpc:     gs,
-		store:    store,
-		logger:   o.logger,
-		socket:   socket,
+		grpc:   gs,
+		logger: o.logger,
+		socket: socket,
 	}
 
-	s.wg.Add(1)
-
-	go func() {
-		defer s.wg.Done()
-
+	s.wg.Go(func() {
 		err := gs.Serve(ln)
 		if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, grpc.ErrServerStopped) {
-			o.logger.Warn("accesslog grpc server exited", slog.Any("err", err))
+			o.logger.WarnContext(ctx, "accesslog grpc server exited", slog.Any("err", err))
 		}
-	}()
+	})
 
 	return s, nil
 }
@@ -192,7 +186,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 	err := os.Remove(s.socket)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		s.logger.Debug("removing accesslog socket", slog.Any("err", err))
+		s.logger.DebugContext(ctx, "removing accesslog socket", slog.Any("err", err))
 	}
 }
 
@@ -212,11 +206,16 @@ func (s *accessLogService) StreamAccessLogs(stream als.AccessLogService_StreamAc
 	for {
 		msg, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
-			return stream.SendAndClose(&als.StreamAccessLogsResponse{})
+			err = stream.SendAndClose(&als.StreamAccessLogsResponse{})
+			if err != nil {
+				return fmt.Errorf("closing access log stream: %w", err)
+			}
+
+			return nil
 		}
 
 		if err != nil {
-			return err
+			return fmt.Errorf("receiving access log message: %w", err)
 		}
 
 		s.handleMessage(msg)

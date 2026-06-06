@@ -40,7 +40,7 @@ func TestServerStreamAccessLogs(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		defer cancel()
 
 		srv.Shutdown(ctx)
@@ -92,16 +92,16 @@ func TestServerStreamAccessLogs(t *testing.T) {
 			return false
 		}
 
-		defer db.Close()
+		defer db.Close() //nolint:errcheck // read-only handle in polling closure.
 
 		var n int
 
-		_ = db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n)
+		require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n))
 
 		return n == 1
 	}, 2*time.Second, 20*time.Millisecond)
 
-	_, _ = stream.CloseAndRecv()
+	stream.CloseAndRecv() //nolint:errcheck // half-close only; the stored event is the assertion.
 
 	// Verify the event details.
 	db, err := eventstore.OpenReadOnly(t.Context(), dbPath)
@@ -139,7 +139,7 @@ func TestServerDefaultSocketMode(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		defer cancel()
 
 		srv.Shutdown(ctx)

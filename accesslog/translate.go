@@ -1,6 +1,7 @@
 package accesslog
 
 import (
+	"math"
 	"net"
 	"strings"
 	"time"
@@ -11,6 +12,18 @@ import (
 	"go.jacobcolvin.com/terrarium/envoy"
 	"go.jacobcolvin.com/terrarium/eventstore"
 )
+
+// clampBytes converts an Envoy unsigned byte counter to the signed
+// int64 the event store records, saturating at [math.MaxInt64] rather
+// than wrapping. Real wire-byte counts never approach this bound; the
+// clamp exists so a malformed counter cannot produce a negative value.
+func clampBytes(v uint64) int64 {
+	if v > math.MaxInt64 {
+		return math.MaxInt64
+	}
+
+	return int64(v)
+}
 
 // httpResponseDetailRBAC and httpResponseDetailDirect are the
 // response_code_details prefixes Envoy emits on a 403 from the RBAC
@@ -54,8 +67,8 @@ func httpEntryToEvent(entry *alsdata.HTTPAccessLogEntry) eventstore.Event {
 		ev.Flags = flags
 	}
 
-	ev.BytesRx = int64(common.GetUpstreamWireBytesReceived()) + int64(common.GetDownstreamWireBytesReceived())
-	ev.BytesTx = int64(common.GetUpstreamWireBytesSent()) + int64(common.GetDownstreamWireBytesSent())
+	ev.BytesRx = clampBytes(common.GetUpstreamWireBytesReceived()) + clampBytes(common.GetDownstreamWireBytesReceived())
+	ev.BytesTx = clampBytes(common.GetUpstreamWireBytesSent()) + clampBytes(common.GetDownstreamWireBytesSent())
 
 	if d := common.GetDuration(); d != nil {
 		ev.DurationMS = int64(d.AsDuration() / time.Millisecond)
@@ -80,8 +93,8 @@ func tcpEntryToEvent(entry *alsdata.TCPAccessLogEntry) eventstore.Event {
 		Domain:   tcpDomain(common),
 		Port:     commonPort(common),
 		Protocol: eventstore.ProtocolTCP,
-		BytesRx:  int64(conn.GetReceivedBytes()),
-		BytesTx:  int64(conn.GetSentBytes()),
+		BytesRx:  clampBytes(conn.GetReceivedBytes()),
+		BytesTx:  clampBytes(conn.GetSentBytes()),
 	}
 
 	if flags := flagsString(common); flags != "" {
@@ -173,7 +186,7 @@ func tcpDecision(common *alsdata.AccessLogCommon, conn *alsdata.ConnectionProper
 }
 
 // extractTime returns the start time recorded on the AccessLogCommon,
-// falling back to time.Now() when missing or when common is nil.
+// falling back to [time.Now] when missing or when common is nil.
 func extractTime(common *alsdata.AccessLogCommon) time.Time {
 	if t := common.GetStartTime(); t != nil {
 		return t.AsTime()
