@@ -16,6 +16,9 @@ const (
 
 	// ModeDaemon is the VM-wide `terrarium daemon` mode.
 	ModeDaemon Mode = "daemon"
+
+	// ModeProxy is the host forward-proxy `terrarium proxy` mode.
+	ModeProxy Mode = "proxy"
 )
 
 // Option configures optional behavior of a [Store].

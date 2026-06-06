@@ -67,6 +67,7 @@ func main() {
 				return err
 			},
 		},
+		proxyCmd(usr),
 		statsCmd(usr),
 	)
 
