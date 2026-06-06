@@ -141,6 +141,7 @@ func (d *driver) startNginx(ctx context.Context, svc serviceSpec) error {
 // startSocat starts a socat echo service inside the VM.
 func (d *driver) startSocat(ctx context.Context, svc serviceSpec) error {
 	var cmd string
+
 	if svc.socat == "udp" {
 		cmd = fmt.Sprintf(
 			`nohup socat UDP-RECVFROM:%d,fork,reuseaddr EXEC:'echo UDP_ECHO_OK' `+

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
 	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
@@ -166,16 +165,31 @@ func initSubcommandRegistered(desc string) assertion {
 // [environment.etc] in configuration.nix.
 const profilePath = "/etc/terrarium/terrarium-workload.profile"
 
+// denyAllConfig is the deny-all egress policy (an empty rule) shared by
+// the test cases that assert all egress is blocked.
+const denyAllConfig = `egress:
+  - {}
+`
+
+// fqdnPort443Config restricts egress to target-allow on TCP/443 and is
+// shared by the test cases that assert FQDN + port filtering.
+const fqdnPort443Config = `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`
+
 // vmTests defines all Lima VM e2e test cases run by the
 // testrunner-lima command. Tests cover deny-all, FQDN exact/wildcard,
 // CIDR, L7 HTTP filtering, port ranges, UDP, ICMP, egress deny rules,
 // guard table behavior, config reload, and container-originated traffic.
 var vmTests = []vmTest{
 	{
-		name: "vm-deny-all",
-		config: `egress:
-  - {}
-`,
+		name:   "vm-deny-all",
+		config: denyAllConfig,
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 			nginxService("target-deny", defaultNginxConf),
@@ -294,15 +308,8 @@ var vmTests = []vmTest{
 		},
 	},
 	{
-		name: "vm-fqdn-port-restrict",
-		config: `egress:
-  - toFQDNs:
-      - matchName: "target-allow"
-    toPorts:
-      - ports:
-          - port: "443"
-            protocol: TCP
-`,
+		name:   "vm-fqdn-port-restrict",
+		config: fqdnPort443Config,
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 		},
@@ -713,15 +720,8 @@ egress:
 		},
 	},
 	{
-		name: "vm-dns-proxy-filtering",
-		config: `egress:
-  - toFQDNs:
-      - matchName: "target-allow"
-    toPorts:
-      - ports:
-          - port: "443"
-            protocol: TCP
-`,
+		name:   "vm-dns-proxy-filtering",
+		config: fqdnPort443Config,
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 			nginxService("target-deny", defaultNginxConf),
@@ -732,15 +732,8 @@ egress:
 		},
 	},
 	{
-		name: "vm-envoy-uid",
-		config: `egress:
-  - toFQDNs:
-      - matchName: "target-allow"
-    toPorts:
-      - ports:
-          - port: "443"
-            protocol: TCP
-`,
+		name:   "vm-envoy-uid",
+		config: fqdnPort443Config,
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 		},
@@ -749,10 +742,8 @@ egress:
 		},
 	},
 	{
-		name: "vm-loopback-deny-all",
-		config: `egress:
-  - {}
-`,
+		name:   "vm-loopback-deny-all",
+		config: denyAllConfig,
 		services: []serviceSpec{
 			nginxService("target-external", defaultNginxConf),
 		},
@@ -821,10 +812,8 @@ tcpForwards:
 		},
 	},
 	{
-		name: "vm-udp-deny-all",
-		config: `egress:
-  - {}
-`,
+		name:   "vm-udp-deny-all",
+		config: denyAllConfig,
 		services: []serviceSpec{
 			udpEchoService("target-udp", 5000),
 		},
@@ -1051,10 +1040,8 @@ egressDeny:
 		},
 	},
 	{
-		name: "vm-container-deny-all",
-		config: `egress:
-  - {}
-`,
+		name:   "vm-container-deny-all",
+		config: denyAllConfig,
 		containerServices: []serviceSpec{
 			nginxService("ct-target", defaultNginxConf),
 		},
@@ -1287,6 +1274,7 @@ egressDeny:
 			// nftables chains, confirming the service is ready
 			// before testing the TPROXY path.
 			var readyErr error
+
 			for range 10 {
 				_, readyErr = d.shell(ctx, "sudo", "nerdctl", "exec",
 					"bridge-svc", "curl", "-sf", "--max-time", "1",
@@ -1430,6 +1418,7 @@ egressDeny:
 
 			// Wait for nginx to be listening.
 			var readyErr error
+
 			for range 10 {
 				_, readyErr = d.shell(ctx, "sudo", "nerdctl", "exec",
 					"bridge-svc-fqdn", "curl", "-sf", "--max-time", "1",
@@ -1480,15 +1469,8 @@ egressDeny:
 
 	// VM-specific tests (not in container suite).
 	{
-		name: "vm-multi-uid",
-		config: `egress:
-  - toFQDNs:
-      - matchName: "target-allow"
-    toPorts:
-      - ports:
-          - port: "443"
-            protocol: TCP
-`,
+		name:   "vm-multi-uid",
+		config: fqdnPort443Config,
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 			nginxService("target-deny", defaultNginxConf),
@@ -1503,15 +1485,8 @@ egressDeny:
 		},
 	},
 	{
-		name: "vm-guard-table",
-		config: `egress:
-  - toFQDNs:
-      - matchName: "target-allow"
-    toPorts:
-      - ports:
-          - port: "443"
-            protocol: TCP
-`,
+		name:   "vm-guard-table",
+		config: fqdnPort443Config,
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 		},
@@ -1577,15 +1552,8 @@ egressDeny:
 		},
 	},
 	{
-		name: "vm-config-reload",
-		config: `egress:
-  - toFQDNs:
-      - matchName: "target-allow"
-    toPorts:
-      - ports:
-          - port: "443"
-            protocol: TCP
-`,
+		name:   "vm-config-reload",
+		config: fqdnPort443Config,
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 			nginxService("target-b", defaultNginxConf),
@@ -1910,6 +1878,7 @@ wait "$child"`
 			out, err := d.shell(ctx, "sudo", "terrarium", "jail", "--", "/bin/true")
 			if err == nil {
 				t.Errorf("jail-missing-profile: expected nonzero exit, got success: %s", out)
+
 				return
 			}
 
@@ -1932,15 +1901,8 @@ wait "$child"`
 	// vm-config-reload, which goes through systemctl reload and
 	// bypasses the CLI's pre-validation.
 	{
-		name: "vm-daemon-reload-cli",
-		config: `egress:
-  - toFQDNs:
-      - matchName: "target-allow"
-    toPorts:
-      - ports:
-          - port: "443"
-            protocol: TCP
-`,
+		name:   "vm-daemon-reload-cli",
+		config: fqdnPort443Config,
 		services: []serviceSpec{
 			nginxService("target-allow", defaultNginxConf),
 			nginxService("target-b", defaultNginxConf),
@@ -2357,6 +2319,7 @@ func verifyVMStatusStatsSection(ctx context.Context, t *testing.T, d *driver) {
 	matches := re.FindStringSubmatch(stdout)
 	if len(matches) < 2 {
 		t.Errorf("status-stats-section: could not parse events 24h count\nstdout:\n%s", stdout)
+
 		return
 	}
 

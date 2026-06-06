@@ -204,7 +204,7 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 		slog.DebugContext(ctx, "reloading nftables", slog.String("error", err.Error()))
 	}
 
-	_, err = d.shell(ctx, "sudo", "systemctl", "restart", "terrarium")
+	_, err = d.shell(ctx, "sudo", "systemctl", "restart", terrariumName)
 	if err != nil {
 		return fmt.Errorf("systemctl restart: %w", err)
 	}
@@ -215,7 +215,7 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 	defer pollCancel()
 
 	for pollCtx.Err() == nil {
-		out, err := d.shell(pollCtx, "systemctl", "is-active", "terrarium")
+		out, err := d.shell(pollCtx, "systemctl", "is-active", terrariumName)
 		if err == nil && strings.TrimSpace(out) == "active" {
 			// Restart nscd (nsncd) after the daemon is active so
 			// stale DNS failures from a previous daemon run do not
@@ -238,7 +238,7 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 // reloadDaemon signals the terrarium daemon to reload its configuration
 // via `systemctl reload` and restarts nscd to clear stale DNS state.
 func (d *driver) reloadDaemon(ctx context.Context) error {
-	_, err := d.shell(ctx, "sudo", "systemctl", "reload", "terrarium")
+	_, err := d.shell(ctx, "sudo", "systemctl", "reload", terrariumName)
 	if err != nil {
 		return fmt.Errorf("systemctl reload: %w", err)
 	}
@@ -249,7 +249,7 @@ func (d *driver) reloadDaemon(ctx context.Context) error {
 	defer pollCancel()
 
 	for pollCtx.Err() == nil {
-		out, err := d.shell(pollCtx, "systemctl", "is-active", "terrarium")
+		out, err := d.shell(pollCtx, "systemctl", "is-active", terrariumName)
 		if err == nil && strings.TrimSpace(out) == "active" {
 			// Restart nscd so stale DNS failures from the previous
 			// config do not persist.
@@ -269,9 +269,14 @@ func (d *driver) reloadDaemon(ctx context.Context) error {
 
 // stopDaemon stops the terrarium daemon.
 func (d *driver) stopDaemon(ctx context.Context) error {
-	_, err := d.shell(ctx, "sudo", "systemctl", "stop", "terrarium")
+	_, err := d.shell(ctx, "sudo", "systemctl", "stop", terrariumName)
 	return err
 }
+
+// terrariumName is the terrarium binary and systemd unit name used by
+// the driver for both `terrarium` CLI invocations and `systemctl`
+// service control inside the lima VM.
+const terrariumName = "terrarium"
 
 // VMTerrariumConfigPath is the canonical mutable terrarium config
 // path inside the lima VM. The systemd unit and the testrunner
@@ -294,7 +299,7 @@ const VMTerrariumStatsDB = "/var/lib/terrarium/stats.db"
 // CLI returns a non-zero exit code and prints a message describing
 // the rejection (invalid YAML, missing PID file, dead daemon) on
 // stderr.
-func (d *driver) reloadDaemonViaCli(ctx context.Context) (exitCode int, stdout, stderr string, err error) {
+func (d *driver) reloadDaemonViaCli(ctx context.Context) (int, string, string, error) {
 	return d.runTerrarium(ctx, "daemon", "reload")
 }
 
@@ -311,8 +316,8 @@ func (d *driver) reloadDaemonViaCli(ctx context.Context) (exitCode int, stdout, 
 // match. err is non-nil only on non-exec failures (limactl missing,
 // context canceled); a non-zero terrarium exit is reported via the
 // returned exitCode, not err.
-func (d *driver) runTerrarium(ctx context.Context, args ...string) (exitCode int, stdout, stderr string, err error) {
-	full := append([]string{"sudo", "terrarium", "--config", VMTerrariumConfigPath}, args...)
+func (d *driver) runTerrarium(ctx context.Context, args ...string) (int, string, string, error) {
+	full := append([]string{"sudo", terrariumName, "--config", VMTerrariumConfigPath}, args...)
 	//nolint:gosec // args are controlled by test code.
 	cmd := exec.CommandContext(ctx, "limactl",
 		append([]string{"shell", d.vmName, "--"}, full...)...,
@@ -325,11 +330,12 @@ func (d *driver) runTerrarium(ctx context.Context, args ...string) (exitCode int
 
 	runErr := cmd.Run()
 
-	stdout = stdoutBuf.String()
-	stderr = stderrBuf.String()
+	stdout := stdoutBuf.String()
+	stderr := stderrBuf.String()
 
 	if runErr != nil {
 		var exitErr *exec.ExitError
+
 		if errors.As(runErr, &exitErr) {
 			return exitErr.ExitCode(), stdout, stderr, nil
 		}
@@ -387,6 +393,7 @@ func (d *driver) runTestrunner(ctx context.Context) (int, string, error) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		var exitErr *exec.ExitError
+
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode(), string(out), nil
 		}
@@ -452,7 +459,7 @@ func (d *driver) tailLogs(ctx context.Context) string {
 	var buf strings.Builder
 
 	cmdCtx, cancel := context.WithTimeout(ctx, perCmd)
-	journal, err := d.shell(cmdCtx, "sudo", "journalctl", "-u", "terrarium", "-n", "50", "--no-pager")
+	journal, err := d.shell(cmdCtx, "sudo", "journalctl", "-u", terrariumName, "-n", "50", "--no-pager")
 
 	cancel()
 
@@ -523,6 +530,7 @@ func (d *driver) tailLogs(ctx context.Context) string {
 
 	if klog != "" {
 		var filtered []string
+
 		for line := range strings.SplitSeq(klog, "\n") {
 			if strings.Contains(line, "TERRARIUM_") {
 				filtered = append(filtered, line)
