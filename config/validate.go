@@ -27,6 +27,13 @@ const maxFQDNEndPortRange = 100
 // fail in RE2.
 const maxRegexLen = 1000
 
+// cidrAllIPv4 and cidrAllIPv6 are the default routes matching every
+// IPv4 / IPv6 address, used to expand the world/all entity selectors.
+const (
+	cidrAllIPv4 = "0.0.0.0/0"
+	cidrAllIPv6 = "::/0"
+)
+
 var (
 	// allowedMatchNameChars validates that a matchName contains only
 	// DNS-safe characters. Matches Cilium's allowedMatchNameChars
@@ -63,10 +70,10 @@ var (
 	// a single address family. In Cilium's non-Kubernetes context,
 	// "all" is functionally identical to "world".
 	entityCIDRs = map[string][]string{
-		"world":      {"0.0.0.0/0", "::/0"},
-		"all":        {"0.0.0.0/0", "::/0"},
-		"world-ipv4": {"0.0.0.0/0"},
-		"world-ipv6": {"::/0"},
+		"world":      {cidrAllIPv4, cidrAllIPv6},
+		"all":        {cidrAllIPv4, cidrAllIPv6},
+		"world-ipv4": {cidrAllIPv4},
+		"world-ipv6": {cidrAllIPv6},
 	}
 )
 
