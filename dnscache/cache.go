@@ -3,6 +3,7 @@ package dnscache
 import (
 	"container/list"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -208,11 +209,11 @@ func (c *Cache) Lookup(ip netip.Addr) (string, bool) {
 
 	now := c.now()
 
-	for i := len(e.records) - 1; i >= 0; i-- {
-		if e.records[i].expiresAt.After(now) {
+	for _, v := range slices.Backward(e.records) {
+		if v.expiresAt.After(now) {
 			c.lru.MoveToFront(e.elem)
 
-			return e.records[i].qname, true
+			return v.qname, true
 		}
 	}
 
@@ -254,6 +255,7 @@ func (c *Cache) Evictions() uint64 {
 // ok=false.
 func (c *Cache) Close() {
 	c.mu.Lock()
+
 	if c.closed {
 		c.mu.Unlock()
 
@@ -278,7 +280,13 @@ func (c *Cache) evictGlobalLocked() {
 		}
 
 		c.lru.Remove(back)
-		delete(c.entries, back.Value.(netip.Addr))
+
+		addr, ok := back.Value.(netip.Addr)
+		if !ok {
+			continue
+		}
+
+		delete(c.entries, addr)
 		c.evictions.Add(1)
 	}
 }
