@@ -45,6 +45,7 @@ func TestCapLastCapFrom(t *testing.T) {
 
 			if tc.err != "" {
 				require.ErrorContains(t, err, tc.err)
+
 				return
 			}
 

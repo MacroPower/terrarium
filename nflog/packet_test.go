@@ -16,16 +16,16 @@ import (
 // given proto byte. l4 is appended after the 20-byte header.
 func makeIPv4(_ *testing.T, proto byte, l4 []byte) []byte {
 	hdr := []byte{
-		0x45,                  // version 4, IHL 5
-		0x00,                  // dscp/ecn
-		0x00, 0x00,            // total length
-		0x00, 0x00,            // id
-		0x00, 0x00,            // flags / frag
-		0x40,                  // TTL
-		proto,                 // protocol
-		0x00, 0x00,            // checksum
-		1, 1, 1, 1,            // src 1.1.1.1
-		8, 8, 8, 8,            // dst 8.8.8.8
+		0x45,       // version 4, IHL 5
+		0x00,       // dscp/ecn
+		0x00, 0x00, // total length
+		0x00, 0x00, // id
+		0x00, 0x00, // flags / frag
+		0x40,       // TTL
+		proto,      // protocol
+		0x00, 0x00, // checksum
+		1, 1, 1, 1, // src 1.1.1.1
+		8, 8, 8, 8, // dst 8.8.8.8
 	}
 
 	return append(hdr, l4...)

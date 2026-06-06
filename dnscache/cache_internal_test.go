@@ -54,6 +54,7 @@ func TestPruneOnceDropsExpiredEntries(t *testing.T) {
 	c.pruneOnce()
 
 	c.mu.Lock()
+
 	_, present := c.entries[ip]
 	c.mu.Unlock()
 

@@ -111,6 +111,7 @@ func BuildTLSListener(
 	// suffix-based server_names matching would allow arbitrarily deep
 	// subdomains for single-star patterns like "*.example.com".
 	var exactDomains, wildcardDomains []string
+
 	for _, d := range passthroughDomains {
 		if IsWildcardDomain(d) {
 			wildcardDomains = append(wildcardDomains, d)
@@ -120,6 +121,7 @@ func BuildTLSListener(
 	}
 
 	var chains []filterChain
+
 	if len(exactDomains) > 0 {
 		chains = append(chains, buildPassthroughFilterChain(upstreamPort, statPrefix, exactDomains, tcpAL, nil))
 	}
@@ -140,6 +142,7 @@ func BuildTLSListener(
 
 	for _, r := range mitmRules {
 		var httpRBAC *filter
+
 		if IsWildcardDomain(r.Domain) {
 			f := buildWildcardHTTPRBACFilter([]string{r.Domain}, nil)
 			httpRBAC = &f
@@ -401,6 +404,7 @@ func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []A
 	}
 
 	var additionalAddrs []additionalAddr
+
 	if transparent {
 		additionalAddrs = []additionalAddr{{
 			Address: address{SocketAddress: socketAddress{

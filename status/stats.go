@@ -35,6 +35,7 @@ func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 	case err != nil:
 		s.Err = fmt.Errorf("stat: %w", err)
 		return s
+
 	default:
 		s.DBSizeBytes = info.Size()
 	}

@@ -44,6 +44,7 @@ func InstallToBundle(caCertPath string) error {
 	// Collect candidate bundle paths: SSL_CERT_FILE first (what TLS
 	// clients actually use), then well-known system paths.
 	var candidates []string
+
 	if env := os.Getenv("SSL_CERT_FILE"); env != "" {
 		candidates = append(candidates, env)
 	}
@@ -62,6 +63,7 @@ func InstallToBundle(caCertPath string) error {
 	seen := make(map[string]bool)
 
 	var bundles []string
+
 	for _, c := range candidates {
 		if c != "" && !seen[c] {
 			seen[c] = true

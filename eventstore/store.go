@@ -570,9 +570,11 @@ func (s *Store) Close() error {
 	}
 
 	s.closeMu.Lock()
+
 	if s.closed {
 		s.closeMu.Unlock()
 		<-s.done
+
 		return nil
 	}
 
@@ -866,6 +868,7 @@ func (s *Store) pruneByAge() {
 
 	if err != nil {
 		s.logger.Debug("retention: probing for expired rows", slog.Any("err", err))
+
 		return
 	}
 
@@ -877,6 +880,7 @@ func (s *Store) pruneByAge() {
 	)
 	if err != nil {
 		s.logger.Debug("retention: pruning by age", slog.Any("err", err))
+
 		return
 	}
 
@@ -898,6 +902,7 @@ func (s *Store) deleteOldestGlobal(chunk int64) {
 	)
 	if err != nil {
 		s.logger.Debug("retention: pruning by rows", slog.Any("err", err))
+
 		return
 	}
 
@@ -959,6 +964,7 @@ func (s *Store) applyDeletedRows(rows *sql.Rows) {
 		err := rows.Scan(&source)
 		if err != nil {
 			s.logger.Debug("retention: scanning pruned row source", slog.Any("err", err))
+
 			continue
 		}
 

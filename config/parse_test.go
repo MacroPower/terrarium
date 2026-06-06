@@ -150,6 +150,7 @@ egress:
 			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
+
 				return
 			}
 
@@ -386,6 +387,7 @@ logging:
 			_, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
+
 				return
 			}
 
@@ -398,16 +400,16 @@ func TestParseStats(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		yaml          string
-		err           error
-		want          *config.Stats
-		wantMaxAge    time.Duration
-		wantMaxRows   int64
-		wantEnabled   bool
-		wantDBPath    string
-		wantSocket    string
-		wantBufBytes  uint32
-		wantFlushMs   uint32
+		yaml            string
+		err             error
+		want            *config.Stats
+		wantMaxAge      time.Duration
+		wantMaxRows     int64
+		wantEnabled     bool
+		wantDBPath      string
+		wantSocket      string
+		wantBufBytes    uint32
+		wantFlushMs     uint32
 		retentionWasSet bool
 	}{
 		"absent": {
@@ -549,6 +551,7 @@ stats:
 			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
+
 				return
 			}
 

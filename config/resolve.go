@@ -150,6 +150,7 @@ func (c *Config) TCPForwardHosts() []string {
 	seen := make(map[string]bool)
 
 	var hosts []string
+
 	for _, fwd := range c.TCPForwards {
 		if !seen[fwd.Host] {
 			seen[fwd.Host] = true
@@ -605,6 +606,7 @@ func (c *Config) ResolvePorts(ctx context.Context) []int {
 	}
 
 	sort.Ints(result)
+
 	if len(result) == 0 {
 		return nil
 	}
@@ -616,6 +618,7 @@ func (c *Config) ResolvePorts(ctx context.Context) []int {
 // (80 and 443), since those have dedicated redirect rules.
 func (c *Config) ExtraPorts(ctx context.Context) []int {
 	var extra []int
+
 	for _, p := range c.ResolvePorts(ctx) {
 		if p != 80 && p != 443 {
 			extra = append(extra, p)
@@ -721,6 +724,7 @@ func (c *Config) ResolveOpenPorts(ctx context.Context) []int {
 	seen := make(map[int]bool, len(openRules))
 
 	var result []int
+
 	for _, r := range openRules {
 		if !seen[r.Port] {
 			seen[r.Port] = true
@@ -1194,6 +1198,7 @@ func classifyCIDR(cidr CIDRRule, ports []ResolvedPortProto, ruleIndex int) (*Res
 	// detection to avoid Go's IPv4-mapped IPv6 normalization where
 	// To4() returns non-nil for "::ffff:10.0.0.0/104".
 	var v4Except, v6Except []string
+
 	for _, exc := range cidr.Except {
 		_, _, excErr := net.ParseCIDR(exc)
 		if excErr != nil {
@@ -1314,6 +1319,7 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 
 		// Collect CIDRs from sibling L3 selectors on this rule.
 		var allCIDRs []CIDRRule
+
 		if len(rules[ri].ToCIDR) > 0 || len(rules[ri].ToCIDRSet) > 0 {
 			for _, cidr := range rules[ri].ToCIDR {
 				allCIDRs = append(allCIDRs, CIDRRule{CIDR: cidr})
@@ -1332,6 +1338,7 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 				// Filter CIDRs by address family to match the
 				// ICMP family (IPv4 CIDRs for IPv4 ICMP, etc.).
 				var cidrs []CIDRRule
+
 				if len(allCIDRs) > 0 {
 					isV6 := f.Family == FamilyIPv6
 					for _, c := range allCIDRs {

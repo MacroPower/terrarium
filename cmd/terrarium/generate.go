@@ -37,6 +37,7 @@ func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Confi
 	mitmSeen := make(map[string]bool)
 
 	var mitmRules []config.ResolvedRule
+
 	for _, port := range tlsPorts {
 		portRules := cfg.ResolveRulesForPort(ctx, port)
 

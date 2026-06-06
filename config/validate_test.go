@@ -2047,6 +2047,7 @@ func TestValidate(t *testing.T) {
 			err := tt.cfg.Validate(t.Context())
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
+
 				return
 			}
 
@@ -2417,6 +2418,7 @@ egressPolicy:
 			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
+
 				return
 			}
 
@@ -3796,6 +3798,7 @@ egressDeny:
 // generateICMPFields returns a YAML snippet with n ICMP field entries.
 func generateICMPFields(n int) string {
 	var b strings.Builder
+
 	for range n {
 		b.WriteString("\n          - type: \"8\"")
 	}
@@ -3805,6 +3808,7 @@ func generateICMPFields(n int) string {
 
 func generatePorts(n int) string {
 	var b strings.Builder
+
 	for i := range n {
 		fmt.Fprintf(&b, "\n          - port: \"%d\"", i+1)
 	}

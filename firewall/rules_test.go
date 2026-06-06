@@ -139,6 +139,7 @@ func TestApplyRules_Unrestricted(t *testing.T) {
 	require.NotEmpty(t, natRules)
 
 	var redirCount int
+
 	for _, r := range natRules {
 		if ruleHasRedir(r) {
 			redirCount++
@@ -182,6 +183,7 @@ func TestApplyRules_UnrestrictedWithTCPForwards(t *testing.T) {
 	natRules := rec.rulesForChain("nat_output")
 	// DNS UDP, DNS TCP, port 80, port 443, TCPForward port 3000, catch-all TCP = 6 REDIRECTs.
 	var redirCount int
+
 	for _, r := range natRules {
 		if ruleHasRedir(r) {
 			redirCount++
@@ -216,6 +218,7 @@ func TestApplyRules_Blocked(t *testing.T) {
 	require.NotEmpty(t, natRules)
 
 	var redirCount int
+
 	for _, r := range natRules {
 		if ruleHasRedir(r) {
 			redirCount++
@@ -293,6 +296,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 	outputRules := rec.rulesForChain("output")
 
 	var jumpIdx, estIdx int
+
 	for i, r := range outputRules {
 		v, chain := ruleVerdict(r)
 		if v == expr.VerdictJump && chain == "terrarium_output" {
@@ -321,6 +325,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 
 	// terrarium_output has jump to cidr_0.
 	var hasCIDRJump bool
+
 	for _, r := range terrariumRules {
 		vk, chain := ruleVerdict(r)
 		if vk == expr.VerdictJump && chain == "cidr_0" {
@@ -336,6 +341,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 	require.NotEmpty(t, cidrRules)
 
 	var hasReturn, hasAccept bool
+
 	for _, r := range cidrRules {
 		vk, _ := ruleVerdict(r)
 		if vk == expr.VerdictReturn {
@@ -372,6 +378,7 @@ func TestApplyRules_RulesMode(t *testing.T) {
 	require.NotEmpty(t, natRules)
 
 	var redirCount int
+
 	for _, r := range natRules {
 		if ruleHasRedir(r) {
 			redirCount++
@@ -492,6 +499,7 @@ func TestApplyRules_FQDNSets(t *testing.T) {
 	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	var lookupCount int
+
 	for _, r := range terrariumRules {
 		if ruleHasLookup(r) {
 			lookupCount++
@@ -573,6 +581,7 @@ func TestApplyRules_UnrestrictedOpenPorts(t *testing.T) {
 	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	var hasBlanketAccept bool
+
 	for _, r := range terrariumRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictAccept && ruleHasMetaKey(r, expr.MetaKeySKUID) {
@@ -618,6 +627,7 @@ func TestApplyRules_OpenTCPSinglePortGoThroughEnvoy(t *testing.T) {
 	// match a destination CIDR. With the new behavior, only CIDR
 	// RETURNs should exist.
 	var redirCount int
+
 	for _, r := range natRules {
 		if ruleHasRedir(r) {
 			redirCount++
@@ -737,6 +747,7 @@ func TestApplyRules_OpenPortFilterRules(t *testing.T) {
 
 	// Count ACCEPT rules that have UID matching (open port rules).
 	var acceptCount int
+
 	for _, r := range terrariumRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictAccept && ruleHasMetaKey(r, expr.MetaKeySKUID) {
@@ -779,6 +790,7 @@ func TestApplyRules_MultipleRuleCIDRChains(t *testing.T) {
 	terrariumRules := rec.rulesForChain("terrarium_output")
 
 	var jumpChains []string
+
 	for _, r := range terrariumRules {
 		v, chain := ruleVerdict(r)
 		if v == expr.VerdictJump {
@@ -819,6 +831,7 @@ func TestApplyRules_CIDROnlyFilteredMode(t *testing.T) {
 		require.NotEmpty(t, cidrNATRules, "chain %s should have rules", chainName)
 
 		var hasRedir bool
+
 		for _, r := range cidrNATRules {
 			if ruleHasRedir(r) {
 				hasRedir = true
@@ -833,6 +846,7 @@ func TestApplyRules_CIDROnlyFilteredMode(t *testing.T) {
 	require.NotEmpty(t, natRules)
 
 	var hasJump, hasRedir bool
+
 	for _, r := range natRules {
 		v, chain := ruleVerdict(r)
 		if v == expr.VerdictJump && (chain == "cidr_nat_0" || chain == "cidr_nat_1") {
@@ -901,6 +915,7 @@ func TestApplyRules_MangleChains_Unrestricted(t *testing.T) {
 	require.NotEmpty(t, mangleRules)
 
 	var hasMarkSet bool
+
 	for _, r := range mangleRules {
 		if ruleHasMark(r) {
 			hasMarkSet = true
@@ -914,6 +929,7 @@ func TestApplyRules_MangleChains_Unrestricted(t *testing.T) {
 	require.NotEmpty(t, preRules)
 
 	var tproxyCount int
+
 	for _, r := range preRules {
 		if ruleHasTProxy(r) {
 			tproxyCount++
@@ -994,6 +1010,7 @@ func TestApplyRules_MangleChains_DNSExclusion(t *testing.T) {
 	require.NotEmpty(t, mangleRules)
 
 	var hasDstPortNeq bool
+
 	for _, r := range mangleRules {
 		for _, e := range r.Exprs {
 			if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpNeq {
@@ -1031,6 +1048,7 @@ func TestApplyRules_CIDRWithPorts(t *testing.T) {
 	cidrRules := rec.rulesForChain("cidr_0")
 	// With 2 ports on one CIDR, we get 2 ACCEPT rules (one per port).
 	var acceptCount int
+
 	for _, r := range cidrRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictAccept {
@@ -1063,6 +1081,7 @@ func TestApplyRules_ICMPOnly(t *testing.T) {
 	outputRules := rec.rulesForChain("terrarium_output")
 
 	var icmpAccepts int
+
 	for _, r := range outputRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictAccept && ruleHasPayload(r) {
@@ -1099,6 +1118,7 @@ func TestApplyRules_DenyICMP(t *testing.T) {
 	outputRules := rec.rulesForChain("terrarium_output")
 
 	var icmpDrops int
+
 	for _, r := range outputRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictDrop && ruleHasPayload(r) {
@@ -1140,6 +1160,7 @@ func TestApplyRules_ICMPWithCIDR(t *testing.T) {
 
 	// The ICMP chain should have a CIDR-scoped ACCEPT with payload.
 	var icmpAccepts int
+
 	for _, r := range icmpChainRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictAccept && ruleHasPayload(r) {
@@ -1173,6 +1194,7 @@ func TestApplyRules_ICMPWithoutCIDR(t *testing.T) {
 	outputRules := rec.rulesForChain("terrarium_output")
 
 	var icmpAccepts int
+
 	for _, r := range outputRules {
 		v, _ := ruleVerdict(r)
 		if v == expr.VerdictAccept && ruleHasPayload(r) {
@@ -1255,6 +1277,7 @@ func TestApplyRules_ICMPWithFQDN(t *testing.T) {
 	// at ICMP offset). ICMP FQDN lookups have matchICMPType +
 	// setLookupDst, producing two Payload expressions per rule.
 	var icmpLookups int
+
 	for _, r := range outputRules {
 		payloadCount := 0
 		hasLookup := false
@@ -1338,6 +1361,7 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 
 			// Find the postrouting_guard chain.
 			var guardChain *nftables.Chain
+
 			for _, c := range rec.chains {
 				if c.Name == "postrouting_guard" {
 					guardChain = c
@@ -1347,6 +1371,7 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 
 			if !tt.wantChain {
 				assert.Nil(t, guardChain, "blocked mode should not have postrouting_guard")
+
 				return
 			}
 
@@ -1368,6 +1393,7 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 
 			// Verify oifname comparison is CmpOpNeq (not equal to "lo").
 			var foundOIFNeq bool
+
 			for _, e := range lastRule.Exprs {
 				c, ok := e.(*expr.Cmp)
 				if !ok || c.Op != expr.CmpOpNeq {
@@ -1384,6 +1410,7 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 
 			// LOG rule presence.
 			var hasLog bool
+
 			for _, r := range rules {
 				if ruleHasLog(r) {
 					hasLog = true
@@ -1395,6 +1422,7 @@ func TestApplyRules_PostroutingGuard(t *testing.T) {
 
 			// ICMP accept rules should exist before the log/drop rules.
 			var icmpAccept, icmpv6Accept bool
+
 			for _, r := range rules {
 				rv, _ := ruleVerdict(r)
 				if rv != expr.VerdictAccept {
@@ -1627,6 +1655,7 @@ func TestApplyRules_VMMode_PostroutingGuard(t *testing.T) {
 
 	// Verify CmpOpGte (matchHasSocketOwner) rather than CmpOpEq (matchUID).
 	var hasCmpGte bool
+
 	for _, e := range lastRule.Exprs {
 		if c, ok := e.(*expr.Cmp); ok && c.Op == expr.CmpOpGte {
 			hasCmpGte = true
@@ -1638,6 +1667,7 @@ func TestApplyRules_VMMode_PostroutingGuard(t *testing.T) {
 
 	// ICMP accept rules should exist between UID accepts and drop.
 	var icmpAccept, icmpv6Accept bool
+
 	for _, r := range rules {
 		rv, _ := ruleVerdict(r)
 		if rv != expr.VerdictAccept {
@@ -1729,6 +1759,7 @@ func TestApplyRules_VMMode_Blocked(t *testing.T) {
 
 	// Remaining rules: DNS REDIRECT (UDP + TCP).
 	var vmRedirCount int
+
 	for _, r := range natRules[2:] {
 		if ruleHasRedir(r) {
 			vmRedirCount++
@@ -1832,6 +1863,7 @@ func TestApplyRules_ExcludeUIDs(t *testing.T) {
 			// Both UDP and TCP should have ACCEPT rules for the
 			// excluded UID.
 			var excludeAcceptCount int
+
 			for _, r := range natRules {
 				if ruleMatchesUID(r, dnsmasqUID) && ruleHasDstPort(r, 53) {
 					v, _ := ruleVerdict(r)
@@ -1851,6 +1883,7 @@ func TestApplyRules_ExcludeUIDs(t *testing.T) {
 			require.NotEmpty(t, outputRules)
 
 			var filterAcceptCount int
+
 			for _, r := range outputRules {
 				if ruleMatchesUID(r, dnsmasqUID) && ruleHasDstPort(r, 53) {
 					v, _ := ruleVerdict(r)
@@ -1870,6 +1903,7 @@ func TestApplyRules_ExcludeUIDs(t *testing.T) {
 			pgRules := rec.rulesForChain("postrouting_guard")
 			if tc.uids.VMMode && len(pgRules) > 0 {
 				var pgAcceptCount int
+
 				for _, r := range pgRules {
 					if ruleMatchesUID(r, dnsmasqUID) && ruleHasDstPort(r, 53) {
 						v, _ := ruleVerdict(r)
@@ -1913,6 +1947,7 @@ func TestApplyRules_VMMode_NATPreRouting(t *testing.T) {
 	// queries to bridge-local resolvers (e.g., BuildKit on the CNI
 	// gateway) where mangle's matchNotLocalDst skips them.
 	var dnsDNATCount int
+
 	for _, r := range rules {
 		if ruleHasNAT(r) && ruleHasDstPort(r, 53) {
 			dnsDNATCount++
@@ -1923,6 +1958,7 @@ func TestApplyRules_VMMode_NATPreRouting(t *testing.T) {
 
 	// Bridge-local DNAT for resolved ports (port 443 in this config).
 	var bridgeLocalDNATCount int
+
 	for _, r := range rules {
 		if ruleHasNAT(r) && !ruleHasDstPort(r, 53) {
 			bridgeLocalDNATCount++
@@ -1951,6 +1987,7 @@ func TestApplyRules_VMMode_NATPreRouting_Unrestricted(t *testing.T) {
 	// Should have DNS DNAT for UDP + TCP (2) plus bridge-local DNAT
 	// for ports 80 and 443 (2) = 4 total.
 	var natCount int
+
 	for _, r := range rules {
 		if ruleHasNAT(r) {
 			natCount++
@@ -1985,6 +2022,7 @@ func TestApplyRules_VMMode_NATPreRouting_TCPForwards(t *testing.T) {
 
 	// 2 DNS (UDP+TCP) + 1 resolved port (443) + 1 TCPForward (22) = 4.
 	var natCount int
+
 	for _, r := range rules {
 		if ruleHasNAT(r) {
 			natCount++
@@ -1996,6 +2034,7 @@ func TestApplyRules_VMMode_NATPreRouting_TCPForwards(t *testing.T) {
 
 	// Verify the TCPForward port is present.
 	var hasTCPForwardPort bool
+
 	for _, r := range rules {
 		if ruleHasNAT(r) && ruleHasDstPort(r, 22) {
 			hasTCPForwardPort = true
@@ -2036,6 +2075,7 @@ func TestApplyRules_VMMode_ForwardChain(t *testing.T) {
 
 	// Should have jump to terrarium_output.
 	var hasJump bool
+
 	for _, r := range rules {
 		vk, chain := ruleVerdict(r)
 		if vk == expr.VerdictJump && chain == "terrarium_output" {
@@ -2132,6 +2172,7 @@ func TestApplyRules_VMMode_MangleForwarded(t *testing.T) {
 	// Should have marking rules (fwmark but no TPROXY) followed
 	// by TPROXY dispatch rules.
 	var hasMark, hasTProxy bool
+
 	for _, r := range rules[2:] {
 		if ruleHasMark(r) && !ruleHasTProxy(r) {
 			hasMark = true
@@ -2245,6 +2286,7 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 
 	// Count marking rules (have mark set but no TPROXY).
 	var markRules []*nftables.Rule
+
 	for _, r := range rules {
 		if ruleHasMark(r) && !ruleHasTProxy(r) {
 			markRules = append(markRules, r)
@@ -2274,6 +2316,7 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 
 	// Should have IPv6 TPROXY dispatch rules.
 	var ipv6TProxyCount int
+
 	for _, r := range rules {
 		if ruleHasTProxy(r) && ruleMatchesNFProto(r, 10) {
 			ipv6TProxyCount++
@@ -2306,6 +2349,7 @@ func TestApplyRules_VMMode_IPv6TPROXY_NotInContainerMode(t *testing.T) {
 
 	// Container mode: only 2 TPROXY rules (IPv4 UDP, IPv6 UDP).
 	var tproxyCount int
+
 	for _, r := range rules {
 		if ruleHasTProxy(r) {
 			tproxyCount++
@@ -2624,6 +2668,7 @@ func TestApplyRules_LogRules_GateOnCtStateNew(t *testing.T) {
 			require.NoError(t, err)
 
 			var logRules []*nftables.Rule
+
 			for _, r := range rec.rules {
 				if ruleHasLog(r) {
 					logRules = append(logRules, r)
@@ -2690,6 +2735,7 @@ func TestApplyRules_LogRules_SyslogVsNFLog(t *testing.T) {
 			require.NoError(t, err)
 
 			var found bool
+
 			for _, r := range rec.rules {
 				log := findLog(r)
 				if log == nil {
@@ -2717,4 +2763,3 @@ func TestApplyRules_LogRules_SyslogVsNFLog(t *testing.T) {
 		})
 	}
 }
-

@@ -17,7 +17,7 @@ func TestParseProcStarttime(t *testing.T) {
 	// nice, num_threads, itrealvalue, starttime, ...
 	// That's 19 fields before starttime (field 22 overall, index 19
 	// in the post-')' tail).
-	build := func(comm string, starttime string) string {
+	build := func(comm, starttime string) string {
 		tail := []string{
 			"S",  // state
 			"1",  // ppid
@@ -86,6 +86,7 @@ func TestParseProcStarttime(t *testing.T) {
 			got, err := parseProcStarttime(tc.line)
 			if tc.err {
 				require.Error(t, err)
+
 				return
 			}
 
@@ -127,6 +128,7 @@ func TestSplitTailLines(t *testing.T) {
 			got := splitTailLines([]byte(tc.in))
 			if len(tc.want) == 0 {
 				assert.Empty(t, got)
+
 				return
 			}
 

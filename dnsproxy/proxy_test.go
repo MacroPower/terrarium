@@ -986,6 +986,7 @@ func TestProxyICMPFQDNPopulatesIPSet(t *testing.T) {
 	require.Len(t, recorded, 2)
 
 	var hasICMPSet bool
+
 	for _, entry := range recorded {
 		if strings.Contains(entry, "terrarium_fqdnicmp4_0") {
 			assert.Contains(t, entry, "10.0.0.1")
@@ -1066,6 +1067,7 @@ func TestProxyEmitsEvents(t *testing.T) {
 		var domain, reason sql.NullString
 
 		require.NoError(t, rows.Scan(&ev.source, &ev.decision, &domain, &reason))
+
 		ev.domain = domain.String
 		ev.reason = reason.String
 
@@ -1128,9 +1130,7 @@ func TestProxyBlockedModeEmitsDeny(t *testing.T) {
 
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
-	var (
-		decision, reason string
-	)
+	var decision, reason string
 
 	err = db.QueryRowContext(t.Context(), `SELECT decision, reason FROM events LIMIT 1`).Scan(&decision, &reason)
 	require.NoError(t, err)

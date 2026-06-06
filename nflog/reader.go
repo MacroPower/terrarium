@@ -95,6 +95,7 @@ func (r *Reader) Run(ctx context.Context) error {
 
 	hook := func(a nflog.Attribute) int {
 		r.handle(a)
+
 		return 0
 	}
 
@@ -103,6 +104,7 @@ func (r *Reader) Run(ctx context.Context) error {
 			slog.Uint64("group", uint64(r.group)),
 			slog.Any("err", err),
 		)
+
 		// Continue receiving; transient netlink hiccups are
 		// expected and the library serializes our hook calls.
 		return 0
@@ -182,18 +184,21 @@ func (r *Reader) handle(a nflog.Attribute) {
 
 	if a.Prefix == nil || a.Payload == nil {
 		r.parseErrors.Add(1)
+
 		return
 	}
 
 	kind, ruleIdx, ok := logprefix.Decode(*a.Prefix)
 	if !ok {
 		r.parseErrors.Add(1)
+
 		return
 	}
 
 	tuple, ok := parsePacket(*a.Payload)
 	if !ok {
 		r.parseErrors.Add(1)
+
 		return
 	}
 
@@ -296,6 +301,7 @@ func protocolFor(proto, family uint8) eventstore.Protocol {
 		}
 
 		return eventstore.ProtocolICMP
+
 	case unix.IPPROTO_ICMPV6:
 		return eventstore.ProtocolICMPv6
 	}

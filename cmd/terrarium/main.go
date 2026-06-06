@@ -117,6 +117,7 @@ func main() {
 	)
 	if err != nil {
 		var exitErr *ExitError
+
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.Code)
 		}

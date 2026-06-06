@@ -47,6 +47,7 @@ func (r *ruleRecorder) Flush() error {
 
 func (r *ruleRecorder) chainNames() []string {
 	var names []string
+
 	for _, c := range r.chains {
 		names = append(names, c.Name)
 	}
@@ -56,6 +57,7 @@ func (r *ruleRecorder) chainNames() []string {
 
 func (r *ruleRecorder) rulesForChain(name string) []*nftables.Rule {
 	var chain *nftables.Chain
+
 	for _, c := range r.chains {
 		if c.Name == name {
 			chain = c
@@ -80,6 +82,7 @@ func (r *ruleRecorder) rulesForChain(name string) []*nftables.Rule {
 
 func (r *ruleRecorder) setNames() []string {
 	var names []string
+
 	for _, s := range r.sets {
 		names = append(names, s.Name)
 	}

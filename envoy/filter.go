@@ -36,6 +36,7 @@ const wildcardRBACPolicy = "wildcard_depth"
 // [CiliumNetworkPolicy]: https://docs.cilium.io/en/stable/policy/language/#dns-based
 func buildWildcardRBACFilter(wildcardDomains []string) filter {
 	var permissions []rbacPermission
+
 	for _, d := range wildcardDomains {
 		permissions = append(permissions, rbacPermission{
 			RequestedServerName: &stringMatch{
@@ -135,6 +136,7 @@ func buildPassthroughFilterChain(
 	rbacFilter *filter,
 ) filterChain {
 	var filters []filter
+
 	if rbacFilter != nil {
 		filters = append(filters, *rbacFilter)
 	}

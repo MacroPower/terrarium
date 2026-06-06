@@ -94,6 +94,7 @@ func CleanupPolicyRouting(ctx context.Context) {
 	lo, err := netlink.LinkByName("lo")
 	if err != nil {
 		slog.DebugContext(ctx, "looking up loopback for cleanup", slog.Any("err", err))
+
 		return
 	}
 

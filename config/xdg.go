@@ -75,4 +75,3 @@ func envoyLogDefault() string {
 func StatsDBDefault() string {
 	return filepath.Join(userDataDir(), "terrarium", "stats.db")
 }
-

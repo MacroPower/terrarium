@@ -41,6 +41,7 @@ const (
 // trailing space is 41 bytes, well under that cap.
 func Encode(k Kind, ruleIdx int) string {
 	var b strings.Builder
+
 	b.Grow(32)
 
 	switch k {

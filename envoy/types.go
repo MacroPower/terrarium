@@ -180,13 +180,13 @@ type stderrAccessLogConfig struct {
 
 // httpGrpcAccessLogConfig models Envoy's HttpGrpcAccessLogConfig.
 type httpGrpcAccessLogConfig struct {
-	AtType       string                  `yaml:"@type"`
+	AtType       string                    `yaml:"@type"`
 	CommonConfig commonGrpcAccessLogConfig `yaml:"common_config"`
 }
 
 // tcpGrpcAccessLogConfig models Envoy's TcpGrpcAccessLogConfig.
 type tcpGrpcAccessLogConfig struct {
-	AtType       string                  `yaml:"@type"`
+	AtType       string                    `yaml:"@type"`
 	CommonConfig commonGrpcAccessLogConfig `yaml:"common_config"`
 }
 

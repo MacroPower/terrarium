@@ -20,6 +20,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 	// "**.example.com") since those are allowed with L7 rules; only
 	// bare wildcards ("*", "**") are rejected by validation.
 	var wildcardDomains, exactDomains []string
+
 	for _, r := range rules {
 		if r.IsRestricted() {
 			restricted = append(restricted, r)
@@ -48,6 +49,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 	// independent match (OR'd), not a cross-product.
 	for _, r := range restricted {
 		var routes []route
+
 		for _, hr := range r.HTTPRules {
 			match := routeMatch{Prefix: "/"}
 			if hr.Path != "" {
@@ -78,6 +80,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 			// Split headerMatches into deny-semantics (no mismatch
 			// action) and mismatch-action groups.
 			var actionMatches []config.HeaderMatch
+
 			for _, hm := range hr.HeaderMatches {
 				if hm.Mismatch == "" {
 					match.Headers = append(match.Headers, headerMatcher{
@@ -273,6 +276,7 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // transforms are needed.
 func mismatchHeaderMatchers(matches []config.HeaderMatch) []headerMatcher {
 	var result []headerMatcher
+
 	for _, hm := range matches {
 		result = append(result, headerMatcher{
 			Name:        hm.Name,
@@ -287,6 +291,7 @@ func mismatchHeaderMatchers(matches []config.HeaderMatch) []headerMatcher {
 // headerMatches with ADD or REPLACE mismatch actions.
 func mismatchHeadersToAdd(matches []config.HeaderMatch) []headerValueOption {
 	var result []headerValueOption
+
 	for _, hm := range matches {
 		switch hm.Mismatch {
 		case config.MismatchADD:
@@ -313,6 +318,7 @@ func mismatchHeadersToAdd(matches []config.HeaderMatch) []headerValueOption {
 // headerMatches with DELETE mismatch actions.
 func mismatchHeadersToRemove(matches []config.HeaderMatch) []string {
 	var result []string
+
 	for _, hm := range matches {
 		if hm.Mismatch == config.MismatchDELETE {
 			result = append(result, hm.Name)
@@ -328,6 +334,7 @@ func mismatchHeadersToRemove(matches []config.HeaderMatch) []string {
 // with a format that identifies the mismatched headers.
 func mismatchLogConfig(matches []config.HeaderMatch) map[string]any {
 	var logHeaders []string
+
 	for _, hm := range matches {
 		if hm.Mismatch == config.MismatchLOG {
 			logHeaders = append(logHeaders, hm.Name)
