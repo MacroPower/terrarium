@@ -50,10 +50,66 @@ func NewTabwriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
 }
 
+// errWriter wraps an [io.Writer] and remembers the first write error.
+// The section renderers emit many formatted lines into a buffered
+// [tabwriter]; threading an error check through every write would
+// obscure the layout, so errWriter accumulates the first failure and
+// the renderer reports it once via [errWriter.err].
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+// printf writes a formatted line and remembers the first error.
+func (ew *errWriter) printf(format string, args ...any) {
+	if ew.err != nil {
+		return
+	}
+
+	_, err := fmt.Fprintf(ew.w, format, args...)
+	if err != nil {
+		ew.err = fmt.Errorf("writing status output: %w", err)
+	}
+}
+
+// println writes a line and remembers the first error.
+func (ew *errWriter) println(args ...any) {
+	if ew.err != nil {
+		return
+	}
+
+	_, err := fmt.Fprintln(ew.w, args...)
+	if err != nil {
+		ew.err = fmt.Errorf("writing status output: %w", err)
+	}
+}
+
+// flushSection flushes the section tabwriter, emits a trailing blank
+// line into w, and returns the first error seen while writing the
+// section or flushing.
+func flushSection(w io.Writer, tw *tabwriter.Writer, ew *errWriter) error {
+	if ew.err != nil {
+		return ew.err
+	}
+
+	err := tw.Flush()
+	if err != nil {
+		return fmt.Errorf("flushing status section: %w", err)
+	}
+
+	_, err = fmt.Fprintln(w)
+	if err != nil {
+		return fmt.Errorf("writing status output: %w", err)
+	}
+
+	return nil
+}
+
 func renderProcess(w io.Writer, s ProcessSection) error {
 	tw := NewTabwriter(w)
+	ew := &errWriter{w: tw}
 
-	fmt.Fprintln(tw, "PROCESS")
+	ew.println("PROCESS")
 
 	switch s.Daemon.State {
 	case DaemonRunning:
@@ -62,71 +118,60 @@ func renderProcess(w io.Writer, s ProcessSection) error {
 			uptime = humanDuration(s.Daemon.Uptime)
 		}
 
-		fmt.Fprintf(tw, "  daemon:\trunning (pid=%d, uptime=%s)\n", s.Daemon.PID, uptime)
+		ew.printf("  daemon:\trunning (pid=%d, uptime=%s)\n", s.Daemon.PID, uptime)
+
 	case DaemonNotRunning:
 		switch {
 		case s.Daemon.Stale:
-			fmt.Fprintf(tw, "  daemon:\tnot running (stale PID file: %d)\n", s.Daemon.PID)
+			ew.printf("  daemon:\tnot running (stale PID file: %d)\n", s.Daemon.PID)
 		case errors.Is(s.Err, fs.ErrNotExist):
 			// Never reachable today (ENOENT maps to NotRunning
 			// without Err), but left here so future changes to the
 			// PID-file read path stay consistent.
-			fmt.Fprintf(tw, "  daemon:\tnot running (no pid file at %s)\n", s.Daemon.PIDFile)
+			ew.printf("  daemon:\tnot running (no pid file at %s)\n", s.Daemon.PIDFile)
 		default:
-			fmt.Fprintf(tw, "  daemon:\tnot running (no pid file at %s)\n", s.Daemon.PIDFile)
+			ew.printf("  daemon:\tnot running (no pid file at %s)\n", s.Daemon.PIDFile)
 		}
+
 	case DaemonUnknown:
 		switch {
 		case errors.Is(s.Err, fs.ErrPermission):
-			fmt.Fprintf(tw, "  daemon:\tunknown (pid file permission denied: %s)\n", s.Daemon.PIDFile)
+			ew.printf("  daemon:\tunknown (pid file permission denied: %s)\n", s.Daemon.PIDFile)
 		case s.Err != nil:
-			fmt.Fprintf(tw, "  daemon:\tunknown (%s)\n", s.Err)
+			ew.printf("  daemon:\tunknown (%s)\n", s.Err)
 		default:
-			fmt.Fprintln(tw, "  daemon:\tunknown")
+			ew.println("  daemon:\tunknown")
 		}
 	}
 
 	if s.Daemon.State == DaemonRunning {
 		switch s.Envoy.State {
 		case DaemonRunning:
-			fmt.Fprintf(tw, "  envoy:\trunning (pid=%d)\n", s.Envoy.PID)
+			ew.printf("  envoy:\trunning (pid=%d)\n", s.Envoy.PID)
 		case DaemonUnknown:
-			fmt.Fprintln(tw, "  envoy:\tunknown (CONFIG_PROC_CHILDREN missing?)")
+			ew.println("  envoy:\tunknown (CONFIG_PROC_CHILDREN missing?)")
 		case DaemonNotRunning:
-			fmt.Fprintln(tw, "  envoy:\tnot running")
+			ew.println("  envoy:\tnot running")
 		}
 	}
 
-	err := tw.Flush()
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w)
-
-	return err
+	return flushSection(w, tw, ew)
 }
 
 func renderFirewall(w io.Writer, s FirewallSection) error {
 	tw := NewTabwriter(w)
+	ew := &errWriter{w: tw}
 
-	fmt.Fprintln(tw, "FIREWALL")
+	ew.println("FIREWALL")
 
 	if errors.Is(s.Err, fs.ErrPermission) {
-		fmt.Fprintln(tw, "  state:\tpermission denied")
+		ew.println("  state:\tpermission denied")
 
-		err := tw.Flush()
-		if err != nil {
-			return err
-		}
-
-		_, err = fmt.Fprintln(w)
-
-		return err
+		return flushSection(w, tw, ew)
 	}
 
 	if s.Err != nil {
-		fmt.Fprintf(tw, "  state:\terror (%s)\n", s.Err)
+		ew.printf("  state:\terror (%s)\n", s.Err)
 	}
 
 	tableState := "absent"
@@ -134,39 +179,34 @@ func renderFirewall(w io.Writer, s FirewallSection) error {
 		tableState = "present"
 	}
 
-	fmt.Fprintf(tw, "  table:\t%s (%s, %s)\n", s.TableName, s.TableFamily, tableState)
+	ew.printf("  table:\t%s (%s, %s)\n", s.TableName, s.TableFamily, tableState)
 
 	if !s.GuardPresent {
-		fmt.Fprintln(tw, "  guard:\tabsent (host misconfigured)")
+		ew.println("  guard:\tabsent (host misconfigured)")
 	} else {
-		fmt.Fprintln(tw, "  guard:\tpresent")
+		ew.println("  guard:\tpresent")
 	}
 
 	if s.TablePresent {
-		fmt.Fprintf(tw, "  chains:\t%d\n", s.ChainCount)
-		fmt.Fprintf(tw, "  fqdn sets:\t%d\n", s.FQDNSetCount)
-		fmt.Fprintf(tw, "  catch-all sets:\t%d\n", s.CatchAllSetCount)
-		fmt.Fprintf(tw, "  icmp fqdn sets:\t%d\n", s.ICMPFQDNSetCount)
-		fmt.Fprintf(tw, "  set elements:\t%d (v4=%d, v6=%d)\n",
+		ew.printf("  chains:\t%d\n", s.ChainCount)
+		ew.printf("  fqdn sets:\t%d\n", s.FQDNSetCount)
+		ew.printf("  catch-all sets:\t%d\n", s.CatchAllSetCount)
+		ew.printf("  icmp fqdn sets:\t%d\n", s.ICMPFQDNSetCount)
+		ew.printf("  set elements:\t%d (v4=%d, v6=%d)\n",
 			s.IPv4Elements+s.IPv6Elements, s.IPv4Elements, s.IPv6Elements)
 	}
 
-	err := tw.Flush()
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w)
-
-	return err
+	return flushSection(w, tw, ew)
 }
 
 func renderDNS(w io.Writer, s DNSSection) error {
 	tw := NewTabwriter(w)
+	ew := &errWriter{w: tw}
 
-	fmt.Fprintln(tw, "DNS")
+	ew.println("DNS")
 
 	var state string
+
 	switch s.State {
 	case DNSListening:
 		state = "listening"
@@ -176,10 +216,10 @@ func renderDNS(w io.Writer, s DNSSection) error {
 		state = "unknown"
 	}
 
-	fmt.Fprintf(tw, "  state:\t%s\n", state)
+	ew.printf("  state:\t%s\n", state)
 
 	if len(s.ListenAddrs) > 0 {
-		fmt.Fprintf(tw, "  listen:\t%s\n", strings.Join(s.ListenAddrs, ", "))
+		ew.printf("  listen:\t%s\n", strings.Join(s.ListenAddrs, ", "))
 	}
 
 	if s.Probed {
@@ -188,49 +228,38 @@ func renderDNS(w io.Writer, s DNSSection) error {
 			result = fmt.Sprintf("failed (%s)", s.ProbeErr)
 		}
 
-		fmt.Fprintf(tw, "  probe:\t%s\n", result)
+		ew.printf("  probe:\t%s\n", result)
 	}
 
-	err := tw.Flush()
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w)
-
-	return err
+	return flushSection(w, tw, ew)
 }
 
 func renderEnvoy(w io.Writer, s EnvoySection) error {
 	tw := NewTabwriter(w)
+	ew := &errWriter{w: tw}
 
-	fmt.Fprintln(tw, "ENVOY")
+	ew.println("ENVOY")
 
 	switch {
 	case s.NotGenerated:
-		fmt.Fprintf(tw, "  config:\t%s (not generated)\n", s.ConfigPath)
-		fmt.Fprintln(tw, "  listeners:\t(none)")
+		ew.printf("  config:\t%s (not generated)\n", s.ConfigPath)
+		ew.println("  listeners:\t(none)")
+
 	case s.Err != nil:
-		fmt.Fprintf(tw, "  config:\t%s\n", s.ConfigPath)
-		fmt.Fprintf(tw, "  error:\t%s\n", s.Err)
+		ew.printf("  config:\t%s\n", s.ConfigPath)
+		ew.printf("  error:\t%s\n", s.Err)
+
 	default:
-		fmt.Fprintf(tw, "  config:\t%s\n", s.ConfigPath)
+		ew.printf("  config:\t%s\n", s.ConfigPath)
 
 		if len(s.Listeners) == 0 {
-			fmt.Fprintln(tw, "  listeners:\t(none)")
+			ew.println("  listeners:\t(none)")
 		} else {
-			fmt.Fprintf(tw, "  listeners:\t%s\n", joinInts(s.Listeners))
+			ew.printf("  listeners:\t%s\n", joinInts(s.Listeners))
 		}
 	}
 
-	err := tw.Flush()
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w)
-
-	return err
+	return flushSection(w, tw, ew)
 }
 
 // heartbeatStaleAfter is the staleness window past which the
@@ -248,40 +277,29 @@ func renderStats(w io.Writer, s StatsSection) error {
 	}
 
 	tw := NewTabwriter(w)
+	ew := &errWriter{w: tw}
 
-	fmt.Fprintln(tw, "STATS")
-	fmt.Fprintf(tw, "  db:\t%s\n", s.DBPath)
+	ew.println("STATS")
+	ew.printf("  db:\t%s\n", s.DBPath)
 
 	if s.Err != nil {
-		fmt.Fprintf(tw, "  error:\t%s\n", s.Err)
+		ew.printf("  error:\t%s\n", s.Err)
 
-		err := tw.Flush()
-		if err != nil {
-			return err
-		}
-
-		_, err = fmt.Fprintln(w)
-
-		return err
+		return flushSection(w, tw, ew)
 	}
 
 	if s.LastEvent.IsZero() {
-		fmt.Fprintln(tw, "  last event:\t(none)")
+		ew.println("  last event:\t(none)")
 	} else {
-		fmt.Fprintf(tw, "  last event:\t%s ago\n", humanDuration(time.Since(s.LastEvent)))
+		ew.printf("  last event:\t%s ago\n", humanDuration(time.Since(s.LastEvent)))
 	}
 
-	fmt.Fprintf(tw, "  events 24h:\t%d\n", s.Events24h)
-	fmt.Fprintf(tw, "  db size:\t%d bytes\n", s.DBSizeBytes)
+	ew.printf("  events 24h:\t%d\n", s.Events24h)
+	ew.printf("  db size:\t%d bytes\n", s.DBSizeBytes)
 
-	writeHeartbeatLines(tw, s)
+	writeHeartbeatLines(ew, s)
 
-	err := tw.Flush()
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w)
+	err := flushSection(w, tw, ew)
 	if err != nil {
 		return err
 	}
@@ -307,92 +325,76 @@ func renderStats(w io.Writer, s StatsSection) error {
 // heartbeat lines into tw. When the heartbeat row is absent only
 // the "(none yet)" placeholder line is emitted; the caller suppresses
 // the NFLOG / DNS CACHE / FIREWALL EVENTS sub-sections in that case.
-func writeHeartbeatLines(tw io.Writer, s StatsSection) {
+func writeHeartbeatLines(ew *errWriter, s StatsSection) {
 	if s.HeartbeatRecordedAt.IsZero() {
-		fmt.Fprintln(tw, "  heartbeat:\t(none yet)")
+		ew.println("  heartbeat:\t(none yet)")
+
 		return
 	}
 
-	fmt.Fprintf(tw, "  eventstore drops:\t%d\n", s.EventStoreDropCount)
+	ew.printf("  eventstore drops:\t%d\n", s.EventStoreDropCount)
 
 	if s.EventStoreLastWrite.IsZero() {
-		fmt.Fprintln(tw, "  eventstore last write:\t(none)")
+		ew.println("  eventstore last write:\t(none)")
 	} else {
-		fmt.Fprintf(tw, "  eventstore last write:\t%s ago\n",
+		ew.printf("  eventstore last write:\t%s ago\n",
 			humanDuration(time.Since(s.EventStoreLastWrite)))
 	}
 
 	hbAgo := time.Since(s.HeartbeatRecordedAt)
 	if hbAgo > heartbeatStaleAfter {
-		fmt.Fprintf(tw, "  heartbeat:\t%s ago (stale)\n", humanDuration(hbAgo))
+		ew.printf("  heartbeat:\t%s ago (stale)\n", humanDuration(hbAgo))
+
 		return
 	}
 
-	fmt.Fprintf(tw, "  heartbeat:\t%s ago\n", humanDuration(hbAgo))
+	ew.printf("  heartbeat:\t%s ago\n", humanDuration(hbAgo))
 }
 
 // renderNFLog prints the NFLOG sub-section (kernel drops, parse
 // errors, last event) of [renderStats].
 func renderNFLog(w io.Writer, s StatsSection) error {
 	tw := NewTabwriter(w)
+	ew := &errWriter{w: tw}
 
-	fmt.Fprintln(tw, "NFLOG")
-	fmt.Fprintf(tw, "  kernel drops:\t%d\n", s.NFLogKernelDrops)
-	fmt.Fprintf(tw, "  parse errors:\t%d\n", s.NFLogParseErrors)
+	ew.println("NFLOG")
+	ew.printf("  kernel drops:\t%d\n", s.NFLogKernelDrops)
+	ew.printf("  parse errors:\t%d\n", s.NFLogParseErrors)
 
 	if s.NFLogLastEvent.IsZero() {
-		fmt.Fprintln(tw, "  last event:\t(none)")
+		ew.println("  last event:\t(none)")
 	} else {
-		fmt.Fprintf(tw, "  last event:\t%s ago\n",
+		ew.printf("  last event:\t%s ago\n",
 			humanDuration(time.Since(s.NFLogLastEvent)))
 	}
 
-	err := tw.Flush()
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w)
-
-	return err
+	return flushSection(w, tw, ew)
 }
 
 // renderDNSCache prints the DNS CACHE sub-section (entries,
 // evictions) of [renderStats].
 func renderDNSCache(w io.Writer, s StatsSection) error {
 	tw := NewTabwriter(w)
+	ew := &errWriter{w: tw}
 
-	fmt.Fprintln(tw, "DNS CACHE")
-	fmt.Fprintf(tw, "  entries:\t%d\n", s.DNSCacheSize)
-	fmt.Fprintf(tw, "  evictions:\t%d\n", s.DNSCacheEvictions)
+	ew.println("DNS CACHE")
+	ew.printf("  entries:\t%d\n", s.DNSCacheSize)
+	ew.printf("  evictions:\t%d\n", s.DNSCacheEvictions)
 
-	err := tw.Flush()
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w)
-
-	return err
+	return flushSection(w, tw, ew)
 }
 
 // renderFirewallEvents1h prints the FIREWALL EVENTS (1h)
 // sub-section of [renderStats].
 func renderFirewallEvents1h(w io.Writer, s StatsSection) error {
 	tw := NewTabwriter(w)
+	ew := &errWriter{w: tw}
 
-	fmt.Fprintln(tw, "FIREWALL EVENTS (1h)")
-	fmt.Fprintf(tw, "  null domain rate:\t%.1f%% (%d / %d)\n",
+	ew.println("FIREWALL EVENTS (1h)")
+	ew.printf("  null domain rate:\t%.1f%% (%d / %d)\n",
 		s.FirewallNullDomainRate1h*100, s.FirewallNullDomain1h, s.FirewallEvents1h)
 
-	err := tw.Flush()
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w)
-
-	return err
+	return flushSection(w, tw, ew)
 }
 
 func renderLogs(w io.Writer, s LogsSection) error {
@@ -404,36 +406,28 @@ func renderLogs(w io.Writer, s LogsSection) error {
 }
 
 func renderLogTail(w io.Writer, heading string, t LogTail, requested int) error {
-	_, err := fmt.Fprintf(w, "%s (%s, last %d)\n", heading, t.Path, requested)
-	if err != nil {
-		return err
-	}
+	ew := &errWriter{w: w}
+
+	ew.printf("%s (%s, last %d)\n", heading, t.Path, requested)
 
 	switch {
 	case errors.Is(t.Err, fs.ErrNotExist):
-		_, err = fmt.Fprintln(w, "  (no log file yet)")
+		ew.println("  (no log file yet)")
 	case errors.Is(t.Err, fs.ErrPermission):
-		_, err = fmt.Fprintln(w, "  (permission denied)")
+		ew.println("  (permission denied)")
 	case t.Err != nil:
-		_, err = fmt.Fprintf(w, "  (error: %s)\n", t.Err)
+		ew.printf("  (error: %s)\n", t.Err)
 	case len(t.Lines) == 0:
-		_, err = fmt.Fprintln(w, "  (empty)")
+		ew.println("  (empty)")
 	default:
 		for _, line := range t.Lines {
-			_, err = fmt.Fprintf(w, "  %s\n", line)
-			if err != nil {
-				return err
-			}
+			ew.printf("  %s\n", line)
 		}
 	}
 
-	if err != nil {
-		return err
-	}
+	ew.println()
 
-	_, err = fmt.Fprintln(w)
-
-	return err
+	return ew.err
 }
 
 // anyPermissionError reports whether any section recorded an error
@@ -481,19 +475,19 @@ func humanDuration(d time.Duration) string {
 	}
 
 	const (
-		day  = 24 * time.Hour
-		hour = time.Hour
-		min  = time.Minute
-		sec  = time.Second
+		day    = 24 * time.Hour
+		hour   = time.Hour
+		minute = time.Minute
+		sec    = time.Second
 	)
 
 	switch {
 	case d >= day:
 		return fmt.Sprintf("%dd%dh", d/day, (d%day)/hour)
 	case d >= hour:
-		return fmt.Sprintf("%dh%dm", d/hour, (d%hour)/min)
-	case d >= min:
-		return fmt.Sprintf("%dm%ds", d/min, (d%min)/sec)
+		return fmt.Sprintf("%dh%dm", d/hour, (d%hour)/minute)
+	case d >= minute:
+		return fmt.Sprintf("%dm%ds", d/minute, (d%minute)/sec)
 	default:
 		return fmt.Sprintf("%ds", d/sec)
 	}
