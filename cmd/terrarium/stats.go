@@ -67,11 +67,11 @@ func parseSource(s string) (eventstore.Source, error) {
 type statsFlags struct {
 	since    string
 	until    string
-	limit    int
 	source   string
 	instance string
 	format   string
 	dbPath   string
+	limit    int
 }
 
 // register attaches the shared flags to cmd.
@@ -300,14 +300,14 @@ type listRow struct {
 	Source     string `json:"source"`
 	Decision   string `json:"decision"`
 	Domain     string `json:"domain"`
-	Port       int    `json:"port"`
 	Protocol   string `json:"protocol"`
 	HTTPMethod string `json:"http_method"`
 	HTTPPath   string `json:"http_path"`
-	HTTPStatus int    `json:"http_status"`
 	Flags      string `json:"flags"`
 	Reason     string `json:"reason"`
 	NextCursor string `json:"next_cursor,omitempty"`
+	Port       int    `json:"port"`
+	HTTPStatus int    `json:"http_status"`
 }
 
 // encodeCursor returns an opaque base64 token derived from a row id.

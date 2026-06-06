@@ -95,18 +95,15 @@ type Event struct {
 	// with [time.Now] by the writer.
 	Time time.Time
 
+	// Domain is the qname (DNS), :authority header (HTTP), or
+	// SNI (TCP/TLS) value used for grouping in `stats top`.
+	Domain string
+
 	// Source is the subsystem that produced this event.
 	Source Source
 
 	// Decision is the policy outcome.
 	Decision Decision
-
-	// Domain is the qname (DNS), :authority header (HTTP), or
-	// SNI (TCP/TLS) value used for grouping in `stats top`.
-	Domain string
-
-	// Port is the destination port when known. Zero means unset.
-	Port int
 
 	// Protocol is the upper-layer protocol tag.
 	// See [ProtocolDNS], [ProtocolHTTP], [ProtocolTCP].
@@ -118,15 +115,18 @@ type Event struct {
 	// HTTPPath is the HTTP request path when applicable.
 	HTTPPath string
 
-	// HTTPStatus is the HTTP response status when applicable.
-	HTTPStatus int
-
 	// Flags is the raw Envoy RESPONSE_FLAGS string when applicable.
 	Flags string
 
 	// Reason is a short tag explaining a deny/error decision.
 	// See [ReasonBlockedMode], [ReasonNotAllowlisted], [ReasonUpstream].
 	Reason Reason
+
+	// Port is the destination port when known. Zero means unset.
+	Port int
+
+	// HTTPStatus is the HTTP response status when applicable.
+	HTTPStatus int
 
 	// BytesRx is the bytes received from the downstream peer.
 	BytesRx int64

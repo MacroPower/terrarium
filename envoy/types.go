@@ -42,8 +42,8 @@ type additionalAddr struct {
 }
 
 type address struct {
-	SocketAddress socketAddress `yaml:"socket_address,omitempty"`
 	Pipe          *pipeAddress  `yaml:"pipe,omitempty"`
+	SocketAddress socketAddress `yaml:"socket_address,omitempty"`
 }
 
 type socketAddress struct {
@@ -199,8 +199,8 @@ type tcpGrpcAccessLogConfig struct {
 type commonGrpcAccessLogConfig struct {
 	LogName             string            `yaml:"log_name"`
 	GrpcService         grpcServiceConfig `yaml:"grpc_service"`
-	BufferSizeBytes     uint32            `yaml:"buffer_size_bytes,omitempty"`
 	BufferFlushInterval string            `yaml:"buffer_flush_interval,omitempty"`
+	BufferSizeBytes     uint32            `yaml:"buffer_size_bytes,omitempty"`
 }
 
 // grpcServiceConfig models Envoy's core.GrpcService message. The

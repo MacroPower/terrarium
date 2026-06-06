@@ -113,6 +113,10 @@ CREATE TABLE instances (
 //
 // Create instances with [Open].
 type Store struct {
+	// retention is read by the writer goroutine. Replaced via
+	// SetRetention so reload can swap the policy without races.
+	retention atomic.Pointer[Retention]
+
 	db          *sql.DB
 	insertStmt  *sql.Stmt
 	ch          chan Event
@@ -121,10 +125,6 @@ type Store struct {
 	logger      *slog.Logger
 	instanceID  string
 	opts        storeOptions
-
-	// retention is read by the writer goroutine. Replaced via
-	// SetRetention so reload can swap the policy without races.
-	retention atomic.Pointer[Retention]
 
 	// dropCount counts events dropped because the channel was full.
 	dropCount atomic.Int64

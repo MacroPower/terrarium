@@ -48,11 +48,11 @@ type Options struct {
 // Report is the aggregated result of one [Collect] call.
 type Report struct {
 	Process  ProcessSection
-	Firewall FirewallSection
 	DNS      DNSSection
 	Envoy    EnvoySection
-	Stats    StatsSection
 	Logs     LogsSection
+	Firewall FirewallSection
+	Stats    StatsSection
 
 	// NonRoot is true when [Collect] ran as a non-root user. The
 	// renderer uses this flag together with per-section permission
@@ -83,9 +83,9 @@ const (
 
 // ProcessSection holds the daemon and Envoy process observations.
 type ProcessSection struct {
-	Daemon DaemonProcess
-	Envoy  EnvoyProcess
 	Err    error
+	Envoy  EnvoyProcess
+	Daemon DaemonProcess
 }
 
 // DaemonProcess describes the state of the daemon process itself.
@@ -115,6 +115,11 @@ type DaemonProcess struct {
 // EnvoyProcess describes the Envoy child discovered via
 // /proc/<daemon-pid>/task/<daemon-pid>/children.
 type EnvoyProcess struct {
+	// Err carries a non-permission error encountered while reading
+	// the children or comm files. Permission errors surface on the
+	// parent [ProcessSection.Err] instead.
+	Err error
+
 	// State is [DaemonRunning] when the child PID's /proc/<pid>/comm
 	// reads as "envoy", [DaemonUnknown] when the children file is
 	// missing/empty (possibly CONFIG_PROC_CHILDREN not compiled
@@ -125,20 +130,15 @@ type EnvoyProcess struct {
 
 	// PID is the Envoy child PID when State is [DaemonRunning].
 	PID int
-
-	// Err carries a non-permission error encountered while reading
-	// the children or comm files. Permission errors surface on the
-	// parent [ProcessSection.Err] instead.
-	Err error
 }
 
 // FirewallSection summarizes the nftables state relevant to
 // terrarium. Counts rather than rule dumps keep the output compact
 // and avoid leaking the entire policy.
 type FirewallSection struct {
+	Err              error
 	TableName        string
 	TableFamily      string
-	Err              error
 	ChainCount       int
 	FQDNSetCount     int
 	CatchAllSetCount int
@@ -168,11 +168,6 @@ const (
 
 // DNSSection describes the DNS proxy listen state.
 type DNSSection struct {
-	// ListenAddrs lists the bind addresses the proxy uses under the
-	// current IPv6 state. Always contains at least one entry when
-	// [Collect] succeeds.
-	ListenAddrs []string
-
 	// ProbeErr carries the active probe error when Probed is true
 	// and the probe failed.
 	ProbeErr error
@@ -182,6 +177,11 @@ type DNSSection struct {
 	// not populate this field; the collector falls back to the
 	// "IPv6 enabled" default instead.
 	Err error
+
+	// ListenAddrs lists the bind addresses the proxy uses under the
+	// current IPv6 state. Always contains at least one entry when
+	// [Collect] succeeds.
+	ListenAddrs []string
 
 	// State is the best observed state given the daemon check and
 	// optional active probe.
@@ -225,17 +225,6 @@ type EnvoySection struct {
 // reads them through the heartbeat row written into
 // `instance_metrics` (see [eventstore.LatestHeartbeat]).
 type StatsSection struct {
-	// DBPath is the path the collector resolved from config and
-	// XDG defaults. Empty when stats is disabled.
-	DBPath string
-
-	// Enabled mirrors [Config.StatsEnabled] so the renderer can
-	// distinguish "disabled" from "enabled but unreadable".
-	Enabled bool
-
-	// Err carries any error encountered while reading the DB.
-	Err error
-
 	// LastEvent is the timestamp of the most recent event. Zero
 	// when no events have been written. Sourced from
 	// MAX(events.ts), which is set producer-side, so a healthy
@@ -257,17 +246,12 @@ type StatsSection struct {
 	// the moment the heartbeat fired.
 	EventStoreLastWrite time.Time
 
-	// NFLogKernelDrops is the cumulative kernel-side drop count
-	// observed via FlagSeq gaps.
-	NFLogKernelDrops uint64
+	// Err carries any error encountered while reading the DB.
+	Err error
 
-	// NFLogParseErrors is the cumulative count of malformed
-	// packets and undecodable prefixes.
-	NFLogParseErrors uint64
-
-	// DNSCacheEvictions is the cumulative count of qname-level
-	// FIFO and IP-level LRU evictions.
-	DNSCacheEvictions uint64
+	// DBPath is the path the collector resolved from config and
+	// XDG defaults. Empty when stats is disabled.
+	DBPath string
 
 	// Events24h is the total event count in the last 24 hours.
 	Events24h int64
@@ -276,13 +260,25 @@ type StatsSection struct {
 	// WAL/SHM siblings.
 	DBSizeBytes int64
 
+	// EventStoreDropCount is [eventstore.Store.DropCount] at the
+	// moment the heartbeat fired.
+	EventStoreDropCount int64
+
+	// NFLogKernelDrops is the cumulative kernel-side drop count
+	// observed via FlagSeq gaps.
+	NFLogKernelDrops uint64
+
+	// NFLogParseErrors is the cumulative count of malformed
+	// packets and undecodable prefixes.
+	NFLogParseErrors uint64
+
 	// DNSCacheSize is the dnscache entry count at the moment the
 	// heartbeat fired.
 	DNSCacheSize int64
 
-	// EventStoreDropCount is [eventstore.Store.DropCount] at the
-	// moment the heartbeat fired.
-	EventStoreDropCount int64
+	// DNSCacheEvictions is the cumulative count of qname-level
+	// FIFO and IP-level LRU evictions.
+	DNSCacheEvictions uint64
 
 	// FirewallNullDomainRate1h is the fraction of `source =
 	// firewall` events in the last hour with `domain IS NULL`.
@@ -301,6 +297,10 @@ type StatsSection struct {
 	// last hour). Surfaced so a 0/0 rate renders cleanly without a
 	// divide-by-zero artifact.
 	FirewallEvents1h int64
+
+	// Enabled mirrors [Config.StatsEnabled] so the renderer can
+	// distinguish "disabled" from "enabled but unreadable".
+	Enabled bool
 }
 
 // LogsSection holds the tailed envoy process log. Access events are

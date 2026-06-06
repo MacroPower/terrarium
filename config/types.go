@@ -706,15 +706,15 @@ type StatsFirewall struct {
 // StatsRetention bounds the events table. A zero MaxAge or MaxRows
 // disables that bound.
 type StatsRetention struct {
-	// MaxAge prunes events older than time.Now()-MaxAge. Defaults
-	// to 720h (30 days) when the parent [Stats] is enabled and
-	// this field is unset via a nil [*StatsRetention].
-	MaxAge Duration `yaml:"maxAge,omitempty"`
 	// PerSource caps individual event sources before the global
 	// MaxRows bound. A nil pointer applies the built-in defaults
 	// (firewall=200000, dns=0, envoy=0). An explicit empty value
 	// (`perSource: {}`) opts every source out of per-source pruning.
 	PerSource *PerSourceRetention `yaml:"perSource,omitempty"`
+	// MaxAge prunes events older than time.Now()-MaxAge. Defaults
+	// to 720h (30 days) when the parent [Stats] is enabled and
+	// this field is unset via a nil [*StatsRetention].
+	MaxAge Duration `yaml:"maxAge,omitempty"`
 	// MaxRows caps the events row count. Defaults to 1,000,000
 	// when the parent [Stats] is enabled and this field is unset
 	// via a nil [*StatsRetention].

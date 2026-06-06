@@ -34,14 +34,15 @@ type Option func(*storeOptions)
 // storeOptions holds the resolved values configured by [Option] funcs.
 type storeOptions struct {
 	logger        *slog.Logger
+	mode          Mode
+	retention     Retention
 	chanSize      int
 	batchSize     int
 	batchInterval time.Duration
-	mode          Mode
+
 	// uid is the UID to chown the database files to after open. A
 	// negative value (the default) disables chowning.
-	uid       int
-	retention Retention
+	uid int
 }
 
 // Retention bounds the size of the events table. A zero MaxAge or
