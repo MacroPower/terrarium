@@ -76,8 +76,8 @@ func durationString(d time.Duration) string {
 func BuildAccessLogCluster(socket string) cluster {
 	return cluster{
 		Name:           AccessLogClusterName,
-		Type:           "STATIC",
-		LBPolicy:       "ROUND_ROBIN",
+		Type:           clusterTypeStatic,
+		LBPolicy:       lbPolicyRoundRobin,
 		ConnectTimeout: "1s",
 		TypedExtensionProtocolOptions: map[string]any{
 			"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": httpProtocolOptions{

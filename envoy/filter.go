@@ -7,6 +7,11 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 )
 
+// wildcardRBACPolicy names the RBAC policy (and stat prefix) that
+// confines wildcard domain matches to the correct label depth in
+// [buildWildcardRBACFilter] and [buildWildcardHTTPRBACFilter].
+const wildcardRBACPolicy = "wildcard_depth"
+
 // buildWildcardRBACFilter creates an RBAC network filter that
 // restricts wildcard server_names matches to the correct depth,
 // matching [CiliumNetworkPolicy] toFQDNs.matchPattern semantics.
@@ -43,11 +48,11 @@ func buildWildcardRBACFilter(wildcardDomains []string) filter {
 		Name: "envoy.filters.network.rbac",
 		TypedConfig: rbacConfig{
 			AtType:     "type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC",
-			StatPrefix: "wildcard_depth",
+			StatPrefix: wildcardRBACPolicy,
 			Rules: rbacRules{
 				Action: "ALLOW",
 				Policies: map[string]rbacPolicy{
-					"wildcard_depth": {
+					wildcardRBACPolicy: {
 						Permissions: permissions,
 						Principals:  []rbacPrincipal{{Any: true}},
 					},
@@ -82,7 +87,7 @@ func buildWildcardHTTPRBACFilter(wildcardDomains, exactDomains []string) filter 
 	for _, d := range wildcardDomains {
 		permissions = append(permissions, rbacPermission{
 			Header: &headerMatcher{
-				Name: ":authority",
+				Name: authorityHeader,
 				StringMatch: &stringMatch{
 					SafeRegex: &safeRegex{
 						Regex: WildcardToHostRegex(d),
@@ -95,7 +100,7 @@ func buildWildcardHTTPRBACFilter(wildcardDomains, exactDomains []string) filter 
 	for _, d := range exactDomains {
 		permissions = append(permissions, rbacPermission{
 			Header: &headerMatcher{
-				Name: ":authority",
+				Name: authorityHeader,
 				StringMatch: &stringMatch{
 					SafeRegex: &safeRegex{
 						Regex: `^` + regexp.QuoteMeta(d) + `(:\d+)?$`,
@@ -112,7 +117,7 @@ func buildWildcardHTTPRBACFilter(wildcardDomains, exactDomains []string) filter 
 			Rules: rbacRules{
 				Action: "ALLOW",
 				Policies: map[string]rbacPolicy{
-					"wildcard_depth": {
+					wildcardRBACPolicy: {
 						Permissions: permissions,
 						Principals:  []rbacPrincipal{{Any: true}},
 					},
@@ -144,11 +149,11 @@ func buildPassthroughFilterChain(
 			},
 		},
 		filter{
-			Name: "envoy.filters.network.tcp_proxy",
+			Name: tcpProxyFilterName,
 			TypedConfig: tcpProxyConfig{
-				AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+				AtType:     tcpProxyTypeURL,
 				StatPrefix: statPrefix,
-				Cluster:    "dynamic_forward_proxy_cluster",
+				Cluster:    dynamicForwardProxyCluster,
 				AccessLog:  accessLog,
 			},
 		},
@@ -191,9 +196,9 @@ func buildMITMFilterChain(
 			},
 		},
 		filter{
-			Name: "envoy.filters.http.router",
+			Name: httpRouterFilterName,
 			TypedConfig: typeOnly{
-				AtType: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
+				AtType: httpRouterTypeURL,
 			},
 		},
 	)
@@ -246,9 +251,9 @@ func buildMITMFilterChain(
 func buildDefaultRejectFilterChain(statPrefix string) filterChain {
 	return filterChain{
 		Filters: []filter{{
-			Name: "envoy.filters.network.tcp_proxy",
+			Name: tcpProxyFilterName,
 			TypedConfig: tcpProxyConfig{
-				AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+				AtType:     tcpProxyTypeURL,
 				StatPrefix: statPrefix + "_no_sni",
 				Cluster:    MissingSNIBlackholeCluster,
 				AccessLog: []AccessLog{{

@@ -14,6 +14,15 @@ import (
 // translator keys on that to recognize a TCP deny.
 const MissingSNIBlackholeCluster = "missing_sni_blackhole"
 
+// originalDstCluster is the name of the ORIGINAL_DST cluster the
+// catch-all TCP listener forwards to. Envoy recovers the destination
+// from conntrack via SO_ORIGINAL_DST after nftables REDIRECT.
+const originalDstCluster = "original_dst"
+
+// dynamicForwardProxyCluster is the name of the cluster FQDN-based
+// egress is routed through by the dynamic forward proxy.
+const dynamicForwardProxyCluster = "dynamic_forward_proxy_cluster"
+
 func hasMITMRules(rules []config.ResolvedRule) bool {
 	for _, r := range rules {
 		if r.IsRestricted() {
@@ -41,8 +50,8 @@ func BuildClusters(
 	clusters := []cluster{{
 		Name:           MissingSNIBlackholeCluster,
 		ConnectTimeout: "1s",
-		Type:           "STATIC",
-		LBPolicy:       "ROUND_ROBIN",
+		Type:           clusterTypeStatic,
+		LBPolicy:       lbPolicyRoundRobin,
 	}}
 
 	// ORIGINAL_DST cluster for the catch-all TCP listener.
@@ -50,10 +59,10 @@ func BuildClusters(
 	// SO_ORIGINAL_DST after nftables REDIRECT.
 	if hasListeners {
 		clusters = append(clusters, cluster{
-			Name:           "original_dst",
+			Name:           originalDstCluster,
 			ConnectTimeout: "5s",
 			Type:           "ORIGINAL_DST",
-			LBPolicy:       "CLUSTER_PROVIDED",
+			LBPolicy:       lbPolicyClusterProvided,
 		})
 	}
 
@@ -61,9 +70,9 @@ func BuildClusters(
 	// or listeners that reference it (open passthrough/HTTP listeners).
 	if len(rules) > 0 || hasListeners {
 		clusters = append(clusters, cluster{
-			Name:           "dynamic_forward_proxy_cluster",
+			Name:           dynamicForwardProxyCluster,
 			ConnectTimeout: "5s",
-			LBPolicy:       "CLUSTER_PROVIDED",
+			LBPolicy:       lbPolicyClusterProvided,
 			ClusterType: &clusterType{
 				Name: "envoy.clusters.dynamic_forward_proxy",
 				TypedConfig: clusterDFPConfig{
@@ -98,7 +107,7 @@ func BuildClusters(
 		clusters = append(clusters, cluster{
 			Name:           "mitm_forward_proxy_cluster",
 			ConnectTimeout: "5s",
-			LBPolicy:       "CLUSTER_PROVIDED",
+			LBPolicy:       lbPolicyClusterProvided,
 			ClusterType: &clusterType{
 				Name: "envoy.clusters.dynamic_forward_proxy",
 				TypedConfig: clusterDFPConfig{
@@ -128,11 +137,11 @@ func BuildClusters(
 
 		clusterType := "STRICT_DNS"
 		if net.ParseIP(fwd.Host) != nil {
-			clusterType = "STATIC"
+			clusterType = clusterTypeStatic
 		}
 
 		dnsFamily := "V4_ONLY"
-		if clusterType == "STATIC" {
+		if clusterType == clusterTypeStatic {
 			dnsFamily = ""
 		}
 
@@ -140,7 +149,7 @@ func BuildClusters(
 			Name:            name,
 			ConnectTimeout:  "5s",
 			Type:            clusterType,
-			LBPolicy:        "ROUND_ROBIN",
+			LBPolicy:        lbPolicyRoundRobin,
 			DNSLookupFamily: dnsFamily,
 			LoadAssignment: &loadAssignment{
 				ClusterName: name,

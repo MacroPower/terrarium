@@ -184,7 +184,7 @@ func BuildTLSListener(
 func BuildHTTPForwardListener(
 	rules []config.ResolvedRule, open bool, accessLog []AccessLog, transparent bool,
 ) Listener {
-	vhosts, wildcardDomains, exactDomains := buildHTTPVirtualHosts(rules, "dynamic_forward_proxy_cluster")
+	vhosts, wildcardDomains, exactDomains := buildHTTPVirtualHosts(rules, dynamicForwardProxyCluster)
 
 	// Envoy allows only one virtual host with Domains: ["*"] per route
 	// config. When a bare wildcard rule already produced a "*" vhost,
@@ -198,9 +198,9 @@ func BuildHTTPForwardListener(
 		openRoute := route{
 			Match: routeMatch{Prefix: "/"},
 			Route: &routeAction{
-				Cluster:         "dynamic_forward_proxy_cluster",
+				Cluster:         dynamicForwardProxyCluster,
 				AutoHostRewrite: true,
-				Timeout:         "3600s",
+				Timeout:         routeTimeout1h,
 			},
 		}
 		vhosts = append(vhosts, virtualHost{
@@ -223,9 +223,9 @@ func BuildHTTPForwardListener(
 			},
 		},
 		{
-			Name: "envoy.filters.http.router",
+			Name: httpRouterFilterName,
 			TypedConfig: typeOnly{
-				AtType: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
+				AtType: httpRouterTypeURL,
 			},
 		},
 	}
@@ -283,9 +283,9 @@ func BuildTCPForwardListener(
 		Transparent:         transparent,
 		FilterChains: []filterChain{{
 			Filters: []filter{{
-				Name: "envoy.filters.network.tcp_proxy",
+				Name: tcpProxyFilterName,
 				TypedConfig: tcpProxyConfig{
-					AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+					AtType:     tcpProxyTypeURL,
 					StatPrefix: name,
 					Cluster:    clusterName,
 					AccessLog:  accessLog,
@@ -312,7 +312,7 @@ func BuildTCPForwardListener(
 func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, transparent bool) Listener {
 	cluster := MissingSNIBlackholeCluster
 	if open {
-		cluster = "original_dst"
+		cluster = originalDstCluster
 	}
 
 	return Listener{
@@ -328,9 +328,9 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, 
 		}},
 		FilterChains: []filterChain{{
 			Filters: []filter{{
-				Name: "envoy.filters.network.tcp_proxy",
+				Name: tcpProxyFilterName,
 				TypedConfig: tcpProxyConfig{
-					AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+					AtType:     tcpProxyTypeURL,
 					StatPrefix: "catch_all_tcp",
 					Cluster:    cluster,
 					AccessLog:  accessLog,
@@ -371,11 +371,11 @@ func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog, transparen
 		},
 		FilterChains: []filterChain{{
 			Filters: []filter{{
-				Name: "envoy.filters.network.tcp_proxy",
+				Name: tcpProxyFilterName,
 				TypedConfig: tcpProxyConfig{
-					AtType:     "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+					AtType:     tcpProxyTypeURL,
 					StatPrefix: "cidr_catch_all",
-					Cluster:    "original_dst",
+					Cluster:    originalDstCluster,
 					AccessLog:  accessLog,
 				},
 			}},
@@ -432,7 +432,7 @@ func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []A
 							Name: "route",
 							TypedConfig: udpRoute{
 								AtType:  "type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.Route",
-								Cluster: "original_dst",
+								Cluster: originalDstCluster,
 							},
 						},
 					},

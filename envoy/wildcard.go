@@ -2,6 +2,7 @@ package envoy
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -155,8 +156,9 @@ func longestWildcardFreeSuffix(s string) string {
 
 	// Walk right-to-left to find the longest wildcard-free suffix.
 	start := len(labels)
-	for i := len(labels) - 1; i >= 0; i-- {
-		if strings.Contains(labels[i], "*") {
+
+	for i, label := range slices.Backward(labels) {
+		if strings.Contains(label, "*") {
 			break
 		}
 

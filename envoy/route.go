@@ -103,7 +103,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 					Route: &routeAction{
 						Cluster:         cluster,
 						AutoHostRewrite: true,
-						Timeout:         "3600s",
+						Timeout:         routeTimeout1h,
 					},
 				}
 				routes = append(routes, grpcRouteVariant(matchRoute), matchRoute)
@@ -117,7 +117,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 					Route: &routeAction{
 						Cluster:         cluster,
 						AutoHostRewrite: true,
-						Timeout:         "3600s",
+						Timeout:         routeTimeout1h,
 					},
 				}
 
@@ -132,7 +132,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 					Route: &routeAction{
 						Cluster:         cluster,
 						AutoHostRewrite: true,
-						Timeout:         "3600s",
+						Timeout:         routeTimeout1h,
 					},
 				}
 				routes = append(routes, grpcRouteVariant(httpRoute), httpRoute)
@@ -161,7 +161,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 			Route: &routeAction{
 				Cluster:         cluster,
 				AutoHostRewrite: true,
-				Timeout:         "3600s",
+				Timeout:         routeTimeout1h,
 			},
 		}
 		vhosts = append(vhosts, virtualHost{
@@ -262,7 +262,7 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 	host = strings.TrimRight(host, "$")
 
 	return []headerMatcher{{
-		Name:        ":authority",
+		Name:        authorityHeader,
 		StringMatch: &stringMatch{SafeRegex: &safeRegex{Regex: "^" + host + `(:[0-9]+)?$`}},
 	}}
 }
@@ -344,8 +344,8 @@ func mismatchLogConfig(matches []config.HeaderMatch) map[string]any {
 	)
 
 	return map[string]any{
-		"envoy.filters.http.router": routerFilterConfig{
-			AtType: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router",
+		httpRouterFilterName: routerFilterConfig{
+			AtType: httpRouterTypeURL,
 			UpstreamLog: []AccessLog{{
 				Name: "envoy.access_loggers.stderr",
 				TypedConfig: stderrAccessLogConfig{
