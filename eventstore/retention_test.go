@@ -42,7 +42,7 @@ func TestRetention_MaxRowsCapsRowCount(t *testing.T) {
 
 	var n int64
 
-	err = db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n)
+	err = db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events`).Scan(&n)
 	require.NoError(t, err)
 
 	// Pruning runs after each batch insert. Allow some slop because
@@ -85,7 +85,7 @@ func TestRetention_MaxAgePrunes(t *testing.T) {
 			return false
 		}
 
-		defer func() { _ = db.Close() }()
+		defer db.Close() //nolint:errcheck // read-only handle in polling closure.
 
 		var n int
 

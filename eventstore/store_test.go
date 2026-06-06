@@ -41,11 +41,11 @@ func TestOpen_AppliesSchemaOnFreshDB(t *testing.T) {
 
 	var version int
 
-	err = db.QueryRow(`PRAGMA user_version`).Scan(&version)
+	err = db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
 	require.NoError(t, err)
 	assert.Equal(t, 2, version)
 
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
+	rows, err := db.QueryContext(t.Context(), `SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
 	require.NoError(t, err)
 
 	var tables []string
@@ -54,6 +54,7 @@ func TestOpen_AppliesSchemaOnFreshDB(t *testing.T) {
 		var name string
 
 		require.NoError(t, rows.Scan(&name))
+
 		tables = append(tables, name)
 	}
 
@@ -112,10 +113,10 @@ func TestOpen_MigratesV1ToV2(t *testing.T) {
 	raw, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
 
-	_, err = raw.Exec(v1SchemaSQL)
+	_, err = raw.ExecContext(t.Context(), v1SchemaSQL)
 	require.NoError(t, err)
 
-	_, err = raw.Exec(`PRAGMA user_version = 1`)
+	_, err = raw.ExecContext(t.Context(), `PRAGMA user_version = 1`)
 	require.NoError(t, err)
 	require.NoError(t, raw.Close())
 
@@ -129,13 +130,14 @@ func TestOpen_MigratesV1ToV2(t *testing.T) {
 
 	var version int
 
-	err = db.QueryRow(`PRAGMA user_version`).Scan(&version)
+	err = db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
 	require.NoError(t, err)
 	assert.Equal(t, 2, version)
 
 	var name string
 
-	err = db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'instance_metrics'`).Scan(&name)
+	err = db.QueryRowContext(t.Context(), `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'instance_metrics'`).
+		Scan(&name)
 	require.NoError(t, err)
 	assert.Equal(t, "instance_metrics", name)
 }
@@ -150,7 +152,7 @@ func TestOpen_RefusesFutureSchemaVersion(t *testing.T) {
 	db, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
 
-	_, err = db.Exec(`PRAGMA user_version = 99`)
+	_, err = db.ExecContext(t.Context(), `PRAGMA user_version = 99`)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
@@ -183,7 +185,7 @@ func TestEmit_RecordsEvent(t *testing.T) {
 
 		var count int
 
-		err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count)
+		err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events`).Scan(&count)
 		require.NoError(t, err)
 
 		return count == 1
@@ -198,7 +200,7 @@ func TestEmit_RecordsEvent(t *testing.T) {
 		reason   string
 	)
 
-	err = db.QueryRow(`SELECT source, decision, domain, reason FROM events LIMIT 1`).
+	err = db.QueryRowContext(t.Context(), `SELECT source, decision, domain, reason FROM events LIMIT 1`).
 		Scan(&source, &decision, &domain, &reason)
 	require.NoError(t, err)
 
@@ -243,7 +245,7 @@ func TestEmit_FlushesPartialBatchesPeriodically(t *testing.T) {
 
 		var count int
 
-		err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&count)
+		err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events`).Scan(&count)
 		require.NoError(t, err)
 
 		return count == 1
@@ -258,7 +260,7 @@ func TestEmit_NilStoreNoop(t *testing.T) {
 	require.NotPanics(t, func() {
 		s.Emit(eventstore.Event{Source: eventstore.SourceDNS})
 	})
-	require.NotPanics(t, func() { _ = s.Close() })
+	require.NotPanics(t, func() { assert.NoError(t, s.Close()) })
 	assert.Equal(t, int64(0), s.DropCount())
 	assert.True(t, s.LastWriteTime().IsZero())
 }
@@ -315,7 +317,7 @@ func TestOpen_InstanceIDUniqueAcrossOpens(t *testing.T) {
 
 	var count int
 
-	err = db.QueryRow(`SELECT COUNT(*) FROM instances WHERE ended_at IS NOT NULL`).Scan(&count)
+	err = db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM instances WHERE ended_at IS NOT NULL`).Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, 2, count, "both instances should record ended_at on clean Close()")
 }
@@ -336,7 +338,7 @@ func TestOpen_RecordsInstanceMode(t *testing.T) {
 
 	var mode string
 
-	err = db.QueryRow(`SELECT mode FROM instances WHERE id = ?`, store.InstanceID()).Scan(&mode)
+	err = db.QueryRowContext(t.Context(), `SELECT mode FROM instances WHERE id = ?`, store.InstanceID()).Scan(&mode)
 	require.NoError(t, err)
 	assert.Equal(t, "daemon", mode)
 }
@@ -386,7 +388,7 @@ func TestEmit_SetsTimestampWhenZero(t *testing.T) {
 
 	var ts int64
 
-	err = db.QueryRow(`SELECT ts FROM events LIMIT 1`).Scan(&ts)
+	err = db.QueryRowContext(t.Context(), `SELECT ts FROM events LIMIT 1`).Scan(&ts)
 	require.NoError(t, err)
 	assert.Positive(t, ts)
 }
@@ -418,7 +420,7 @@ func TestRetention_NoOpWhenWithinBounds(t *testing.T) {
 
 		var n int
 
-		_ = db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n)
+		require.NoError(t, db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events`).Scan(&n))
 
 		return n == 1
 	}, 2*time.Second, 20*time.Millisecond)
@@ -496,6 +498,7 @@ func TestRecordHeartbeat_NilStoreNoop(t *testing.T) {
 	t.Parallel()
 
 	var s *eventstore.Store
+
 	require.NoError(t, s.RecordHeartbeat(t.Context(), eventstore.Heartbeat{}))
 }
 

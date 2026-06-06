@@ -43,11 +43,19 @@ func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 
 	err = db.PingContext(ctx)
 	if err != nil {
-		_ = db.Close()
+		closeDBIgnoringErr(db)
+
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
 
 	return db, nil
+}
+
+// closeDBIgnoringErr closes db on an open/setup failure path where the
+// original error is already being returned and a close error would
+// only mask it.
+func closeDBIgnoringErr(db *sql.DB) {
+	_ = db.Close() //nolint:errcheck // abandoning open on error; original error is returned.
 }
 
 // ErrSchemaTooNew is returned when the database file's `user_version`
@@ -198,13 +206,15 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 
 	err = s.applySchema(ctx)
 	if err != nil {
-		_ = db.Close()
+		closeDBIgnoringErr(db)
+
 		return nil, err
 	}
 
 	s.instanceID, err = mintInstanceID()
 	if err != nil {
-		_ = db.Close()
+		closeDBIgnoringErr(db)
+
 		return nil, fmt.Errorf("minting instance id: %w", err)
 	}
 
@@ -213,20 +223,23 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 		s.instanceID, time.Now().UnixMicro(), string(o.mode),
 	)
 	if err != nil {
-		_ = db.Close()
+		closeDBIgnoringErr(db)
+
 		return nil, fmt.Errorf("recording instance: %w", err)
 	}
 
 	s.insertStmt, err = db.PrepareContext(ctx, insertEventSQL)
 	if err != nil {
-		_ = db.Close()
+		closeDBIgnoringErr(db)
+
 		return nil, fmt.Errorf("preparing insert: %w", err)
 	}
 
 	err = s.seedRowCounts(ctx)
 	if err != nil {
-		_ = s.insertStmt.Close()
-		_ = db.Close()
+		_ = s.insertStmt.Close() //nolint:errcheck // abandoning open on error; original error is returned.
+
+		closeDBIgnoringErr(db)
 
 		return nil, fmt.Errorf("counting rows: %w", err)
 	}
@@ -234,11 +247,14 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if o.uid >= 0 {
 		err = chownDBFiles(path, o.uid)
 		if err != nil {
-			s.logger.Warn("chowning db files", slog.Any("err", err))
+			s.logger.WarnContext(ctx, "chowning db files", slog.Any("err", err))
 		}
 	}
 
-	go s.run()
+	// The writer goroutine outlives Open's caller context, so it
+	// derives its own per-operation timeouts from context.Background()
+	// rather than inheriting ctx.
+	go s.run() //nolint:contextcheck // writer goroutine owns its lifetime, see insertBatch.
 
 	return s, nil
 }
@@ -581,7 +597,12 @@ func (s *Store) Close() error {
 		s.logger.Warn("recording instance end", slog.Any("err", err))
 	}
 
-	return s.db.Close()
+	err = s.db.Close()
+	if err != nil {
+		return fmt.Errorf("closing db: %w", err)
+	}
+
+	return nil
 }
 
 // run is the writer goroutine entry point. Retention runs inline
@@ -746,7 +767,8 @@ func (s *Store) insertBatch(batch []Event) error {
 			nullableInt(e.DurationMS),
 		)
 		if err != nil {
-			_ = tx.Rollback()
+			_ = tx.Rollback() //nolint:errcheck // commit path owns the error; rollback is best-effort.
+
 			return fmt.Errorf("inserting event: %w", err)
 		}
 	}
@@ -927,7 +949,7 @@ func (s *Store) sourceCounter(source Source) *atomic.Int64 {
 // RETURNING source result and decrements the matching counters.
 // Closes rows on return.
 func (s *Store) applyDeletedRows(rows *sql.Rows) {
-	defer func() { _ = rows.Close() }()
+	defer func() { _ = rows.Close() }() //nolint:errcheck // read path; row scan errors surface separately.
 
 	var total int64
 
@@ -997,7 +1019,7 @@ func (s *Store) seedRowCounts(ctx context.Context) error {
 		return fmt.Errorf("querying row counts by source: %w", err)
 	}
 
-	defer func() { _ = rows.Close() }()
+	defer func() { _ = rows.Close() }() //nolint:errcheck // read path; row scan errors surface separately.
 
 	var total int64
 
@@ -1035,7 +1057,7 @@ func mintInstanceID() (string, error) {
 
 	_, err := rand.Read(b[:])
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("reading random bytes: %w", err)
 	}
 
 	return hex.EncodeToString(b[:]), nil
