@@ -70,6 +70,83 @@ docker run --cap-add=NET_ADMIN my-terrarium-image
 
 `--cap-add=NET_ADMIN` is required for nftables. The default config path is `~/.config/terrarium/config.yaml` (following XDG conventions); override it with `--config`. Use `--ready-file` to create a file once all infrastructure is up, useful for orchestration. See `terrarium init --help` for the full flag reference.
 
+### Use as a Claude Code proxy
+
+`terrarium proxy` runs the same egress policy as a plain HTTP forward
+proxy on the host instead of a transparent gateway inside a container.
+It needs no root, no nftables, and no network namespaces -- it binds a
+loopback socket and supervises an Envoy subprocess. This makes it a
+drop-in for [Claude Code's sandbox custom
+proxy](https://code.claude.com/docs/en/sandboxing): point
+`sandbox.network.httpProxyPort` at it and every sandboxed request is
+filtered by your YAML.
+
+Envoy is an external dependency in this mode (it is not bundled with
+the host binary):
+
+- **Linux:** install the Envoy project's official release (tarball or
+  Deb/RPM, `amd64`/`arm64`) and put `envoy` on `PATH`. See the
+  [Envoy install docs](https://www.envoyproxy.io/docs/envoy/latest/start/install).
+- **macOS:** `brew install envoy` (Apple Silicon and Intel). The Envoy
+  project does not publish macOS tarballs; Homebrew is the supported
+  native path. Bottles can trail the Linux release by a version or two,
+  which terrarium tolerates.
+
+Run it, writing the generated MITM CA where the sandbox can read it:
+
+```sh
+terrarium proxy \
+  --config ./policy.yaml \
+  --http-port 8080 \
+  --ca-out  ~/.terrarium/proxy/ca.pem
+```
+
+Then in `~/.claude/settings.json`:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "network": {
+      "httpProxyPort": 8080,
+      "allowManagedDomainsOnly": true
+    },
+    "filesystem": {
+      "allowRead": ["~/.terrarium/proxy/ca.pem"]
+    }
+  },
+  "env": {
+    "NODE_EXTRA_CA_CERTS": "~/.terrarium/proxy/ca.pem",
+    "SSL_CERT_FILE": "~/.terrarium/proxy/ca.pem"
+  }
+}
+```
+
+`allowManagedDomainsOnly: true` forces every request through the proxy
+rather than Claude's built-in hostname allowlist, so terrarium's policy
+is the only source of truth: unknown hosts get a 403 from us, not a
+confirmation prompt.
+
+Domains with L7 rules (path/method/header constraints) are MITM'd: the
+proxy terminates TLS with a leaf signed by the generated CA, so the
+sandbox must trust that CA. Claude reads `NODE_EXTRA_CA_CERTS` for Node
+tooling; most other tools honor `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`
+/ `CURL_CA_BUNDLE` pointed at the same PEM. Go-based tools on macOS
+verify through the system keychain and ignore these variables; trust
+the CA in the keychain or exclude those commands. Domains without L7
+rules are tunneled through `CONNECT` without decryption, exactly like
+SNI-only rules in container mode.
+
+Proxy mode filters TCP egress only, so some policy constructs do not
+apply: bare `toCIDR`/`toCIDRSet` ranges, `icmps`, UDP ports, open port
+ranges, and `tcpForwards` are skipped with a warning (this only
+narrows the policy). `egressDeny` rules are rejected, since the proxy
+cannot enforce them and silently dropping them would widen the policy.
+See `terrarium proxy --help` for the full flag reference.
+
+> The transparent container mode (`terrarium init`) is unchanged and
+> remains Linux-only; proxy mode is the only mode that runs on macOS.
+
 ## Examples
 
 Allow GET requests to repos in your GitHub organization, injecting an API key header:
