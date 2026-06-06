@@ -3,6 +3,7 @@ package status
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"time"
@@ -363,12 +364,12 @@ func LoadConfig(ctx context.Context, path string) (*config.Config, error) {
 			return nil, nil //nolint:nilnil // absent config is a valid state.
 		}
 
-		return nil, err
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 
 	cfg, err := config.ParseConfig(ctx, data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 
 	return cfg, nil

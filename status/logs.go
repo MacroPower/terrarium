@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 
 	"go.jacobcolvin.com/terrarium/config"
@@ -29,14 +30,14 @@ func TailN(path string, n int) ([]string, error) {
 
 	f, err := os.Open(path) //nolint:gosec // operator-supplied path.
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 
 	defer f.Close() //nolint:errcheck // read-only file.
 
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 
 	size := info.Size()
@@ -55,10 +56,7 @@ func TailN(path string, n int) ([]string, error) {
 	)
 
 	for offset > 0 && newlines < needLines {
-		readLen := tailChunkSize
-		if offset < readLen {
-			readLen = offset
-		}
+		readLen := min(offset, tailChunkSize)
 
 		offset -= readLen
 
@@ -66,10 +64,10 @@ func TailN(path string, n int) ([]string, error) {
 
 		_, err := f.ReadAt(chunk, offset)
 		if err != nil && !errors.Is(err, io.EOF) {
-			return nil, err
+			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
 
-		buffer = append(chunk, buffer...)
+		buffer = slices.Concat(chunk, buffer)
 		newlines = countNewlines(buffer)
 	}
 

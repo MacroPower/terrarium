@@ -52,7 +52,9 @@ func collectEnvoy(path string) EnvoySection {
 func listenerPorts(bs envoy.Bootstrap) []int {
 	seen := make(map[int]bool)
 
-	for _, l := range bs.StaticResources.Listeners {
+	for i := range bs.StaticResources.Listeners {
+		l := &bs.StaticResources.Listeners[i]
+
 		port := l.Address.SocketAddress.PortValue
 		if port > 0 {
 			seen[port] = true

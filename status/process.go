@@ -21,7 +21,7 @@ const clockTicksPerSecond = 100
 
 // collectProcess gathers daemon liveness and Envoy child discovery.
 // All PID file read errors are reported on [ProcessSection.Err]
-// except fs.ErrNotExist, which maps to [DaemonNotRunning] so a
+// except [fs.ErrNotExist], which maps to [DaemonNotRunning] so a
 // missing PID file reads as "the daemon is not running" rather than
 // "something went wrong."
 func collectProcess(pidFile string) ProcessSection {
@@ -34,11 +34,13 @@ func collectProcess(pidFile string) ProcessSection {
 	case errors.Is(err, fs.ErrNotExist):
 		s.Daemon.State = DaemonNotRunning
 		return s
+
 	case errors.Is(err, fs.ErrPermission):
 		s.Daemon.State = DaemonUnknown
 		s.Err = err
 
 		return s
+
 	case err != nil:
 		s.Daemon.State = DaemonUnknown
 		s.Err = err
@@ -77,12 +79,12 @@ func collectProcess(pidFile string) ProcessSection {
 }
 
 // readPIDFile reads and parses a PID file. A file that does not exist
-// is returned verbatim (fs.ErrNotExist) so the caller can distinguish
-// "no daemon" from "permission denied."
+// yields an error that wraps [fs.ErrNotExist] so the caller can
+// distinguish "no daemon" from "permission denied."
 func readPIDFile(path string) (int, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied path.
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("reading PID file %s: %w", path, err)
 	}
 
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
@@ -105,12 +107,12 @@ func processAlive(pid int) (bool, error) {
 			return false, nil
 		}
 
-		return false, err
+		return false, fmt.Errorf("stat /proc/%d: %w", pid, err)
 	}
 
 	proc, err := os.FindProcess(pid)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("finding process %d: %w", pid, err)
 	}
 
 	err = proc.Signal(syscall.Signal(0))
@@ -126,7 +128,7 @@ func processAlive(pid int) (bool, error) {
 		return true, nil
 	}
 
-	return false, err
+	return false, fmt.Errorf("signaling process %d: %w", pid, err)
 }
 
 // processUptime returns the running duration of pid computed from
@@ -161,7 +163,7 @@ func readProcStarttime(pid int) (uint64, error) {
 
 	data, err := os.ReadFile(path) //nolint:gosec // well-known /proc path.
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	return parseProcStarttime(string(data))
@@ -188,11 +190,17 @@ func parseProcStarttime(line string) (uint64, error) {
 	// pid and (comm) are consumed before the split, so field 3
 	// (state) is index 0, field 22 (starttime) is index 19.
 	const starttimeTailIndex = 19
+
 	if len(tail) <= starttimeTailIndex {
 		return 0, fmt.Errorf("truncated /proc stat line (%d fields)", len(tail))
 	}
 
-	return strconv.ParseUint(tail[starttimeTailIndex], 10, 64)
+	starttime, err := strconv.ParseUint(tail[starttimeTailIndex], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing /proc stat starttime: %w", err)
+	}
+
+	return starttime, nil
 }
 
 // readSystemUptime parses /proc/uptime and returns the first field
@@ -200,7 +208,7 @@ func parseProcStarttime(line string) (uint64, error) {
 func readSystemUptime() (float64, error) {
 	data, err := os.ReadFile("/proc/uptime")
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("reading /proc/uptime: %w", err)
 	}
 
 	fields := strings.Fields(string(data))
@@ -208,7 +216,12 @@ func readSystemUptime() (float64, error) {
 		return 0, errors.New("empty /proc/uptime")
 	}
 
-	return strconv.ParseFloat(fields[0], 64)
+	uptime, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing /proc/uptime: %w", err)
+	}
+
+	return uptime, nil
 }
 
 // findEnvoyChild looks for an Envoy subprocess beneath the daemon PID
@@ -231,7 +244,7 @@ func findEnvoyChild(daemonPID int) EnvoyProcess {
 		return EnvoyProcess{State: DaemonUnknown, Err: err}
 	}
 
-	for _, field := range strings.Fields(string(data)) {
+	for field := range strings.FieldsSeq(string(data)) {
 		pid, err := strconv.Atoi(field)
 		if err != nil {
 			continue
