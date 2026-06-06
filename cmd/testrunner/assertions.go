@@ -226,7 +226,7 @@ func assertHTTPAllowed(ctx context.Context, a assertion) result {
 		defer func() {
 			err := resp.Body.Close()
 			if err != nil {
-				slog.Debug("closing response body", slog.Any("err", err))
+				slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 			}
 		}()
 
@@ -285,7 +285,7 @@ func assertHTTPDenied(ctx context.Context, a assertion) result {
 	defer func() {
 		err := resp.Body.Close()
 		if err != nil {
-			slog.Debug("closing response body", slog.Any("err", err))
+			slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 		}
 	}()
 
@@ -321,7 +321,7 @@ func assertNetworkDenied(ctx context.Context, a assertion) result {
 	defer func() {
 		err := resp.Body.Close()
 		if err != nil {
-			slog.Debug("closing response body", slog.Any("err", err))
+			slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 		}
 	}()
 
@@ -362,7 +362,7 @@ func assertL7Allowed(ctx context.Context, a assertion) result {
 		defer func() {
 			err := resp.Body.Close()
 			if err != nil {
-				slog.Debug("closing response body", slog.Any("err", err))
+				slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 			}
 		}()
 
@@ -412,7 +412,7 @@ func assertL7Denied(ctx context.Context, a assertion) result {
 	defer func() {
 		err := resp.Body.Close()
 		if err != nil {
-			slog.Debug("closing response body", slog.Any("err", err))
+			slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 		}
 	}()
 
@@ -461,7 +461,7 @@ func assertL7BodyWithHeader(ctx context.Context, a assertion) result {
 		defer func() {
 			err := resp.Body.Close()
 			if err != nil {
-				slog.Debug("closing response body", slog.Any("err", err))
+				slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 			}
 		}()
 
@@ -527,7 +527,7 @@ func assertL7DeniedWithHeader(ctx context.Context, a assertion) result {
 	defer func() {
 		err := resp.Body.Close()
 		if err != nil {
-			slog.Debug("closing response body", slog.Any("err", err))
+			slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 		}
 	}()
 
@@ -564,7 +564,7 @@ func assertHTTPSPassthrough(ctx context.Context, a assertion) result {
 		defer func() {
 			err := resp.Body.Close()
 			if err != nil {
-				slog.Debug("closing response body", slog.Any("err", err))
+				slog.DebugContext(ctx, "closing response body", slog.Any("err", err))
 			}
 		}()
 
@@ -598,7 +598,7 @@ func assertUDPAllowed(ctx context.Context, a assertion) result {
 		defer func() {
 			err := conn.Close()
 			if err != nil {
-				slog.Debug("closing connection", slog.Any("err", err))
+				slog.DebugContext(ctx, "closing connection", slog.Any("err", err))
 			}
 		}()
 
@@ -645,7 +645,7 @@ func assertUDPDenied(ctx context.Context, a assertion) result {
 	defer func() {
 		err := conn.Close()
 		if err != nil {
-			slog.Debug("closing connection", slog.Any("err", err))
+			slog.DebugContext(ctx, "closing connection", slog.Any("err", err))
 		}
 	}()
 
@@ -695,7 +695,7 @@ func assertUDPSend(ctx context.Context, a assertion) result {
 	defer func() {
 		err := conn.Close()
 		if err != nil {
-			slog.Debug("closing connection", slog.Any("err", err))
+			slog.DebugContext(ctx, "closing connection", slog.Any("err", err))
 		}
 	}()
 
@@ -724,7 +724,7 @@ func assertTCPForward(ctx context.Context, a assertion) result {
 		defer func() {
 			err := conn.Close()
 			if err != nil {
-				slog.Debug("closing connection", slog.Any("err", err))
+				slog.DebugContext(ctx, "closing connection", slog.Any("err", err))
 			}
 		}()
 

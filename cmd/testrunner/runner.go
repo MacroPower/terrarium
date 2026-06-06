@@ -31,6 +31,7 @@ func run(ctx context.Context, s spec) int {
 		err := validateEnvoy(ctx, s.ConfigPath)
 		if err != nil {
 			fmt.Printf("Infrastructure error: envoy validation: %v\n", err)
+
 			return 2
 		}
 	}
@@ -44,6 +45,7 @@ func run(ctx context.Context, s spec) int {
 		err := installExtraCACert(s.ExtraCACertPath)
 		if err != nil {
 			fmt.Printf("Infrastructure error: %v\n", err)
+
 			return 2
 		}
 	}
@@ -74,6 +76,7 @@ func run(ctx context.Context, s spec) int {
 	err := terrarium.Start()
 	if err != nil {
 		fmt.Printf("Infrastructure error: starting terrarium: %v\n", err)
+
 		return 2
 	}
 
@@ -88,6 +91,7 @@ func run(ctx context.Context, s spec) int {
 	err = waitReady(terrariumDone)
 	if err != nil {
 		fmt.Printf("Infrastructure error: %v\n", err)
+
 		// Try to capture any terrarium stderr output.
 		sigErr := terrarium.Process.Signal(syscall.SIGTERM)
 		if sigErr != nil {
@@ -153,6 +157,7 @@ func runDaemon(ctx context.Context, s spec) int {
 		status := strings.TrimSpace(string(out))
 		if status != "active" {
 			fmt.Printf("Infrastructure error: terrarium daemon status: %s\n", status)
+
 			return 2
 		}
 
@@ -162,6 +167,7 @@ func runDaemon(ctx context.Context, s spec) int {
 	results, err := runAllAssertions(ctx, s)
 	if err != nil {
 		fmt.Printf("Infrastructure error: running child assertions: %v\n", err)
+
 		return 2
 	}
 
@@ -171,7 +177,7 @@ func runDaemon(ctx context.Context, s spec) int {
 // validateEnvoy generates an Envoy bootstrap config from the terrarium
 // config at configPath, then runs envoy --mode=validate against it.
 func validateEnvoy(ctx context.Context, configPath string) error {
-	genCmd := exec.CommandContext(ctx, "terrarium", "generate",
+	genCmd := exec.CommandContext(ctx, "terrarium", "generate", //nolint:gosec // config path from test spec
 		"--config", configPath,
 		"--envoy-config", "/tmp/envoy-validate.yaml",
 	)
@@ -226,6 +232,7 @@ func waitReady(terrariumDone <-chan error) error {
 			_, statErr := os.Stat(readyFile)
 			if statErr == nil {
 				fmt.Println("Terrarium is ready.")
+
 				return nil
 			}
 		}
@@ -321,12 +328,14 @@ func runChild(ctx context.Context, s spec, resultsPath string) int {
 	data, err := json.Marshal(results)
 	if err != nil {
 		fmt.Printf("marshaling results: %v\n", err)
+
 		return 2
 	}
 
 	err = os.WriteFile(resultsPath, data, 0o644)
 	if err != nil {
 		fmt.Printf("writing results: %v\n", err)
+
 		return 2
 	}
 
@@ -350,6 +359,7 @@ func startLoopbackListener(ctx context.Context, port int) {
 		_, err := fmt.Fprint(w, "LOOPBACK_OK\n")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+
 			return
 		}
 	})
@@ -418,7 +428,7 @@ func installExtraCACert(path string) error {
 
 	combinedPath := "/tmp/ca-bundle-with-test-ca.pem"
 
-	err = os.WriteFile(combinedPath, combined, 0o644)
+	err = os.WriteFile(combinedPath, combined, 0o644) //nolint:gosec // G703: combinedPath is a fixed literal.
 	if err != nil {
 		return fmt.Errorf("writing combined CA bundle: %w", err)
 	}

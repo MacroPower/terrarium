@@ -65,6 +65,7 @@ func runJailed(ctx context.Context, args ...string) (int, string, error) {
 	}
 
 	var exitErr *exec.ExitError
+
 	if errors.As(err, &exitErr) {
 		return exitErr.ExitCode(), string(out), nil
 	}
@@ -303,7 +304,7 @@ func assertLockdownModprobeDenied(ctx context.Context, a assertion) result {
 }
 
 // assertLockdownDevmemDenied expects reading /dev/mem to fail.
-func assertLockdownDevmemDenied(_ context.Context, a assertion) result {
+func assertLockdownDevmemDenied(ctx context.Context, a assertion) result {
 	f, err := os.Open("/dev/mem")
 	if err != nil {
 		return result{Status: statusPass, Desc: a.Desc, Detail: fmt.Sprintf("open rejected: %v", err)}
@@ -312,7 +313,7 @@ func assertLockdownDevmemDenied(_ context.Context, a assertion) result {
 	defer func() {
 		err := f.Close()
 		if err != nil {
-			slog.Warn("closing /dev/mem", "err", err)
+			slog.WarnContext(ctx, "closing /dev/mem", slog.Any("err", err))
 		}
 	}()
 
