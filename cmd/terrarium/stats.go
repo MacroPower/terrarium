@@ -180,8 +180,8 @@ func dbPathOrDefault(ctx context.Context, usr *config.User, override string) str
 }
 
 // openStatsDB opens a read-only SQLite handle on the given path.
-func openStatsDB(path string) (*sql.DB, error) {
-	db, err := eventstore.OpenReadOnly(path)
+func openStatsDB(ctx context.Context, path string) (*sql.DB, error) {
+	db, err := eventstore.OpenReadOnly(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("opening stats db %q: %w", path, err)
 	}
@@ -347,7 +347,7 @@ func runStatsTop(
 
 	dbPath := dbPathOrDefault(ctx, usr, f.dbPath)
 
-	db, err := openStatsDB(dbPath)
+	db, err := openStatsDB(ctx, dbPath)
 	if err != nil {
 		return err
 	}
@@ -474,7 +474,7 @@ func runStatsList(
 
 	dbPath := dbPathOrDefault(ctx, usr, f.dbPath)
 
-	db, err := openStatsDB(dbPath)
+	db, err := openStatsDB(ctx, dbPath)
 	if err != nil {
 		return err
 	}
@@ -592,7 +592,7 @@ func runStatsSummary(
 
 	dbPath := dbPathOrDefault(ctx, usr, f.dbPath)
 
-	db, err := openStatsDB(dbPath)
+	db, err := openStatsDB(ctx, dbPath)
 	if err != nil {
 		return err
 	}

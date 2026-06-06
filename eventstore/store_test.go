@@ -17,7 +17,7 @@ import (
 func openReadOnly(t *testing.T, path string) *sql.DB {
 	t.Helper()
 
-	db, err := eventstore.OpenReadOnly(path)
+	db, err := eventstore.OpenReadOnly(t.Context(), path)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })

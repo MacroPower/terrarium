@@ -33,7 +33,7 @@ func seedDB(t *testing.T, events []eventstore.Event) string {
 	}
 
 	require.Eventually(t, func() bool {
-		db, err := eventstore.OpenReadOnly(path)
+		db, err := eventstore.OpenReadOnly(t.Context(), path)
 		if err != nil {
 			return false
 		}

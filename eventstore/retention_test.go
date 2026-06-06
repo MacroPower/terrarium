@@ -35,7 +35,7 @@ func TestRetention_MaxRowsCapsRowCount(t *testing.T) {
 
 	require.NoError(t, store.Close())
 
-	db, err := eventstore.OpenReadOnly(path)
+	db, err := eventstore.OpenReadOnly(t.Context(), path)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
@@ -80,7 +80,7 @@ func TestRetention_MaxAgePrunes(t *testing.T) {
 
 	// Verify both events landed before we apply retention.
 	require.Eventually(t, func() bool {
-		db, err := eventstore.OpenReadOnly(path)
+		db, err := eventstore.OpenReadOnly(t.Context(), path)
 		if err != nil {
 			return false
 		}
@@ -174,7 +174,7 @@ func TestRetention_PerSourceCapsFirewall(t *testing.T) {
 		"channel overflow during the test would invalidate the per-source assertion (drop count %d)",
 		store.DropCount())
 
-	db, err := eventstore.OpenReadOnly(path)
+	db, err := eventstore.OpenReadOnly(t.Context(), path)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })

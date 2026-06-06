@@ -39,7 +39,7 @@ func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 		s.DBSizeBytes = info.Size()
 	}
 
-	db, err := eventstore.OpenReadOnly(dbPath)
+	db, err := eventstore.OpenReadOnly(ctx, dbPath)
 	if err != nil {
 		s.Err = fmt.Errorf("opening db: %w", err)
 		return s

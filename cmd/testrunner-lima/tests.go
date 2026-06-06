@@ -2397,7 +2397,7 @@ func verifyVMHeartbeatOnShutdown(ctx context.Context, t *testing.T, d *driver) {
 		}
 	}()
 
-	db, err := eventstore.OpenReadOnly(hbHostPath)
+	db, err := eventstore.OpenReadOnly(ctx, hbHostPath)
 	require.NoError(t, err, "opening stats db read-only")
 
 	defer func() {

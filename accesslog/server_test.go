@@ -87,7 +87,7 @@ func TestServerStreamAccessLogs(t *testing.T) {
 
 	// Need the server's writer goroutine to drain the channel.
 	require.Eventually(t, func() bool {
-		db, err := eventstore.OpenReadOnly(dbPath)
+		db, err := eventstore.OpenReadOnly(t.Context(), dbPath)
 		if err != nil {
 			return false
 		}
@@ -104,7 +104,7 @@ func TestServerStreamAccessLogs(t *testing.T) {
 	_, _ = stream.CloseAndRecv()
 
 	// Verify the event details.
-	db, err := eventstore.OpenReadOnly(dbPath)
+	db, err := eventstore.OpenReadOnly(t.Context(), dbPath)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })

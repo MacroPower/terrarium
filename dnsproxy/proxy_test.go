@@ -1046,7 +1046,7 @@ func TestProxyEmitsEvents(t *testing.T) {
 	// Wait for the writer goroutine to flush.
 	require.NoError(t, store.Close())
 
-	db, err := eventstore.OpenReadOnly(filepath.Join(dir, "stats.db"))
+	db, err := eventstore.OpenReadOnly(t.Context(), filepath.Join(dir, "stats.db"))
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
@@ -1123,7 +1123,7 @@ func TestProxyBlockedModeEmitsDeny(t *testing.T) {
 
 	require.NoError(t, store.Close())
 
-	db, err := eventstore.OpenReadOnly(filepath.Join(dir, "stats.db"))
+	db, err := eventstore.OpenReadOnly(t.Context(), filepath.Join(dir, "stats.db"))
 	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })

@@ -35,13 +35,13 @@ const readOnlyDSNSuffix = "?mode=ro&_pragma=busy_timeout(2000)"
 // CLI and `status` renderer use it to read a database written by a
 // separate [*Store] in the daemon. The caller owns closing the
 // returned [*sql.DB].
-func OpenReadOnly(path string) (*sql.DB, error) {
+func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path+readOnlyDSNSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
 
-	err = db.Ping()
+	err = db.PingContext(ctx)
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("opening db: %w", err)
