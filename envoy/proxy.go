@@ -79,11 +79,6 @@ type ProxyListenerParams struct {
 
 	// Mode selects the policy posture.
 	Mode ProxyMode
-
-	// HTTPEnabled forwards plain absolute-form HTTP requests to the
-	// internal HTTP listener. Only meaningful in [ProxyModeFiltered];
-	// open mode forwards plain HTTP directly.
-	HTTPEnabled bool
 }
 
 // BuildProxyListener creates the forward-proxy front listener: an
@@ -104,7 +99,7 @@ func BuildProxyListener(p ProxyListenerParams) Listener {
 
 	case ProxyModeFiltered:
 		vhosts = append(vhosts, buildFilteredProxyVhosts(p)...)
-		vhosts = append(vhosts, buildDenyProxyVhost(p.HTTPEnabled))
+		vhosts = append(vhosts, buildDenyProxyVhost(len(p.HTTPDomains) > 0))
 
 	case ProxyModeBlocked:
 		vhosts = append(vhosts, buildDenyProxyVhost(false))

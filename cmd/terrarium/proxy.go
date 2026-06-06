@@ -119,22 +119,7 @@ func GenerateProxy(
 		return nil, "", err
 	}
 
-	// Collect domains that need MITM certs (restricted on any TLS
-	// port), mirroring container-mode Generate.
-	tlsPorts := []int{443}
-	tlsPorts = append(tlsPorts, cfg.ExtraPorts(ctx)...)
-	mitmSeen := make(map[string]bool)
-
-	var mitmRules []config.ResolvedRule
-
-	for _, port := range tlsPorts {
-		for _, r := range cfg.ResolveRulesForPort(ctx, port) {
-			if r.IsRestricted() && !mitmSeen[r.Domain] {
-				mitmSeen[r.Domain] = true
-				mitmRules = append(mitmRules, r)
-			}
-		}
-	}
+	mitmRules := collectMITMRules(ctx, cfg)
 
 	certsDir := ""
 	if len(mitmRules) > 0 {
@@ -192,7 +177,11 @@ func GenerateProxyEnvoyFromConfig(
 	httpPort int,
 	resolvers []netip.AddrPort,
 ) (string, error) {
-	err := checkProxyPolicy(ctx, cfg)
+	// Resolve open (toPorts-only) rules once; both the policy check and
+	// the filtered-mode assembly consume them.
+	openPortRules := cfg.ResolveOpenPortRules(ctx)
+
+	err := checkProxyPolicy(ctx, cfg, openPortRules)
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +200,11 @@ func GenerateProxyEnvoyFromConfig(
 		Resolvers:   resolvers,
 	}
 
-	var listeners []envoy.Listener
+	var (
+		listeners []envoy.Listener
+		allRules  []config.ResolvedRule
+		tlsPorts  []int
+	)
 
 	switch {
 	case cfg.IsEgressBlocked():
@@ -224,21 +217,15 @@ func GenerateProxyEnvoyFromConfig(
 
 	default:
 		params.Mode = envoy.ProxyModeFiltered
-	}
-
-	var allRules []config.ResolvedRule
-
-	if params.Mode == envoy.ProxyModeFiltered {
-		listeners, allRules = assembleFilteredProxy(ctx, cfg, als, certsDir, resolvers, &params)
+		listeners, allRules, tlsPorts = assembleFilteredProxy(
+			ctx, cfg, als, certsDir, resolvers, openTCPPorts(openPortRules), &params)
 	}
 
 	front := envoy.BuildProxyListener(params)
 	listeners = append([]envoy.Listener{front}, listeners...)
 
-	tlsPorts := slices.Sorted(maps.Keys(params.ConnectTLS))
-
 	allClusters := envoy.BuildProxyClusters(
-		allRules, tlsPorts, params.HTTPEnabled,
+		allRules, tlsPorts, len(params.HTTPDomains) > 0,
 		params.Mode == envoy.ProxyModeOpen, caBundlePath, resolvers,
 	)
 	if als.enabled {
@@ -282,30 +269,24 @@ func GenerateProxyEnvoyFromConfig(
 
 // assembleFilteredProxy builds the internal enforcement listeners for
 // filtered mode and fills params with the front listener's CONNECT
-// authority allowlists. It returns the internal listeners and the
-// union of resolved rules they enforce (for cluster determination).
+// authority allowlists. openTCP holds the single TCP ports from
+// toPorts-only rules. It returns the internal listeners, the union of
+// resolved rules they enforce (for cluster determination), and the
+// sorted TLS policy ports.
 func assembleFilteredProxy(
 	ctx context.Context,
 	cfg *config.Config,
 	als alsConfig,
 	certsDir string,
 	resolvers []netip.AddrPort,
+	openTCP map[int]bool,
 	params *envoy.ProxyListenerParams,
-) ([]envoy.Listener, []config.ResolvedRule) {
-	openTCP := resolveOpenTCPPorts(ctx, cfg)
-
-	resolvedPorts := cfg.ResolvePorts(ctx)
-	resolvedPortSet := make(map[int]bool, len(resolvedPorts))
-
-	for _, p := range resolvedPorts {
-		resolvedPortSet[p] = true
-	}
-
+) ([]envoy.Listener, []config.ResolvedRule, []int) {
 	// TLS ports: every non-80 port with FQDN/serverName rules or an
 	// open toPorts rule.
 	tlsPortSet := make(map[int]bool)
 
-	if resolvedPortSet[443] || openTCP[443] {
+	if slices.Contains(cfg.ResolvePorts(ctx), 443) || openTCP[443] {
 		tlsPortSet[443] = true
 	}
 
@@ -324,9 +305,10 @@ func assembleFilteredProxy(
 		allRules  []config.ResolvedRule
 	)
 
-	params.ConnectTLS = make(map[int][]string, len(tlsPortSet))
+	tlsPorts := slices.Sorted(maps.Keys(tlsPortSet))
+	params.ConnectTLS = make(map[int][]string, len(tlsPorts))
 
-	for _, p := range slices.Sorted(maps.Keys(tlsPortSet)) {
+	for _, p := range tlsPorts {
 		rules := cfg.ResolveRulesForPort(ctx, p)
 		rules = append(rules, cfg.ResolveServerNameRulesForPort(ctx, p)...)
 		open := openTCP[p]
@@ -358,8 +340,6 @@ func assembleFilteredProxy(
 
 	if len(rules80) > 0 || open80 {
 		params.HTTPDomains = proxyVhostDomains(rules80, open80)
-		params.HTTPEnabled = true
-
 		allRules = append(allRules, rules80...)
 
 		listeners = append(listeners, envoy.BuildInternalHTTPListener(
@@ -367,7 +347,7 @@ func assembleFilteredProxy(
 		))
 	}
 
-	return listeners, allRules
+	return listeners, allRules, tlsPorts
 }
 
 // proxyVhostDomains extracts the rule domains for a front-listener
@@ -388,8 +368,9 @@ func proxyVhostDomains(rules []config.ResolvedRule, open bool) []string {
 // checkProxyPolicy rejects deny rules (fail-closed) and warns about
 // allow rule kinds a forward proxy cannot enforce. Skipping an allow
 // rule only narrows the policy; skipping a deny rule would widen it,
-// so deny rules are an error.
-func checkProxyPolicy(ctx context.Context, cfg *config.Config) error {
+// so deny rules are an error. openPortRules is the already-resolved
+// toPorts-only rule set.
+func checkProxyPolicy(ctx context.Context, cfg *config.Config, openPortRules []config.ResolvedOpenPort) error {
 	denyV4, denyV6 := cfg.ResolveDenyCIDRRules(ctx)
 	if len(denyV4) > 0 || len(denyV6) > 0 ||
 		len(cfg.ResolveDenyPortOnlyRules(ctx)) > 0 ||
@@ -419,7 +400,7 @@ func checkProxyPolicy(ctx context.Context, cfg *config.Config) error {
 		slog.WarnContext(ctx, "proxy: tcpForwards are not supported in proxy mode")
 	}
 
-	for _, op := range cfg.ResolveOpenPortRules(ctx) {
+	for _, op := range openPortRules {
 		if op.Protocol == config.ProtoTCP && op.EndPort != 0 {
 			slog.WarnContext(ctx, "proxy: open port ranges are not supported in proxy mode",
 				slog.Int("port", op.Port),
@@ -430,13 +411,13 @@ func checkProxyPolicy(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
-// resolveOpenTCPPorts returns the single TCP ports from toPorts-only
-// rules. Ranges and non-TCP protocols are excluded (warned about in
-// [checkProxyPolicy]).
-func resolveOpenTCPPorts(ctx context.Context, cfg *config.Config) map[int]bool {
+// openTCPPorts returns the single TCP ports from the resolved
+// toPorts-only rules. Ranges and non-TCP protocols are excluded
+// (warned about in [checkProxyPolicy]).
+func openTCPPorts(openPortRules []config.ResolvedOpenPort) map[int]bool {
 	out := make(map[int]bool)
 
-	for _, op := range cfg.ResolveOpenPortRules(ctx) {
+	for _, op := range openPortRules {
 		if op.Protocol == config.ProtoTCP && op.EndPort == 0 {
 			out[op.Port] = true
 		}

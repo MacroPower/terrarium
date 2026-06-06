@@ -519,37 +519,26 @@ type endpointAddress struct {
 	Address address `yaml:"address"`
 }
 
-var sharedDNSCacheConfig = dnsCacheConfig{
-	Name:            "dynamic_forward_proxy_cache",
-	DNSLookupFamily: "ALL",
-	TypedDNSResolverConfig: &typedExtensionConfig{
-		Name: "envoy.network.dns_resolver.cares",
-		TypedConfig: caresDNSResolverConfig{
-			AtType: "type.googleapis.com/envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig",
-			Resolvers: []address{{
-				SocketAddress: socketAddress{
-					Address:   "127.0.0.1",
-					PortValue: 53,
-				},
-			}},
-			DNSResolverOptions: dnsResolverOptions{
-				NoDefaultSearchDomain: true,
-			},
-		},
-	},
-}
+// dnsCacheName is the shared dynamic-forward-proxy DNS cache name.
+// The filter- and cluster-side references within one bootstrap must
+// agree, so every [dnsCacheConfig] uses it.
+const dnsCacheName = "dynamic_forward_proxy_cache"
 
-// systemDNSCacheConfig returns the dynamic-forward-proxy DNS cache
-// configuration for proxy mode. With no explicit resolvers, Envoy uses
-// the host's system resolver configuration. Explicit "ip:port"
-// resolvers override it (corporate resolvers, hermetic tests).
-//
-// The cache name matches [sharedDNSCacheConfig] so the filter- and
-// cluster-side references within one bootstrap always agree; the two
-// variants never appear in the same bootstrap.
+// sharedDNSCacheConfig is the container-mode DNS cache: the loopback
+// DNS proxy at 127.0.0.1:53 resolves every upstream name.
+var sharedDNSCacheConfig = systemDNSCacheConfig([]netip.AddrPort{
+	netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 53),
+})
+
+// systemDNSCacheConfig returns a dynamic-forward-proxy DNS cache
+// configuration. With no explicit resolvers, Envoy uses the host's
+// system resolver configuration (proxy mode's default). Explicit
+// "ip:port" resolvers override it: container mode pins the loopback
+// DNS proxy (see [sharedDNSCacheConfig]), and tests inject hermetic
+// resolvers.
 func systemDNSCacheConfig(resolvers []netip.AddrPort) dnsCacheConfig {
 	cache := dnsCacheConfig{
-		Name:            "dynamic_forward_proxy_cache",
+		Name:            dnsCacheName,
 		DNSLookupFamily: "ALL",
 	}
 

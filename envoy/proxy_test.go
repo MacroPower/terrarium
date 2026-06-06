@@ -35,7 +35,6 @@ func TestBuildProxyListener_Filtered(t *testing.T) {
 			8443: {"alt.example.com"},
 		},
 		HTTPDomains: []string{"plain.example.com"},
-		HTTPEnabled: true,
 	})
 
 	assert.Equal(t, "proxy", l.Name)

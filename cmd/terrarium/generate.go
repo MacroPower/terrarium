@@ -32,22 +32,7 @@ func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Confi
 	}
 
 	// Collect domains that need MITM certs (restricted on any TLS port).
-	tlsPorts := []int{443}
-	tlsPorts = append(tlsPorts, cfg.ExtraPorts(ctx)...)
-	mitmSeen := make(map[string]bool)
-
-	var mitmRules []config.ResolvedRule
-
-	for _, port := range tlsPorts {
-		portRules := cfg.ResolveRulesForPort(ctx, port)
-
-		for _, r := range portRules {
-			if r.IsRestricted() && !mitmSeen[r.Domain] {
-				mitmSeen[r.Domain] = true
-				mitmRules = append(mitmRules, r)
-			}
-		}
-	}
+	mitmRules := collectMITMRules(ctx, cfg)
 
 	certsDir := ""
 	if len(mitmRules) > 0 {
@@ -76,6 +61,30 @@ func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Confi
 	}
 
 	return cfg, nil
+}
+
+// collectMITMRules returns the deduplicated restricted rules (those
+// with HTTP path/method/header constraints) across every TLS port,
+// i.e. the domains that need a generated MITM leaf certificate. Both
+// container mode ([Generate]) and proxy mode ([GenerateProxy]) drive
+// cert generation from this set.
+func collectMITMRules(ctx context.Context, cfg *config.Config) []config.ResolvedRule {
+	tlsPorts := []int{443}
+	tlsPorts = append(tlsPorts, cfg.ExtraPorts(ctx)...)
+	seen := make(map[string]bool)
+
+	var rules []config.ResolvedRule
+
+	for _, port := range tlsPorts {
+		for _, r := range cfg.ResolveRulesForPort(ctx, port) {
+			if r.IsRestricted() && !seen[r.Domain] {
+				seen[r.Domain] = true
+				rules = append(rules, r)
+			}
+		}
+	}
+
+	return rules
 }
 
 // alsConfig captures the shared gRPC ALS config used by every
