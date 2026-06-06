@@ -28,8 +28,8 @@ func seedDB(t *testing.T, events []eventstore.Event) string {
 		eventstore.WithBatchInterval(10*time.Millisecond))
 	require.NoError(t, err)
 
-	for _, e := range events {
-		store.Emit(e)
+	for i := range events {
+		store.Emit(events[i])
 	}
 
 	require.Eventually(t, func() bool {
@@ -38,11 +38,11 @@ func seedDB(t *testing.T, events []eventstore.Event) string {
 			return false
 		}
 
-		defer db.Close()
+		defer db.Close() //nolint:errcheck // read-only handle in polling closure.
 
 		var n int
 
-		err = db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n)
+		err = db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events`).Scan(&n)
 		if err != nil {
 			return false
 		}
@@ -61,9 +61,27 @@ func TestStatsTopDenied(t *testing.T) {
 	now := time.Now()
 
 	dbPath := seedDB(t, []eventstore.Event{
-		{Time: now, Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Domain: "evil.example", Reason: eventstore.ReasonBlockedMode},
-		{Time: now, Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Domain: "evil.example", Reason: eventstore.ReasonBlockedMode},
-		{Time: now, Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Domain: "rare.example", Reason: eventstore.ReasonBlockedMode},
+		{
+			Time:     now,
+			Source:   eventstore.SourceDNS,
+			Decision: eventstore.DecisionDeny,
+			Domain:   "evil.example",
+			Reason:   eventstore.ReasonBlockedMode,
+		},
+		{
+			Time:     now,
+			Source:   eventstore.SourceDNS,
+			Decision: eventstore.DecisionDeny,
+			Domain:   "evil.example",
+			Reason:   eventstore.ReasonBlockedMode,
+		},
+		{
+			Time:     now,
+			Source:   eventstore.SourceDNS,
+			Decision: eventstore.DecisionDeny,
+			Domain:   "rare.example",
+			Reason:   eventstore.ReasonBlockedMode,
+		},
 		{Time: now, Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Domain: "ok.example"},
 	})
 
@@ -135,7 +153,13 @@ func TestStatsList(t *testing.T) {
 	now := time.Now()
 
 	dbPath := seedDB(t, []eventstore.Event{
-		{Time: now, Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Domain: "list.example", Protocol: eventstore.ProtocolDNS},
+		{
+			Time:     now,
+			Source:   eventstore.SourceDNS,
+			Decision: eventstore.DecisionAllow,
+			Domain:   "list.example",
+			Protocol: eventstore.ProtocolDNS,
+		},
 	})
 
 	usr := config.NewUser()
@@ -169,7 +193,13 @@ func TestStatsTopCSV(t *testing.T) {
 	now := time.Now()
 
 	dbPath := seedDB(t, []eventstore.Event{
-		{Time: now, Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Domain: "csv.example", Reason: eventstore.ReasonBlockedMode},
+		{
+			Time:     now,
+			Source:   eventstore.SourceDNS,
+			Decision: eventstore.DecisionDeny,
+			Domain:   "csv.example",
+			Reason:   eventstore.ReasonBlockedMode,
+		},
 	})
 
 	usr := config.NewUser()
@@ -260,6 +290,7 @@ func TestResolveSince(t *testing.T) {
 			got, err := resolveSince(tt.input, now)
 			if tt.err {
 				require.Error(t, err)
+
 				return
 			}
 

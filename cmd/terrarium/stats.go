@@ -30,6 +30,17 @@ const (
 	formatCSV   outputFormat = "csv"
 )
 
+// Group-by values shared by flag defaults, validation, and query
+// building in `stats top`.
+const (
+	groupByDomain = "domain"
+	groupByPath   = "path"
+)
+
+// instanceFilterClause is appended to stats queries to scope results
+// to a single instance ID.
+const instanceFilterClause = " AND instance_id = ?"
+
 // parseFormat validates s as an [outputFormat]. Empty input maps to
 // the table default.
 func parseFormat(s string) (outputFormat, error) {
@@ -135,7 +146,8 @@ func resolveSince(value string, now time.Time) (time.Time, error) {
 		return time.Time{}, nil
 	}
 
-	if d, err := time.ParseDuration(value); err == nil {
+	d, err := time.ParseDuration(value)
+	if err == nil {
 		return now.Add(-d), nil
 	}
 
@@ -239,7 +251,7 @@ func statsTopCmd(usr *config.User) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "top",
+		Use:   "top", //nolint:goconst // the other occurrences are test inputs.
 		Short: "Top-N domains by event count (denied by default)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -259,7 +271,7 @@ func statsTopCmd(usr *config.User) *cobra.Command {
 	f.register(cmd)
 	cmd.Flags().BoolVar(&denied, "denied", false, "show top denied domains (default)")
 	cmd.Flags().BoolVar(&allowed, "allowed", false, "show top allowed domains")
-	cmd.Flags().StringVar(&groupBy, "by", "domain",
+	cmd.Flags().StringVar(&groupBy, "by", groupByDomain,
 		"group by: domain, sni, path")
 
 	return cmd
@@ -368,12 +380,14 @@ func runStatsTop(
 	sourceClause := ""
 	if rf.source != "" {
 		sourceClause = " AND source = ?"
+
 		args = append(args, string(rf.source))
 	}
 
 	instanceClause := ""
 	if instance != "" {
-		instanceClause = " AND instance_id = ?"
+		instanceClause = instanceFilterClause
+
 		args = append(args, instance)
 	}
 
@@ -383,13 +397,14 @@ func runStatsTop(
 	groupClause := ""
 	if groupBy == "sni" {
 		groupClause = " AND protocol = ?"
+
 		args = append(args, string(eventstore.ProtocolTCP))
 	}
 
 	args = append(args, f.limit)
 
 	groupExpr := column
-	if groupBy == "path" {
+	if groupBy == groupByPath {
 		// Session tokens and cache-busters in query strings would
 		// blow out cardinality; strip them before grouping.
 		groupExpr = "CASE WHEN instr(http_path, '?') > 0 " +
@@ -397,6 +412,7 @@ func runStatsTop(
 			"ELSE http_path END"
 	}
 
+	//nolint:gosec // G201: only internal column names and constant clauses are interpolated; user values use ? placeholders.
 	query := fmt.Sprintf(`
 		SELECT %s AS bucket, COUNT(*) AS n
 		FROM events
@@ -436,7 +452,8 @@ func runStatsTop(
 		csvRows = append(csvRows, []string{r.Bucket, strconv.Itoa(r.Count)})
 	}
 
-	if err = rows.Err(); err != nil {
+	err = rows.Err()
+	if err != nil {
 		return fmt.Errorf("iterating top: %w", err)
 	}
 
@@ -448,11 +465,11 @@ func runStatsTop(
 // add post-processing).
 func groupColumn(by string) (string, error) {
 	switch by {
-	case "", "domain":
-		return "domain", nil
+	case "", groupByDomain:
+		return groupByDomain, nil
 	case "sni":
-		return "domain", nil
-	case "path":
+		return groupByDomain, nil
+	case groupByPath:
 		return "http_path", nil
 	default:
 		return "", fmt.Errorf("unsupported --by value %q (expected: domain, sni, path)", by)
@@ -491,12 +508,14 @@ func runStatsList(
 
 	if rf.source != "" {
 		sourceClause = " AND source = ?"
+
 		args = append(args, string(rf.source))
 	}
 
 	instanceClause := ""
 	if instance != "" {
-		instanceClause = " AND instance_id = ?"
+		instanceClause = instanceFilterClause
+
 		args = append(args, instance)
 	}
 
@@ -564,7 +583,8 @@ func runStatsList(
 		lastID = id
 	}
 
-	if err = rows.Err(); err != nil {
+	err = rows.Err()
+	if err != nil {
 		return fmt.Errorf("iterating events: %w", err)
 	}
 
@@ -614,7 +634,8 @@ func runStatsSummary(
 
 	instanceClause := ""
 	if instance != "" {
-		instanceClause = " AND instance_id = ?"
+		instanceClause = instanceFilterClause
+
 		args = append(args, instance)
 	}
 
@@ -648,7 +669,8 @@ func runStatsSummary(
 		csvRows = append(csvRows, []string{s.Source, s.Decision, strconv.Itoa(s.Count)})
 	}
 
-	if err = rows.Err(); err != nil {
+	err = rows.Err()
+	if err != nil {
 		return fmt.Errorf("iterating summary: %w", err)
 	}
 
@@ -667,6 +689,7 @@ func renderRows(out io.Writer, format outputFormat, structured any, headers []st
 		enc.SetIndent("", "  ")
 
 		return enc.Encode(structured)
+
 	case formatCSV:
 		w := csv.NewWriter(out)
 
@@ -681,6 +704,7 @@ func renderRows(out io.Writer, format outputFormat, structured any, headers []st
 		}
 
 		return w.Error()
+
 	default:
 		tw := status.NewTabwriter(out)
 
@@ -689,10 +713,16 @@ func renderRows(out io.Writer, format outputFormat, structured any, headers []st
 			upper[i] = strings.ToUpper(h)
 		}
 
-		fmt.Fprintln(tw, strings.Join(upper, "\t"))
+		_, err := fmt.Fprintln(tw, strings.Join(upper, "\t"))
+		if err != nil {
+			return fmt.Errorf("writing header row: %w", err)
+		}
 
 		for _, row := range csvRows {
-			fmt.Fprintln(tw, strings.Join(row, "\t"))
+			_, err = fmt.Fprintln(tw, strings.Join(row, "\t"))
+			if err != nil {
+				return fmt.Errorf("writing row: %w", err)
+			}
 		}
 
 		return tw.Flush()
