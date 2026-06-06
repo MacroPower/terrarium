@@ -216,7 +216,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 			return
 		}
 
-		closeErr := store.Close()
+		closeErr := store.Close() //nolint:contextcheck // shutdown flush must not inherit a cancelable ctx.
 		if closeErr != nil {
 			slog.DebugContext(ctx, "closing event store on init failure", slog.Any("err", closeErr))
 		}
@@ -513,7 +513,8 @@ func openAccessLog(
 		accesslog.WithSocketOwner(int(envoyUID)))
 	if err != nil {
 		slog.WarnContext(ctx, "stats: opening accesslog socket, ingestion disabled",
-			slog.String("socket", socket), slog.Any("err", err))
+			slog.String("socket", socket),
+			slog.Any("err", err))
 
 		return nil
 	}
@@ -568,13 +569,15 @@ func openEventStore(
 	store, err := eventstore.Open(ctx, path, opts...)
 	if err != nil {
 		slog.WarnContext(ctx, "stats: opening event store, ingestion disabled",
-			slog.String("path", path), slog.Any("err", err))
+			slog.String("path", path),
+			slog.Any("err", err))
 
 		return nil
 	}
 
 	slog.InfoContext(ctx, "stats: event store opened",
-		slog.String("path", path), slog.String("instance", store.InstanceID()))
+		slog.String("path", path),
+		slog.String("instance", store.InstanceID()))
 
 	return store
 }
@@ -690,6 +693,7 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 
 	if waitErr != nil {
 		var exitErr *exec.ExitError
+
 		if errors.As(waitErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
@@ -750,7 +754,7 @@ func shutdown(ctx context.Context, inf *infra) {
 
 	// Close the event store last so its writer goroutine has time to
 	// drain queued events from in-flight DNS/Envoy emit calls.
-	err := inf.eventStore.Close()
+	err := inf.eventStore.Close() //nolint:contextcheck // shutdown flush must not inherit a cancelable ctx.
 	if err != nil {
 		slog.DebugContext(ctx, "closing event store on shutdown", slog.Any("err", err))
 	}
@@ -785,6 +789,7 @@ func stopEnvoy(ctx context.Context, cmd *exec.Cmd, drainTimeout time.Duration) {
 	err := cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
 		slog.DebugContext(ctx, "stopping envoy", slog.Any("err", err))
+
 		return
 	}
 
@@ -972,7 +977,7 @@ func startEnvoy(
 // file owned by the Envoy UID with world-readable permissions so the
 // terrarium user can read it.
 func prepareEnvoyLogFile(path string, ownerUID int) error {
-	err := os.MkdirAll(filepath.Dir(path), 0o755)
+	err := os.MkdirAll(filepath.Dir(path), 0o755) //nolint:gosec // G703: log path from config.
 	if err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
@@ -988,7 +993,7 @@ func prepareEnvoyLogFile(path string, ownerUID int) error {
 		return fmt.Errorf("closing log file: %w", closeErr)
 	}
 
-	err = os.Chown(path, ownerUID, ownerUID)
+	err = os.Chown(path, ownerUID, ownerUID) //nolint:gosec // G703: log path from config.
 	if err != nil {
 		return fmt.Errorf("chown log file: %w", err)
 	}
@@ -1043,13 +1048,14 @@ func ensurePathTraversable(path string) error {
 
 	// Collect directories from the file's parent up to /.
 	var dirs []string
+
 	for dir != "/" && dir != "." {
 		dirs = append(dirs, dir)
 		dir = filepath.Dir(dir)
 	}
 
 	for _, d := range dirs {
-		info, err := os.Stat(d)
+		info, err := os.Stat(d) //nolint:gosec // G703: dir path derived from config.
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", d, err)
 		}
@@ -1060,6 +1066,7 @@ func ensurePathTraversable(path string) error {
 				slog.String("dir", d),
 				slog.String("old_mode", fmt.Sprintf("%04o", perm)),
 			)
+
 			//nolint:gosec // G302: intentionally adding world-execute for path traversal.
 			err := os.Chmod(d, perm|0o001)
 			if err != nil {

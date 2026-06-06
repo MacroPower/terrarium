@@ -30,6 +30,11 @@ var (
 	// ErrDaemonNotRunning indicates the PID file references a process
 	// that is no longer alive.
 	ErrDaemonNotRunning = fmt.Errorf("daemon not running")
+
+	// ErrReloadNFLogGroupChanged is returned by
+	// [validateStartupOnlyStatsChanges] when the new config requests a
+	// different nflog group than the running reader is bound to.
+	ErrReloadNFLogGroupChanged = fmt.Errorf("reload: stats.firewall.nflogGroup change requires restart")
 )
 
 // DaemonReload triggers a live configuration reload of the running
@@ -111,6 +116,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	resolvData, err := os.ReadFile("/etc/resolv.conf")
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: reading /etc/resolv.conf", slog.Any("err", err))
+
 		return
 	}
 
@@ -119,12 +125,14 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	cfg, err := Generate(ctx, usr, uids.VMMode)
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: generating configs", slog.Any("err", err))
+
 		return
 	}
 
 	err = ensurePathTraversable(usr.EnvoyConfigPath)
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: making envoy config path traversable", slog.Any("err", err))
+
 		return
 	}
 
@@ -136,6 +144,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 		err = installCA(ctx, caCertPath)
 		if err != nil {
 			slog.ErrorContext(ctx, "reload: installing CA", slog.Any("err", err))
+
 			return
 		}
 
@@ -143,6 +152,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 			err = copyFile(caCertPath, "/etc/terrarium/ca.pem")
 			if err != nil {
 				slog.ErrorContext(ctx, "reload: copying CA for container trust", slog.Any("err", err))
+
 				return
 			}
 		}
@@ -165,6 +175,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	err = validateStartupOnlyStatsChanges(ctx, inf.boundStats, cfg)
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: rejected", slog.Any("err", err))
+
 		return
 	}
 
@@ -172,12 +183,14 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	conn, err := nftables.New()
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: creating nftables connection", slog.Any("err", err))
+
 		return
 	}
 
 	err = firewall.ApplyRules(ctx, conn, cfg, uids)
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: applying firewall rules", slog.Any("err", err))
+
 		return
 	}
 
@@ -186,6 +199,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 		err = firewall.SetupPolicyRouting(ctx, sys)
 		if err != nil {
 			slog.ErrorContext(ctx, "reload: setting up policy routing", slog.Any("err", err))
+
 			return
 		}
 	}
@@ -194,6 +208,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	err = firewall.SetupForwardRouting(sys)
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: setting up forward routing", slog.Any("err", err))
+
 		return
 	}
 
@@ -203,6 +218,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	dnsConn, err := nftables.New()
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: creating DNS proxy nftables connection", slog.Any("err", err))
+
 		return
 	}
 
@@ -241,6 +257,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	)
 	if err != nil {
 		slog.ErrorContext(ctx, "reload: starting DNS proxy", slog.Any("err", err))
+
 		return
 	}
 
@@ -253,6 +270,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 		envoyCmd, err = startEnvoy(ctx, usr, envoySettings, cfg)
 		if err != nil {
 			slog.ErrorContext(ctx, "reload: starting envoy", slog.Any("err", err))
+
 			return
 		}
 	}
@@ -271,11 +289,6 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 
 	slog.InfoContext(ctx, "terrarium configuration reloaded successfully")
 }
-
-// ErrReloadNFLogGroupChanged is returned by
-// [validateStartupOnlyStatsChanges] when the new config requests a
-// different nflog group than the running reader is bound to.
-var ErrReloadNFLogGroupChanged = fmt.Errorf("reload: stats.firewall.nflogGroup change requires restart")
 
 // validateStartupOnlyStatsChanges returns an error when the new
 // config requests a value for a startup-only stats field that the
@@ -309,21 +322,24 @@ func warnStartupOnlyStatsChanges(ctx context.Context, bound boundStats, cfg *con
 	if bound.enabled != newEnabled {
 		slog.WarnContext(ctx,
 			"reload: stats.enabled change ignored (restart required)",
-			slog.Bool("bound", bound.enabled), slog.Bool("requested", newEnabled))
+			slog.Bool("bound", bound.enabled),
+			slog.Bool("requested", newEnabled))
 	}
 
 	newPath := cfg.StatsPath(config.StatsDBDefault())
 	if bound.enabled && bound.path != newPath {
 		slog.WarnContext(ctx,
 			"reload: stats.path change ignored (restart required)",
-			slog.String("bound", bound.path), slog.String("requested", newPath))
+			slog.String("bound", bound.path),
+			slog.String("requested", newPath))
 	}
 
 	newSocket := cfg.StatsSocket()
 	if bound.enabled && bound.socket != newSocket {
 		slog.WarnContext(ctx,
 			"reload: stats.socket change ignored (restart required)",
-			slog.String("bound", bound.socket), slog.String("requested", newSocket))
+			slog.String("bound", bound.socket),
+			slog.String("requested", newSocket))
 	}
 }
 

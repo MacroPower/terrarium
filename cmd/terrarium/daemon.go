@@ -117,7 +117,7 @@ func daemonShutdown(ctx context.Context, inf *infra) {
 		inf.heartbeatStop()
 	}
 
-	err := inf.eventStore.Close()
+	err := inf.eventStore.Close() //nolint:contextcheck // shutdown flush must not inherit a cancelable ctx.
 	if err != nil {
 		slog.DebugContext(ctx, "closing event store on daemon shutdown", slog.Any("err", err))
 	}
@@ -134,13 +134,14 @@ func sdNotify(ctx context.Context, state string) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unixgram", socketAddr)
 	if err != nil {
 		slog.DebugContext(ctx, "sd_notify dial", slog.Any("err", err))
+
 		return
 	}
 
 	defer func() {
 		cerr := conn.Close()
 		if cerr != nil {
-			slog.Debug("sd_notify close", slog.Any("err", cerr))
+			slog.DebugContext(ctx, "sd_notify close", slog.Any("err", cerr))
 		}
 	}()
 
