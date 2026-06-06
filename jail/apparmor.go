@@ -157,7 +157,7 @@ func changeOnExec(cfg *config, profile string) error {
 	defer func() {
 		err := unix.Close(fd)
 		if err != nil {
-			slog.Warn("closing apparmor exec attr fd", "err", err)
+			slog.Warn("closing apparmor exec attr fd", slog.Any("err", err))
 		}
 	}()
 
