@@ -18,6 +18,7 @@ builds:
     main: ./cmd/terrarium
     goos:
       - linux
+      - darwin
     goarch:
       - amd64
       - arm64
@@ -90,4 +91,5 @@ nix:
     license: "asl20"
     skip_upload: auto
     dependencies:
-      - envoy-bin
+      - name: envoy-bin
+        os: linux

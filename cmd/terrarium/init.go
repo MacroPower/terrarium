@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -29,15 +31,6 @@ import (
 	"go.jacobcolvin.com/terrarium/nflog"
 	"go.jacobcolvin.com/terrarium/sysctl"
 )
-
-// ExitError carries a child process exit code through the error
-// return path so the CLI entrypoint can propagate it to [os.Exit].
-type ExitError struct{ Code int }
-
-// Error returns a human-readable representation of the exit status.
-func (e *ExitError) Error() string {
-	return fmt.Sprintf("exit status %d", e.Code)
-}
 
 var (
 	// ErrNoCommand is returned when Init is called without a command to exec.

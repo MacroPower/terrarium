@@ -20,13 +20,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "jail" {
-		jailChangeProfile(os.Args[2:])
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "exec" {
-		execPrivDrop(os.Args[2:])
-	}
+	platformDispatch(os.Args)
 
 	usr := config.NewUser()
 	logCfg := log.NewConfig()
@@ -63,29 +57,6 @@ func main() {
 		)
 	}
 
-	var pidFile string
-
-	daemonCmd := &cobra.Command{
-		Use:   "daemon",
-		Short: "Run as a VM-wide network filter daemon",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return Daemon(cmd.Context(), usr, pidFile)
-		},
-	}
-
-	daemonCmd.PersistentFlags().StringVar(&pidFile, "pid-file",
-		config.DefaultPIDFile, "path to PID file")
-
-	daemonCmd.AddCommand(&cobra.Command{
-		Use:   "reload",
-		Short: "Validate config and signal the daemon to reload",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return DaemonReload(cmd.Context(), usr, pidFile)
-		},
-	})
-
 	rootCmd.AddCommand(
 		&cobra.Command{
 			Use:   "generate",
@@ -96,18 +67,10 @@ func main() {
 				return err
 			},
 		},
-		&cobra.Command{
-			Use:   "init [-- cmd...]",
-			Short: "Load firewall, start services, drop privileges, exec cmd",
-			Args:  cobra.ArbitraryArgs,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return Init(cmd.Context(), usr, args)
-			},
-		},
-		daemonCmd,
-		statusCmd(usr),
 		statsCmd(usr),
 	)
+
+	rootCmd.AddCommand(platformCommands(usr)...)
 
 	err = fang.Execute(context.Background(), rootCmd,
 		fang.WithErrorHandler(fangs.ErrorHandler),

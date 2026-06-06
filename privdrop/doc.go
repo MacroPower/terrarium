@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package privdrop performs Linux privilege-dropping syscalls before
 // execve, replacing the need for setpriv (util-linux).
 //
