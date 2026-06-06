@@ -1,7 +1,6 @@
 package nflog
 
 import (
-	"io"
 	"log/slog"
 	"net/netip"
 
@@ -10,7 +9,7 @@ import (
 )
 
 func noopLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 // FiveTuple is the test-facing view of an unexported fiveTuple.
