@@ -29,13 +29,17 @@ type firewaller interface {
 
 var _ firewaller = (*nftables.Conn)(nil)
 
+// tableFamilyInet is the nftables address-family label reported for
+// terrarium's inet table.
+const tableFamilyInet = "inet"
+
 // collectFirewall introspects nftables state relevant to terrarium.
 // Returns a [FirewallSection] populated from the real kernel via
 // [nftables.New].
 func collectFirewall() FirewallSection {
 	s := FirewallSection{
 		TableName:   firewall.TableName,
-		TableFamily: "inet",
+		TableFamily: tableFamilyInet,
 	}
 
 	conn, err := nftables.New()
@@ -58,6 +62,7 @@ func collectFirewallWith(conn firewaller, s FirewallSection) FirewallSection {
 	case err != nil:
 		s.Err = fmt.Errorf("listing table %s: %w", firewall.TableName, err)
 		return s
+
 	default:
 		s.TablePresent = table != nil
 	}
@@ -71,6 +76,7 @@ func collectFirewallWith(conn firewaller, s FirewallSection) FirewallSection {
 		if s.Err == nil {
 			s.Err = fmt.Errorf("listing guard table: %w", err)
 		}
+
 	default:
 		s.GuardPresent = true
 	}

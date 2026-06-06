@@ -23,11 +23,11 @@ func TestProbeDNSSuccess(t *testing.T) {
 func TestProbeDNSTimeout(t *testing.T) {
 	t.Parallel()
 
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	pc, err := (&net.ListenConfig{}).ListenPacket(t.Context(), "udp", "127.0.0.1:0")
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		_ = pc.Close()
+		require.NoError(t, pc.Close())
 	})
 
 	err = probeDNS(pc.LocalAddr().String(), 50*time.Millisecond)

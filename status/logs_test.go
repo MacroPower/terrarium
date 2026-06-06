@@ -46,9 +46,10 @@ func TestTailNLongerThanN(t *testing.T) {
 	t.Parallel()
 
 	var b strings.Builder
+
 	for i := range 100 {
 		_, _ = b.WriteString("line")
-		_, _ = b.WriteString(string(rune('0' + (i % 10))))
+		_, _ = b.WriteRune(rune('0' + (i % 10)))
 		_, _ = b.WriteString("\n")
 	}
 
@@ -126,7 +127,7 @@ func TestTailNUnreadable(t *testing.T) {
 	require.NoError(t, os.Chmod(path, 0o000))
 
 	t.Cleanup(func() {
-		_ = os.Chmod(path, 0o644)
+		os.Chmod(path, 0o644) //nolint:errcheck // best-effort perm restore for cleanup.
 	})
 
 	_, err := status.TailN(path, 10)

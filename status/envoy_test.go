@@ -21,7 +21,7 @@ func TestCollectEnvoyMissing(t *testing.T) {
 	r := status.Collect(t.Context(), opts)
 
 	assert.True(t, r.Envoy.NotGenerated)
-	assert.NoError(t, r.Envoy.Err)
+	require.NoError(t, r.Envoy.Err)
 	assert.Empty(t, r.Envoy.Listeners)
 }
 

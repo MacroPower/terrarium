@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/nftables"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/firewall"
@@ -156,6 +157,6 @@ func TestCollectFirewallChainsError(t *testing.T) {
 	})
 
 	assert.True(t, s.TablePresent)
-	assert.Error(t, s.Err)
+	require.Error(t, s.Err)
 	assert.Zero(t, s.ChainCount)
 }

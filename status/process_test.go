@@ -99,7 +99,7 @@ func TestCollectProcessPIDFilePermission(t *testing.T) {
 	require.NoError(t, os.Chmod(path, 0o000))
 
 	t.Cleanup(func() {
-		_ = os.Chmod(path, 0o644)
+		os.Chmod(path, 0o644) //nolint:errcheck // best-effort perm restore for cleanup.
 	})
 
 	opts := status.Options{PIDFile: path}
