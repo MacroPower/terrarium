@@ -1051,7 +1051,7 @@ func TestProxyEmitsEvents(t *testing.T) {
 
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
-	rows, err := db.Query(`SELECT source, decision, domain, reason FROM events ORDER BY id`)
+	rows, err := db.QueryContext(t.Context(), `SELECT source, decision, domain, reason FROM events ORDER BY id`)
 	require.NoError(t, err)
 
 	var events []struct {
@@ -1132,7 +1132,7 @@ func TestProxyBlockedModeEmitsDeny(t *testing.T) {
 		decision, reason string
 	)
 
-	err = db.QueryRow(`SELECT decision, reason FROM events LIMIT 1`).Scan(&decision, &reason)
+	err = db.QueryRowContext(t.Context(), `SELECT decision, reason FROM events LIMIT 1`).Scan(&decision, &reason)
 	require.NoError(t, err)
 
 	assert.Equal(t, "deny", decision)
