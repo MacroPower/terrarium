@@ -1,12 +1,28 @@
 package envoy
 
+import "net/netip"
+
 // Envoy bootstrap config types. These model the subset of the Envoy v3
 // API used by terrarium's transparent SNI-filtering proxy.
 
 // Bootstrap is the top-level Envoy bootstrap configuration.
 type Bootstrap struct {
-	OverloadManager OverloadManager `yaml:"overload_manager"`
-	StaticResources StaticResources `yaml:"static_resources"`
+	OverloadManager     OverloadManager `yaml:"overload_manager"`
+	BootstrapExtensions []NamedTyped    `yaml:"bootstrap_extensions,omitempty"`
+	StaticResources     StaticResources `yaml:"static_resources"`
+}
+
+// InternalListenerBootstrapExtension returns the bootstrap extension
+// that enables Envoy's internal listener support. Required whenever a
+// [Listener] is marked internal or a cluster endpoint uses an
+// envoy_internal_address.
+func InternalListenerBootstrapExtension() NamedTyped {
+	return NamedTyped{
+		Name: "envoy.bootstrap.internal_listener",
+		TypedConfig: typeOnly{
+			AtType: "type.googleapis.com/envoy.extensions.bootstrap.internal_listener.v3.InternalListener",
+		},
+	}
 }
 
 // OverloadManager configures Envoy's overload manager resource monitors.
@@ -23,15 +39,22 @@ type StaticResources struct {
 // Listener models an Envoy listener with filter chains and optional
 // listener-level filters.
 type Listener struct {
-	DefaultFilterChain  *filterChain       `yaml:"default_filter_chain,omitempty"`
-	UDPListenerConfig   *udpListenerConfig `yaml:"udp_listener_config,omitempty"`
-	Name                string             `yaml:"name"`
-	ListenerFilters     []NamedTyped       `yaml:"listener_filters,omitempty"`
-	FilterChains        []filterChain      `yaml:"filter_chains,omitempty"`
-	AdditionalAddresses []additionalAddr   `yaml:"additional_addresses,omitempty"`
-	Address             address            `yaml:"address"`
-	Transparent         bool               `yaml:"transparent,omitempty"`
+	DefaultFilterChain  *filterChain          `yaml:"default_filter_chain,omitempty"`
+	UDPListenerConfig   *udpListenerConfig    `yaml:"udp_listener_config,omitempty"`
+	InternalListener    *internalListenerOpts `yaml:"internal_listener,omitempty"`
+	Address             *address              `yaml:"address,omitempty"`
+	Name                string                `yaml:"name"`
+	ListenerFilters     []NamedTyped          `yaml:"listener_filters,omitempty"`
+	FilterChains        []filterChain         `yaml:"filter_chains,omitempty"`
+	AdditionalAddresses []additionalAddr      `yaml:"additional_addresses,omitempty"`
+	Transparent         bool                  `yaml:"transparent,omitempty"`
 }
+
+// internalListenerOpts marks a [Listener] as internal: it has no
+// socket address and is reachable only from clusters whose endpoints
+// use an envoy_internal_address naming it. Its presence is the signal;
+// Envoy accepts an empty message.
+type internalListenerOpts struct{}
 
 // additionalAddr is an additional address for a [Listener]. Used to
 // bind both IPv4 and IPv6 on a single logical listener. Required for
@@ -42,8 +65,16 @@ type additionalAddr struct {
 }
 
 type address struct {
-	Pipe          *pipeAddress  `yaml:"pipe,omitempty"`
-	SocketAddress socketAddress `yaml:"socket_address,omitempty"`
+	Pipe                 *pipeAddress          `yaml:"pipe,omitempty"`
+	EnvoyInternalAddress *envoyInternalAddress `yaml:"envoy_internal_address,omitempty"`
+	SocketAddress        socketAddress         `yaml:"socket_address,omitempty"`
+}
+
+// envoyInternalAddress models Envoy's EnvoyInternalAddress: a cluster
+// endpoint address that targets an internal [Listener] by name instead
+// of a network socket.
+type envoyInternalAddress struct {
+	ServerListenerName string `yaml:"server_listener_name"`
 }
 
 type socketAddress struct {
@@ -305,11 +336,19 @@ type route struct {
 //   - source/common/common/matchers.cc: CompiledGoogleReMatcher::match
 //     calls re2::RE2::FullMatch
 type routeMatch struct {
-	SafeRegex *safeRegex             `yaml:"safe_regex,omitempty"`
-	Grpc      *grpcRouteMatchOptions `yaml:"grpc,omitempty"`
-	Prefix    string                 `yaml:"prefix,omitempty"`
-	Headers   []headerMatcher        `yaml:"headers,omitempty"`
+	SafeRegex      *safeRegex             `yaml:"safe_regex,omitempty"`
+	Grpc           *grpcRouteMatchOptions `yaml:"grpc,omitempty"`
+	ConnectMatcher *connectMatcher        `yaml:"connect_matcher,omitempty"`
+	Prefix         string                 `yaml:"prefix,omitempty"`
+	Headers        []headerMatcher        `yaml:"headers,omitempty"`
 }
+
+// connectMatcher is an empty message that, when present on a
+// routeMatch, restricts the route to CONNECT requests. CONNECT has no
+// path, so prefix and safe_regex path specifiers never match it; this
+// is the only way to route CONNECT. Mirrors Envoy's
+// route.RouteMatch.ConnectMatcher.
+type connectMatcher struct{}
 
 // grpcRouteMatchOptions is an empty message that, when present on a
 // RouteMatch, restricts the route to gRPC requests (content-type
@@ -381,11 +420,27 @@ type routerFilterConfig struct {
 }
 
 type routeAction struct {
-	MaxStreamDuration *maxStreamDuration `yaml:"max_stream_duration,omitempty"`
-	Cluster           string             `yaml:"cluster"`
-	Timeout           string             `yaml:"timeout,omitempty"`
-	AutoHostRewrite   bool               `yaml:"auto_host_rewrite"`
+	MaxStreamDuration *maxStreamDuration   `yaml:"max_stream_duration,omitempty"`
+	Cluster           string               `yaml:"cluster"`
+	Timeout           string               `yaml:"timeout,omitempty"`
+	UpgradeConfigs    []routeUpgradeConfig `yaml:"upgrade_configs,omitempty"`
+	AutoHostRewrite   bool                 `yaml:"auto_host_rewrite"`
 }
+
+// routeUpgradeConfig models the route-level
+// RouteAction.UpgradeConfig. With UpgradeType CONNECT and a non-nil
+// ConnectConfig, Envoy terminates the CONNECT request and streams its
+// payload to the route's cluster as raw TCP, synthesizing the
+// "200 Connection Established" response toward the client.
+type routeUpgradeConfig struct {
+	ConnectConfig *connectConfig `yaml:"connect_config,omitempty"`
+	UpgradeType   string         `yaml:"upgrade_type"`
+}
+
+// connectConfig is an empty message enabling CONNECT termination on a
+// [routeUpgradeConfig]. Its presence is the signal; Envoy accepts an
+// empty message.
+type connectConfig struct{}
 
 // maxStreamDuration models Envoy's route.MaxStreamDuration message.
 // GrpcTimeoutHeaderMax caps the duration extracted from the grpc-timeout
@@ -482,6 +537,46 @@ var sharedDNSCacheConfig = dnsCacheConfig{
 			},
 		},
 	},
+}
+
+// systemDNSCacheConfig returns the dynamic-forward-proxy DNS cache
+// configuration for proxy mode. With no explicit resolvers, Envoy uses
+// the host's system resolver configuration. Explicit "ip:port"
+// resolvers override it (corporate resolvers, hermetic tests).
+//
+// The cache name matches [sharedDNSCacheConfig] so the filter- and
+// cluster-side references within one bootstrap always agree; the two
+// variants never appear in the same bootstrap.
+func systemDNSCacheConfig(resolvers []netip.AddrPort) dnsCacheConfig {
+	cache := dnsCacheConfig{
+		Name:            "dynamic_forward_proxy_cache",
+		DNSLookupFamily: "ALL",
+	}
+
+	if len(resolvers) == 0 {
+		return cache
+	}
+
+	addrs := make([]address, len(resolvers))
+	for i, r := range resolvers {
+		addrs[i] = address{SocketAddress: socketAddress{
+			Address:   r.Addr().String(),
+			PortValue: int(r.Port()),
+		}}
+	}
+
+	cache.TypedDNSResolverConfig = &typedExtensionConfig{
+		Name: "envoy.network.dns_resolver.cares",
+		TypedConfig: caresDNSResolverConfig{
+			AtType:    "type.googleapis.com/envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig",
+			Resolvers: addrs,
+			DNSResolverOptions: dnsResolverOptions{
+				NoDefaultSearchDomain: true,
+			},
+		},
+	}
+
+	return cache
 }
 
 // udpListenerConfig models Envoy's UdpListenerConfig message.

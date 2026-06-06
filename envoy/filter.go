@@ -134,6 +134,7 @@ func buildPassthroughFilterChain(
 	serverNames []string,
 	accessLog []AccessLog,
 	rbacFilter *filter,
+	dnsCache dnsCacheConfig,
 ) filterChain {
 	var filters []filter
 
@@ -147,7 +148,7 @@ func buildPassthroughFilterChain(
 			TypedConfig: sniFilterConfig{
 				AtType:         "type.googleapis.com/envoy.extensions.filters.network.sni_dynamic_forward_proxy.v3.FilterConfig",
 				PortValue:      upstreamPort,
-				DNSCacheConfig: sharedDNSCacheConfig,
+				DNSCacheConfig: dnsCache,
 			},
 		},
 		filter{
@@ -177,12 +178,13 @@ func buildMITMFilterChain(
 	accessLog []AccessLog,
 	certsDir string,
 	httpRBACFilter *filter,
+	dnsCache dnsCacheConfig,
 ) filterChain {
 	sn := WildcardServerName(rule.Domain)
 	certPath := fmt.Sprintf("%s/%s/cert.pem", certsDir, sn)
 	keyPath := fmt.Sprintf("%s/%s/key.pem", certsDir, sn)
 
-	vhosts, _, _ := buildHTTPVirtualHosts([]config.ResolvedRule{rule}, "mitm_forward_proxy_cluster")
+	vhosts, _, _ := buildHTTPVirtualHosts([]config.ResolvedRule{rule}, mitmForwardProxyCluster)
 
 	httpFilters := make([]filter, 0, 3)
 	if httpRBACFilter != nil {
@@ -191,10 +193,10 @@ func buildMITMFilterChain(
 
 	httpFilters = append(httpFilters,
 		filter{
-			Name: "envoy.filters.http.dynamic_forward_proxy",
+			Name: httpDFPFilterName,
 			TypedConfig: httpDFPFilterConfig{
-				AtType:         "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
-				DNSCacheConfig: sharedDNSCacheConfig,
+				AtType:         httpDFPFilterTypeURL,
+				DNSCacheConfig: dnsCache,
 			},
 		},
 		filter{
@@ -224,11 +226,11 @@ func buildMITMFilterChain(
 			},
 		},
 		Filters: []filter{{
-			Name: "envoy.filters.network.http_connection_manager",
+			Name: hcmFilterName,
 			TypedConfig: httpConnManagerConfig{
-				AtType:                       "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+				AtType:                       hcmTypeURL,
 				StatPrefix:                   "mitm_" + rule.Domain,
-				StreamIdleTimeout:            "300s",
+				StreamIdleTimeout:            streamIdleTimeout5m,
 				NormalizePath:                boolPtr(true),
 				UseRemoteAddress:             boolPtr(true),
 				SkipXffAppend:                boolPtr(true),
@@ -239,7 +241,7 @@ func buildMITMFilterChain(
 					VirtualHosts: vhosts,
 				},
 				AccessLog:      accessLog,
-				UpgradeConfigs: []upgradeConfig{{UpgradeType: "websocket"}},
+				UpgradeConfigs: []upgradeConfig{{UpgradeType: upgradeTypeWebsocket}},
 				HTTPFilters:    httpFilters,
 			},
 		}},

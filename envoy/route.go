@@ -147,7 +147,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 			Match: routeMatch{Prefix: "/"},
 			DirectResponse: &directResponseAction{
 				Status: 403,
-				Body:   &dataSource{InlineString: "Access denied"},
+				Body:   &dataSource{InlineString: accessDeniedBody},
 			},
 		})
 		vhosts = append(vhosts, virtualHost{

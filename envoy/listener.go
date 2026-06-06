@@ -80,6 +80,37 @@ func BuildTLSListener(
 	certsDir string,
 	transparent bool,
 ) Listener {
+	chains, defaultChain := buildTLSFilterChains(
+		upstreamPort, statPrefix, rules, open, tcpAL, httpAL, certsDir, sharedDNSCacheConfig,
+	)
+
+	return Listener{
+		Name:                name,
+		Address:             &address{SocketAddress: listenSocketAddr(transparent, listenPort)},
+		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
+		Transparent:         transparent,
+		DefaultFilterChain:  &defaultChain,
+		ListenerFilters:     []NamedTyped{tlsInspectorListenerFilter()},
+		FilterChains:        chains,
+	}
+}
+
+// buildTLSFilterChains builds the SNI-matched filter chains shared by
+// the container-mode TLS listener ([BuildTLSListener]) and the
+// proxy-mode internal TLS listener ([BuildInternalTLSListener]):
+// passthrough chains for SNI-only domains, wildcard chains with RBAC
+// depth enforcement, MITM chains for L7-restricted rules, an optional
+// open catch-all, and the default reject chain for connections
+// without SNI.
+func buildTLSFilterChains(
+	upstreamPort int,
+	statPrefix string,
+	rules []config.ResolvedRule,
+	open bool,
+	tcpAL, httpAL []AccessLog,
+	certsDir string,
+	dnsCache dnsCacheConfig,
+) ([]filterChain, filterChain) {
 	var (
 		passthroughDomains []string
 		mitmRules          []config.ResolvedRule
@@ -123,7 +154,8 @@ func BuildTLSListener(
 	var chains []filterChain
 
 	if len(exactDomains) > 0 {
-		chains = append(chains, buildPassthroughFilterChain(upstreamPort, statPrefix, exactDomains, tcpAL, nil))
+		chains = append(chains, buildPassthroughFilterChain(
+			upstreamPort, statPrefix, exactDomains, tcpAL, nil, dnsCache))
 	}
 
 	if len(wildcardDomains) > 0 {
@@ -134,10 +166,8 @@ func BuildTLSListener(
 			envoyNames[i] = WildcardServerName(d)
 		}
 
-		chains = append(
-			chains,
-			buildPassthroughFilterChain(upstreamPort, statPrefix+"_wildcard", envoyNames, tcpAL, &rbac),
-		)
+		chains = append(chains, buildPassthroughFilterChain(
+			upstreamPort, statPrefix+"_wildcard", envoyNames, tcpAL, &rbac, dnsCache))
 	}
 
 	for _, r := range mitmRules {
@@ -148,12 +178,13 @@ func BuildTLSListener(
 			httpRBAC = &f
 		}
 
-		chains = append(chains, buildMITMFilterChain(r, httpAL, certsDir, httpRBAC))
+		chains = append(chains, buildMITMFilterChain(r, httpAL, certsDir, httpRBAC, dnsCache))
 	}
 
 	// Open ports get a catch-all passthrough chain (no SNI restriction).
 	if open {
-		chains = append(chains, buildPassthroughFilterChain(upstreamPort, statPrefix+"_open", nil, tcpAL, nil))
+		chains = append(chains, buildPassthroughFilterChain(
+			upstreamPort, statPrefix+"_open", nil, tcpAL, nil, dnsCache))
 	}
 
 	// Default filter chain catches connections without SNI (e.g., TLS
@@ -162,21 +193,17 @@ func BuildTLSListener(
 	// access log always fires (regardless of the logging flag) since
 	// missing-SNI connections indicate a configuration or client issue
 	// that should be visible.
-	defaultChain := buildDefaultRejectFilterChain(statPrefix)
+	return chains, buildDefaultRejectFilterChain(statPrefix)
+}
 
-	return Listener{
-		Name:                name,
-		Address:             address{SocketAddress: listenSocketAddr(transparent, listenPort)},
-		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
-		Transparent:         transparent,
-		DefaultFilterChain:  &defaultChain,
-		ListenerFilters: []NamedTyped{{
-			Name: "envoy.filters.listener.tls_inspector",
-			TypedConfig: typeOnly{
-				AtType: "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector",
-			},
-		}},
-		FilterChains: chains,
+// tlsInspectorListenerFilter returns the tls_inspector listener
+// filter that extracts SNI for filter chain matching.
+func tlsInspectorListenerFilter() NamedTyped {
+	return NamedTyped{
+		Name: "envoy.filters.listener.tls_inspector",
+		TypedConfig: typeOnly{
+			AtType: "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector",
+		},
 	}
 }
 
@@ -187,6 +214,33 @@ func BuildTLSListener(
 func BuildHTTPForwardListener(
 	rules []config.ResolvedRule, open bool, accessLog []AccessLog, transparent bool,
 ) Listener {
+	hcm := buildHTTPForwardHCM(
+		"http_forward", rules, open, false, accessLog, sharedDNSCacheConfig,
+	)
+
+	return Listener{
+		Name:                "http_forward",
+		Address:             &address{SocketAddress: listenSocketAddr(transparent, 15080)},
+		AdditionalAddresses: listenAdditionalAddrs(transparent, 15080),
+		Transparent:         transparent,
+		FilterChains:        []filterChain{{Filters: []filter{hcm}}},
+	}
+}
+
+// buildHTTPForwardHCM builds the host-header-routed HTTP connection
+// manager shared by the container-mode HTTP listener
+// ([BuildHTTPForwardListener]) and the proxy-mode internal HTTP
+// listener ([BuildInternalHTTPListener]). When denyUnmatched is true,
+// hosts outside the allowlist receive an explicit 403 instead of
+// Envoy's default 404; proxy mode uses this so denied plain-HTTP
+// requests are distinguishable from missing routes.
+func buildHTTPForwardHCM(
+	statPrefix string,
+	rules []config.ResolvedRule,
+	open, denyUnmatched bool,
+	accessLog []AccessLog,
+	dnsCache dnsCacheConfig,
+) filter {
 	vhosts, wildcardDomains, exactDomains := buildHTTPVirtualHosts(rules, dynamicForwardProxyCluster)
 
 	// Envoy allows only one virtual host with Domains: ["*"] per route
@@ -213,16 +267,30 @@ func BuildHTTPForwardListener(
 		})
 	}
 
+	if denyUnmatched && !open && !hasCatchAll {
+		vhosts = append(vhosts, virtualHost{
+			Name:    "deny",
+			Domains: []string{"*"},
+			Routes: []route{{
+				Match: routeMatch{Prefix: "/"},
+				DirectResponse: &directResponseAction{
+					Status: 403,
+					Body:   &dataSource{InlineString: accessDeniedBody},
+				},
+			}},
+		})
+	}
+
 	// Build the HTTP filter chain. When wildcard domains are present
 	// and the listener is not fully open and there is no catch-all
 	// vhost, prepend an RBAC filter that enforces single-label depth
 	// on the :authority header.
 	httpFilters := []filter{
 		{
-			Name: "envoy.filters.http.dynamic_forward_proxy",
+			Name: httpDFPFilterName,
 			TypedConfig: httpDFPFilterConfig{
-				AtType:         "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
-				DNSCacheConfig: sharedDNSCacheConfig,
+				AtType:         httpDFPFilterTypeURL,
+				DNSCacheConfig: dnsCache,
 			},
 		},
 		{
@@ -238,33 +306,25 @@ func BuildHTTPForwardListener(
 		httpFilters = append([]filter{rbacFilter}, httpFilters...)
 	}
 
-	return Listener{
-		Name:                "http_forward",
-		Address:             address{SocketAddress: listenSocketAddr(transparent, 15080)},
-		AdditionalAddresses: listenAdditionalAddrs(transparent, 15080),
-		Transparent:         transparent,
-		FilterChains: []filterChain{{
-			Filters: []filter{{
-				Name: "envoy.filters.network.http_connection_manager",
-				TypedConfig: httpConnManagerConfig{
-					AtType:                       "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
-					StatPrefix:                   "http_forward",
-					StreamIdleTimeout:            "300s",
-					NormalizePath:                boolPtr(true),
-					UseRemoteAddress:             boolPtr(true),
-					SkipXffAppend:                boolPtr(true),
-					MergeSlashes:                 true,
-					StripAnyHostPort:             true,
-					PathWithEscapedSlashesAction: "UNESCAPE_AND_REDIRECT",
-					RouteConfig: routeConfig{
-						VirtualHosts: vhosts,
-					},
-					AccessLog:      accessLog,
-					UpgradeConfigs: []upgradeConfig{{UpgradeType: "websocket"}},
-					HTTPFilters:    httpFilters,
-				},
-			}},
-		}},
+	return filter{
+		Name: hcmFilterName,
+		TypedConfig: httpConnManagerConfig{
+			AtType:                       hcmTypeURL,
+			StatPrefix:                   statPrefix,
+			StreamIdleTimeout:            streamIdleTimeout5m,
+			NormalizePath:                boolPtr(true),
+			UseRemoteAddress:             boolPtr(true),
+			SkipXffAppend:                boolPtr(true),
+			MergeSlashes:                 true,
+			StripAnyHostPort:             true,
+			PathWithEscapedSlashesAction: "UNESCAPE_AND_REDIRECT",
+			RouteConfig: routeConfig{
+				VirtualHosts: vhosts,
+			},
+			AccessLog:      accessLog,
+			UpgradeConfigs: []upgradeConfig{{UpgradeType: upgradeTypeWebsocket}},
+			HTTPFilters:    httpFilters,
+		},
 	}
 }
 
@@ -281,7 +341,7 @@ func BuildTCPForwardListener(
 ) Listener {
 	return Listener{
 		Name:                name,
-		Address:             address{SocketAddress: listenSocketAddr(transparent, listenPort)},
+		Address:             &address{SocketAddress: listenSocketAddr(transparent, listenPort)},
 		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
 		Transparent:         transparent,
 		FilterChains: []filterChain{{
@@ -320,7 +380,7 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, 
 
 	return Listener{
 		Name:                "catch_all_tcp",
-		Address:             address{SocketAddress: listenSocketAddr(transparent, listenPort)},
+		Address:             &address{SocketAddress: listenSocketAddr(transparent, listenPort)},
 		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
 		Transparent:         transparent,
 		ListenerFilters: []NamedTyped{{
@@ -355,7 +415,7 @@ func BuildCatchAllTCPListener(listenPort int, open bool, accessLog []AccessLog, 
 func BuildCIDRCatchAllListener(listenPort int, accessLog []AccessLog, transparent bool) Listener {
 	return Listener{
 		Name:                "cidr_catch_all",
-		Address:             address{SocketAddress: listenSocketAddr(transparent, listenPort)},
+		Address:             &address{SocketAddress: listenSocketAddr(transparent, listenPort)},
 		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
 		Transparent:         transparent,
 		ListenerFilters: []NamedTyped{
@@ -417,7 +477,7 @@ func BuildCatchAllUDPListener(port int, idleTimeout time.Duration, accessLog []A
 
 	return Listener{
 		Name:                "catch_all_udp",
-		Address:             address{SocketAddress: udpSockAddr},
+		Address:             &address{SocketAddress: udpSockAddr},
 		AdditionalAddresses: additionalAddrs,
 		Transparent:         true,
 		UDPListenerConfig: &udpListenerConfig{

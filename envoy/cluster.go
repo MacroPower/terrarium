@@ -23,6 +23,12 @@ const originalDstCluster = "original_dst"
 // egress is routed through by the dynamic forward proxy.
 const dynamicForwardProxyCluster = "dynamic_forward_proxy_cluster"
 
+// mitmForwardProxyCluster is the name of the dynamic forward proxy
+// cluster MITM filter chains route through. Unlike
+// [dynamicForwardProxyCluster], it re-encrypts upstream with TLS and
+// validates the upstream certificate against the CA bundle.
+const mitmForwardProxyCluster = "mitm_forward_proxy_cluster"
+
 func hasMITMRules(rules []config.ResolvedRule) bool {
 	for _, r := range rules {
 		if r.IsRestricted() {
@@ -69,102 +75,121 @@ func BuildClusters(
 	// Add the dynamic forward proxy cluster when there are FQDN rules
 	// or listeners that reference it (open passthrough/HTTP listeners).
 	if len(rules) > 0 || hasListeners {
-		clusters = append(clusters, cluster{
-			Name:           dynamicForwardProxyCluster,
-			ConnectTimeout: "5s",
-			LBPolicy:       lbPolicyClusterProvided,
-			ClusterType: &clusterType{
-				Name: "envoy.clusters.dynamic_forward_proxy",
-				TypedConfig: clusterDFPConfig{
-					AtType:         "type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig",
-					DNSCacheConfig: sharedDNSCacheConfig,
-				},
-			},
-		})
+		clusters = append(clusters, buildDFPCluster(sharedDNSCacheConfig))
 	}
 
 	if hasMITMRules(rules) {
-		upstreamTLS := upstreamTlsContext{
-			AtType: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
-		}
-		if caBundlePath != "" {
-			upstreamTLS.CommonTlsContext = &upstreamCommonTlsContext{
-				ValidationContext: &validationContext{
-					TrustedCA: dataSource{Filename: caBundlePath},
-				},
-			}
-		}
-
-		// Upstream SNI handling: Envoy v1.37+ requires explicit
-		// auto_sni and auto_san_validation on DFP clusters that
-		// set typed_extension_protocol_options. Earlier versions
-		// auto-enabled both via the DFP cluster factory, but
-		// v1.37 validates their presence at config time. Setting
-		// them in upstream_http_protocol_options ensures the
-		// upstream TLS handshake uses the correct SNI (derived
-		// from the HTTP Host header) and validates the upstream
-		// cert SAN against it.
-		clusters = append(clusters, cluster{
-			Name:           "mitm_forward_proxy_cluster",
-			ConnectTimeout: "5s",
-			LBPolicy:       lbPolicyClusterProvided,
-			ClusterType: &clusterType{
-				Name: "envoy.clusters.dynamic_forward_proxy",
-				TypedConfig: clusterDFPConfig{
-					AtType:         "type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig",
-					DNSCacheConfig: sharedDNSCacheConfig,
-				},
-			},
-			TransportSocket: &transportSocket{
-				Name:        "envoy.transport_sockets.tls",
-				TypedConfig: upstreamTLS,
-			},
-			TypedExtensionProtocolOptions: map[string]any{
-				"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": httpProtocolOptions{
-					AtType: "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
-					UpstreamHTTPProtocolOptions: &upstreamHTTPProtocolOptions{
-						AutoSNI:           true,
-						AutoSANValidation: true,
-					},
-					AutoConfig: &autoConfig{},
-				},
-			},
-		})
+		clusters = append(clusters, buildMITMCluster(caBundlePath, sharedDNSCacheConfig))
 	}
 
 	for _, fwd := range tcpForwards {
-		name := fmt.Sprintf("tcp_forward_%d", fwd.Port)
-
-		clusterType := "STRICT_DNS"
-		if net.ParseIP(fwd.Host) != nil {
-			clusterType = clusterTypeStatic
-		}
-
-		dnsFamily := "V4_ONLY"
-		if clusterType == clusterTypeStatic {
-			dnsFamily = ""
-		}
-
-		clusters = append(clusters, cluster{
-			Name:            name,
-			ConnectTimeout:  "5s",
-			Type:            clusterType,
-			LBPolicy:        lbPolicyRoundRobin,
-			DNSLookupFamily: dnsFamily,
-			LoadAssignment: &loadAssignment{
-				ClusterName: name,
-				Endpoints: []endpoint{{
-					LBEndpoints: []lbEndpoint{{
-						Endpoint: endpointAddress{
-							Address: address{SocketAddress: socketAddress{
-								Address: fwd.Host, PortValue: fwd.Port,
-							}},
-						},
-					}},
-				}},
-			},
-		})
+		clusters = append(clusters, buildTCPForwardCluster(fwd))
 	}
 
 	return clusters
+}
+
+// buildMITMCluster builds the dynamic forward proxy cluster MITM
+// filter chains route through. The upstream connection is TLS with
+// SNI derived from the HTTP Host header.
+//
+// Upstream SNI handling: Envoy v1.37+ requires explicit auto_sni and
+// auto_san_validation on DFP clusters that set
+// typed_extension_protocol_options. Earlier versions auto-enabled
+// both via the DFP cluster factory, but v1.37 validates their
+// presence at config time. Setting them in
+// upstream_http_protocol_options ensures the upstream TLS handshake
+// uses the correct SNI (derived from the HTTP Host header) and
+// validates the upstream cert SAN against it.
+func buildMITMCluster(caBundlePath string, dnsCache dnsCacheConfig) cluster {
+	upstreamTLS := upstreamTlsContext{
+		AtType: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
+	}
+	if caBundlePath != "" {
+		upstreamTLS.CommonTlsContext = &upstreamCommonTlsContext{
+			ValidationContext: &validationContext{
+				TrustedCA: dataSource{Filename: caBundlePath},
+			},
+		}
+	}
+
+	return cluster{
+		Name:           mitmForwardProxyCluster,
+		ConnectTimeout: "5s",
+		LBPolicy:       lbPolicyClusterProvided,
+		ClusterType: &clusterType{
+			Name: "envoy.clusters.dynamic_forward_proxy",
+			TypedConfig: clusterDFPConfig{
+				AtType:         "type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig",
+				DNSCacheConfig: dnsCache,
+			},
+		},
+		TransportSocket: &transportSocket{
+			Name:        "envoy.transport_sockets.tls",
+			TypedConfig: upstreamTLS,
+		},
+		TypedExtensionProtocolOptions: map[string]any{
+			"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": httpProtocolOptions{
+				AtType: "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+				UpstreamHTTPProtocolOptions: &upstreamHTTPProtocolOptions{
+					AutoSNI:           true,
+					AutoSANValidation: true,
+				},
+				AutoConfig: &autoConfig{},
+			},
+		},
+	}
+}
+
+// buildDFPCluster builds the plain dynamic forward proxy cluster used
+// for FQDN-based egress and SNI passthrough tunneling.
+func buildDFPCluster(dnsCache dnsCacheConfig) cluster {
+	return cluster{
+		Name:           dynamicForwardProxyCluster,
+		ConnectTimeout: "5s",
+		LBPolicy:       lbPolicyClusterProvided,
+		ClusterType: &clusterType{
+			Name: "envoy.clusters.dynamic_forward_proxy",
+			TypedConfig: clusterDFPConfig{
+				AtType:         "type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig",
+				DNSCacheConfig: dnsCache,
+			},
+		},
+	}
+}
+
+// buildTCPForwardCluster builds the static or STRICT_DNS cluster for
+// one [config.TCPForward] entry.
+func buildTCPForwardCluster(fwd config.TCPForward) cluster {
+	name := fmt.Sprintf("tcp_forward_%d", fwd.Port)
+
+	clusterType := "STRICT_DNS"
+	if net.ParseIP(fwd.Host) != nil {
+		clusterType = clusterTypeStatic
+	}
+
+	dnsFamily := "V4_ONLY"
+	if clusterType == clusterTypeStatic {
+		dnsFamily = ""
+	}
+
+	return cluster{
+		Name:            name,
+		ConnectTimeout:  "5s",
+		Type:            clusterType,
+		LBPolicy:        lbPolicyRoundRobin,
+		DNSLookupFamily: dnsFamily,
+		LoadAssignment: &loadAssignment{
+			ClusterName: name,
+			Endpoints: []endpoint{{
+				LBEndpoints: []lbEndpoint{{
+					Endpoint: endpointAddress{
+						Address: address{SocketAddress: socketAddress{
+							Address: fwd.Host, PortValue: fwd.Port,
+						}},
+					},
+				}},
+			}},
+		},
+	}
 }
