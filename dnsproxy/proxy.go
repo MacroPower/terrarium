@@ -373,7 +373,7 @@ func Start(
 		go func() {
 			err := s.ActivateAndServe()
 			if err != nil {
-				slog.Debug("dns server exited", slog.Any("err", err))
+				slog.DebugContext(ctx, "dns server exited", slog.Any("err", err))
 			}
 		}()
 	}
@@ -501,6 +501,7 @@ func (p *Proxy) handleQuery(w dns.ResponseWriter, r *dns.Msg, proto string) {
 		// matches Cilium's behavior and avoids triggering
 		// immediate client retries via SERVFAIL.
 		var netErr net.Error
+
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return
 		}

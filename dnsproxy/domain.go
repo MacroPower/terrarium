@@ -2,6 +2,7 @@ package dnsproxy
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -232,8 +233,8 @@ func longestWildcardFreeSuffix(s string) string {
 	labels := strings.Split(s, ".")
 	start := len(labels)
 
-	for i := len(labels) - 1; i >= 0; i-- {
-		if strings.Contains(labels[i], "*") {
+	for i, v := range slices.Backward(labels) {
+		if strings.Contains(v, "*") {
 			break
 		}
 
