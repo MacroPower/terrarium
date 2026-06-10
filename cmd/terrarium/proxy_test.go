@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/envoy"
 )
 
 // parseProxyConfig parses a policy YAML for proxy bootstrap tests.
@@ -26,12 +27,14 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 	tests := map[string]struct {
 		yaml         string
 		certsDir     string
+		caBundlePath string
 		want         []string
 		wantAbsent   []string
 		err          error
 		useResolvers bool
 	}{
 		"fqdn only": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			yaml: "egress:\n" +
 				"  - toFQDNs:\n" +
 				"      - matchName: example.com\n" +
@@ -65,15 +68,32 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 				"          http:\n" +
 				"            - path: /v1/.*\n" +
 				"              method: GET\n",
-			certsDir: "/state/certs",
+			certsDir:     "/state/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"/state/certs/api.example.com/cert.pem",
 				"regex: /v1/.*",
 				"name: mitm_forward_proxy_cluster",
 				"trusted_ca:",
+				"filename: /etc/ssl/bundle.pem",
 			},
 		},
+		"l7 restricted without CA bundle": {
+			yaml: "egress:\n" +
+				"  - toFQDNs:\n" +
+				"      - matchName: api.example.com\n" +
+				"    toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n" +
+				"        rules:\n" +
+				"          http:\n" +
+				"            - path: /v1/.*\n" +
+				"              method: GET\n",
+			certsDir: "/state/certs",
+			err:      envoy.ErrMITMCABundleMissing,
+		},
 		"port 80 rules": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			yaml: "egress:\n" +
 				"  - toFQDNs:\n" +
 				"      - matchName: plain.example.com\n" +
@@ -91,6 +111,7 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 			},
 		},
 		"open port": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			yaml: "egress:\n" +
 				"  - toPorts:\n" +
 				"      - ports:\n" +
@@ -145,6 +166,7 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 			err: ErrDenyRulesUnsupported,
 		},
 		"explicit resolvers": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			yaml: "egress:\n" +
 				"  - toFQDNs:\n" +
 				"      - matchName: example.com\n" +
@@ -172,7 +194,7 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 			}
 
 			out, err := GenerateProxyEnvoyFromConfig(
-				t.Context(), cfg, tt.certsDir, "/etc/ssl/bundle.pem",
+				t.Context(), cfg, tt.certsDir, tt.caBundlePath,
 				"127.0.0.1", 8080, resolvers,
 			)
 

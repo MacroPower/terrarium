@@ -42,13 +42,15 @@ func hasMITMRules(rules []config.ResolvedRule) bool {
 // BuildClusters creates the static cluster definitions for the Envoy
 // bootstrap config. When hasListeners is true, the original destination
 // and dynamic forward proxy clusters are included alongside MITM and
-// TCP forward clusters.
+// TCP forward clusters. When rules contain L7 restrictions, a non-empty
+// caBundlePath is required: without one, [ErrMITMCABundleMissing] is
+// returned.
 func BuildClusters(
 	rules []config.ResolvedRule,
 	tcpForwards []config.TCPForward,
 	hasListeners bool,
 	caBundlePath string,
-) []cluster {
+) ([]cluster, error) {
 	// Static cluster with no endpoints used as the upstream for the
 	// default filter chain on TLS listeners. Connections routed here
 	// are immediately reset (no healthy upstream), which is the desired
@@ -79,19 +81,27 @@ func BuildClusters(
 	}
 
 	if hasMITMRules(rules) {
-		clusters = append(clusters, buildMITMCluster(caBundlePath, sharedDNSCacheConfig))
+		mitm, err := buildMITMCluster(caBundlePath, sharedDNSCacheConfig)
+		if err != nil {
+			return nil, fmt.Errorf("building MITM cluster: %w", err)
+		}
+
+		clusters = append(clusters, mitm)
 	}
 
 	for _, fwd := range tcpForwards {
 		clusters = append(clusters, buildTCPForwardCluster(fwd))
 	}
 
-	return clusters
+	return clusters, nil
 }
 
 // buildMITMCluster builds the dynamic forward proxy cluster MITM
 // filter chains route through. The upstream connection is TLS with
-// SNI derived from the HTTP Host header.
+// SNI derived from the HTTP Host header. caBundlePath must be
+// non-empty; the upstream certificate is always validated against it.
+// When the path is empty, [ErrMITMCABundleMissing] is returned, so the
+// cluster is never emitted without a trust store.
 //
 // Upstream SNI handling: Envoy v1.37+ requires explicit auto_sni and
 // auto_san_validation on DFP clusters that set
@@ -101,16 +111,18 @@ func BuildClusters(
 // upstream_http_protocol_options ensures the upstream TLS handshake
 // uses the correct SNI (derived from the HTTP Host header) and
 // validates the upstream cert SAN against it.
-func buildMITMCluster(caBundlePath string, dnsCache dnsCacheConfig) cluster {
+func buildMITMCluster(caBundlePath string, dnsCache dnsCacheConfig) (cluster, error) {
+	if caBundlePath == "" {
+		return cluster{}, ErrMITMCABundleMissing
+	}
+
 	upstreamTLS := upstreamTlsContext{
 		AtType: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
-	}
-	if caBundlePath != "" {
-		upstreamTLS.CommonTlsContext = &upstreamCommonTlsContext{
+		CommonTlsContext: &upstreamCommonTlsContext{
 			ValidationContext: &validationContext{
 				TrustedCA: dataSource{Filename: caBundlePath},
 			},
-		}
+		},
 	}
 
 	return cluster{
@@ -138,7 +150,7 @@ func buildMITMCluster(caBundlePath string, dnsCache dnsCacheConfig) cluster {
 				AutoConfig: &autoConfig{},
 			},
 		},
-	}
+	}, nil
 }
 
 // buildDFPCluster builds the plain dynamic forward proxy cluster used

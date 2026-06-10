@@ -234,10 +234,14 @@ func GenerateProxyEnvoyFromConfig(
 	front := envoy.BuildProxyListener(params)
 	listeners = append([]envoy.Listener{front}, listeners...)
 
-	allClusters := envoy.BuildProxyClusters(
+	allClusters, err := envoy.BuildProxyClusters(
 		allRules, tlsPorts, len(params.HTTPDomains) > 0,
 		params.Mode == envoy.ProxyModeOpen, caBundlePath, resolvers,
 	)
+	if err != nil {
+		return "", fmt.Errorf("building proxy clusters: %w", err)
+	}
+
 	if als.enabled {
 		allClusters = append(allClusters, envoy.BuildAccessLogCluster(als.socket))
 	}

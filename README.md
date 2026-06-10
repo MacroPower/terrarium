@@ -141,6 +141,18 @@ trust the CA in the keychain, or list those tools in `excludedCommands`.
 Domains without L7 rules are tunneled through `CONNECT` without
 decryption, exactly like SNI-only rules in container mode.
 
+L7 rules also require a system CA trust bundle in the environment where
+`terrarium` itself runs: the proxy re-encrypts inspected traffic
+upstream and verifies the real server's certificate against that
+bundle. Terrarium looks for `SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, and
+the usual system paths (including `/etc/ssl/cert.pem` on macOS), and
+fails closed with an error when none is found. This is a different
+bundle from the sandbox `env` above: the sandboxed _client_ points
+`SSL_CERT_FILE` at the terrarium MITM CA, while terrarium's own
+environment must point at a real system trust bundle. Pointing
+terrarium's own `SSL_CERT_FILE` at the MITM CA would satisfy the
+bundle check but break every upstream handshake.
+
 Proxy mode filters TCP egress only. UDP egress (DNS, QUIC) is not
 proxied and stays blocked by the sandbox. Allow-rule kinds a forward
 proxy cannot enforce -- bare `toCIDR`/`toCIDRSet` ranges, `icmps`, open
@@ -709,6 +721,10 @@ isolated filesystems and need separate configuration:
 - Build into image: copy and run `update-ca-certificates`
 - Non-L7 rules: if rules only use FQDN/CIDR selectors without L7 matchers
   (paths/methods/headers), no MITM occurs and no CA is needed
+
+MITM inspection also requires a system CA bundle on the host, which Envoy
+uses to verify upstream server certificates when it re-encrypts traffic.
+Generation fails closed with an error when none is found.
 
 #### Workload confinement
 

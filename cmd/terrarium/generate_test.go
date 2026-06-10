@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/envoy"
 )
 
 func TestGenerate(t *testing.T) {
@@ -114,10 +115,10 @@ func TestGenerateDeterministicOutput(t *testing.T) {
 	envoyResults := make([]string, iterations)
 
 	for i := range iterations {
-		envoy, err := GenerateEnvoyFromConfig(t.Context(), cfg, "", "", false)
+		conf, err := GenerateEnvoyFromConfig(t.Context(), cfg, "", "", false)
 		require.NoError(t, err)
 
-		envoyResults[i] = envoy
+		envoyResults[i] = conf
 	}
 
 	for i := 1; i < iterations; i++ {
@@ -133,10 +134,12 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		cfg      *config.Config
-		certsDir string
-		want     []string
-		notWant  []string
+		cfg          *config.Config
+		certsDir     string
+		caBundlePath string
+		want         []string
+		notWant      []string
+		err          error
 	}{
 		"basic TLS and HTTP": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
@@ -215,6 +218,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			},
 		},
 		"path restricted domain gets direct response": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{Egress: egressRules(
 				config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -254,7 +258,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 				},
 			)},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"mitm_forward_proxy_cluster",
 				"DownstreamTlsContext",
@@ -271,6 +276,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			},
 		},
 		"no MITM without certsDir": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
 				ToPorts: []config.PortRule{{
@@ -281,6 +287,17 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			certsDir: "",
 			notWant:  []string{"DownstreamTlsContext", "mitm_api.example.com"},
 		},
+		"MITM rules without CA bundle": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+				ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "443"}, {Port: "80"}},
+					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
+				}},
+			})},
+			certsDir: "/etc/terrarium/certs",
+			err:      envoy.ErrMITMCABundleMissing,
+		},
 		"no MITM cluster without path rules": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
@@ -289,6 +306,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			notWant: []string{"mitm_forward_proxy_cluster", "UpstreamTlsContext"},
 		},
 		"method-only restriction": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{Egress: egressRules(
 				config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -312,6 +330,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			},
 		},
 		"paths and methods paired not cross-producted": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
 				ToPorts: []config.PortRule{{
@@ -343,7 +362,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
 				}},
 			})},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"mitm_forward_proxy_cluster",
 				"DownstreamTlsContext",
@@ -362,6 +382,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			notWant: []string{":method"},
 		},
 		"host-only restriction": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
 				ToPorts: []config.PortRule{{
@@ -381,6 +402,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			notWant: []string{":method"},
 		},
 		"host and method combined": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
 				ToPorts: []config.PortRule{{
@@ -398,6 +420,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			},
 		},
 		"no host restriction has no authority header": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 				ToPorts: []config.PortRule{{
@@ -468,7 +491,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					{Port: "443"}, {Port: "80"},
 				}}}},
 			)},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"api.example.com",
 				"tls_passthrough",
@@ -559,7 +583,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					}},
 				},
 			)},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"tls_passthrough",
 				"http_forward",
@@ -579,7 +604,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					Rules: &config.L7Rules{HTTP: []config.HTTPRule{}},
 				}},
 			})},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"api.example.com",
 				"tls_passthrough",
@@ -680,7 +706,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 				}},
 			})},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"tls_passthrough_8080",
 				"mitm_api.example.com",
@@ -786,7 +813,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 				}},
 			})},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"mitm_api.example.com",
 				"normalize_path: true",
@@ -802,7 +830,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Path: "/v1/"}}},
 				}},
 			})},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"mitm_api.example.com",
 				"normalize_path: true",
@@ -832,7 +861,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					}},
 				}},
 			})},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"restricted_api.example.com",
 				"present_match: true",
@@ -852,7 +882,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					}},
 				}},
 			})},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"restricted_api.example.com",
 				"name: X-Token",
@@ -872,7 +903,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 					}},
 				}},
 			})},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"restricted_api.example.com",
 				":method",
@@ -903,6 +935,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			},
 		},
 		"route actions have request timeout": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{Egress: egressRules(
 				config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -982,12 +1015,14 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				},
 				config.EgressRule{ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080"}}}}},
 			)},
-			certsDir: "/etc/terrarium/certs",
+			certsDir:     "/etc/terrarium/certs",
+			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"transport_protocol: tls",
 			},
 		},
 		"clusters have connect timeout": {
+			caBundlePath: "/etc/ssl/bundle.pem",
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -1034,7 +1069,13 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			conf, err := GenerateEnvoyFromConfig(t.Context(), tt.cfg, tt.certsDir, "", false)
+			conf, err := GenerateEnvoyFromConfig(t.Context(), tt.cfg, tt.certsDir, tt.caBundlePath, false)
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+
+				return
+			}
+
 			require.NoError(t, err)
 
 			for _, s := range tt.want {

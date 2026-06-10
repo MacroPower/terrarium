@@ -228,7 +228,11 @@ func GenerateEnvoyFromConfig(
 	// Use global rules for cluster determination.
 	allRules := cfg.ResolveRules(ctx)
 
-	clusters := envoy.BuildClusters(allRules, cfg.TCPForwards, len(listeners) > 0, caBundlePath)
+	clusters, err := envoy.BuildClusters(allRules, cfg.TCPForwards, len(listeners) > 0, caBundlePath)
+	if err != nil {
+		return "", fmt.Errorf("building clusters: %w", err)
+	}
+
 	if als.enabled {
 		clusters = append(clusters, envoy.BuildAccessLogCluster(als.socket))
 	}
@@ -251,7 +255,7 @@ func GenerateEnvoyFromConfig(
 
 	var buf bytes.Buffer
 
-	err := niceyaml.NewEncoder(&buf).Encode(bs)
+	err = niceyaml.NewEncoder(&buf).Encode(bs)
 	if err != nil {
 		return "", fmt.Errorf("marshaling envoy config: %w", err)
 	}

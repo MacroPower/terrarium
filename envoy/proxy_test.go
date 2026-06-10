@@ -237,9 +237,10 @@ func TestBuildProxyClusters(t *testing.T) {
 		}},
 	}
 
-	clusters := envoy.BuildProxyClusters(
+	clusters, err := envoy.BuildProxyClusters(
 		rules, []int{443, 8443}, true, false, "/etc/ssl/bundle.pem", nil,
 	)
+	require.NoError(t, err)
 
 	y := marshalYAML(t, clusters)
 
@@ -265,20 +266,36 @@ func TestBuildProxyClusters(t *testing.T) {
 func TestBuildProxyClusters_Blocked(t *testing.T) {
 	t.Parallel()
 
-	clusters := envoy.BuildProxyClusters(nil, nil, false, false, "", nil)
+	clusters, err := envoy.BuildProxyClusters(nil, nil, false, false, "", nil)
+	require.NoError(t, err)
 	assert.Empty(t, clusters, "blocked mode needs no clusters")
 }
 
 func TestBuildProxyClusters_Open(t *testing.T) {
 	t.Parallel()
 
-	clusters := envoy.BuildProxyClusters(nil, nil, false, true, "", nil)
+	clusters, err := envoy.BuildProxyClusters(nil, nil, false, true, "", nil)
+	require.NoError(t, err)
 
 	y := marshalYAML(t, clusters)
 
 	assert.Contains(t, y, "name: dynamic_forward_proxy_cluster")
 	assert.NotContains(t, y, "missing_sni_blackhole")
 	assert.NotContains(t, y, "mitm_forward_proxy_cluster")
+}
+
+func TestBuildProxyClusters_MITMWithoutCABundle(t *testing.T) {
+	t.Parallel()
+
+	rules := []config.ResolvedRule{
+		{Domain: "restricted.example.com", HTTPRules: []config.ResolvedHTTPRule{
+			{Method: "GET"},
+		}},
+	}
+
+	clusters, err := envoy.BuildProxyClusters(rules, []int{443}, false, false, "", nil)
+	require.ErrorIs(t, err, envoy.ErrMITMCABundleMissing)
+	assert.Nil(t, clusters)
 }
 
 func TestInternalListenerBootstrapExtension(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 
 // FindCABundle returns the path to the system CA certificate bundle.
 // Checks SSL_CERT_FILE and NIX_SSL_CERT_FILE env vars first, then
-// well-known filesystem paths.
+// well-known filesystem paths covering Linux and macOS/BSD.
 func FindCABundle() string {
 	candidates := []string{
 		os.Getenv("SSL_CERT_FILE"),
@@ -16,6 +16,7 @@ func FindCABundle() string {
 		"/etc/ssl/certs/ca-certificates.crt",
 		"/etc/ssl/certs/ca-bundle.crt",
 		"/etc/pki/tls/certs/ca-bundle.crt",
+		"/etc/ssl/cert.pem",
 	}
 	for _, c := range candidates {
 		if c == "" {

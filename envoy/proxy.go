@@ -391,14 +391,15 @@ func BuildInternalHTTPListener(
 // enforcement listeners need, plus dynamic forward proxy clusters
 // using the system resolver (or explicit resolvers). caBundlePath
 // supplies upstream trust for the MITM cluster's re-encrypted
-// connections.
+// connections; when rules contain L7 restrictions it must be
+// non-empty, otherwise [ErrMITMCABundleMissing] is returned.
 func BuildProxyClusters(
 	rules []config.ResolvedRule,
 	tlsPorts []int,
 	httpInternal, open bool,
 	caBundlePath string,
 	resolvers []netip.AddrPort,
-) []cluster {
+) ([]cluster, error) {
 	dnsCache := systemDNSCacheConfig(resolvers)
 
 	var clusters []cluster
@@ -419,7 +420,12 @@ func BuildProxyClusters(
 	}
 
 	if hasMITMRules(rules) {
-		clusters = append(clusters, buildMITMCluster(caBundlePath, dnsCache))
+		mitm, err := buildMITMCluster(caBundlePath, dnsCache)
+		if err != nil {
+			return nil, fmt.Errorf("building MITM cluster: %w", err)
+		}
+
+		clusters = append(clusters, mitm)
 	}
 
 	for _, p := range tlsPorts {
@@ -430,7 +436,7 @@ func BuildProxyClusters(
 		clusters = append(clusters, buildInternalListenerCluster(internalHTTPName))
 	}
 
-	return clusters
+	return clusters, nil
 }
 
 // buildInternalListenerCluster creates a static cluster whose single
