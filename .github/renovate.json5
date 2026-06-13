@@ -1,0 +1,32 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    ":disableRateLimiting",
+    ":separateMajorReleases",
+    ":semanticCommits",
+    ":automergeMinor",
+  ],
+  ignorePaths: [
+    "**/testdata/**",
+  ],
+  postUpdateOptions: [
+    "gomodTidy",
+    "gomodUpdateImportPaths",
+  ],
+  customManagers: [
+    // Tool and image versions pinned as Go constants in the Dagger
+    // toolchain modules, annotated with `// renovate:` comments, e.g.:
+    //   goreleaserVersion = "v2.13.3" // renovate: datasource=github-releases depName=goreleaser/goreleaser
+    //   envoyVersion = "v1.37.1" // renovate: datasource=github-releases depName=envoyproxy/envoy
+    // For image references, the version is the tag after the last colon.
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^toolchains/.+\\.go$/"],
+      matchStrings: [
+        '"(?:[^"]*:)?(?<currentValue>[^":]+)"\\s*// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)',
+      ],
+      versioningTemplate: "{{#if (equals datasource 'docker')}}docker{{else}}semver-coerced{{/if}}",
+    },
+  ],
+}

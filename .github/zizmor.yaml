@@ -7,3 +7,4 @@ rules:
       - validate.yaml
       - release.yaml
       - build.yaml
+      - renovate.yaml
