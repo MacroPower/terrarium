@@ -1,0 +1,54 @@
+extends:
+  - "@commitlint/config-conventional"
+
+rules:
+  type-enum:
+    - 2
+    - always
+    - - build
+      - chore
+      - ci
+      - docs
+      - feat
+      - fix
+      - perf
+      - refactor
+      - revert
+      - reapply
+      - style
+      - test
+  scope-enum:
+    - 2
+    - always
+    - - accesslog
+      - certs
+      - ci
+      - cli
+      - config
+      - deps
+      - dev
+      - dnscache
+      - dnsproxy
+      - dnstest
+      - envoy
+      - eventstore
+      - firewall
+      - internal
+      - jail
+      - lima
+      - nflog
+      - privdrop
+      - status
+      - sysctl
+      - tasks
+      - testrunner
+      - testrunner-lima
+      - toolchains
+  header-max-length:
+    - 2
+    - always
+    - 89
+  body-max-line-length:
+    - 2
+    - always
+    - 72
