@@ -30,7 +30,6 @@ formatters:
         - pattern: "interface{}"
           replacement: "any"
     gofumpt:
-      module-path: dagger/dev
       extra-rules: true
     golines:
       reformat-tags: false
@@ -60,6 +59,7 @@ linters:
     - goconst
     - gocritic
     - godoclint
+    - godot
     - goprintffuncname
     - gosec
     - gosmopolitan
@@ -112,6 +112,8 @@ linters:
     - wsl_v5
 
   settings:
+    # Terrarium is a system tool doing privileged network and syscall
+    # work, so several file-permission and path gosec rules do not fit.
     gosec:
       excludes:
         - G122 # Lchown permissions
@@ -166,6 +168,13 @@ linters:
         - level
         - msg
 
+    modernize:
+      # The newexpr analyzer panics on the config test package
+      # (index out of range in golang.org/x/tools modernize/newexpr).
+      # https://github.com/golang/go/issues/73937
+      disable:
+        - newexpr
+
     gocritic:
       enable-all: true
       disabled-checks:
@@ -173,13 +182,9 @@ linters:
         - singleCaseSwitch
       settings:
         hugeParam:
+          # Envoy and config model structs pass by value; 256 is too
+          # aggressive here.
           sizeThreshold: 1024
-
-    modernize:
-      # newexpr analyzer panics in golang.org/x/tools@v0.42.0
-      # https://github.com/golang/go/issues/73937
-      disable:
-        - newexpr
 
     godoclint:
       default: all
@@ -187,7 +192,7 @@ linters:
         - require-pkg-doc
       options:
         max-len:
-          length: 80
+          length: 88
 
     godot:
       scope: noinline
@@ -197,6 +202,12 @@ linters:
     errcheck:
       check-type-assertions: true
       check-blank: true
+      exclude-functions:
+        - io/ioutil.ReadFile
+        - io.Copy(*bytes.Buffer)
+        - io.Copy(os.Stdout)
+        - os.Remove
+        - os.RemoveAll
 
     grouper:
       import-require-single-import: true
@@ -213,10 +224,13 @@ linters:
 
   exclusions:
     rules:
+      # godot is excluded in tests (matching kclipper): test tables
+      # carry many informal policy/config comments.
       - path: _test\.go
         linters:
           - dupl
           - goconst
+          - godot
           - gosec
           - gosmopolitan
           - godoclint
