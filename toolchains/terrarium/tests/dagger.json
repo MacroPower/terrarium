@@ -8,7 +8,7 @@
     {
       "name": "go",
       "source": "github.com/MacroPower/x/toolchains/go@main",
-      "pin": "2ed06b2b3c6908b794d405b0833b4242bd46918a"
+      "pin": "8660ae3bdb29a92728d6b9f4cc03776af38bad62"
     },
     {
       "name": "terrarium",
