@@ -16,7 +16,7 @@ require (
 	go.jacobcolvin.com/niceyaml v0.0.0-20260221203657-9862fde753d7
 	go.jacobcolvin.com/x v0.0.0-20260219184143-22313fb1414d
 	golang.org/x/sys v0.42.0
-	google.golang.org/grpc v1.81.0
+	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.50.0
 )
