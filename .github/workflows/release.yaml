@@ -21,7 +21,7 @@ jobs:
       attestations: write
     steps:
       - name: Generate Token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: "${{ secrets.BOT_APP_ID }}"
@@ -78,11 +78,11 @@ jobs:
           REGISTRY_PASSWORD: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: Attest Build Provenance (checksums.txt)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-checksums: ./dist/checksums.txt
 
       - name: Attest Build Provenance (digests.txt)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-checksums: ./dist/digests.txt
