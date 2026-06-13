@@ -1,0 +1,12 @@
+version: "3"
+
+set: [errexit, nounset, pipefail]
+shopt: [globstar]
+
+tasks:
+  # Unlike x, terrarium has no lint-renovate function; gh:lint covers
+  # workflow linting only.
+  lint:
+    desc: Lints GitHub configuration via Dagger
+    cmds:
+      - dagger check terrarium-ci:lint-actions

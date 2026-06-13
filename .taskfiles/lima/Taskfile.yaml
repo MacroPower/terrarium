@@ -1,0 +1,92 @@
+version: "3"
+
+set: [errexit, nounset, pipefail]
+shopt: [globstar]
+
+tasks:
+  lock:
+    desc: Updates the Lima flake lock file (run on the host)
+    cmds:
+      - nix flake update --flake {{.ROOT_DIR}}/lima
+
+  image:
+    desc: Builds the golden qcow2 image (requires a Linux Nix builder)
+    vars:
+      NIX_SYSTEM:
+        sh: "uname -m | sed 's/arm64/aarch64/' | sed 's/$/-linux/'"
+    sources:
+      - lima/flake.nix
+      - lima/flake.lock
+      - lima/configuration.nix
+    generates:
+      - lima/terrarium.qcow2
+    cmds:
+      - nix build {{.ROOT_DIR}}/lima#packages.{{.NIX_SYSTEM}}.image --no-update-lock-file --always-allow-substitutes --out-link {{.ROOT_DIR}}/lima/result
+      - cp -f {{.ROOT_DIR}}/lima/result/*.qcow2 {{.ROOT_DIR}}/lima/terrarium.qcow2
+      - rm -f {{.ROOT_DIR}}/lima/result
+
+  create:
+    desc: Creates and starts the Terrarium Lima VM
+    deps: [image]
+    status:
+      - limactl list --json | jq -es 'map(select(.name == "terrarium")) | length > 0'
+    vars:
+      LIMA_IMAGE: "{{.ROOT_DIR}}/lima/terrarium.qcow2"
+      LIMA_ARCH:
+        sh: "uname -m | sed 's/arm64/aarch64/'"
+    cmds:
+      - >-
+        limactl create --name=terrarium --tty=false
+        --set '.images = [{"location": "file://{{.LIMA_IMAGE}}", "arch": "{{.LIMA_ARCH}}"}]'
+        lima/terrarium.yaml
+      - limactl start terrarium
+
+  rebuild:
+    desc: Rebuilds the Lima VM with the current NixOS configuration
+    deps: [create]
+    cmds:
+      # Stop terrarium and flush nftables so nixos-rebuild can reach
+      # the binary cache. Flushing the terrarium nftables table removes
+      # the filter OUTPUT policy that blocks root HTTPS.
+      - |
+        limactl shell terrarium -- sudo sh -c '
+          systemctl stop terrarium 2>/dev/null
+          nft flush table inet terrarium 2>/dev/null
+          nft "add chain inet terrarium output { type filter hook output priority 0; policy accept; }"
+          nft "add chain inet terrarium input { type filter hook input priority 0; policy accept; }"
+          nft flush table inet terrarium-guard 2>/dev/null
+          nft "add chain inet terrarium-guard output { type filter hook output priority 10; policy accept; }"
+          rm -f /var/lib/terrarium/config.yaml
+          systemctl restart dnsmasq
+        '
+      - limactl shell terrarium -- sudo rm -rf /tmp/lima-source
+      - limactl shell terrarium -- sudo mkdir -p /tmp/lima-source
+      - git archive HEAD | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
+      - git diff --name-only HEAD | tar cf - -T - | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
+      - git ls-files --others --exclude-standard | tar cf - -T - | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
+      - limactl shell terrarium -- sudo nixos-rebuild switch --no-update-lock-file --override-input source path:/tmp/lima-source --flake "/tmp/lima-source/lima#terrarium-$(limactl shell terrarium -- uname -m)"
+
+  logs:
+    desc: Tails provisioning logs from the Lima VM (run alongside lima:create)
+    cmds:
+      - |
+        until limactl shell terrarium -- true 2>/dev/null; do sleep 2; done
+        limactl shell terrarium -- journalctl -f -u lima-init --output=cat
+
+  test:
+    desc: Runs Lima VM e2e tests
+    deps: [rebuild]
+    cmds:
+      - go test -v -count=1 -timeout=30m ./cmd/testrunner-lima
+
+  test:single:
+    desc: Runs a single Lima VM e2e test by name
+    deps: [rebuild]
+    cmds:
+      - go test -v -count=1 -timeout=30m -run TestVM/{{.TEST}} ./cmd/testrunner-lima
+
+  destroy:
+    desc: Stops and deletes the Terrarium Lima VM
+    cmds:
+      - limactl stop terrarium || true
+      - limactl delete terrarium

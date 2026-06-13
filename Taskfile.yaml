@@ -1,87 +1,74 @@
 version: "3"
 
+set: [errexit, nounset, pipefail]
+shopt: [globstar]
+
+# The .taskfiles/ segmentation is intentional, even where a namespace holds
+# only thin Dagger wrappers — do not flatten it into this file.
+includes:
+  dagger: ./.taskfiles/dagger/Taskfile.yaml
+  dev: ./.taskfiles/dev/Taskfile.yaml
+  fmt: ./.taskfiles/fmt/Taskfile.yaml
+  gh: ./.taskfiles/gh/Taskfile.yaml
+  git: ./.taskfiles/git/Taskfile.yaml
+  go: ./.taskfiles/go/Taskfile.yaml
+  lima: ./.taskfiles/lima/Taskfile.yaml
+
 tasks:
   default:
-    cmds:
-      - task: format
-      - task: lint
-      - task: test
-      - task: build
+    cmd: task -l
 
   format:
-    desc: Formats and generates code via Dagger
+    desc: Formats, tidies, and generates code via Dagger
+    summary: |
+      Runs every registered Dagger generator and applies the changes.
+      Supersedes go:format, which remains for selective runs.
     cmds:
       - dagger generate --auto-apply
 
   lint:
-    desc: Runs all lint checks via Dagger
-    cmds:
-      - dagger check go:lint terrarium-ci:lint-prettier terrarium-ci:lint-actions terrarium-ci:lint-releaser
+    desc: Runs all lint targets
+    deps: [go:lint, gh:lint, fmt:lint, releaser:lint]
 
-  lint:go:
-    desc: Lints Go code via Dagger
-    cmds:
-      - dagger check go:lint
-
-  lint:prettier:
-    desc: Checks formatting of YAML, JSON, and Markdown via Dagger
-    cmds:
-      - dagger check terrarium-ci:lint-prettier
-
-  lint:actions:
-    desc: Lints GitHub Actions workflows via Dagger
-    cmds:
-      - dagger check terrarium-ci:lint-actions
-
-  lint:releaser:
-    desc: Validates GoReleaser configuration via Dagger
+  releaser:lint:
+    desc: Validates the GoReleaser configuration via Dagger
     cmds:
       - dagger check terrarium-ci:lint-releaser
 
-  lint:deadcode:
-    desc: Reports unreachable functions via Dagger
-    cmds:
-      - dagger call terrarium-ci lint-deadcode
-
   test:
-    desc: Runs Go tests via Dagger
-    cmds:
-      - dagger check terrarium-ci:test-unit
-
-  test:integration:
-    desc: Runs CI module integration tests via Dagger
-    cmds:
-      - dagger check -m toolchains/terrarium/tests
+    desc: Runs all test targets
+    deps: [go:test]
 
   build:
     desc: Builds all binaries via Dagger
     cmds:
       - dagger call terrarium-ci build --output=./dist
 
-  cover:
-    desc: Runs Go tests with coverage via Dagger
-    cmds:
-      - dagger call go test-coverage --output=coverage.txt
-
   check:
     desc: Runs all checks via Dagger
     cmds:
       - dagger check
 
-  scan:image:
-    desc: Scans a container image for vulnerabilities via Dagger
+  scan:
+    desc: Scans source dependencies for vulnerabilities via Dagger
     cmds:
-      - dagger call security scan-image --target=...
+      - dagger call security scan-source
 
-  benchmark:
-    desc: Measures pipeline stage timings via Dagger
+  pre-commit:
+    desc: Runs all pre-commit targets
     cmds:
-      - dagger call terrarium-ci benchmark-summary
+      - task: format
+      - task: lint
+      - task: test
 
-  benchmark:parallel:
-    desc: Measures full-pipeline wall-clock time via Dagger (parallel)
+  install:
+    desc: Runs all install targets
+    deps: [dev:install, git:hooks:install]
+
+  clean:
+    desc: Removes build artifacts and caches
     cmds:
-      - dagger call terrarium-ci benchmark-summary --parallel
+      - rm -rf dist/ .test/ .task/ .tmp/
 
   release:
     desc: Runs full release via Dagger
@@ -95,95 +82,3 @@ tasks:
         --registry-password=env://REGISTRY_PASSWORD
         --tag={{.TAG}}
         --output=./dist
-
-  lima:lock:
-    desc: Updates the Lima flake lock file (run on the host)
-    cmds:
-      - nix flake update --flake {{.ROOT_DIR}}/lima
-
-  lima:image:
-    desc: Builds the golden qcow2 image (requires a Linux Nix builder)
-    vars:
-      NIX_SYSTEM:
-        sh: "uname -m | sed 's/arm64/aarch64/' | sed 's/$/-linux/'"
-    sources:
-      - lima/flake.nix
-      - lima/flake.lock
-      - lima/configuration.nix
-    generates:
-      - lima/terrarium.qcow2
-    cmds:
-      - nix build {{.ROOT_DIR}}/lima#packages.{{.NIX_SYSTEM}}.image --no-update-lock-file --always-allow-substitutes --out-link {{.ROOT_DIR}}/lima/result
-      - cp -f {{.ROOT_DIR}}/lima/result/*.qcow2 {{.ROOT_DIR}}/lima/terrarium.qcow2
-      - rm -f {{.ROOT_DIR}}/lima/result
-
-  lima:create:
-    desc: Creates and starts the Terrarium Lima VM
-    deps: [lima:image]
-    status:
-      - limactl list --json | jq -es 'map(select(.name == "terrarium")) | length > 0'
-    vars:
-      LIMA_IMAGE: "{{.ROOT_DIR}}/lima/terrarium.qcow2"
-      LIMA_ARCH:
-        sh: "uname -m | sed 's/arm64/aarch64/'"
-    cmds:
-      - >-
-        limactl create --name=terrarium --tty=false
-        --set '.images = [{"location": "file://{{.LIMA_IMAGE}}", "arch": "{{.LIMA_ARCH}}"}]'
-        lima/terrarium.yaml
-      - limactl start terrarium
-
-  lima:rebuild:
-    desc: Rebuilds the Lima VM with the current NixOS configuration
-    deps: [lima:create]
-    cmds:
-      # Stop terrarium and flush nftables so nixos-rebuild can reach
-      # the binary cache. Flushing the terrarium nftables table removes
-      # the filter OUTPUT policy that blocks root HTTPS.
-      - |
-        limactl shell terrarium -- sudo sh -c '
-          systemctl stop terrarium 2>/dev/null
-          nft flush table inet terrarium 2>/dev/null
-          nft "add chain inet terrarium output { type filter hook output priority 0; policy accept; }"
-          nft "add chain inet terrarium input { type filter hook input priority 0; policy accept; }"
-          nft flush table inet terrarium-guard 2>/dev/null
-          nft "add chain inet terrarium-guard output { type filter hook output priority 10; policy accept; }"
-          rm -f /var/lib/terrarium/config.yaml
-          systemctl restart dnsmasq
-        '
-      - limactl shell terrarium -- sudo rm -rf /tmp/lima-source
-      - limactl shell terrarium -- sudo mkdir -p /tmp/lima-source
-      - git archive HEAD | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
-      - git diff --name-only HEAD | tar cf - -T - | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
-      - git ls-files --others --exclude-standard | tar cf - -T - | limactl shell terrarium -- sudo tar xf - -C /tmp/lima-source
-      - limactl shell terrarium -- sudo nixos-rebuild switch --no-update-lock-file --override-input source path:/tmp/lima-source --flake "/tmp/lima-source/lima#terrarium-$(limactl shell terrarium -- uname -m)"
-
-  lima:logs:
-    desc: Tails provisioning logs from the Lima VM (run alongside lima:create)
-    cmds:
-      - |
-        until limactl shell terrarium -- true 2>/dev/null; do sleep 2; done
-        limactl shell terrarium -- journalctl -f -u lima-init --output=cat
-
-  lima:test:
-    desc: Runs Lima VM e2e tests
-    deps: [lima:rebuild]
-    cmds:
-      - go test -v -count=1 -timeout=30m ./cmd/testrunner-lima
-
-  lima:test:single:
-    desc: Runs a single Lima VM e2e test by name
-    deps: [lima:rebuild]
-    cmds:
-      - go test -v -count=1 -timeout=30m -run TestVM/{{.TEST}} ./cmd/testrunner-lima
-
-  lima:destroy:
-    desc: Stops and deletes the Terrarium Lima VM
-    cmds:
-      - limactl stop terrarium || true
-      - limactl delete terrarium
-
-  install-hooks:
-    desc: Install git hooks
-    cmds:
-      - lefthook install

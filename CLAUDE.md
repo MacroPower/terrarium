@@ -11,9 +11,10 @@ It is designed to closely align with CiliumNetworkPolicy semantics.
 ## Build & Test Commands
 
 ```bash
-task format # Format and lint
-task lint   # Lint only
-task test   # Run all tests
+task format # Format, tidy, and generate (dagger generate --auto-apply)
+task lint   # Lint only (go, GitHub, prettier, and GoReleaser checks)
+task test   # Run all tests (dagger check terrarium-ci:test-unit)
+task check  # Everything CI runs (dagger check)
 ```
 
 ## Architecture
