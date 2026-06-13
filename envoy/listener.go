@@ -9,20 +9,20 @@ import (
 )
 
 const (
-	// loopbackAddr is the default listener bind address for
-	// container mode (non-transparent) listeners.
+	// The default listener bind address for container mode
+	// (non-transparent) listeners.
 	loopbackAddr = "127.0.0.1"
 
-	// ipv4AnyAddr is the wildcard IPv4 address for VM mode
-	// transparent listeners. TPROXY requires AF_INET sockets
+	// The wildcard IPv4 address for VM mode transparent
+	// listeners. TPROXY requires AF_INET sockets
 	// because the kernel's nf_tproxy_get_sock_v4 only searches
 	// the IPv4 socket hash; dual-stack AF_INET6 sockets are
 	// invisible to it.
 	ipv4AnyAddr = "0.0.0.0"
 
-	// ipv6AnyAddr is the wildcard IPv6 address, used as an
-	// additional bind address alongside [ipv4AnyAddr] for
-	// transparent listeners so IPv6 TPROXY can find the socket.
+	// The wildcard IPv6 address, used as an additional bind address
+	// alongside [ipv4AnyAddr] for transparent listeners so IPv6
+	// TPROXY can find the socket.
 	ipv6AnyAddr = "::"
 )
 
@@ -66,8 +66,9 @@ func listenAdditionalAddrs(transparent bool, port int) []additionalAddr {
 // transparent is true, the listener binds to [::] (dual-stack) with
 // IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
 //
-// tcpAL is the access log slice for the TCP-level chains (passthrough
-// and wildcard passthrough); httpAL is the access log slice for the
+// The tcpAL is the access log slice for the TCP-level chains
+// (passthrough and wildcard passthrough); httpAL is the access log
+// slice for the
 // HCM-based MITM chain. Pass distinct slices when stats is enabled
 // so receivers can tell passthrough events from MITM events.
 func BuildTLSListener(

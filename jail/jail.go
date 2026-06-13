@@ -42,12 +42,12 @@ type Options struct {
 // of touching the real /proc and /sys trees. Unexported because the
 // public [Exec] wraps it.
 type config struct {
-	// write is the function used to write the arming command to the
-	// exec attr. Tests override it to simulate short writes.
+	// The function used to write the arming command to the exec
+	// attr. Tests override it to simulate short writes.
 	write func(fd int, p []byte) (int, error)
 
-	// execve is called to replace the current process. Tests override
-	// it to observe the call without replacing the process; production
+	// Called to replace the current process. Tests override it to
+	// observe the call without replacing the process; production
 	// uses [unix.Exec].
 	execve func(path string, argv, envv []string) error
 
@@ -110,7 +110,7 @@ func exec(cfg *config, opts Options, argv []string) error {
 	}
 
 	err = cfg.execve(bin, argv, unix.Environ())
-	// execve only returns on error; the armed transition is discarded
-	// by the kernel automatically.
+	// The execve call only returns on error; the armed transition
+	// is discarded by the kernel automatically.
 	return fmt.Errorf("execve %s: %w", bin, err)
 }

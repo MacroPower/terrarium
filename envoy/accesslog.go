@@ -12,7 +12,7 @@ import (
 const AccessLogClusterName = "terrarium_accesslog"
 
 // commonGrpcConfig builds the shared CommonGrpcAccessLogConfig used by
-// the HTTP and TCP gRPC access loggers. logName identifies the
+// the HTTP and TCP gRPC access loggers. The logName identifies the
 // listener; bufBytes and flushMs control client-side buffering before
 // the gRPC stream flushes.
 func commonGrpcConfig(logName string, bufBytes, flushMs uint32) commonGrpcAccessLogConfig {

@@ -161,9 +161,9 @@ func Start(ctx context.Context, socket string, store *eventstore.Store, opts ...
 	return s, nil
 }
 
-// Shutdown gracefully stops the gRPC server. ctx caps how long to
-// wait before forcing a stop. The socket file is removed so a later
-// [Start] does not see a stale entry.
+// Shutdown gracefully stops the gRPC server. The ctx deadline caps
+// how long to wait before forcing a stop. The socket file is removed
+// so a later [Start] does not see a stale entry.
 func (s *Server) Shutdown(ctx context.Context) {
 	if s == nil {
 		return

@@ -253,7 +253,7 @@ type pipeAddress struct {
 }
 
 // explicitHTTPConfig wraps the HTTP/2 options used by the gRPC ALS
-// cluster. gRPC requires HTTP/2.
+// cluster, since gRPC requires HTTP/2.
 type explicitHTTPConfig struct {
 	HTTP2Options *http2Options `yaml:"http2_protocol_options,omitempty"`
 }
@@ -489,8 +489,8 @@ type httpProtocolOptions struct {
 }
 
 // upstreamHTTPProtocolOptions models Envoy's UpstreamHttpProtocolOptions.
-// auto_sni sets the upstream TLS SNI from the Host header; auto_san_validation
-// validates the upstream cert SAN against the SNI.
+// The auto_sni option sets the upstream TLS SNI from the Host header;
+// auto_san_validation validates the upstream cert SAN against the SNI.
 type upstreamHTTPProtocolOptions struct {
 	AutoSNI           bool `yaml:"auto_sni"`
 	AutoSANValidation bool `yaml:"auto_san_validation"`

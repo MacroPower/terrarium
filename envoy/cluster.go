@@ -98,7 +98,7 @@ func BuildClusters(
 
 // buildMITMCluster builds the dynamic forward proxy cluster MITM
 // filter chains route through. The upstream connection is TLS with
-// SNI derived from the HTTP Host header. caBundlePath must be
+// SNI derived from the HTTP Host header. The caBundlePath must be
 // non-empty; the upstream certificate is always validated against it.
 // When the path is empty, [ErrMITMCABundleMissing] is returned, so the
 // cluster is never emitted without a trust store.

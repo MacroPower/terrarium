@@ -103,7 +103,7 @@ func (f *statsFlags) register(cmd *cobra.Command) {
 }
 
 // resolved bundles the parsed/validated form of [statsFlags] used by
-// every handler. resolveFlags pulls everything that must succeed
+// every handler. [resolveFlags] pulls everything that must succeed
 // before opening the DB into one place.
 type resolvedFlags struct {
 	since  time.Time

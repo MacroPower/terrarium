@@ -44,7 +44,7 @@ type Cache struct {
 	lru     *list.List
 	stopCh  chan struct{}
 
-	// evictions counts qname-level FIFO evictions (per-IP cap) plus
+	// Counts qname-level FIFO evictions (per-IP cap) plus
 	// IP-level LRU evictions (global cap). Read through
 	// [Cache.Evictions] for cross-goroutine access.
 	evictions atomic.Uint64
@@ -130,7 +130,7 @@ func New(opts ...Option) *Cache {
 }
 
 // Add records that ip resolved to qname, valid for ttl + grace.
-// Empty qname is a no-op. ip is normalized via [netip.Addr.Unmap]
+// Empty qname is a no-op. The ip is normalized via [netip.Addr.Unmap]
 // so 4-byte v4 and v4-mapped-v6 keys collapse to the same canonical
 // form. Adding bumps the LRU. If the per-IP slice is full, the
 // oldest qname for that IP is FIFO-evicted. If the global cap is
@@ -189,8 +189,8 @@ func (c *Cache) Add(ip netip.Addr, qname string, ttl time.Duration) {
 }
 
 // Lookup returns the most-recently-resolved non-expired qname for
-// ip. ip is [netip.Addr.Unmap]-normalized to match the storage key.
-// Bumps the entry's LRU position. Returns ok=false on cold or
+// ip. The ip is [netip.Addr.Unmap]-normalized to match the storage
+// key. Bumps the entry's LRU position. Returns ok=false on cold or
 // fully-expired entries and on a closed [*Cache].
 func (c *Cache) Lookup(ip netip.Addr) (string, bool) {
 	key := ip.Unmap()

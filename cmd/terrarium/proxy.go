@@ -102,8 +102,9 @@ func proxyBootstrapPath(usr *config.User) string {
 // and optionally copies the CA PEM to caOut. It returns the parsed
 // config and the bootstrap path.
 //
-// caOut is honored only when the policy has L7 rules requiring MITM;
-// an FQDN-only policy generates no CA, so there is nothing to export.
+// The caOut path is honored only when the policy has L7 rules
+// requiring MITM; an FQDN-only policy generates no CA, so there is
+// nothing to export.
 func GenerateProxy(
 	ctx context.Context, usr *config.User, opts proxyOptions,
 ) (*config.Config, string, error) {
@@ -283,8 +284,9 @@ func GenerateProxyEnvoyFromConfig(
 
 // assembleFilteredProxy builds the internal enforcement listeners for
 // filtered mode and fills params with the front listener's CONNECT
-// authority allowlists. openTCP holds the single TCP ports from
-// toPorts-only rules. It returns the internal listeners, the union of
+// authority allowlists. The openTCP argument holds the single TCP
+// ports from toPorts-only rules. It returns the internal listeners,
+// the union of
 // resolved rules they enforce (for cluster determination), and the
 // sorted TLS policy ports.
 func assembleFilteredProxy(
@@ -382,8 +384,8 @@ func proxyVhostDomains(rules []config.ResolvedRule, open bool) []string {
 // checkProxyPolicy rejects deny rules (fail-closed) and warns about
 // allow rule kinds a forward proxy cannot enforce. Skipping an allow
 // rule only narrows the policy; skipping a deny rule would widen it,
-// so deny rules are an error. openPortRules is the already-resolved
-// toPorts-only rule set.
+// so deny rules are an error. The openPortRules argument is the
+// already-resolved toPorts-only rule set.
 func checkProxyPolicy(ctx context.Context, cfg *config.Config, openPortRules []config.ResolvedOpenPort) error {
 	denyV4, denyV6 := cfg.ResolveDenyCIDRRules(ctx)
 	if len(denyV4) > 0 || len(denyV6) > 0 ||

@@ -79,8 +79,8 @@ type infra struct {
 	nflogCancel   context.CancelFunc
 	heartbeatStop context.CancelFunc
 
-	// boundStats records the stats config the [eventstore.Store]
-	// and [accesslog.Server] were bound to at process start. Reload
+	// The stats config the [eventstore.Store] and [accesslog.Server]
+	// were bound to at process start. Reload
 	// diffs against it and warns on path/socket/enabled changes,
 	// which require a process restart.
 	boundStats boundStats
@@ -88,13 +88,14 @@ type infra struct {
 	drainTimeout time.Duration
 }
 
-// boundStats holds the startup-only fields of the stats config. path
-// and socket name the on-disk database and gRPC ALS UDS, which a
-// running process cannot rebind; enabled gates both. Buffer sizing is
-// omitted because reload always restarts Envoy.
+// boundStats holds the startup-only fields of the stats config. The
+// path and socket fields name the on-disk database and gRPC ALS UDS,
+// which a running process cannot rebind; enabled gates both. Buffer
+// sizing is omitted because reload always restarts Envoy.
 //
-// nflogGroup is captured from [config.Config.StatsFirewallNFLogGroup]
-// at bind time. A running reader cannot rebind the netlink socket
+// The nflogGroup field is captured from
+// [config.Config.StatsFirewallNFLogGroup] at bind time. A running
+// reader cannot rebind the netlink socket
 // without dropping events, so reload rejects the new config when this
 // changes.
 type boundStats struct {

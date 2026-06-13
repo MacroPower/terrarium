@@ -389,7 +389,7 @@ func BuildInternalHTTPListener(
 // BuildProxyClusters creates the cluster set for a proxy-mode
 // bootstrap: the blackhole and internal-listener clusters the
 // enforcement listeners need, plus dynamic forward proxy clusters
-// using the system resolver (or explicit resolvers). caBundlePath
+// using the system resolver (or explicit resolvers). The caBundlePath
 // supplies upstream trust for the MITM cluster's re-encrypted
 // connections; when rules contain L7 restrictions it must be
 // non-empty, otherwise [ErrMITMCABundleMissing] is returned.

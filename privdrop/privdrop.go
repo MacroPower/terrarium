@@ -228,6 +228,6 @@ func execvp(argv []string) error {
 	}
 
 	err = unix.Exec(bin, argv, unix.Environ())
-	// unix.Exec only returns on error.
+	// [unix.Exec] only returns on error.
 	return fmt.Errorf("execve %s: %w", bin, err)
 }

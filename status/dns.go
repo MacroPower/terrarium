@@ -60,7 +60,7 @@ func dnsListenAddrs() []string {
 }
 
 // ipv6Disabled parses /proc/sys/net/ipv6/conf/all/disable_ipv6. Any
-// error reading the file is swallowed and treated as "IPv6 enabled."
+// error reading the file is swallowed and treated as "IPv6 enabled".
 func ipv6Disabled() bool {
 	data, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
 	if err != nil {
@@ -80,8 +80,8 @@ func probeDNS(addr string, timeout time.Duration) error {
 		return fmt.Errorf("invalid address %s: %w", addr, err)
 	}
 
-	// dns.Client expects the host form with brackets when IPv6, and
-	// without brackets when IPv4. net.JoinHostPort handles both.
+	// [dns.Client] expects the host form with brackets when IPv6, and
+	// without brackets when IPv4. [net.JoinHostPort] handles both.
 	target := net.JoinHostPort(host, port)
 
 	client := &dns.Client{Timeout: timeout}

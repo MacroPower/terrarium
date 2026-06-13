@@ -33,7 +33,7 @@ const (
 
 // Encode returns the nftables `log prefix` payload for a decision.
 //
-// ruleIdx < 0 omits the `rule=` segment; [KindLeak] always omits
+// A negative ruleIdx omits the `rule=` segment; [KindLeak] always omits
 // it because the leak guard fires outside any per-rule chain. The
 // output always ends with a single trailing space so syslog readers
 // see space-delimited tokens. The kernel truncates `log prefix` at

@@ -17,7 +17,7 @@ type fiveTuple struct {
 	sport uint16
 	dport uint16
 	proto uint8
-	// family is 4 or 6. Disambiguates ICMP (1) from ICMPv6 (58)
+	// Either 4 or 6. Disambiguates ICMP (1) from ICMPv6 (58)
 	// for the [eventstore.Protocol] mapping.
 	family uint8
 }

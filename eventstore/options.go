@@ -43,8 +43,8 @@ type storeOptions struct {
 	batchSize     int
 	batchInterval time.Duration
 
-	// uid is the UID to chown the database files to after open. A
-	// negative value (the default) disables chowning.
+	// The UID to chown the database files to after open. A negative
+	// value (the default) disables chowning.
 	uid int
 }
 

@@ -15,7 +15,7 @@ const (
 )
 
 // icmpIPv4TypeNameToCode maps CamelCase ICMPv4 type names to their
-// numeric codes. icmpIPv6TypeNameToCode maps CamelCase ICMPv6 type
+// numeric codes. [icmpIPv6TypeNameToCode] maps CamelCase ICMPv6 type
 // names. Both are copied from Cilium's pkg/policy/api/icmp.go.
 var (
 	icmpIPv4TypeNameToCode = map[string]uint8{

@@ -229,7 +229,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 			return firewall.UpdateFQDNSet(dnsConn, setName, ips, ttl)
 		}),
 		dnsproxy.WithVMMode(),
-		// Reuse the existing eventstore handle. stats.path,
+		// Reuse the existing eventstore handle; stats.path,
 		// stats.socket, stats.enabled are startup-only.
 		dnsproxy.WithEventStore(inf.eventStore),
 		// Reuse the existing reverse cache so attribution state

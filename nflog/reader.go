@@ -27,7 +27,8 @@ const bufsize = 128
 // See [*dnscache.Cache] for an implementation.
 type Resolver interface {
 	// Lookup returns the most-recently-resolved non-expired qname
-	// for ip. ok=false on cache miss or fully-expired entry.
+	// for ip. It returns ok=false on cache miss or fully-expired
+	// entry.
 	Lookup(ip netip.Addr) (string, bool)
 }
 
@@ -45,10 +46,10 @@ type Reader struct {
 
 	closeOnce sync.Once
 
-	// lastSeq and lastSeqValid are owned by the hook goroutine.
-	// go-nflog's RegisterWithErrorFunc invokes the hook serially
-	// from a single reader goroutine, so neither field needs a
-	// lock. Cross-goroutine readers of KernelDrops use [atomic.Uint64].
+	// Owned by the hook goroutine: go-nflog's RegisterWithErrorFunc
+	// invokes the hook serially from a single reader goroutine, so
+	// neither field needs a lock. Cross-goroutine readers of
+	// KernelDrops use [atomic.Uint64].
 	lastSeq      uint32
 	group        uint16
 	lastSeqValid bool
@@ -56,7 +57,8 @@ type Reader struct {
 
 // New creates a [*Reader] bound to the given netlink log group. Blocks
 // briefly to open the socket; returns an error on socket-open failure.
-// Start the read loop with [Reader.Run]. store and r must be non-nil.
+// Start the read loop with [Reader.Run]. The store and r arguments
+// must be non-nil.
 func New(group uint16, store *eventstore.Store, r Resolver, opts ...Option) (*Reader, error) {
 	o := defaultReaderOptions()
 	for _, opt := range opts {

@@ -121,8 +121,8 @@ CREATE TABLE instances (
 //
 // Create instances with [Open].
 type Store struct {
-	// retention is read by the writer goroutine. Replaced via
-	// SetRetention so reload can swap the policy without races.
+	// Read by the writer goroutine and replaced via SetRetention so
+	// reload can swap the policy without races.
 	retention atomic.Pointer[Retention]
 
 	db          *sql.DB
@@ -134,27 +134,27 @@ type Store struct {
 	instanceID  string
 	opts        storeOptions
 
-	// dropCount counts events dropped because the channel was full.
+	// Counts events dropped because the channel was full.
 	dropCount atomic.Int64
 
-	// lastWriteUnix records the most recent successful batch
-	// commit, in unix microseconds.
+	// Records the most recent successful batch commit, in unix
+	// microseconds.
 	lastWriteUnix atomic.Int64
 
-	// rowCount is the in-memory event row count. Seeded from
+	// The in-memory event row count. Seeded from
 	// COUNT(*) at [Open], then incremented after each batch insert
 	// and decremented after each retention DELETE on the writer
 	// goroutine. Row-based pruning reads it instead of scanning the
 	// table every batch.
 	rowCount atomic.Int64
 
-	// firewallRowCount, dnsRowCount, envoyRowCount partition
-	// [rowCount] by [Source] for [Retention.PerSource] caps.
+	// Partitions of [rowCount] by [Source] for [Retention.PerSource]
+	// caps.
 	firewallRowCount atomic.Int64
 	dnsRowCount      atomic.Int64
 	envoyRowCount    atomic.Int64
 
-	// closeMu serializes [Close] against [Emit]. Emit takes the
+	// Serializes [Close] against [Emit]. Emit takes the
 	// read lock so concurrent producers do not block each other.
 	// Close takes the write lock and sets closed before closing the
 	// channel. After Close, Emit returns without sending, which
@@ -436,8 +436,8 @@ func (s *Store) RecordHeartbeat(_ context.Context, h Heartbeat) error {
 
 // LatestHeartbeat reads the most recent `instance_metrics` row for
 // instanceID. Returns ok=false on a fresh database or when no
-// heartbeat has been written for the given instance. db must be a
-// handle opened by [OpenReadOnly] or [Open]. Used by the
+// heartbeat has been written for the given instance. The db must be
+// a handle opened by [OpenReadOnly] or [Open]. Used by the
 // `terrarium status` CLI which holds a read-only handle.
 func LatestHeartbeat(ctx context.Context, db *sql.DB, instanceID string) (Heartbeat, bool, error) {
 	if instanceID == "" {
@@ -496,7 +496,7 @@ func LatestHeartbeat(ctx context.Context, db *sql.DB, instanceID string) (Heartb
 // LatestInstanceID returns the most recent in-progress instance ID,
 // falling back to the most recent overall instance when no run is in
 // progress. Returns ok=false when the `instances` table is empty.
-// db must be a handle opened by [OpenReadOnly] or [Open].
+// The db must be a handle opened by [OpenReadOnly] or [Open].
 func LatestInstanceID(ctx context.Context, db *sql.DB) (string, bool, error) {
 	var id string
 

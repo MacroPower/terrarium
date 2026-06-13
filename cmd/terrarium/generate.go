@@ -98,9 +98,9 @@ type alsConfig struct {
 }
 
 // httpListenerLog returns the per-listener HttpGrpcAccessLog slice.
-// logName distinguishes listeners on the receiving side. When stats is
-// disabled, an empty slice is returned and Envoy emits no access
-// events.
+// The logName distinguishes listeners on the receiving side. When
+// stats is disabled, an empty slice is returned and Envoy emits no
+// access events.
 func (a alsConfig) httpListenerLog(logName string) []envoy.AccessLog {
 	if !a.enabled {
 		return nil
@@ -110,9 +110,9 @@ func (a alsConfig) httpListenerLog(logName string) []envoy.AccessLog {
 }
 
 // tcpListenerLog returns the per-listener TcpGrpcAccessLog slice.
-// logName distinguishes listeners on the receiving side. When stats is
-// disabled, an empty slice is returned and Envoy emits no access
-// events.
+// The logName distinguishes listeners on the receiving side. When
+// stats is disabled, an empty slice is returned and Envoy emits no
+// access events.
 func (a alsConfig) tcpListenerLog(logName string) []envoy.AccessLog {
 	if !a.enabled {
 		return nil

@@ -35,28 +35,28 @@ const (
 )
 
 var (
-	// allowedMatchNameChars validates that a matchName contains only
+	// Validates that a matchName contains only
 	// DNS-safe characters. Matches Cilium's allowedMatchNameChars
 	// (pkg/policy/api/fqdn.go:18). Includes uppercase letters to match
 	// Cilium's definition; normalizeEgressRule lowercases as a
 	// convenience, but these regexes do not depend on that ordering.
 	allowedMatchNameChars = regexp.MustCompile(`^[-a-zA-Z0-9_.]+$`)
 
-	// allowedMatchPatternChars validates that a matchPattern contains
+	// Validates that a matchPattern contains
 	// only DNS-safe characters plus the wildcard '*'. Matches Cilium's
 	// allowedPatternChars (pkg/fqdn/matchpattern/matchpattern.go:33).
 	// Includes uppercase letters to match Cilium's definition;
 	// normalization lowercases as a convenience, not a prerequisite.
 	allowedMatchPatternChars = regexp.MustCompile(`^[-a-zA-Z0-9_.*]+$`)
 
-	// allowedServerNameChars validates serverNames entries against the
+	// Validates serverNames entries against the
 	// Cilium CRD kubebuilder pattern for ServerName fields:
 	// ^([-a-zA-Z0-9_*]+[.]?)+$. This disallows leading dots and
 	// consecutive dots, unlike the more permissive
 	// allowedMatchPatternChars used for FQDN matchPattern.
 	allowedServerNameChars = regexp.MustCompile(`^([-a-zA-Z0-9_*]+\.?)+$`)
 
-	// validProtocols lists the supported transport protocols. Cilium
+	// Lists the supported transport protocols. Cilium
 	// also supports ICMP, ICMPv6, VRRP, and IGMP, but these are
 	// IP-layer protocols without ports and cannot be expressed in the
 	// terrarium's port-based model.
@@ -64,7 +64,7 @@ var (
 		"": true, ProtoTCP: true, ProtoUDP: true, ProtoAny: true,
 	}
 
-	// entityCIDRs maps each supported toEntities value to the CIDRs
+	// Maps each supported toEntities value to the CIDRs
 	// it expands into. "world" and "all" expand to dual-stack CIDRs
 	// (0.0.0.0/0 and ::/0). "world-ipv4" and "world-ipv6" expand to
 	// a single address family. In Cilium's non-Kubernetes context,
@@ -372,15 +372,15 @@ func validateICMPRules(icmps []ICMPRule, toPorts []PortRule, prefix string, rule
 
 // validateUnsupportedDenySelectors checks whether any Cilium selectors
 // that terrarium does not implement are present in an egress deny rule.
-// toFQDNs is checked separately with a targeted error because Cilium's
-// EgressDenyRule type structurally lacks a ToFQDNs field (unlike the
-// generic unsupported selectors which exist in Cilium but require
-// cluster infrastructure).
+// The toFQDNs selector is checked separately with a targeted error
+// because Cilium's EgressDenyRule type structurally lacks a ToFQDNs
+// field (unlike the generic unsupported selectors which exist in
+// Cilium but require cluster infrastructure).
 func validateUnsupportedDenySelectors(rule EgressDenyRule, ruleIdx int) error {
-	// toFQDNs gets a targeted error distinct from the generic
-	// unsupported-selector message, because the structural absence
-	// of ToFQDNs on Cilium's EgressDenyRule is a deliberate design
-	// constraint, not a terrarium limitation.
+	// The toFQDNs selector gets a targeted error distinct from the
+	// generic unsupported-selector message, because the structural
+	// absence of ToFQDNs on Cilium's EgressDenyRule is a deliberate
+	// design constraint, not a terrarium limitation.
 	if len(rule.ToFQDNs) > 0 {
 		return fmt.Errorf(
 			"%w: egressDeny rule %d",
@@ -1055,7 +1055,7 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 		return nil
 	}
 
-	// serverNames requires an L3 selector.
+	// The serverNames field requires an L3 selector.
 	hasL3 := len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0 || len(rule.ToFQDNs) > 0
 	if !hasL3 {
 		return fmt.Errorf("%w: rule %d", ErrServerNamesRequiresL3, ruleIdx)

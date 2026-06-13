@@ -941,8 +941,9 @@ func addManglePreRoutingChain(
 		})
 
 		// Forwarded TCP uses DNAT in NAT PREROUTING (addNATPreRouting)
-		// instead of TPROXY. br_nf_pre_routing_finish only re-routes
-		// packets locally when DNAT changes the destination address;
+		// instead of TPROXY. The kernel's br_nf_pre_routing_finish
+		// only re-routes packets locally when DNAT changes the
+		// destination address;
 		// TPROXY does not modify the IP header, so bridge-forwarded
 		// packets would be L2-forwarded to the original destination.
 		// IPv4 DNS (UDP + TCP) also uses DNAT. Only IPv6 DNS needs

@@ -114,8 +114,8 @@ fi`
 }
 
 // expectJailNonzero runs `terrarium jail -- <argv...>` and passes when
-// the child exits nonzero. failDetail formats the failure message when
-// the child unexpectedly exits zero.
+// the child exits nonzero. The failDetail callback formats the failure
+// message when the child unexpectedly exits zero.
 func expectJailNonzero(ctx context.Context, a assertion, argv []string, failDetail func(out string) string) result {
 	code, out, err := runJailed(ctx, argv...)
 	if err != nil {

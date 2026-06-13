@@ -40,11 +40,11 @@ func (le logEmitter) expr(prefix string) []expr.Any {
 }
 
 // emit appends a `ct state new` log rule for kind+ruleIdx to chain
-// when the emitter is enabled. extra match expressions are prepended
-// for rules that need extra scoping (e.g. the postrouting guard's
-// UID and non-loopback predicates). No-op when the emitter is disabled.
-// ruleIdx<0 encodes a catch-all (no `rule=N` segment in the
-// [logprefix] payload).
+// when the emitter is enabled. The extra match expressions are
+// prepended for rules that need extra scoping (e.g. the postrouting
+// guard's UID and non-loopback predicates). No-op when the emitter is
+// disabled. A negative ruleIdx encodes a catch-all (no `rule=N`
+// segment in the [logprefix] payload).
 //
 //nolint:unparam // ruleIdx is part of the [logprefix] contract; current call sites are catch-alls.
 func (le logEmitter) emit(
@@ -478,7 +478,7 @@ func addFilterRules(
 	allowICMPs := cfg.ResolveICMPRules()
 	denyICMPs := cfg.ResolveDenyICMPRules()
 
-	// terrarium_output chain rules.
+	// Rules for the terrarium_output chain.
 	// Deny chains first: deny takes precedence over allow.
 	addDenyCIDRChains(conn, table, terrariumChain, allDenyCIDRs, uids)
 	addDenyPortRules(conn, table, terrariumChain, denyPortOnly, uids)

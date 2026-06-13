@@ -23,7 +23,7 @@ const clockTicksPerSecond = 100
 // All PID file read errors are reported on [ProcessSection.Err]
 // except [fs.ErrNotExist], which maps to [DaemonNotRunning] so a
 // missing PID file reads as "the daemon is not running" rather than
-// "something went wrong."
+// "something went wrong".
 func collectProcess(pidFile string) ProcessSection {
 	s := ProcessSection{
 		Daemon: DaemonProcess{PIDFile: pidFile},
@@ -80,7 +80,7 @@ func collectProcess(pidFile string) ProcessSection {
 
 // readPIDFile reads and parses a PID file. A file that does not exist
 // yields an error that wraps [fs.ErrNotExist] so the caller can
-// distinguish "no daemon" from "permission denied."
+// distinguish "no daemon" from "permission denied".
 func readPIDFile(path string) (int, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied path.
 	if err != nil {

@@ -29,15 +29,15 @@ const (
 type mode int
 
 const (
-	// modeForwardAll forwards all queries to the upstream resolver.
+	// Forwards all queries to the upstream resolver.
 	// Used for unrestricted and bare wildcard configs.
 	modeForwardAll mode = iota
 
-	// modeRefuseAll returns REFUSED for all queries without
+	// Returns REFUSED for all queries without
 	// contacting upstream. Used for blocked configs (egress: [{}]).
 	modeRefuseAll
 
-	// modeAllowlist forwards queries matching the allowed domain
+	// Forwards queries matching the allowed domain
 	// list and returns NXDOMAIN for everything else.
 	modeAllowlist
 )

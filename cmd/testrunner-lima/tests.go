@@ -1696,7 +1696,7 @@ egressDeny:
 			// Signals to the terrarium daemon.
 			jailSignalDenied("kill -9 mainpid:terrarium",
 				"jail-confinement: SIGKILL to terrarium denied"),
-			// nftables mutation. Protected by CAP_NET_ADMIN omission,
+			// Mutating nftables is protected by CAP_NET_ADMIN omission,
 			// not by a netlink deny -- these assertions guard against
 			// the cap allow-list regressing.
 			jailNftDenied([]string{"list", "tables"},
@@ -1728,8 +1728,8 @@ egressDeny:
 			// Cross-profile ptrace must still be denied. The peer
 			// rule in the profile (not the cap grant) is the
 			// boundary; strace against the daemon's PID must die at
-			// attach. jailExecDenied passes when the script exits
-			// nonzero, so the script exits 0 only on regression
+			// attach. The jailExecDenied helper passes when the script
+			// exits nonzero, so the script exits 0 only on regression
 			// (strace stayed alive attached to the daemon).
 			jailExecDenied(
 				`strace -p mainpid:terrarium -e trace=read -o /dev/null >/dev/null 2>&1 &
@@ -1754,7 +1754,7 @@ exit 1`,
 			// sysctls (configuration.nix) ensure these only pass when
 			// the cap is actually granted.
 			//
-			// sys_ptrace: strace attaches to a sibling non-descendant
+			// For sys_ptrace, strace attaches to a sibling non-descendant
 			// sleep. Under ptrace_scope=1 PTRACE_ATTACH to a
 			// non-ancestor requires CAP_SYS_PTRACE. A live strace is
 			// State: S (sleeping for tracee events); a dead/EPERM'd
@@ -1863,8 +1863,8 @@ wait "$child"`
 			return nil
 		},
 		teardown: func(ctx context.Context, d *driver) error {
-			// apparmor reloads the full policy set from disk on
-			// restart, restoring the profile.
+			// Restarting apparmor reloads the full policy set from
+			// disk, restoring the profile.
 			_, err := d.shell(ctx, "sudo", "systemctl", "restart", "apparmor")
 			if err != nil {
 				return fmt.Errorf("restarting apparmor: %w", err)
@@ -1896,7 +1896,7 @@ wait "$child"`
 		},
 	},
 
-	// vm-daemon-reload-cli exercises the `terrarium daemon reload`
+	// The vm-daemon-reload-cli case exercises the `terrarium daemon reload`
 	// CLI's pre-validation and SIGHUP plumbing. Companion to
 	// vm-config-reload, which goes through systemctl reload and
 	// bypasses the CLI's pre-validation.
@@ -1916,7 +1916,7 @@ wait "$child"`
 		teardown: runDaemonReloadCliTeardown,
 	},
 
-	// vm-stats-firewall-events proves the kernel-side nflog binding
+	// The vm-stats-firewall-events case proves the kernel-side nflog binding
 	// actually works in VM mode (where openNflog is fatal on bind
 	// failure). Generates HTTP traffic and asserts a
 	// firewall-source allow row with a non-empty domain field.
@@ -1945,7 +1945,7 @@ egress:
 		verify: verifyVMStatsFirewallEvents,
 	},
 
-	// vm-status-stats-section asserts `terrarium status --no-logs`
+	// The vm-status-stats-section case asserts `terrarium status --no-logs`
 	// renders the STATS section after traffic, with a non-zero
 	// 24-hour event count and a parseable last-event timestamp.
 	{
@@ -1970,7 +1970,7 @@ egress:
 		verify: verifyVMStatusStatsSection,
 	},
 
-	// vm-heartbeat-on-shutdown exercises the eventstore shutdown
+	// The vm-heartbeat-on-shutdown case exercises the eventstore shutdown
 	// drain. The heartbeat goroutine's final snapshot is pushed
 	// onto the buffer-1 channel during cancel; the writer
 	// goroutine drains heartbeats before closing s.done. By the
@@ -2392,7 +2392,8 @@ func verifyVMHeartbeatOnShutdown(ctx context.Context, t *testing.T, d *driver) {
 		t.Errorf("heartbeat-on-shutdown: nflog_last_event is zero (firewall ingestion did not run)")
 	}
 
-	// dnscache_size is INTEGER NOT NULL DEFAULT 0; the meaningful
+	// The dnscache_size column is INTEGER NOT NULL DEFAULT 0; the
+	// meaningful
 	// guard is that LatestHeartbeat returned a row at all
 	// (already covered by require.True above).
 	//

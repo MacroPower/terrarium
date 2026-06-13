@@ -219,8 +219,8 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 		if err == nil && strings.TrimSpace(out) == "active" {
 			// Restart nscd (nsncd) after the daemon is active so
 			// stale DNS failures from a previous daemon run do not
-			// persist. nsncd proxies NSS lookups over a Unix socket;
-			// restarting it clears any in-flight failures.
+			// persist. The nsncd daemon proxies NSS lookups over a
+			// Unix socket; restarting it clears any in-flight failures.
 			_, nscdErr := d.shell(ctx, "sudo", "systemctl", "restart", "nscd")
 			if nscdErr != nil {
 				slog.DebugContext(ctx, "restarting nscd", slog.String("error", nscdErr.Error()))
@@ -313,9 +313,9 @@ func (d *driver) reloadDaemonViaCli(ctx context.Context) (int, string, string, e
 //
 // Stdout and stderr are kept separate so callers can parse JSON or
 // regex against stdout without a slog line on stderr breaking the
-// match. err is non-nil only on non-exec failures (limactl missing,
-// context canceled); a non-zero terrarium exit is reported via the
-// returned exitCode, not err.
+// match. The returned err is non-nil only on non-exec failures (limactl
+// missing, context canceled); a non-zero terrarium exit is reported via
+// the returned exitCode, not err.
 func (d *driver) runTerrarium(ctx context.Context, args ...string) (int, string, string, error) {
 	full := append([]string{"sudo", terrariumName, "--config", VMTerrariumConfigPath}, args...)
 	//nolint:gosec // args are controlled by test code.
@@ -408,41 +408,41 @@ func (d *driver) runTestrunner(ctx context.Context) (int, string, error) {
 // start services, write config, run setup hook, restart daemon, run
 // assertions, run verify hook, run teardown hook, stop services.
 type vmTest struct {
-	// setup runs after services are started but before the daemon
-	// is restarted. Used for tests that need custom pre-conditions.
+	// Runs after services start but before the daemon restarts.
+	// Used for tests that need custom pre-conditions.
 	setup func(ctx context.Context, d *driver) error
 
-	// verify runs after testrunner assertions complete. It receives
+	// Runs after testrunner assertions complete. It receives
 	// the per-test timeout context and testing.T so it can call
 	// driver methods and assert results directly -- used for tests
 	// that need to run commands inside ephemeral containers or other
 	// actions the testrunner spec cannot express.
 	verify func(ctx context.Context, t *testing.T, d *driver)
 
-	// teardown runs after the testrunner completes, before cleanup.
+	// Runs after the testrunner completes, before cleanup.
 	teardown func(ctx context.Context, d *driver) error
 
-	// name identifies the test in output and --test filtering.
+	// Identifies the test in output and --test filtering.
 	name string
 
-	// config is the terrarium YAML config written to the VM.
+	// The terrarium YAML config written to the VM.
 	config string
 
-	// assertions run as a non-root user inside the VM.
+	// Assertions that run as a non-root user inside the VM.
 	assertions []assertion
 
-	// rootAssertions run as root inside the VM.
+	// Assertions that run as root inside the VM.
 	rootAssertions []assertion
 
-	// services are nginx/socat targets started on the VM host.
+	// The nginx/socat targets started on the VM host.
 	services []serviceSpec
 
-	// containerServices are nginx targets started as bridge-networked
-	// containers with fixed IPs.
+	// The nginx targets started as bridge-networked containers with
+	// fixed IPs.
 	containerServices []serviceSpec
 
-	// containerAssertions run from ephemeral bridge-networked
-	// containers to test intercepted container traffic.
+	// Assertions that run from ephemeral bridge-networked containers
+	// to test intercepted container traffic.
 	containerAssertions []assertion
 }
 
@@ -502,7 +502,7 @@ func (d *driver) tailLogs(ctx context.Context) string {
 		}
 	}
 
-	// nftables ruleset for firewall debugging.
+	// Dump the nftables ruleset for firewall debugging.
 	cmdCtx, cancel = context.WithTimeout(ctx, perCmd)
 	nft, err := d.shell(cmdCtx, "sudo", "nft", "list", "ruleset")
 

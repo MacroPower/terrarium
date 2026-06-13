@@ -30,7 +30,7 @@ const labelCharClass = `[-a-zA-Z0-9_]`
 // * (zero-or-more) because e.g. "ci*" should match "ci".
 //
 // SNI values never contain trailing dots (RFC 6066 section 3), so this
-// uses literal \. separators and omits the trailing dot anchor.
+// uses literal "\." separators and omits the trailing dot anchor.
 //
 // [dnsWildcardREGroup]: Cilium pkg/fqdn/matchpattern constants.
 func WildcardToSNIRegex(pattern string) string {
@@ -42,7 +42,9 @@ func WildcardToSNIRegex(pattern string) string {
 // accepts an optional ":port" suffix, since HTTP/1.1 Host and HTTP/2
 // :authority headers may include a port (e.g. "sub.example.com:80").
 //
-// Example: "*.example.com" -> "^[-a-zA-Z0-9_]+\.example\.com(:\d+)?$"
+// Example:
+//
+//	"*.example.com" -> "^[-a-zA-Z0-9_]+\.example\.com(:\d+)?$"
 func WildcardToHostRegex(pattern string) string {
 	return WildcardToRegex(pattern, `(:\d+)?`)
 }
@@ -63,7 +65,7 @@ func WildcardToRegex(pattern, beforeAnchor string) string {
 	// stars back to regex wildcards with appropriate quantifiers.
 	escaped := regexp.QuoteMeta(pattern)
 
-	// Split on dots (escaped as \.) to process per-label.
+	// Split on the (escaped) dot separators to process per-label.
 	labels := strings.Split(escaped, `\.`)
 	for i, label := range labels {
 		if !strings.Contains(label, `\*`) {

@@ -224,7 +224,7 @@ func (c *Config) ResolveRulesForPort(ctx context.Context, port int) []ResolvedRu
 		if hasFQDNs {
 			domains := fqdnDomains(egressRules[i].ToFQDNs)
 
-			// serverNames replaces FQDN domains for SNI
+			// The serverNames list replaces FQDN domains for SNI
 			// filtering: DNS resolution still uses FQDN
 			// matchName/matchPattern, but the Envoy SNI
 			// allowlist uses serverNames instead.
@@ -1398,7 +1398,7 @@ func (c *Config) ResolveDenyPortOnlyRules(ctx context.Context) []ResolvedPortPro
 
 		ports := resolvePortsFromDenyRule(ctx, denyRules[ri])
 		if ports == nil {
-			// nil means wildcard (all ports). Emit a single
+			// A nil slice means wildcard (all ports). Emit a single
 			// zero-port entry so the firewall can generate a
 			// blanket DROP without port matching.
 			ports = []ResolvedPortProto{{}}

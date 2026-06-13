@@ -260,7 +260,7 @@ func logPrefix(prefix string) []expr.Any {
 
 // logGroupPrefix emits a `log group N prefix "..."` directive that
 // pushes the matched packet onto nfnetlink_log group [group]. The
-// userspace [nflog.Reader] binds to the same group. prefix is the
+// userspace [nflog.Reader] binds to the same group. The prefix is the
 // [logprefix] payload that decodes back to a [Kind] and rule index.
 // Peer to [logPrefix] for syslog-bound emission.
 func logGroupPrefix(group uint16, prefix string) []expr.Any {
