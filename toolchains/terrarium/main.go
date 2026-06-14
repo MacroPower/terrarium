@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	goreleaserVersion = "v2.13.3" // renovate: datasource=github-releases depName=goreleaser/goreleaser
+	goreleaserVersion = "v2.16.0" // renovate: datasource=github-releases depName=goreleaser/goreleaser
 	envoyVersion      = "v1.38.2" // renovate: datasource=github-releases depName=envoyproxy/envoy
 
 	terrariumCacheNamespace = "go.jacobcolvin.com/terrarium/toolchains/terrarium"
