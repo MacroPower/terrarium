@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/miekg/dns v1.1.72
-	go.jacobcolvin.com/terrarium v0.0.0
+	go.jacobcolvin.com/terrarium v0.7.0
 )
 
 require (
