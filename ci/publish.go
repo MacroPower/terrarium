@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	"dagger/terrarium/internal/dagger"
+	"dagger/ci/internal/dagger"
 
 	"golang.org/x/sync/errgroup"
 )
 
 // ReleaseReport captures the results of a release operation including
 // image digests, artifact checksums, and a human-readable summary.
-// Create instances via [Terrarium.Release].
+// Create instances via [Ci.Release].
 type ReleaseReport struct {
 	// Dist directory containing release artifacts.
 	Dist *dagger.Directory
@@ -102,7 +102,7 @@ func variantTag(tag string, variant Variant) string {
 // Pre-release versions are published with only their exact tag per variant.
 //
 // +cache="never"
-func (m *Terrarium) PublishImages(
+func (m *Ci) PublishImages(
 	ctx context.Context,
 	// Base image tags to publish (e.g. ["latest", "v1.2.3", "v1", "v1.2"]).
 	// Variant suffixes are applied automatically.
@@ -179,7 +179,7 @@ func (m *Terrarium) PublishImages(
 // summary suitable for $GITHUB_STEP_SUMMARY.
 //
 // +cache="never"
-func (m *Terrarium) Release(
+func (m *Ci) Release(
 	ctx context.Context,
 	// GitHub token for creating the release.
 	githubToken *dagger.Secret,
@@ -268,7 +268,7 @@ func (m *Terrarium) Release(
 
 // publishAllVariants publishes all variant sets concurrently. Returns the
 // combined digest list and total tag count across all variants.
-func (m *Terrarium) publishAllVariants(
+func (m *Ci) publishAllVariants(
 	ctx context.Context,
 	sets []variantSet,
 	baseTags []string,
@@ -309,7 +309,7 @@ func (m *Terrarium) publishAllVariants(
 // publishImages publishes pre-built container image variants to the registry.
 // Returns the list of published digest references (one per tag,
 // e.g. "registry/image:tag@sha256:hex").
-func (m *Terrarium) publishImages(
+func (m *Ci) publishImages(
 	ctx context.Context,
 	variants []*dagger.Container,
 	tags []string,
@@ -353,7 +353,7 @@ func (m *Terrarium) publishImages(
 // tokens on demand, avoiding expiry issues. Digests are deduplicated before
 // signing since multiple tags often share one manifest. Does nothing when
 // oidcRequestToken is nil.
-func (m *Terrarium) signImages(
+func (m *Ci) signImages(
 	ctx context.Context,
 	digests []string,
 	registryUsername string,
@@ -378,8 +378,8 @@ func (m *Terrarium) signImages(
 		}
 	}
 
-	return m.Cosign.SignKeyless(ctx, toSign, oidcRequestURL, oidcRequestToken,
-		dagger.CosignSignKeylessOpts{
+	return m.Goreleaser.SignKeyless(ctx, toSign, oidcRequestURL, oidcRequestToken,
+		dagger.GoreleaserSignKeylessOpts{
 			RegistryHost:     host,
 			RegistryUsername: registryUsername,
 			RegistryPassword: registryPassword,

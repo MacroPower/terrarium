@@ -25,10 +25,16 @@ dist/
 # Devbox
 .devbox/
 
+# Worktrees
+.worktrees/
+
 # Temp files
 .tmp/
 .task/
 .chief/
+
+# SARIF scan output (from `task security:sarif-source`)
+*.sarif
 
 # Nix build outputs
 result

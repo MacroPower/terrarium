@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"dagger/terrarium/internal/dagger"
+	"dagger/ci/internal/dagger"
 )
 
 // Variant identifies a container image variant. Each variant uses a different
@@ -37,7 +37,7 @@ type variantSet struct {
 // Build runs GoReleaser in snapshot mode, producing binaries for all
 // platforms. Returns the dist/ directory. Source archives are skipped in
 // snapshot mode since they are only needed for releases.
-func (m *Terrarium) Build(ctx context.Context) (*dagger.Directory, error) {
+func (m *Ci) Build(ctx context.Context) (*dagger.Directory, error) {
 	ctr, err := m.releaserBase(ctx)
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func (m *Terrarium) Build(ctx context.Context) (*dagger.Directory, error) {
 // BuildImages builds multi-arch runtime container images from a GoReleaser
 // dist directory. If no dist is provided, a snapshot build is run. When
 // variant is empty, all variants are built and returned as a flat slice.
-func (m *Terrarium) BuildImages(
+func (m *Ci) BuildImages(
 	ctx context.Context,
 	// Version label for OCI metadata.
 	// +default="snapshot"
@@ -201,13 +201,13 @@ func withOCILabels(ctr *dagger.Container) *dagger.Container {
 // toolchain) extended with cosign, syft, a nix-hash shim, project source, and
 // a bootstrapped git repo -- everything goreleaser release needs for signing
 // and SBOMs. Config-only validation goes through the [Goreleaser] toolchain
-// directly -- see [Terrarium.LintReleaser].
-func (m *Terrarium) releaserBase(_ context.Context) (*dagger.Container, error) {
+// directly -- see [Ci.LintReleaser].
+func (m *Ci) releaserBase(_ context.Context) (*dagger.Container, error) {
 	// WithCosign/WithSyft take and return a container, so they are applied as
 	// statements rather than chained.
 	ctr := m.Goreleaser.GoreleaserBase()
-	ctr = m.Cosign.WithCosign(ctr)
-	ctr = m.Syft.WithSyft(ctr)
+	ctr = m.Goreleaser.WithCosign(ctr)
+	ctr = m.Goreleaser.WithSyft(ctr)
 	ctr = ctr.
 		WithNewFile("/usr/local/bin/nix-hash", `#!/bin/sh
 # nix-hash shim -- supports: nix-hash --type sha256 --flat --sri <file>
@@ -224,5 +224,5 @@ printf 'sha256-%s\n' "$(openssl dgst -sha256 -binary "$file" | base64 -w0)"
 		// Mount source after all tools so that source changes only invalidate
 		// layers from here onward, preserving the tool installation layers above.
 		WithMountedDirectory("/src", m.Source)
-	return m.Go.EnsureGitRepo(ctr, dagger.GoEnsureGitRepoOpts{RemoteURL: terrariumCloneURL}), nil
+	return m.Goreleaser.EnsureGitRepo(ctr, dagger.GoreleaserEnsureGitRepoOpts{RemoteURL: terrariumCloneURL}), nil
 }

@@ -3,68 +3,202 @@ version: "3"
 set: [errexit, nounset, pipefail]
 shopt: [globstar]
 
+# Go tasks call the local toolchain (go, golangci-lint) directly; devbox
+# provides both on PATH. The repo is a go.work workspace with no root go.mod,
+# so the default ./... pattern matches nothing at the root and is instead
+# expressed as per-module ./<dir>/... patterns. GO_MODULES is the list of
+# workspace module directories, derived from go.work so it never drifts.
+vars:
+  GO_MODULES:
+    sh: |
+      go work edit -json | grep -oE '"DiskPath": *"[^"]*"' | sed -E 's/^"DiskPath": *"//; s/"$//; s|^\./||' | xargs
+  GO_PKGS:
+    sh: for m in {{.GO_MODULES}}; do printf './%s/... ' "$m"; done
+  # cmd/testrunner-lima is a host/VM-only e2e harness: its TestMain builds the
+  # testrunner binary and drives a Lima VM via limactl, so `go test` against it
+  # only works on a developer host with the VM provisioned (run it via
+  # `task lima:test`, which sets up the VM first). It is excluded from the
+  # general unit/integration/coverage runs, which execute on hosts and inside
+  # the devbox CI container where no VM exists. lint, tidy, and generate keep
+  # the full GO_MODULES because they need no VM.
+  TEST_MODULES:
+    sh: |
+      go work edit -json | grep -oE '"DiskPath": *"[^"]*"' | sed -E 's/^"DiskPath": *"//; s/"$//; s|^\./||' | tr ' ' '\n' | grep -v '^cmd/testrunner-lima$' | xargs
+  TEST_PKGS:
+    sh: |
+      for m in {{.TEST_MODULES}}; do printf './%s/... ' "$m"; done
+  TEST_TIMEOUT: 30m
+  # Test names matching this regex are integration tests: go:test skips them,
+  # go:test:integration selects them.
+  INTEGRATION_PATTERN: Integration
+  DEADCODE_VERSION: v0.46.0 # renovate: datasource=go depName=golang.org/x/tools
+
 tasks:
-  format:
-    desc: Formats Go code via Dagger
-    cmds:
-      - dagger call -y go format-go
+  # lint, format, tidy, and tidy:check fan out to one internal invocation per
+  # module so each module is fingerprinted independently: editing one module
+  # re-runs only that module's check, and a no-op `task check` skips them all.
+  # Each internal task carries the module in its `label` so Task stores a
+  # separate checksum per module (a single name would share one checksum and
+  # the modules would clobber each other). Checksums live in .task/, which
+  # `task clean` removes and .gitignore excludes.
+  #
+  # Each task's `sources` list is scoped to exactly what changes its result.
+  # lint and format additionally read .golangci.yaml and depend on the
+  # golangci-lint binary, so devbox.lock is a source (a Go or golangci-lint
+  # version bump invalidates their cache). tidy reads neither, so its sources
+  # stop at the module files and the workspace files; the Go version it cares
+  # about is already pinned in go.work, and CI's `go mod tidy -diff` is the
+  # backstop against any binary-patch drift.
+  _lint:
+    internal: true
+    label: "go:lint ({{.MODULE}})"
+    sources: &go-lint-sources
+      - "{{.MODULE}}/**/*.go"
+      - "{{.MODULE}}/go.mod"
+      - "{{.MODULE}}/go.sum"
+      - go.work
+      - go.work.sum
+      - .golangci.yaml
+      - devbox.lock
+    cmd: cd {{.MODULE}} && golangci-lint run
+
+  _format:
+    internal: true
+    label: "go:format ({{.MODULE}})"
+    sources: *go-lint-sources
+    cmd: cd {{.MODULE}} && golangci-lint run --fix
+
+  _tidy:
+    internal: true
+    label: "go:tidy ({{.MODULE}})"
+    sources: &go-tidy-sources
+      - "{{.MODULE}}/**/*.go"
+      - "{{.MODULE}}/go.mod"
+      - "{{.MODULE}}/go.sum"
+      - go.work
+      - go.work.sum
+    cmd: cd {{.MODULE}} && go mod tidy
+
+  _tidy:check:
+    internal: true
+    label: "go:tidy:check ({{.MODULE}})"
+    sources: *go-tidy-sources
+    cmd: cd {{.MODULE}} && go mod tidy -diff
 
   lint:
-    desc: Lints Go code via Dagger
+    desc: Lints Go code with golangci-lint across all workspace modules
     cmds:
-      - dagger check go:lint
+      - for: { var: GO_MODULES }
+        task: _lint
+        vars: { MODULE: "{{.ITEM}}" }
 
-  test:
-    desc: Runs Go tests via Dagger
-    summary: |
-      Runs Go tests via Dagger.
-
-      For a single package or extra flags, call the toolchain directly:
-        dagger call go test --pkgs=./config/... --run=TestName
+  format:
+    desc: Formats Go code with golangci-lint --fix across all workspace modules
     cmds:
-      - dagger check terrarium-ci:test-unit
-
-  test:integration:
-    desc: Runs CI module integration tests via Dagger
-    cmds:
-      - dagger check -m toolchains/terrarium/tests
-
-  cover:
-    desc: Runs Go tests with coverage via Dagger
-    cmds:
-      - dagger call go test-coverage --output=.test/coverage.txt
+      - for: { var: GO_MODULES }
+        task: _format
+        vars: { MODULE: "{{.ITEM}}" }
 
   tidy:
-    desc: Tidies go.mod and go.sum across all modules via Dagger
+    desc: Tidies go.mod and go.sum across all workspace modules
     cmds:
-      - dagger call -y go tidy
+      - for: { var: GO_MODULES }
+        task: _tidy
+        vars: { MODULE: "{{.ITEM}}" }
 
-  gen:
-    desc: Generates Go code via Dagger
+  tidy:check:
+    desc: Verifies go.mod and go.sum are tidy across all workspace modules
+    summary: |
+      Runs `go mod tidy -diff` in each module, which reports the changes tidy
+      would make and exits non-zero if any are needed, without modifying the
+      files. Being read-only, it is safe to run alongside go:lint and go:test
+      and needs no .git (the check runs inside the devbox container in CI).
     cmds:
-      - dagger call -y go generate
+      - for: { var: GO_MODULES }
+        task: _tidy:check
+        vars: { MODULE: "{{.ITEM}}" }
 
+  # test, test:integration, and test:cover are deliberately not fingerprinted
+  # with `sources`. Go's build/test cache is content-addressed over the full
+  # transitive dependency graph and re-runs exactly the packages that changed;
+  # a file-glob fingerprint here would be coarser and could skip a stale test.
+  test:
+    desc: Runs Go unit tests (skips integration tests) with the race detector
+    summary: |
+      Runs the workspace unit tests with the race detector.
+
+      For a single package or extra flags, call go directly:
+        go test -run TestName ./config/...
+    cmds:
+      - go test -timeout={{.TEST_TIMEOUT}} -skip {{.INTEGRATION_PATTERN}} -race {{.TEST_PKGS}}
+
+  test:integration:
+    desc: Runs Go integration tests with the race detector
+    cmds:
+      - go test -timeout={{.TEST_TIMEOUT}} -run {{.INTEGRATION_PATTERN}} -race {{.TEST_PKGS}}
+
+  test:cover:
+    desc: Runs all Go tests with coverage profiling
+    summary: |
+      Runs every test (unit and integration) with -coverprofile, which
+      disables Go's test result cache. Writes the profile to OUTPUT.
+
+      Args:
+        OUTPUT: Coverage profile path (default: .test/coverage.txt)
+    vars:
+      OUTPUT: '{{.OUTPUT | default ".test/coverage.txt"}}'
+    env:
+      CGO_ENABLED: "1"
+    cmds:
+      - mkdir -p .test
+      - go test -timeout={{.TEST_TIMEOUT}} -race -coverprofile={{.OUTPUT}} {{.TEST_PKGS}}
+
+  generate:
+    desc: Runs go generate across all workspace modules
+    cmds:
+      - go generate {{.GO_PKGS}}
+
+  # deadcode, bench, and docs are advisory tasks whose whole purpose is the
+  # report they print to stdout. They are deliberately not fingerprinted: a
+  # `sources` cache hit would skip the command and suppress that output, which
+  # is the opposite of useful. Run them on demand.
   deadcode:
-    desc: Finds dead code in Go via Dagger
-    cmds:
-      - dagger call terrarium-ci lint-deadcode
+    desc: Reports unreachable Go functions (advisory)
+    label: "go:deadcode {{.PKG}}"
+    summary: |
+      Reports unreachable functions via the golang.org/x/tools deadcode
+      analyzer. Advisory only; not part of the standard gate.
 
-  benchmark:
-    desc: Measures pipeline stage timings via Dagger
+      Args:
+        PKG: Go package(s) to analyze (default: every workspace module)
+    vars:
+      PKG: "{{.PKG | default .GO_PKGS}}"
     cmds:
-      - dagger call terrarium-ci benchmark-summary
+      - go run golang.org/x/tools/cmd/deadcode@{{.DEADCODE_VERSION}} {{.PKG}}
 
-  benchmark:parallel:
-    desc: Measures full-pipeline wall-clock time via Dagger (parallel)
+  bench:
+    desc: Runs Go benchmarks
+    label: "go:bench {{.PKG}}"
+    summary: |
+      Runs Go benchmarks.
+
+      Args:
+        PKG: Go package to benchmark (default: go.jacobcolvin.com/terrarium/...)
+        FLAGS: Additional flags to pass to `go test` (default: "")
+
+      Examples:
+        task go:bench PKG=./config FLAGS="-cpuprofile profile.out -run=^\$"
+    vars:
+      PKG: '{{.PKG | default "go.jacobcolvin.com/terrarium/..."}}'
+      FLAGS: '{{.FLAGS | default ""}}'
     cmds:
-      - dagger call terrarium-ci benchmark-summary --parallel
+      - go test -bench=. -benchmem {{.FLAGS}} {{.PKG}}
 
   docs:
     desc: Prints Go documentation for all packages
     label: "go:docs {{.PKG}}"
     summary: |
-      Prints Go documentation for all packages. Runs on the host for fast,
-      interactive reading.
+      Prints Go documentation for all packages.
 
       Args:
         PKG: Go package(s) to document (default: go.jacobcolvin.com/terrarium/...)

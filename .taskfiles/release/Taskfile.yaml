@@ -1,0 +1,25 @@
+version: "3"
+
+set: [errexit, nounset, pipefail]
+shopt: [globstar]
+
+vars:
+  # Host directory the snapshot build is exported to; cleaned by the root
+  # `clean` task and ignored by .gitignore.
+  DIST: ./dist
+
+tasks:
+  check:
+    desc: Validates the GoReleaser configuration
+    # Validation depends only on the GoReleaser config, so `sources` skips the
+    # Dagger invocation when it does not change.
+    sources:
+      - .goreleaser.yaml
+    cmd: dagger call ci lint-releaser
+
+  # snapshot is not fingerprinted here: it cross-compiles all targets and runs
+  # GoReleaser in snapshot mode, and Dagger's content-addressed cache already
+  # rebuilds only when an input changes.
+  snapshot:
+    desc: Cross-compiles all targets without publishing (writes to ./dist)
+    cmd: dagger call ci build export --path={{.DIST}}
