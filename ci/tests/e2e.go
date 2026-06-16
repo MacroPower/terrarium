@@ -111,7 +111,7 @@ var e2eTestFuncs = []struct {
 // take significant time, and depend on external network conditions within the
 // Dagger engine. Run manually:
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-all
+//	dagger call -m ci/tests test-egress-all
 func (m *Tests) TestEgressAll(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
 	for _, t := range e2eTestFuncs {
@@ -124,7 +124,7 @@ func (m *Tests) TestEgressAll(ctx context.Context) error {
 // all outbound traffic from the terrarium user. The deny-all pattern has no
 // ports, so Envoy is not started; nftables rules alone enforce the lockdown.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-deny-all
+//	dagger call -m ci/tests test-egress-deny-all
 func (m *Tests) TestEgressDenyAll(ctx context.Context) error {
 	return newTestCase("deny-all", `egress:
   - {}
@@ -144,7 +144,7 @@ func (m *Tests) TestEgressDenyAll(ctx context.Context) error {
 // TestEgressFqdnExact verifies exact FQDN matching. Only the explicitly named
 // host on the specified ports should be reachable.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-exact
+//	dagger call -m ci/tests test-egress-fqdn-exact
 func (m *Tests) TestEgressFqdnExact(ctx context.Context) error {
 	return newTestCase("fqdn-exact", `egress:
   - toFQDNs:
@@ -170,7 +170,7 @@ func (m *Tests) TestEgressFqdnExact(ctx context.Context) error {
 // TestEgressFqdnWildcard verifies wildcard FQDN matching. Single * matches
 // exactly one DNS label.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-wildcard
+//	dagger call -m ci/tests test-egress-fqdn-wildcard
 func (m *Tests) TestEgressFqdnWildcard(ctx context.Context) error {
 	return newTestCase("fqdn-wildcard", `egress:
   - toFQDNs:
@@ -194,7 +194,7 @@ func (m *Tests) TestEgressFqdnWildcard(ctx context.Context) error {
 // DNS label. Multi-label subdomains (deep.sub.target-zone) must be rejected to
 // prevent policy bypass.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-wildcard-depth
+//	dagger call -m ci/tests test-egress-fqdn-wildcard-depth
 func (m *Tests) TestEgressFqdnWildcardDepth(ctx context.Context) error {
 	return newTestCase("fqdn-wildcard-depth", `egress:
   - toFQDNs:
@@ -220,7 +220,7 @@ func (m *Tests) TestEgressFqdnWildcardDepth(ctx context.Context) error {
 // multi-label (two.one.target-zone) subdomains are allowed, exercising the
 // distinct RBAC regex path in Envoy.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-wildcard-multi-label
+//	dagger call -m ci/tests test-egress-fqdn-wildcard-multi-label
 func (m *Tests) TestEgressFqdnWildcardMultiLabel(ctx context.Context) error {
 	return newTestCase("fqdn-wildcard-multi-label", `egress:
   - toFQDNs:
@@ -248,7 +248,7 @@ func (m *Tests) TestEgressFqdnWildcardMultiLabel(ctx context.Context) error {
 // filter, multi-label subdomains could bypass the wildcard restriction over
 // plain HTTP.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-wildcard-http-rbac
+//	dagger call -m ci/tests test-egress-fqdn-wildcard-http-rbac
 func (m *Tests) TestEgressFqdnWildcardHttpRbac(ctx context.Context) error {
 	return newTestCase("fqdn-wildcard-http-rbac", `egress:
   - toFQDNs:
@@ -273,7 +273,7 @@ func (m *Tests) TestEgressFqdnWildcardHttpRbac(ctx context.Context) error {
 // while still enforcing port restrictions. HTTPS (port 443) to any service is
 // allowed, but HTTP (port 80) is denied because it is not in toPorts.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-bare-wildcard
+//	dagger call -m ci/tests test-egress-fqdn-bare-wildcard
 func (m *Tests) TestEgressFqdnBareWildcard(ctx context.Context) error {
 	return newTestCase("fqdn-bare-wildcard", `egress:
   - toFQDNs:
@@ -297,7 +297,7 @@ func (m *Tests) TestEgressFqdnBareWildcard(ctx context.Context) error {
 // TestEgressFqdnPortRestrict verifies port-level restriction on an allowed
 // FQDN. The target is reachable on port 443 but not on port 80.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-port-restrict
+//	dagger call -m ci/tests test-egress-fqdn-port-restrict
 func (m *Tests) TestEgressFqdnPortRestrict(ctx context.Context) error {
 	return newTestCase("fqdn-port-restrict", `egress:
   - toFQDNs:
@@ -319,7 +319,7 @@ func (m *Tests) TestEgressFqdnPortRestrict(ctx context.Context) error {
 // on port 80 (broad CIDR), but other ports should be blocked. CIDR TCP
 // traffic is routed through Envoy's CIDR catch-all listener (original_dst).
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-cidr-allow
+//	dagger call -m ci/tests test-egress-cidr-allow
 func (m *Tests) TestEgressCidrAllow(ctx context.Context) error {
 	return newTestCase("cidr-allow", `egress:
   - toCIDR:
@@ -345,7 +345,7 @@ func (m *Tests) TestEgressCidrAllow(ctx context.Context) error {
 // then checks the SQLite event store via `terrarium stats list` for
 // an envoy-source allow event on port 80.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-cidr-logging
+//	dagger call -m ci/tests test-egress-cidr-logging
 func (m *Tests) TestEgressCidrLogging(ctx context.Context) error {
 	return newTestCase("cidr-logging", `stats:
   enabled: true
@@ -376,7 +376,7 @@ egress:
 // terminates TLS, inspects the HTTP request, and only allows GET requests
 // to paths matching /allowed/.*.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-http-path
+//	dagger call -m ci/tests test-egress-l7-http-path
 func (m *Tests) TestEgressL7HttpPath(ctx context.Context) error {
 	return newTestCase("l7-http-path", `egress:
   - toFQDNs:
@@ -403,7 +403,7 @@ func (m *Tests) TestEgressL7HttpPath(ctx context.Context) error {
 // TestEgressL7HttpMethod verifies method-only L7 restriction. GET and HEAD
 // are allowed; POST, PUT, DELETE are denied.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-http-method
+//	dagger call -m ci/tests test-egress-l7-http-method
 func (m *Tests) TestEgressL7HttpMethod(ctx context.Context) error {
 	return newTestCase("l7-http-method", `egress:
   - toFQDNs:
@@ -432,7 +432,7 @@ func (m *Tests) TestEgressL7HttpMethod(ctx context.Context) error {
 // with the correct host are allowed; requests smuggled with a different Host
 // header value are denied with HTTP 403.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-http-host
+//	dagger call -m ci/tests test-egress-l7-http-host
 func (m *Tests) TestEgressL7HttpHost(ctx context.Context) error {
 	return newTestCase("l7-http-host", `egress:
   - toFQDNs:
@@ -457,7 +457,7 @@ func (m *Tests) TestEgressL7HttpHost(ctx context.Context) error {
 // check for the presence of specific request headers. Requests that include the
 // required header are allowed; requests without it are denied with HTTP 403.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-http-header-presence
+//	dagger call -m ci/tests test-egress-l7-http-header-presence
 func (m *Tests) TestEgressL7HttpHeaderPresence(ctx context.Context) error {
 	return newTestCase("l7-http-header-presence", `egress:
   - toFQDNs:
@@ -484,7 +484,7 @@ func (m *Tests) TestEgressL7HttpHeaderPresence(ctx context.Context) error {
 // allowed; requests with a wrong value or missing the header entirely are
 // denied with HTTP 403.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-http-header-value
+//	dagger call -m ci/tests test-egress-l7-http-header-value
 func (m *Tests) TestEgressL7HttpHeaderValue(ctx context.Context) error {
 	return newTestCase("l7-http-header-value", `egress:
   - toFQDNs:
@@ -512,7 +512,7 @@ func (m *Tests) TestEgressL7HttpHeaderValue(ctx context.Context) error {
 // within a single HTTP rule. A rule with method, path, and host fields requires
 // all three to match; violating any single constraint results in HTTP 403.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-http-combined
+//	dagger call -m ci/tests test-egress-l7-http-combined
 func (m *Tests) TestEgressL7HttpCombined(ctx context.Context) error {
 	return newTestCase("l7-http-combined", `egress:
   - toFQDNs:
@@ -542,7 +542,7 @@ func (m *Tests) TestEgressL7HttpCombined(ctx context.Context) error {
 // {POST, /write/.*} -- mean a request matching either rule is allowed.
 // Cross-combinations (GET /write, POST /read) must be denied with HTTP 403.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-http-or-semantics
+//	dagger call -m ci/tests test-egress-l7-http-or-semantics
 func (m *Tests) TestEgressL7HttpOrSemantics(ctx context.Context) error {
 	return newTestCase("l7-http-or-semantics", `egress:
   - toFQDNs:
@@ -572,7 +572,7 @@ func (m *Tests) TestEgressL7HttpOrSemantics(ctx context.Context) error {
 // where Envoy inspects traffic via http_connection_manager without TLS
 // termination. This exercises the virtual host path without MITM.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-http-plain
+//	dagger call -m ci/tests test-egress-l7-http-plain
 func (m *Tests) TestEgressL7HttpPlain(ctx context.Context) error {
 	return newTestCase("l7-http-plain", `egress:
   - toFQDNs:
@@ -602,7 +602,7 @@ func (m *Tests) TestEgressL7HttpPlain(ctx context.Context) error {
 // inspection. This exercises the nullification logic in config/resolve.go
 // (matchRuleForPort).
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-l7-l4-nullification
+//	dagger call -m ci/tests test-egress-l7-l4-nullification
 func (m *Tests) TestEgressL7L4Nullification(ctx context.Context) error {
 	return newTestCase("l7-l4-nullification", `egress:
   - toFQDNs:
@@ -631,7 +631,7 @@ func (m *Tests) TestEgressL7L4Nullification(ctx context.Context) error {
 // TestEgressMultipleRules verifies that multiple egress rules are OR'd.
 // Traffic matching any rule is allowed; traffic matching none is denied.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-multiple-rules
+//	dagger call -m ci/tests test-egress-multiple-rules
 func (m *Tests) TestEgressMultipleRules(ctx context.Context) error {
 	return newTestCase("multiple-rules", `egress:
   - toFQDNs:
@@ -663,7 +663,7 @@ func (m *Tests) TestEgressMultipleRules(ctx context.Context) error {
 // TestEgressUnrestricted verifies that when no egress rules are present, all
 // traffic is unrestricted.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-unrestricted
+//	dagger call -m ci/tests test-egress-unrestricted
 func (m *Tests) TestEgressUnrestricted(ctx context.Context) error {
 	return newTestCase("unrestricted", `{}`,
 		targetService("target-allow", defaultNginxConf),
@@ -683,7 +683,7 @@ func (m *Tests) TestEgressUnrestricted(ctx context.Context) error {
 // target-deny's IP. The placeholder is resolved inside the terrarium container
 // where the service binding is active, so the IP always matches.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-cidr-except
+//	dagger call -m ci/tests test-egress-cidr-except
 func (m *Tests) TestEgressCidrExcept(ctx context.Context) error {
 	return newTestCase("cidr-except", `egress:
   - toCIDRSet:
@@ -714,7 +714,7 @@ func (m *Tests) TestEgressCidrExcept(ctx context.Context) error {
 // list are blocked. Placeholders are resolved inside the terrarium container
 // where the service bindings are active, so the IPs always match.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-cidr-multi-except
+//	dagger call -m ci/tests test-egress-cidr-multi-except
 func (m *Tests) TestEgressCidrMultiExcept(ctx context.Context) error {
 	return newTestCase("cidr-multi-except", `egress:
   - toCIDRSet:
@@ -746,7 +746,7 @@ func (m *Tests) TestEgressCidrMultiExcept(ctx context.Context) error {
 // on localhost that reaches the upstream service. A socat echo server
 // listens on port 22, and terrarium proxies localhost:15022 to it.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-tcp-forward
+//	dagger call -m ci/tests test-egress-tcp-forward
 func (m *Tests) TestEgressTcpForward(ctx context.Context) error {
 	return newTestCase("tcp-forward", `egress:
   - toFQDNs:
@@ -777,7 +777,7 @@ tcpForwards:
 // are OR'd correctly. Both named FQDNs are allowed on port 443; an unlisted
 // FQDN is denied.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-fqdn-multiple
+//	dagger call -m ci/tests test-egress-fqdn-multiple
 func (m *Tests) TestEgressFqdnMultiple(ctx context.Context) error {
 	return newTestCase("fqdn-multiple", `egress:
   - toFQDNs:
@@ -804,7 +804,7 @@ func (m *Tests) TestEgressFqdnMultiple(ctx context.Context) error {
 // on ports within the range (e.g., 8080) while blocking ports outside the
 // range (e.g., 9000). Uses custom nginx services on non-standard ports.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-port-range
+//	dagger call -m ci/tests test-egress-port-range
 func (m *Tests) TestEgressPortRange(ctx context.Context) error {
 	return newTestCase("port-range", `egress:
   - toFQDNs:
@@ -831,7 +831,7 @@ func (m *Tests) TestEgressPortRange(ctx context.Context) error {
 // or a valid answer), while queries for "target-allow" must return NOERROR with
 // a resolved address.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-dns-proxy-filtering
+//	dagger call -m ci/tests test-egress-dns-proxy-filtering
 func (m *Tests) TestEgressDnsProxyFiltering(ctx context.Context) error {
 	return newTestCase("dns-proxy-filtering", `egress:
   - toFQDNs:
@@ -856,7 +856,7 @@ func (m *Tests) TestEgressDnsProxyFiltering(ctx context.Context) error {
 // script then validates. A filtered policy (FQDN rule) is used to ensure
 // privilege drop happens in the filtered code path.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-privilege-isolation
+//	dagger call -m ci/tests test-egress-privilege-isolation
 func (m *Tests) TestEgressPrivilegeIsolation(ctx context.Context) error {
 	return newTestCase("privilege-isolation", `egress:
   - toFQDNs:
@@ -885,7 +885,7 @@ func (m *Tests) TestEgressPrivilegeIsolation(ctx context.Context) error {
 // Envoy readiness, the test checks ps output to confirm the envoy process
 // owner.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-envoy-uid
+//	dagger call -m ci/tests test-egress-envoy-uid
 func (m *Tests) TestEgressEnvoyUID(ctx context.Context) error {
 	return newTestCase("envoy-uid", `egress:
   - toFQDNs:
@@ -907,7 +907,7 @@ func (m *Tests) TestEgressEnvoyUID(ctx context.Context) error {
 // inside the container before terrarium init. The terrarium command (UID 1000)
 // verifies it can reach the localhost service while external traffic is denied.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-loopback-deny-all
+//	dagger call -m ci/tests test-egress-loopback-deny-all
 func (m *Tests) TestEgressLoopbackDenyAll(ctx context.Context) error {
 	return newTestCase("loopback-deny-all", `egress:
   - {}
@@ -927,7 +927,7 @@ func (m *Tests) TestEgressLoopbackDenyAll(ctx context.Context) error {
 // terrarium should exit with the same code. When it exits with 0, terrarium
 // should exit with 0.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-exit-code-propagation
+//	dagger call -m ci/tests test-egress-exit-code-propagation
 func (m *Tests) TestEgressExitCodePropagation(ctx context.Context) error {
 	config := `egress:
   - {}
@@ -995,7 +995,7 @@ func (m *Tests) TestEgressExitCodePropagation(ctx context.Context) error {
 // store entries for proxied traffic. Replaces the previous file-based
 // access log assertion.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-logging
+//	dagger call -m ci/tests test-egress-logging
 func (m *Tests) TestEgressLogging(ctx context.Context) error {
 	return newTestCase("logging", `stats:
   enabled: true
@@ -1027,7 +1027,7 @@ egress:
 // attribution, group-by paths, and CSV/cursor output across one
 // container boot.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-event-attribution
+//	dagger call -m ci/tests test-egress-event-attribution
 func (m *Tests) TestEgressEventAttribution(ctx context.Context) error {
 	return newTestCase("event-attribution", `stats:
   enabled: true
@@ -1151,7 +1151,7 @@ egress:
 // in unrestricted mode (no egress rules). Root has a blanket ACCEPT in the
 // output chain so traffic goes directly without TPROXY.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-udp-forward
+//	dagger call -m ci/tests test-egress-udp-forward
 func (m *Tests) TestEgressUdpForward(ctx context.Context) error {
 	return newTestCase("udp-forward", `{}`,
 		udpEchoService("target-udp", 5000),
@@ -1166,7 +1166,7 @@ func (m *Tests) TestEgressUdpForward(ctx context.Context) error {
 // No mangle chains or Envoy TPROXY listener are created. Assertions run
 // as UID 1000 so the denial is tested through the terrarium-UID path.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-udp-deny-all
+//	dagger call -m ci/tests test-egress-udp-deny-all
 func (m *Tests) TestEgressUdpDenyAll(ctx context.Context) error {
 	return newTestCase("udp-deny-all", `egress:
   - {}
@@ -1187,7 +1187,7 @@ func (m *Tests) TestEgressUdpDenyAll(ctx context.Context) error {
 // (upstream Envoy issue). Assertions run as UID 1000 because nftables
 // policy only applies to that UID.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-udp-filtered
+//	dagger call -m ci/tests test-egress-udp-filtered
 func (m *Tests) TestEgressUdpFiltered(ctx context.Context) error {
 	return newTestCase("udp-filtered", `egress:
   - toCIDRSet:
@@ -1215,7 +1215,7 @@ func (m *Tests) TestEgressUdpFiltered(ctx context.Context) error {
 // Envoy process log even though the v1 stats event store does not
 // capture UDP access events.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-udp-logging
+//	dagger call -m ci/tests test-egress-udp-logging
 func (m *Tests) TestEgressUdpLogging(ctx context.Context) error {
 	return newTestCase("udp-logging", `stats:
   enabled: true
@@ -1238,7 +1238,7 @@ func (m *Tests) TestEgressUdpLogging(ctx context.Context) error {
 // broad CIDR allow covers it. The filter chain's deny rules DROP the
 // non-redirected traffic.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-deny-all-via-egress-deny
+//	dagger call -m ci/tests test-egress-deny-all-via-egress-deny
 func (m *Tests) TestEgressDenyAllViaEgressDeny(ctx context.Context) error {
 	return newTestCase("egress-deny", `egress:
   - toCIDR:
@@ -1269,7 +1269,7 @@ egressDeny:
 // TestEgressEntityWorldIpv4 verifies that toEntities with world-ipv4 expands
 // to 0.0.0.0/0. Port 80 is allowed; port 443 is not in toPorts and is blocked.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-entity-world-ipv4
+//	dagger call -m ci/tests test-egress-entity-world-ipv4
 func (m *Tests) TestEgressEntityWorldIpv4(ctx context.Context) error {
 	return newTestCase("entity-world-ipv4", `egress:
   - toEntities:
@@ -1293,7 +1293,7 @@ func (m *Tests) TestEgressEntityWorldIpv4(ctx context.Context) error {
 // populates the ICMP ipset, enabling ping to allowed FQDNs while denying
 // ping to unlisted FQDNs.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-icmp-fqdn
+//	dagger call -m ci/tests test-egress-icmp-fqdn
 func (m *Tests) TestEgressIcmpFqdn(ctx context.Context) error {
 	return newTestCase("icmp-fqdn", `egress:
   - toFQDNs:
@@ -1327,7 +1327,7 @@ func (m *Tests) TestEgressIcmpFqdn(ctx context.Context) error {
 // header value in the response body, allowing verification that REPLACE
 // normalizes all requests to carry the correct value.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-header-match-mismatch
+//	dagger call -m ci/tests test-egress-header-match-mismatch
 func (m *Tests) TestEgressHeaderMatchMismatch(ctx context.Context) error {
 	return newTestCase("header-match-mismatch", `egress:
   - toFQDNs:
@@ -1356,7 +1356,7 @@ func (m *Tests) TestEgressHeaderMatchMismatch(ctx context.Context) error {
 // to nil, meaning no effective serverNames restriction. With no L7 rules and no
 // effective serverNames, TLS passes through without MITM interception.
 //
-//	dagger call -m toolchains/terrarium/tests test-egress-server-name-bare-wildcard
+//	dagger call -m ci/tests test-egress-server-name-bare-wildcard
 func (m *Tests) TestEgressServerNameBareWildcard(ctx context.Context) error {
 	return newTestCase("server-name-bare-wildcard", `egress:
   - toFQDNs:

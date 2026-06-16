@@ -11,11 +11,21 @@ It is designed to closely align with CiliumNetworkPolicy semantics.
 ## Build & Test Commands
 
 ```bash
-task format # Format, tidy, and generate (dagger generate --auto-apply)
-task lint   # Lint only (go, GitHub, prettier, and GoReleaser checks)
-task test   # Run all tests (dagger check terrarium-ci:test-unit)
-task check  # Everything CI runs (dagger check)
+task format    # Format and tidy code, run generators
+task lint      # golangci-lint, go mod tidy check, prettier
+task test      # Run all tests (unit + integration)
+task check     # Local gate: lint + test (tools on the devbox PATH, no Dagger)
+task check:all # Everything CI runs (adds security + GitHub config + releaser, via Dagger)
 ```
+
+Devbox provides all required tools on PATH automatically.
+
+CI runs these same tasks inside the devbox environment via the `ci` Dagger
+toolchain (`dagger call ci <task>`), so local and CI execute identical commands.
+The `ci` module composes the shared toolchains from github.com/MacroPower/x
+(devbox, goreleaser, security, zizmor), pinned in `ci/dagger.json` and the root
+`dagger.json`; the `dagger` CLI must be on PATH and match the pinned
+`engineVersion`.
 
 ## Architecture
 

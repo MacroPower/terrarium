@@ -333,14 +333,14 @@ type testSpec struct {
 // terrarium init, readiness wait, and assertion execution.
 // Create instances with [newTestCase].
 type testCase struct {
-	name           string
-	config         string
-	bindings       []serviceBinding
-	assertions     []assertion
-	envoy          bool
-	packages       []string
-	rootAssertions []assertion
-	initCommand    string
+	name               string
+	config             string
+	bindings           []serviceBinding
+	assertions         []assertion
+	envoy              bool
+	packages           []string
+	rootAssertions     []assertion
+	initCommand        string
 	loopbackPort       int
 	configReplacements map[string]string
 	postExec           func(ctx context.Context, variant string, ctr *dagger.Container) error
@@ -946,7 +946,7 @@ func (tc *testCase) run(ctx context.Context) error {
 			}
 
 			// Mount testrunner binary and spec.
-			testrunnerBin := dag.Terrarium().TestRunner()
+			testrunnerBin := dag.Ci().TestRunner()
 			ctr = ctr.
 				WithFile("/usr/local/bin/testrunner", testrunnerBin).
 				WithNewFile("/tmp/spec.json", string(specJSON))
@@ -993,9 +993,9 @@ func terrariumContainer(
 	configContent string,
 	bindings []serviceBinding,
 ) (*dagger.Container, error) {
-	dist := dag.Terrarium().Build()
+	dist := dag.Ci().Build()
 
-	containers, err := dag.Terrarium().BuildImages(ctx, dagger.TerrariumBuildImagesOpts{
+	containers, err := dag.Ci().BuildImages(ctx, dagger.CiBuildImagesOpts{
 		Version: "v0.0.0-e2e",
 		Dist:    dist,
 		Variant: variant,

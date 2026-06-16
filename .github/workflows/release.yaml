@@ -63,7 +63,7 @@ jobs:
         with:
           version: "v0.21.4"
           call: >-
-            terrarium-ci release
+            ci release
             --github-token=env://GITHUB_TOKEN
             --registry-username="${{ github.actor }}"
             --registry-password=env://REGISTRY_PASSWORD

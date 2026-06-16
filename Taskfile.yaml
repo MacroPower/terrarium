@@ -13,46 +13,54 @@ includes:
   git: ./.taskfiles/git/Taskfile.yaml
   go: ./.taskfiles/go/Taskfile.yaml
   lima: ./.taskfiles/lima/Taskfile.yaml
+  release: ./.taskfiles/release/Taskfile.yaml
+  security: ./.taskfiles/security/Taskfile.yaml
 
 tasks:
   default:
     cmd: task -l
 
   format:
-    desc: Formats, tidies, and generates code via Dagger
-    summary: |
-      Runs every registered Dagger generator and applies the changes.
-      Supersedes go:format, which remains for selective runs.
+    desc: Runs all format and generate targets
     cmds:
-      - dagger generate --auto-apply
+      - task: go:tidy
+      - task: go:generate
+      - task: go:format
+      - task: fmt:format
 
   lint:
     desc: Runs all lint targets
-    deps: [go:lint, gh:lint, fmt:lint, releaser:lint]
-
-  releaser:lint:
-    desc: Validates the GoReleaser configuration via Dagger
-    cmds:
-      - dagger check terrarium-ci:lint-releaser
+    deps: [go:lint, go:tidy:check, fmt:lint]
 
   test:
-    desc: Runs all test targets
-    deps: [go:test]
+    desc: Runs all test targets (unit and integration)
+    deps: [go:test, go:test:integration]
 
-  build:
-    desc: Builds all binaries via Dagger
-    cmds:
-      - dagger call terrarium-ci build --output=./dist
+  docs:
+    desc: Runs all docs targets
+    deps: [go:docs]
 
+  # check is the fast local gate: lint and test invoke their tools straight off
+  # the devbox PATH, so it needs no Dagger engine. check:ci adds the gates whose
+  # tools (Trivy, zizmor, renovate-config-validator, goreleaser) are not on the
+  # devbox PATH and so run through Dagger. check:all is the union -- the full set
+  # CI runs, mirrored by the validate.yaml matrix.
   check:
-    desc: Runs all checks via Dagger
-    cmds:
-      - dagger check
+    desc: Runs the local checks using devbox
+    deps: [lint, test]
+
+  check:ci:
+    desc: Runs the Dagger-backed checks
+    deps: [security:scan, gh:lint, release:check]
+
+  check:all:
+    desc: Runs every check, local and Dagger-backed
+    deps: [check, check:ci]
 
   scan:
-    desc: Scans source dependencies for vulnerabilities via Dagger
+    desc: Scans source dependencies for vulnerabilities
     cmds:
-      - dagger call security scan-source
+      - task: security:scan
 
   pre-commit:
     desc: Runs all pre-commit targets
@@ -70,13 +78,18 @@ tasks:
     cmds:
       - rm -rf dist/ .test/ .task/ .tmp/
 
+  build:
+    desc: Builds all binaries via Dagger (snapshot, writes to ./dist)
+    cmds:
+      - dagger call ci build --output=./dist
+
   release:
     desc: Runs full release via Dagger
     requires:
       vars: [GITHUB_TOKEN, TAG, REGISTRY_USERNAME, REGISTRY_PASSWORD]
     cmds:
       - >-
-        dagger call terrarium-ci release
+        dagger call ci release
         --github-token=env://GITHUB_TOKEN
         --registry-username={{.REGISTRY_USERNAME}}
         --registry-password=env://REGISTRY_PASSWORD

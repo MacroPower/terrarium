@@ -15,7 +15,43 @@ permissions:
 
 jobs:
   check:
-    name: check
+    name: check (${{ matrix.task }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each entry is a function on the `ci` toolchain. lint, test, and
+        # test-integration run the matching Taskfile target inside the devbox
+        # environment (dagger -> devbox -> task); the rest compose a toolchain
+        # or Node container directly: security (Trivy via the security
+        # toolchain), lint-actions (zizmor via the zizmor toolchain),
+        # lint-renovate (renovate-config-validator in a Node container), and
+        # lint-releaser (goreleaser check via the goreleaser toolchain).
+        # Mirrors the gates developers run via `task check:all`.
+        task:
+          - lint
+          - test
+          - test-integration
+          - security
+          - lint-actions
+          - lint-renovate
+          - lint-releaser
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run ci ${{ matrix.task }}
+        uses: dagger/dagger-for-github@v8.4.1
+        with:
+          version: "v0.21.4"
+          call: ci ${{ matrix.task }}
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: "true"
+
+  coverage:
+    name: coverage
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,21 +59,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run all checks (test + lint in parallel)
-        uses: dagger/dagger-for-github@v8.4.1
-        with:
-          version: "v0.21.4"
-          verb: check
-          args: test-unit lint lint-prettier lint-actions lint-releaser
-          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
-          enable-github-summary: "true"
-
       - name: Export coverage profile
         if: ${{ !cancelled() }}
         uses: dagger/dagger-for-github@v8.4.1
         with:
           version: "v0.21.4"
-          call: go test-coverage --output=coverage.txt
+          call: ci test-coverage --output=coverage.txt
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
           enable-github-summary: "true"
 
@@ -47,8 +74,8 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  integration:
-    name: integration
+  toolchains:
+    name: toolchains
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -56,11 +83,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run terrarium integration tests
+      - name: Run ci integration tests
         uses: dagger/dagger-for-github@v8.4.1
         with:
           version: "v0.21.4"
           verb: check
-          module: toolchains/terrarium/tests
+          module: ci/tests
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
           enable-github-summary: "true"
