@@ -30,7 +30,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.41.0 // indirect
 	go.opentelemetry.io/otel/log v0.17.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
-	go.opentelemetry.io/otel/sdk v1.43.0
+	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/sdk/log v0.17.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
@@ -44,21 +44,21 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc => go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.16.0
+replace go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc => go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.20.0
 
-replace go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp => go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.16.0
+replace go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp => go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.20.0
 
-replace go.opentelemetry.io/otel/log => go.opentelemetry.io/otel/log v0.16.0
+replace go.opentelemetry.io/otel/log => go.opentelemetry.io/otel/log v0.20.0
 
-replace go.opentelemetry.io/otel/sdk/log => go.opentelemetry.io/otel/sdk/log v0.16.0
+replace go.opentelemetry.io/otel/sdk/log => go.opentelemetry.io/otel/sdk/log v0.20.0
 
 // Force the patched Dagger SDK transitive dependencies. The codegen pins
 // otel/sdk v1.41.0 and grpc v1.79.1, which carry CVE-2026-39883 and
 // CVE-2026-33186; pin the fixed releases so the source vulnerability scan
 // (which covers this module's go.mod) stays clean. Re-confirm after any
 // `dagger develop` regenerates this file.
-replace go.opentelemetry.io/otel/sdk => go.opentelemetry.io/otel/sdk v1.43.0
+replace go.opentelemetry.io/otel/sdk => go.opentelemetry.io/otel/sdk v1.44.0
 
-replace go.opentelemetry.io/otel/sdk/metric => go.opentelemetry.io/otel/sdk/metric v1.43.0
+replace go.opentelemetry.io/otel/sdk/metric => go.opentelemetry.io/otel/sdk/metric v1.44.0
 
 replace google.golang.org/grpc => google.golang.org/grpc v1.79.3
