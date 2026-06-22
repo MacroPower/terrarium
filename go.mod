@@ -3,7 +3,7 @@ module go.jacobcolvin.com/terrarium
 go 1.26.0
 
 require (
-	github.com/charmbracelet/fang v1.0.0
+	github.com/charmbracelet/fang/v2 v2.0.1
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
 	github.com/florianl/go-nflog/v2 v2.3.0
 	github.com/goccy/go-yaml v1.19.2
