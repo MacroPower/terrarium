@@ -22,7 +22,7 @@ import (
 
 const (
 	goreleaserVersion = "v2.16.0" // renovate: datasource=github-releases depName=goreleaser/goreleaser
-	envoyVersion      = "v1.38.2" // renovate: datasource=github-releases depName=envoyproxy/envoy
+	envoyVersion      = "v1.38.3" // renovate: datasource=github-releases depName=envoyproxy/envoy
 
 	defaultRegistry = "ghcr.io/macropower/terrarium"
 
