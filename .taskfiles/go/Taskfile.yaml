@@ -31,7 +31,7 @@ vars:
   # Test names matching this regex are integration tests: go:test skips them,
   # go:test:integration selects them.
   INTEGRATION_PATTERN: Integration
-  DEADCODE_VERSION: v0.46.0 # renovate: datasource=go depName=golang.org/x/tools
+  DEADCODE_VERSION: v0.47.0 # renovate: datasource=go depName=golang.org/x/tools
 
 tasks:
   # lint, format, tidy, and tidy:check fan out to one internal invocation per
