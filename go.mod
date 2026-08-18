@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/charmbracelet/fang v1.0.0
-	github.com/envoyproxy/go-control-plane/envoy v1.37.0
+	github.com/envoyproxy/go-control-plane/envoy v1.39.0
 	github.com/florianl/go-nflog/v2 v2.3.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/nftables v0.3.0
@@ -15,8 +15,8 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	go.jacobcolvin.com/niceyaml v0.0.0-20260221203657-9862fde753d7
 	go.jacobcolvin.com/x v0.0.0-20260219184143-22313fb1414d
-	golang.org/x/sys v0.42.0
-	google.golang.org/grpc v1.81.1
+	golang.org/x/sys v0.45.0
+	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.50.0
 )
@@ -62,12 +62,12 @@ require (
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20240604190554-fc45aab8b7f8 // indirect
-	golang.org/x/mod v0.33.0 // indirect
-	golang.org/x/net v0.51.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
-	golang.org/x/tools v0.42.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/tools v0.44.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.72.0 // indirect
