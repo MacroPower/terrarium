@@ -9,7 +9,12 @@ import (
 // FindCABundle returns the path to the system CA certificate bundle.
 // Checks SSL_CERT_FILE and NIX_SSL_CERT_FILE env vars first, then
 // well-known filesystem paths covering Linux and macOS/BSD.
-func FindCABundle() string {
+//
+// FindCABundle skips a candidate that is the same file as a path in
+// exclude. Callers pass the files that they write from the MITM CA.
+// Terrarium then never trusts its own CA for upstream servers, even
+// when SSL_CERT_FILE points at one of those files.
+func FindCABundle(exclude ...string) string {
 	candidates := []string{
 		os.Getenv("SSL_CERT_FILE"),
 		os.Getenv("NIX_SSL_CERT_FILE"),
@@ -23,13 +28,41 @@ func FindCABundle() string {
 			continue
 		}
 
-		_, err := os.Stat(c) //nolint:gosec // G703: paths are hardcoded candidates.
-		if err == nil {
-			return c
+		info, err := os.Stat(c) //nolint:gosec // G703: paths are hardcoded candidates.
+		if err != nil {
+			continue
 		}
+
+		if sameFileAsAny(info, exclude) {
+			//nolint:gosec // G706: path from env or hardcoded candidates.
+			slog.Warn("skipping CA bundle that terrarium writes",
+				slog.String("path", c),
+			)
+
+			continue
+		}
+
+		return c
 	}
 
 	return ""
+}
+
+// sameFileAsAny reports whether info describes the same file as one of
+// paths. It ignores empty and missing paths.
+func sameFileAsAny(info os.FileInfo, paths []string) bool {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+
+		other, err := os.Stat(p) //nolint:gosec // G703: path from caller.
+		if err == nil && os.SameFile(info, other) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // InstallToBundle appends a CA certificate to the system CA bundle and

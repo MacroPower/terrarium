@@ -36,12 +36,17 @@ var (
 	ErrEnvoyNotFound = errors.New(
 		"envoy binary not found on PATH " +
 			"(install it from envoyproxy.io on Linux or `brew install envoy` on macOS)")
+
+	// ErrSystemCABundleMissing means that --ca-bundle-out is set but no
+	// system CA bundle exists, so the client bundle has no roots.
+	ErrSystemCABundleMissing = errors.New("no system CA bundle found")
 )
 
 // proxyOptions carries the proxy command's flag values.
 type proxyOptions struct {
 	bindAddress string
 	caOut       string
+	caBundleOut string
 	resolvers   []string
 	httpPort    int
 }
@@ -68,6 +73,8 @@ func proxyCmd(usr *config.User) *cobra.Command {
 		"address the proxy listener binds")
 	cmd.Flags().StringVar(&opts.caOut, "ca-out", "",
 		"write the MITM CA certificate PEM to this path (only when the policy has L7 rules)")
+	cmd.Flags().StringVar(&opts.caBundleOut, "ca-bundle-out", "",
+		"write the system CA bundle plus the MITM CA to this path, for clients that read one trust file")
 	cmd.Flags().StringSliceVar(&opts.resolvers, "resolver", nil,
 		"DNS resolver ip:port for upstream resolution (default: system resolver)")
 
@@ -97,17 +104,14 @@ func proxyBootstrapPath(usr *config.User) string {
 	return filepath.Join(filepath.Dir(usr.EnvoyConfigPath), "envoy-proxy.yaml")
 }
 
-// GenerateProxy reads the policy from usr.ConfigPath, generates MITM
-// certs for restricted rules, writes the proxy-mode Envoy bootstrap,
-// and optionally copies the CA PEM to caOut. It returns the parsed
-// config and the bootstrap path.
+// GenerateProxy reads the policy from usr.ConfigPath and generates
+// MITM certs for restricted rules. It writes the proxy-mode Envoy
+// bootstrap and exports the CA files that opts names, then returns the
+// parsed config and the bootstrap path.
 //
 // The proxy reuses the CA in usr.CADir across runs, so clients that
-// trust it keep working after a restart.
-//
-// The caOut path is honored only when the policy has L7 rules
-// requiring MITM; an FQDN-only policy generates no CA, so there is
-// nothing to export.
+// trust it keep working after a restart. See [exportCA] for the files
+// it exports.
 func GenerateProxy(
 	ctx context.Context, usr *config.User, opts proxyOptions,
 ) (*config.Config, string, error) {
@@ -128,9 +132,11 @@ func GenerateProxy(
 
 	mitmRules := collectMITMRules(ctx, cfg)
 
+	caPath := ""
 	certsDir := ""
+
 	if len(mitmRules) > 0 {
-		_, _, err := certs.LoadOrGenerateCA(usr.CADir)
+		caPath, _, err = certs.LoadOrGenerateCA(usr.CADir)
 		if err != nil {
 			return nil, "", fmt.Errorf("loading CA: %w", err)
 		}
@@ -143,24 +149,16 @@ func GenerateProxy(
 		certsDir = usr.CertsDir
 	}
 
-	switch {
-	case opts.caOut != "" && certsDir != "":
-		err := copyFile(filepath.Join(usr.CADir, "ca.pem"), opts.caOut)
-		if err != nil {
-			return nil, "", fmt.Errorf("writing CA to %s: %w", opts.caOut, err)
-		}
+	// Skip the exported files, which hold the MITM CA, when choosing
+	// the bundle that verifies upstream servers.
+	systemBundle := certs.FindCABundle(opts.caOut, opts.caBundleOut)
 
-		slog.InfoContext(ctx, "proxy: CA certificate written",
-			slog.String("path", opts.caOut))
-
-	case opts.caOut != "":
-		// No L7 rules means no MITM and no CA; make the no-op explicit
-		// rather than silently leaving --ca-out unfulfilled.
-		slog.InfoContext(ctx, "proxy: no L7 rules, no MITM CA to export",
-			slog.String("ca_out", opts.caOut))
+	err = exportCA(ctx, caPath, systemBundle, opts)
+	if err != nil {
+		return nil, "", err
 	}
 
-	envoyConf, err := GenerateProxyEnvoyFromConfig(ctx, cfg, certsDir, certs.FindCABundle(),
+	envoyConf, err := GenerateProxyEnvoyFromConfig(ctx, cfg, certsDir, systemBundle,
 		opts.bindAddress, opts.httpPort, resolvers)
 	if err != nil {
 		return nil, "", fmt.Errorf("generating envoy config: %w", err)
@@ -179,6 +177,134 @@ func GenerateProxy(
 	}
 
 	return cfg, path, nil
+}
+
+// exportCA writes the CA files that opts names. The caPath argument is
+// the MITM CA certificate, or empty when the policy has no L7 rules.
+//
+//   - opts.caOut receives the MITM CA alone, for clients that add one
+//     certificate to their default roots, such as NODE_EXTRA_CA_CERTS
+//     or a keychain import. exportCA skips it without a MITM CA.
+//   - opts.caBundleOut receives the roots from systemBundle followed by
+//     the MITM CA, for clients that read a single trust file, such as
+//     SSL_CERT_FILE. The roots let those clients verify the hosts that
+//     the proxy tunnels without inspection. Without a MITM CA, the
+//     file holds the roots alone, so clients can point at it whatever
+//     the policy holds.
+//
+// exportCA replaces each file in one rename, so a client that reads it
+// during a restart sees either the old or the new contents.
+func exportCA(ctx context.Context, caPath, systemBundle string, opts proxyOptions) error {
+	var caPEM []byte
+
+	if caPath != "" {
+		var err error
+
+		caPEM, err = os.ReadFile(caPath) //nolint:gosec // G304: path from the CA directory.
+		if err != nil {
+			return fmt.Errorf("reading CA: %w", err)
+		}
+	}
+
+	switch {
+	case opts.caOut != "" && caPEM != nil:
+		err := writeFileAtomic(opts.caOut, caPEM)
+		if err != nil {
+			return fmt.Errorf("writing CA to %s: %w", opts.caOut, err)
+		}
+
+		slog.InfoContext(ctx, "proxy: CA certificate written",
+			slog.String("path", opts.caOut))
+
+	case opts.caOut != "":
+		// No L7 rules means no MITM and no CA; make the no-op explicit
+		// rather than silently leaving --ca-out unfulfilled.
+		slog.InfoContext(ctx, "proxy: no L7 rules, no MITM CA to export",
+			slog.String("ca_out", opts.caOut))
+	}
+
+	if opts.caBundleOut == "" {
+		return nil
+	}
+
+	if systemBundle == "" {
+		return fmt.Errorf("writing %s: %w", opts.caBundleOut, ErrSystemCABundleMissing)
+	}
+
+	roots, err := os.ReadFile(systemBundle) //nolint:gosec // G304: path from FindCABundle.
+	if err != nil {
+		return fmt.Errorf("reading system CA bundle: %w", err)
+	}
+
+	bundle := make([]byte, 0, len(roots)+len(caPEM)+1)
+	bundle = append(bundle, roots...)
+
+	if len(caPEM) > 0 {
+		if len(bundle) > 0 && bundle[len(bundle)-1] != '\n' {
+			bundle = append(bundle, '\n')
+		}
+
+		bundle = append(bundle, caPEM...)
+	}
+
+	err = writeFileAtomic(opts.caBundleOut, bundle)
+	if err != nil {
+		return fmt.Errorf("writing CA bundle to %s: %w", opts.caBundleOut, err)
+	}
+
+	slog.InfoContext(ctx, "proxy: CA bundle written",
+		slog.String("path", opts.caBundleOut),
+		slog.String("system_bundle", systemBundle),
+		slog.Bool("mitm_ca", len(caPEM) > 0))
+
+	return nil
+}
+
+// writeFileAtomic writes data to a temporary file next to path with
+// mode 0o644, then renames it over path.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+
+	err := os.MkdirAll(dir, 0o755)
+	if err != nil {
+		return fmt.Errorf("creating dir for %s: %w", path, err)
+	}
+
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+
+	tmp := f.Name()
+
+	_, err = f.Write(data)
+	if err == nil {
+		// CreateTemp creates the file with mode 0o600.
+		err = f.Chmod(0o644)
+	}
+
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+
+	if err != nil {
+		removeErr := os.Remove(tmp)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			slog.Debug("removing temp file",
+				slog.String("path", tmp),
+				slog.Any("err", removeErr),
+			)
+		}
+
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+
+	return nil
 }
 
 // GenerateProxyEnvoyFromConfig builds the proxy-mode Envoy bootstrap
