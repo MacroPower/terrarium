@@ -49,4 +49,32 @@ func TestFindCABundle(t *testing.T) {
 		// "" when none does); it must never be the nonexistent path.
 		assert.NotEqual(t, bogus, certs.FindCABundle())
 	})
+
+	t.Run("excluded file falls through", func(t *testing.T) {
+		excluded := writeTempBundle(t)
+		fallback := writeTempBundle(t)
+		t.Setenv("SSL_CERT_FILE", excluded)
+		t.Setenv("NIX_SSL_CERT_FILE", fallback)
+
+		assert.Equal(t, fallback, certs.FindCABundle("", excluded))
+	})
+
+	t.Run("excluded file through a symlink falls through", func(t *testing.T) {
+		excluded := writeTempBundle(t)
+		fallback := writeTempBundle(t)
+		link := filepath.Join(t.TempDir(), "link.pem")
+		require.NoError(t, os.Symlink(excluded, link))
+		t.Setenv("SSL_CERT_FILE", link)
+		t.Setenv("NIX_SSL_CERT_FILE", fallback)
+
+		assert.Equal(t, fallback, certs.FindCABundle(excluded))
+	})
+
+	t.Run("missing excluded path is ignored", func(t *testing.T) {
+		bundle := writeTempBundle(t)
+		t.Setenv("SSL_CERT_FILE", bundle)
+		t.Setenv("NIX_SSL_CERT_FILE", "")
+
+		assert.Equal(t, bundle, certs.FindCABundle(filepath.Join(t.TempDir(), "absent.pem")))
+	})
 }
