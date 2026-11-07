@@ -79,10 +79,10 @@ reference.
 `terrarium proxy` runs the same egress policy as a plain HTTP forward proxy on
 the host instead of a transparent gateway inside a container. It needs no root,
 no nftables, and no network namespaces -- it binds a loopback socket and
-supervises an Envoy subprocess. This makes it a drop-in for the
-[Claude Code sandbox proxy](https://code.claude.com/docs/en/sandboxing): point
-`sandbox.network.httpProxyPort` at it and every sandboxed request is filtered by
-your existing network policies.
+supervises an Envoy subprocess. Point `sandbox.network.httpProxyPort` at it
+to replace the [Claude Code sandbox proxy](https://code.claude.com/docs/en/sandboxing)
+for HTTP traffic. Your existing network policies then filter every sandboxed
+HTTP request.
 
 Envoy is an external dependency in this mode (it is not bundled with
 the host binary):
@@ -95,63 +95,113 @@ the host binary):
   native path. Bottles can trail the Linux release by a version or two,
   which terrarium tolerates.
 
-Run it, writing the generated MITM CA where the sandbox can read it:
+Run it, writing the CA files where the sandbox can read them:
 
 ```sh
 terrarium proxy \
   --config ./policy.yaml \
   --http-port 8080 \
-  --ca-out ~/.terrarium/proxy/ca.pem
+  --ca-out ~/.terrarium/proxy/ca.pem \
+  --ca-bundle-out ~/.terrarium/proxy/bundle.pem
 ```
 
-Then in `~/.claude/settings.json`:
+The two output files serve different clients:
+
+| Flag              | Contents                                                      | Use with                                                                     |
+| ----------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `--ca-out`        | The MITM CA alone, written only when the policy has L7 rules  | `NODE_EXTRA_CA_CERTS`, the macOS keychain                                    |
+| `--ca-bundle-out` | The system CA bundle, followed by the MITM CA when one exists | `SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` |
+
+A client that reads a single trust file needs the system roots as well as
+the MITM CA. The proxy tunnels hosts without L7 rules, so the client
+verifies the real server certificate for those hosts.
+
+Then in `~/.claude/settings.json`, with `/Users/me` replaced by your home
+directory:
 
 ```json
 {
   "sandbox": {
     "enabled": true,
     "network": {
-      "httpProxyPort": 8080
+      "httpProxyPort": 8080,
+      "strictAllowlist": true
     },
     "filesystem": {
-      "allowRead": ["~/.terrarium/proxy/ca.pem"]
+      "allowRead": ["~/.terrarium/proxy"],
+      "denyRead": ["~/.local/share/terrarium"]
     }
   },
   "env": {
-    "NODE_EXTRA_CA_CERTS": "~/.terrarium/proxy/ca.pem",
-    "SSL_CERT_FILE": "~/.terrarium/proxy/ca.pem"
+    "NODE_EXTRA_CA_CERTS": "/Users/me/.terrarium/proxy/ca.pem",
+    "SSL_CERT_FILE": "/Users/me/.terrarium/proxy/bundle.pem",
+    "NIX_SSL_CERT_FILE": "/Users/me/.terrarium/proxy/bundle.pem",
+    "REQUESTS_CA_BUNDLE": "/Users/me/.terrarium/proxy/bundle.pem",
+    "CURL_CA_BUNDLE": "/Users/me/.terrarium/proxy/bundle.pem"
   }
 }
 ```
 
-Setting `httpProxyPort` routes every sandboxed request through
-terrarium and skips Claude's own built-in proxy and hostname allowlist,
-so terrarium's policy is the only source of truth: unknown hosts get a
-403 from terrarium, never a confirmation prompt.
+Write absolute paths in `env`, because OpenSSL and Node read each value
+as a literal path and do not expand `~`. The `env` block applies to every
+process that Claude Code starts. The bundle keeps the system roots, so
+commands outside the sandbox still verify servers. Set both
+`SSL_CERT_FILE` and `NIX_SSL_CERT_FILE`, because tools built by Nix
+differ on which one wins. Nix's `curl` prefers `SSL_CERT_FILE`, and
+Nix's `git` prefers `NIX_SSL_CERT_FILE`.
 
-Domains with L7 rules (path/method/header constraints) are MITM'd: the
-proxy terminates TLS with a leaf signed by the generated CA, so the
-sandbox must trust that CA. Claude reads `NODE_EXTRA_CA_CERTS` for Node
-tooling; most other tools honor `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`
-/ `CURL_CA_BUNDLE` pointed at the same PEM. Go-based tools on macOS
-verify through the system keychain and ignore these variables; set
-`sandbox.network.enableWeakerNetworkIsolation: true` (Claude's
-documented option for an `httpProxyPort` MITM proxy with a custom CA),
-trust the CA in the keychain, or list those tools in `excludedCommands`.
-Domains without L7 rules are tunneled through `CONNECT` without
+Setting `httpProxyPort` routes every sandboxed HTTP request through
+terrarium and skips Claude's built-in HTTP proxy and hostname allowlist.
+Terrarium's policy is then the only source of truth for that traffic, so
+unknown hosts get a 403 from terrarium, never a confirmation prompt.
+
+Terrarium serves HTTP only, so Claude Code keeps running its built-in
+SOCKS proxy, and sandboxed commands can connect to either proxy. The
+SOCKS proxy filters by `allowedDomains` and `WebFetch(domain:...)` allow
+rules, so a host listed there skips terrarium's L7 rules. Exclude each
+host that has L7 rules from both lists. Set `strictAllowlist` so that the
+SOCKS proxy refuses unlisted hosts instead of prompting for them.
+
+The proxy terminates TLS for domains with L7 rules (path, method, or
+header constraints) and presents a leaf signed by its CA. The sandbox
+must therefore trust that CA. The proxy tunnels other domains through `CONNECT` without
 decryption, exactly like SNI-only rules in container mode.
 
-L7 rules also require a system CA trust bundle in the environment where
-`terrarium` itself runs: the proxy re-encrypts inspected traffic
-upstream and verifies the real server's certificate against that
-bundle. Terrarium looks for `SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, and
-the usual system paths (including `/etc/ssl/cert.pem` on macOS), and
-fails closed with an error when none is found. This is a different
-bundle from the sandbox `env` above: the sandboxed _client_ points
-`SSL_CERT_FILE` at the terrarium MITM CA, while terrarium's own
-environment must point at a real system trust bundle. Pointing
-terrarium's own `SSL_CERT_FILE` at the MITM CA would satisfy the
-bundle check but break every upstream handshake.
+The proxy keeps its CA in `--ca-dir`, which defaults to
+`$XDG_DATA_HOME/terrarium/ca` or `~/.local/share/terrarium/ca`. It reuses
+that CA on every start, so clients that trust it keep working after a
+restart. The proxy replaces the CA when the stored files do not form a
+valid pair, or when the CA expires within a year. To rotate the CA,
+delete the directory and restart the proxy.
+
+Only your user can read the CA key, but sandboxed commands run as your
+user. The `denyRead` entry in the example keeps them from reading the
+key and signing certificates that your clients trust. Adjust it when you
+set `--ca-dir` or `XDG_DATA_HOME`.
+
+Go-based tools on macOS verify certificates through the system keychain
+and ignore the variables above. To make them trust the CA, add it to your
+login keychain and set `sandbox.network.enableWeakerNetworkIsolation:
+true`, which lets sandboxed tools reach the trust service:
+
+```sh
+security add-trusted-cert -r trustRoot \
+  -k ~/Library/Keychains/login.keychain-db ~/.terrarium/proxy/ca.pem
+```
+
+Otherwise, list those tools in `excludedCommands`. A Go tool needs the CA
+only for the domains that have L7 rules.
+
+L7 rules also require a system CA bundle in the environment where
+`terrarium` itself runs. The proxy re-encrypts inspected traffic upstream
+and verifies the real server's certificate against that bundle.
+Terrarium looks for `SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, and the usual
+system paths (including `/etc/ssl/cert.pem` on macOS), and fails closed
+with an error when it finds none. It skips the `--ca-out` and
+`--ca-bundle-out` files, so a shell that exports the client variables
+above does not make terrarium trust its own CA. Point terrarium at a real
+system bundle. Any other copy of the MITM CA breaks every upstream
+handshake.
 
 Proxy mode filters TCP egress only. UDP egress (DNS, QUIC) is not
 proxied and stays blocked by the sandbox. Allow-rule kinds a forward
