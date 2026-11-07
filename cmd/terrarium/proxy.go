@@ -102,6 +102,9 @@ func proxyBootstrapPath(usr *config.User) string {
 // and optionally copies the CA PEM to caOut. It returns the parsed
 // config and the bootstrap path.
 //
+// The proxy reuses the CA in usr.CADir across runs, so clients that
+// trust it keep working after a restart.
+//
 // The caOut path is honored only when the policy has L7 rules
 // requiring MITM; an FQDN-only policy generates no CA, so there is
 // nothing to export.
@@ -127,7 +130,12 @@ func GenerateProxy(
 
 	certsDir := ""
 	if len(mitmRules) > 0 {
-		err := certs.Generate(mitmRules, usr.CADir, usr.CertsDir)
+		_, _, err := certs.LoadOrGenerateCA(usr.CADir)
+		if err != nil {
+			return nil, "", fmt.Errorf("loading CA: %w", err)
+		}
+
+		err = certs.GenerateLeaves(mitmRules, usr.CADir, usr.CertsDir)
 		if err != nil {
 			return nil, "", fmt.Errorf("generating certs: %w", err)
 		}
