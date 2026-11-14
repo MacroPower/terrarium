@@ -588,6 +588,12 @@ func openTCPPorts(openPortRules []config.ResolvedOpenPort) map[int]bool {
 // host, and supervises it until a signal arrives or Envoy exits. No
 // root, network namespaces, or nftables involved: the only privilege
 // needed is binding the listen port.
+//
+// A signal or a cancellation of ctx stops Envoy and makes Proxy return
+// nil. Proxy also returns nil when either arrives before Envoy starts
+// or before the listener accepts connections. Proxy returns
+// [ErrEnvoyNotRunning] when Envoy exits by itself or the listener does
+// not come up within the startup timeout.
 func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -638,21 +644,38 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 
 	err = cmd.Start()
 	if err != nil {
+		if ctx.Err() != nil {
+			// The shutdown arrived before Envoy started. Start does
+			// not run the process after ctx ends, so Proxy has no
+			// process to reap.
+			slog.InfoContext(ctx, "proxy: shut down")
+
+			return nil
+		}
+
 		return fmt.Errorf("starting envoy: %w", err)
 	}
 
 	addr := fmt.Sprintf("%s:%d", opts.bindAddress, opts.httpPort)
 
 	err = waitForListener(ctx, addr, envoySettings.StartupTimeout.Duration)
-	if err != nil {
+
+	switch {
+	case err == nil:
+		slog.InfoContext(ctx, "proxy: ready",
+			slog.String("address", addr),
+			slog.String("bootstrap", bootstrapPath))
+
+	case ctx.Err() != nil:
+		// The shutdown arrived before the listener came up. An early
+		// shutdown is not a startup failure, so Proxy reaps Envoy the
+		// same way as after the shutdown of a ready proxy.
+
+	default:
 		stopEnvoy(ctx, cmd, envoySettings.DrainTimeout.Duration)
 
 		return fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
 	}
-
-	slog.InfoContext(ctx, "proxy: ready",
-		slog.String("address", addr),
-		slog.String("bootstrap", bootstrapPath))
 
 	err = cmd.Wait()
 	if ctx.Err() != nil {

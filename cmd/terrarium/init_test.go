@@ -5,33 +5,38 @@ package main
 import (
 	"net"
 	"os/exec"
-	"syscall"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
 
 	"go.jacobcolvin.com/terrarium/config"
-	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/dnstest"
 )
 
-// setReuseAddr sets SO_REUSEADDR on the socket. Used in port-release
-// verification to avoid racing with kernel socket teardown in
-// sandboxed build environments.
-func setReuseAddr(_, _ string, c syscall.RawConn) error {
-	var opErr error
+// requireUDPPortReleased fails the test unless the UDP address addr
+// can be bound again within a few seconds.
+//
+// The bind can fail for a moment after the owner closes its socket. A
+// parallel test that starts a child process copies every open
+// descriptor into the child at fork. The copy keeps the port bound
+// until the child calls exec. SO_REUSEADDR does not help, because the
+// kernel honors it for UDP only when both sockets set it.
+func requireUDPPortReleased(t *testing.T, addr string) {
+	t.Helper()
 
-	err := c.Control(func(fd uintptr) {
-		opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-	})
-	if err != nil {
-		return err
-	}
+	lc := net.ListenConfig{}
 
-	return opErr
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		ln, err := lc.ListenPacket(t.Context(), "udp", addr)
+		if !assert.NoError(c, err) {
+			return
+		}
+
+		assert.NoError(c, ln.Close())
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestParseUpstreamDNS(t *testing.T) {
@@ -96,8 +101,7 @@ func TestDNSProxyShutdownOnInitFailure(t *testing.T) {
 	}
 
 	// Start the DNS proxy (simulates the Init step that succeeds).
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	// Verify the proxy is serving queries.
 	client := &dns.Client{Net: "udp"}
@@ -112,15 +116,8 @@ func TestDNSProxyShutdownOnInitFailure(t *testing.T) {
 	// the defer in Init does on error return).
 	require.NoError(t, proxy.Shutdown())
 
-	// Verify the port is released by binding the same address.
-	// Use SO_REUSEADDR to avoid racing with kernel socket teardown
-	// in sandboxed build environments.
-	lc := net.ListenConfig{
-		Control: setReuseAddr,
-	}
-	ln, err := lc.ListenPacket(t.Context(), "udp", proxy.Addr)
-	require.NoError(t, err)
-	require.NoError(t, ln.Close())
+	// Verify that Shutdown released the port.
+	requireUDPPortReleased(t, proxy.Addr)
 }
 
 func TestFirstListenerPort(t *testing.T) {
@@ -178,8 +175,7 @@ func TestShutdownOrder(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	// Start a long-running subprocess to simulate Envoy.
 	envoyCmd := exec.CommandContext(t.Context(), "sleep", "60")
@@ -207,12 +203,6 @@ func TestShutdownOrder(t *testing.T) {
 	// Envoy process should have been terminated and waited on.
 	assert.NotNil(t, envoyCmd.ProcessState, "envoy process should have been waited on")
 
-	// DNS proxy port should be released. Use SO_REUSEADDR to avoid
-	// racing with kernel socket teardown in sandboxed build environments.
-	lc := net.ListenConfig{
-		Control: setReuseAddr,
-	}
-	ln, err := lc.ListenPacket(t.Context(), "udp", proxy.Addr)
-	require.NoError(t, err)
-	require.NoError(t, ln.Close())
+	// The shutdown must release the DNS proxy port.
+	requireUDPPortReleased(t, proxy.Addr)
 }

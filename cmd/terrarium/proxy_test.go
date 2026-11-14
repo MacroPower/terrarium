@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -533,4 +535,86 @@ func TestGenerateProxyReusesCA(t *testing.T) {
 	bundle, err := os.ReadFile(opts.caBundleOut)
 	require.NoError(t, err)
 	assert.True(t, bytes.HasSuffix(bundle, first), "bundle must end with the MITM CA")
+}
+
+// TestProxyCancelDuringStartup checks that [Proxy] returns nil when
+// its context ends before the listener accepts connections. A stub
+// envoy that never listens holds the proxy in startup.
+//
+//nolint:paralleltest,tparallel // sets PATH for the whole process.
+func TestProxyCancelDuringStartup(t *testing.T) {
+	tests := map[string]struct {
+		// beforeStart cancels the context before the call to Proxy,
+		// so the cancellation arrives before Envoy starts.
+		beforeStart bool
+	}{
+		"before envoy starts": {beforeStart: true},
+		"after envoy starts":  {},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			binDir := t.TempDir()
+			started := filepath.Join(binDir, "started")
+
+			stub := "#!/bin/sh\n" +
+				": > '" + started + "'\n" +
+				"exec sleep 60\n"
+			require.NoError(t, os.WriteFile(filepath.Join(binDir, "envoy"), []byte(stub), 0o755))
+
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			dir := t.TempDir()
+			policyPath := filepath.Join(dir, "policy.yaml")
+			require.NoError(t, os.WriteFile(policyPath, []byte("egress: []\n"), 0o644))
+
+			usr := &config.User{
+				ConfigPath:      policyPath,
+				CADir:           filepath.Join(dir, "ca"),
+				CertsDir:        filepath.Join(dir, "certs"),
+				EnvoyConfigPath: filepath.Join(dir, "envoy.yaml"),
+			}
+
+			opts := proxyOptions{
+				bindAddress: loopbackIPv4,
+				httpPort:    freePort(t),
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			if tt.beforeStart {
+				cancel()
+			}
+
+			errCh := make(chan error, 1)
+
+			go func() {
+				errCh <- Proxy(ctx, usr, opts)
+			}()
+
+			if !tt.beforeStart {
+				// The stub creates the file when it starts, which is
+				// the moment the proxy begins to wait for the listener.
+				require.Eventually(t, func() bool {
+					_, err := os.Stat(started)
+
+					return err == nil
+				}, 15*time.Second, 10*time.Millisecond, "stub envoy did not start")
+
+				cancel()
+			}
+
+			select {
+			case err := <-errCh:
+				require.NoError(t, err)
+			case <-time.After(15 * time.Second):
+				t.Fatal("proxy did not shut down")
+			}
+
+			if tt.beforeStart {
+				assert.NoFileExists(t, started, "envoy must not start after the cancellation")
+			}
+		})
+	}
 }

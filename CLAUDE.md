@@ -38,7 +38,7 @@ The data flow is: YAML config -> `config` (parse, validate, normalize, resolve) 
 - **firewall**: nftables rule generation via google/nftables netlink backend. Per-rule chain isolation for OR semantics across egress rules. FQDN IP sets with TTLs.
 - **envoy**: Models a subset of Envoy v3 API for bootstrap config generation. SNI-based filter chains, HTTP connection manager with route matching, RBAC for header/SNI validation.
 - **dnsproxy**: DNS proxy using miekg/dns that resolves FQDNs and updates firewall IP sets dynamically.
-- **dnstest**: Shared test helper (`StartServer(t, ip)`) for spinning up test DNS servers.
+- **dnstest**: Shared test helpers that start a mock DNS server (`StartServer(t, ip)`) or a DNS proxy (`StartProxy(t, cfg, upstream)`) on a free loopback port. `Listen(t)` binds one port for UDP and TCP.
 - **certs**: MITM certificate generation (CA + leaf) for L7-restricted TLS rules.
 
 ## Code Style

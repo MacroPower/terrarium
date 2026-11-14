@@ -41,8 +41,7 @@ func TestStart(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -83,8 +82,7 @@ func TestProxyTCPPassthrough(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -114,8 +112,7 @@ func TestProxyBlockedMode(t *testing.T) {
 		Egress: egressRules(config.EgressRule{}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -143,8 +140,7 @@ func TestProxyRestrictedMode(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -192,8 +188,7 @@ func TestProxyRestrictedWildcard(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -239,8 +234,7 @@ func TestProxyBareWildcard(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -262,8 +256,7 @@ func TestProxyUnrestrictedMode(t *testing.T) {
 	upstream := dnstest.StartServer(t, "10.0.0.4")
 
 	// nil config -> unrestricted.
-	proxy, err := dnsproxy.Start(t.Context(), nil, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, nil, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -295,7 +288,7 @@ func TestProxyTCPPopulatesIPSet(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstream,
 		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -305,7 +298,6 @@ func TestProxyTCPPopulatesIPSet(t *testing.T) {
 			return nil
 		}),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -333,16 +325,7 @@ func TestProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 
 	// Mock upstream that returns a truncated UDP response,
 	// then a full TCP response with A records.
-	lc := net.ListenConfig{}
-
-	pc, err := lc.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	udpAddr, ok := pc.LocalAddr().(*net.UDPAddr)
-	require.True(t, ok)
-
-	tcpLn, err := lc.Listen(t.Context(), "tcp", fmt.Sprintf("127.0.0.1:%d", udpAddr.Port))
-	require.NoError(t, err)
+	pc, tcpLn, port := dnstest.Listen(t)
 
 	// UDP handler: return truncated response with no answers.
 	udpHandler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
@@ -412,7 +395,7 @@ func TestProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 		assert.NoError(t, tcpSrv.Shutdown())
 	})
 
-	upstreamAddr := fmt.Sprintf("127.0.0.1:%d", udpAddr.Port)
+	upstreamAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	var (
 		mu       sync.Mutex
@@ -426,7 +409,7 @@ func TestProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstreamAddr,
 		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -436,7 +419,6 @@ func TestProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 			return nil
 		}),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -477,16 +459,7 @@ func TestProxyTruncatedUDPThenTCPRetry(t *testing.T) {
 func startOversizedMockDNS(t *testing.T) string {
 	t.Helper()
 
-	lc := net.ListenConfig{}
-
-	pc, err := lc.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	udpAddr, ok := pc.LocalAddr().(*net.UDPAddr)
-	require.True(t, ok)
-
-	tcpLn, err := lc.Listen(t.Context(), "tcp", fmt.Sprintf("127.0.0.1:%d", udpAddr.Port))
-	require.NoError(t, err)
+	pc, tcpLn, port := dnstest.Listen(t)
 
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
 		resp := new(dns.Msg)
@@ -541,7 +514,7 @@ func startOversizedMockDNS(t *testing.T) string {
 		assert.NoError(t, tcpSrv.Shutdown())
 	})
 
-	return fmt.Sprintf("127.0.0.1:%d", udpAddr.Port)
+	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
 func TestProxyUDPCompressionOversized(t *testing.T) {
@@ -556,8 +529,7 @@ func TestProxyUDPCompressionOversized(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -587,8 +559,7 @@ func TestProxyTCPNoCompression(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -620,8 +591,7 @@ func TestProxyTCPForwardHosts(t *testing.T) {
 		TCPForwards: []config.TCPForward{{Port: 22, Host: "git.example.com"}},
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true)
-	require.NoError(t, err)
+	proxy := dnstest.StartProxy(t, cfg, upstream)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -661,16 +631,7 @@ func TestProxyTCPForwardHosts(t *testing.T) {
 func startCNAMEMockDNS(t *testing.T, cnameTTL, aTTL uint32) string {
 	t.Helper()
 
-	lc := net.ListenConfig{}
-
-	pc, err := lc.ListenPacket(t.Context(), "udp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	udpAddr, ok := pc.LocalAddr().(*net.UDPAddr)
-	require.True(t, ok)
-
-	tcpLn, err := lc.Listen(t.Context(), "tcp", fmt.Sprintf("127.0.0.1:%d", udpAddr.Port))
-	require.NoError(t, err)
+	pc, tcpLn, port := dnstest.Listen(t)
 
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
 		resp := new(dns.Msg)
@@ -730,7 +691,7 @@ func startCNAMEMockDNS(t *testing.T, cnameTTL, aTTL uint32) string {
 		assert.NoError(t, tcpSrv.Shutdown())
 	})
 
-	return fmt.Sprintf("127.0.0.1:%d", udpAddr.Port)
+	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
 func TestProxyCNAMEMinTTL(t *testing.T) {
@@ -756,7 +717,7 @@ func TestProxyCNAMEMinTTL(t *testing.T) {
 
 	var calls []setCall
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstream,
 		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -766,7 +727,6 @@ func TestProxyCNAMEMinTTL(t *testing.T) {
 			return nil
 		}),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -812,7 +772,7 @@ func TestProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 
 	var calls []setCall
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstream,
 		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -822,7 +782,6 @@ func TestProxyCNAMEHigherTTLUsesATTL(t *testing.T) {
 			return nil
 		}),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -869,10 +828,9 @@ func TestProxyUpstreamTimeoutSilentDrop(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstreamAddr, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstreamAddr,
 		dnsproxy.WithClientTimeout(100*time.Millisecond),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -912,10 +870,9 @@ func TestProxyUpstreamConnectionRefusedSERVFAIL(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, addr, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, addr,
 		dnsproxy.WithClientTimeout(2*time.Second),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -955,7 +912,7 @@ func TestProxyICMPFQDNPopulatesIPSet(t *testing.T) {
 		}),
 	}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstream,
 		dnsproxy.WithFQDNSetFunc(func(_ context.Context, setName string, ips []net.IP, ttl time.Duration) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -965,7 +922,6 @@ func TestProxyICMPFQDNPopulatesIPSet(t *testing.T) {
 			return nil
 		}),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -1018,10 +974,9 @@ func TestProxyEmitsEvents(t *testing.T) {
 
 	t.Cleanup(func() { assert.NoError(t, store.Close()) })
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstream,
 		dnsproxy.WithEventStore(store),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -1108,10 +1063,9 @@ func TestProxyBlockedModeEmitsDeny(t *testing.T) {
 
 	t.Cleanup(func() { assert.NoError(t, store.Close()) })
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstream,
 		dnsproxy.WithEventStore(store),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 
@@ -1182,13 +1136,12 @@ func TestProxyPopulatesReverseCache(t *testing.T) {
 
 	cache := &fakeReverseCache{}
 
-	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true,
+	proxy := dnstest.StartProxy(t, cfg, upstream,
 		dnsproxy.WithFQDNSetFunc(func(_ context.Context, _ string, _ []net.IP, _ time.Duration) error {
 			return nil
 		}),
 		dnsproxy.WithReverseCache(cache),
 	)
-	require.NoError(t, err)
 
 	t.Cleanup(func() { assert.NoError(t, proxy.Shutdown()) })
 

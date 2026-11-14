@@ -11,20 +11,34 @@ import (
 	"time"
 )
 
-// ErrEnvoyNotRunning is returned when the Envoy proxy process exits
-// or cannot be signaled after startup.
-var ErrEnvoyNotRunning = errors.New("envoy process not running")
+var (
+	// ErrEnvoyNotRunning is returned when the Envoy proxy process exits
+	// or cannot be signaled after startup.
+	ErrEnvoyNotRunning = errors.New("envoy process not running")
 
-// waitForListener polls a TCP address until it accepts connections or
-// the timeout expires.
+	// ErrListenerNotReady means that a listener did not accept
+	// connections before the startup timeout expired.
+	ErrListenerNotReady = errors.New("listener not ready")
+)
+
+// listenerPollInterval is the pause between two connection attempts
+// of [waitForListener].
+const listenerPollInterval = 100 * time.Millisecond
+
+// waitForListener polls a TCP address until it accepts connections.
+//
+// It returns [ErrListenerNotReady] when the timeout expires first.
+// When the caller cancels ctx first, it returns the context's error
+// without waiting for the next poll. The caller can then tell a
+// shutdown from a listener that never came up.
 func waitForListener(ctx context.Context, addr string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	dialer := net.Dialer{Timeout: 100 * time.Millisecond}
+	dialer := net.Dialer{Timeout: listenerPollInterval}
 
 	for {
-		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		conn, err := dialer.DialContext(waitCtx, "tcp", addr)
 		if err == nil {
 			err := conn.Close()
 			if err != nil {
@@ -34,11 +48,16 @@ func waitForListener(ctx context.Context, addr string, timeout time.Duration) er
 			return nil
 		}
 
-		if ctx.Err() != nil {
-			return fmt.Errorf("listener %s not ready after %v", addr, timeout)
-		}
+		select {
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return fmt.Errorf("waiting for listener %s: %w", addr, ctx.Err())
+			}
 
-		time.Sleep(100 * time.Millisecond)
+			return fmt.Errorf("%w: %s after %v", ErrListenerNotReady, addr, timeout)
+
+		case <-time.After(listenerPollInterval):
+		}
 	}
 }
 
