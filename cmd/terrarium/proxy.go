@@ -42,6 +42,10 @@ var (
 	ErrSystemCABundleMissing = errors.New("no system CA bundle found")
 )
 
+// loopbackIPv4 is the IPv4 loopback address. The proxy binds it by
+// default, and container mode skips it as an upstream resolver.
+const loopbackIPv4 = "127.0.0.1"
+
 // proxyOptions carries the proxy command's flag values.
 type proxyOptions struct {
 	bindAddress string
@@ -69,7 +73,7 @@ func proxyCmd(usr *config.User) *cobra.Command {
 
 	cmd.Flags().IntVar(&opts.httpPort, "http-port", 8080,
 		"port for the HTTP proxy listener")
-	cmd.Flags().StringVar(&opts.bindAddress, "bind-address", "127.0.0.1",
+	cmd.Flags().StringVar(&opts.bindAddress, "bind-address", loopbackIPv4,
 		"address the proxy listener binds")
 	cmd.Flags().StringVar(&opts.caOut, "ca-out", "",
 		"write the MITM CA certificate PEM to this path (only when the policy has L7 rules)")

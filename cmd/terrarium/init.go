@@ -54,7 +54,7 @@ func ParseUpstreamDNS(resolvConf string) string {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
 				addr := fields[1]
-				if addr == "127.0.0.1" || addr == "::1" {
+				if addr == loopbackIPv4 || addr == "::1" {
 					continue
 				}
 
