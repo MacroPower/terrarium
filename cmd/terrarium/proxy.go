@@ -42,9 +42,13 @@ var (
 	ErrSystemCABundleMissing = errors.New("no system CA bundle found")
 )
 
-// loopbackIPv4 is the IPv4 loopback address. The proxy binds it by
-// default, and container mode skips it as an upstream resolver.
-const loopbackIPv4 = "127.0.0.1"
+// The loopback addresses. The proxy binds loopbackIPv4 by default, and
+// container mode skips both as upstream resolvers because the DNS proxy
+// listens on them.
+const (
+	loopbackIPv4 = "127.0.0.1"
+	loopbackIPv6 = "::1"
+)
 
 // proxyOptions carries the proxy command's flag values.
 type proxyOptions struct {
