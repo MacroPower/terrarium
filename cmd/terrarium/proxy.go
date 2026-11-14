@@ -149,6 +149,8 @@ func GenerateProxy(
 			return nil, "", fmt.Errorf("loading CA: %w", err)
 		}
 
+		warnUntrustedCA(ctx, caPath)
+
 		err = certs.GenerateLeaves(mitmRules, usr.CADir, usr.CertsDir)
 		if err != nil {
 			return nil, "", fmt.Errorf("generating certs: %w", err)

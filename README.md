@@ -191,6 +191,11 @@ security add-trusted-cert -r trustRoot \
   -k ~/Library/Keychains/login.keychain-db ~/.local/share/terrarium/proxy/ca.pem
 ```
 
+On macOS, the proxy checks the keychain trust settings at startup and
+logs a warning when the keychain does not trust the CA. The warning
+also appears after you rotate the CA, because the keychain still holds
+the old one.
+
 Otherwise, list those tools in `excludedCommands`. A Go tool needs the CA
 only for the domains that have L7 rules.
 
