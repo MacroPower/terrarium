@@ -91,6 +91,16 @@ func proxyCmd(usr *config.User) *cobra.Command {
 	cmd.Flags().StringSliceVar(&opts.resolvers, "resolver", nil,
 		"DNS resolver ip:port for upstream resolution (default: system resolver)")
 
+	// The proxy runs as the invoking user and does not intercept DNS,
+	// so it does not register the UID flags of the container modes.
+	usr.RegisterFlags(cmd.Flags(),
+		usr.Flags.CADir,
+		usr.Flags.CertsDir,
+		usr.Flags.EnvoyConfigPath,
+		usr.Flags.EnvoyLogPath,
+		usr.Flags.ReadyFile,
+	)
+
 	return cmd
 }
 

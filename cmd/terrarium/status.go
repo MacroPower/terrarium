@@ -48,6 +48,11 @@ func statusCmd(usr *config.User) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.ProbeDNS, "probe-dns", false,
 		"actively probe the local DNS proxy")
 
+	usr.RegisterFlags(cmd.Flags(),
+		usr.Flags.EnvoyConfigPath,
+		usr.Flags.EnvoyLogPath,
+	)
+
 	return cmd
 }
 

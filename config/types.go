@@ -829,31 +829,56 @@ func NewUser() *User {
 	}
 }
 
-// RegisterFlags registers CLI flags for all [User] fields on the given
-// flag set. Default values follow XDG Base Directory conventions with
+// RegisterFlags registers CLI flags for [User] fields on the given flag
+// set. Default values follow XDG Base Directory conventions with
 // container-appropriate fallbacks.
-func (u *User) RegisterFlags(flags *pflag.FlagSet) {
-	flags.StringVar(&u.UID, u.Flags.UID, "1000", "terrarium user UID")
-	flags.StringVar(&u.GID, u.Flags.GID, "1000", "terrarium user GID")
-	flags.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "1001", "Envoy process UID")
-	flags.UintSliceVar(&u.ExcludeDNSUIDs, u.Flags.ExcludeDNSUIDs, nil,
+//
+// With no names, RegisterFlags registers every flag. With names, it
+// registers only the flags that have those names, so each command of a
+// CLI can offer only the flags that it reads. Take the names from
+// [User.Flags]. RegisterFlags panics when a name matches no flag.
+//
+// Every [User] field receives its default value, including the fields
+// of the flags that RegisterFlags does not register.
+func (u *User) RegisterFlags(flags *pflag.FlagSet, names ...string) {
+	all := pflag.NewFlagSet("user", pflag.ContinueOnError)
+
+	all.StringVar(&u.UID, u.Flags.UID, "1000", "terrarium user UID")
+	all.StringVar(&u.GID, u.Flags.GID, "1000", "terrarium user GID")
+	all.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "1001", "Envoy process UID")
+	all.UintSliceVar(&u.ExcludeDNSUIDs, u.Flags.ExcludeDNSUIDs, nil,
 		"UIDs excluded from DNS interception (e.g., local DNS forwarder)")
-	flags.StringVar(&u.Username, u.Flags.Username, "dev", "terrarium username")
-	flags.StringVar(&u.HomeDir, u.Flags.HomeDir,
+	all.StringVar(&u.Username, u.Flags.Username, "dev", "terrarium username")
+	all.StringVar(&u.HomeDir, u.Flags.HomeDir,
 		userHomeDir(), "terrarium user home directory")
-	flags.StringVar(&u.ConfigPath, u.Flags.ConfigPath,
+	all.StringVar(&u.ConfigPath, u.Flags.ConfigPath,
 		filepath.Join(userConfigDir(), "terrarium", "config.yaml"), "terrarium config file path")
-	flags.StringVar(&u.CertsDir, u.Flags.CertsDir,
+	all.StringVar(&u.CertsDir, u.Flags.CertsDir,
 		filepath.Join(userDataDir(), "terrarium", "certs"), "MITM leaf certificate directory")
-	flags.StringVar(&u.CADir, u.Flags.CADir,
+	all.StringVar(&u.CADir, u.Flags.CADir,
 		filepath.Join(userDataDir(), "terrarium", "ca"), "CA cert and key directory")
-	flags.StringVar(&u.EnvoyConfigPath, u.Flags.EnvoyConfigPath,
+	all.StringVar(&u.EnvoyConfigPath, u.Flags.EnvoyConfigPath,
 		envoyConfigDefault(),
 		"Envoy config output path (proxy writes envoy-proxy.yaml in the same directory)")
-	flags.StringVar(&u.EnvoyLogPath, u.Flags.EnvoyLogPath,
+	all.StringVar(&u.EnvoyLogPath, u.Flags.EnvoyLogPath,
 		envoyLogDefault(), "Envoy process log file path")
-	flags.StringVar(&u.ReadyFile, u.Flags.ReadyFile,
+	all.StringVar(&u.ReadyFile, u.Flags.ReadyFile,
 		"", "path to create when init or proxy is ready")
+
+	if len(names) == 0 {
+		all.VisitAll(flags.AddFlag)
+
+		return
+	}
+
+	for _, name := range names {
+		f := all.Lookup(name)
+		if f == nil {
+			panic(fmt.Sprintf("unknown user flag %q", name))
+		}
+
+		flags.AddFlag(f)
+	}
 }
 
 // RegisterCompletions registers shell completions for [User] flags.

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -260,4 +261,87 @@ func TestDurationUnmarshalYAML(t *testing.T) {
 			assert.Equal(t, tt.want, d.Duration)
 		})
 	}
+}
+
+func TestUserRegisterFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		names []string
+		want  []string
+	}{
+		"no names registers every flag": {
+			want: []string{
+				"ca-dir", "certs-dir", "config", "envoy-config", "envoy-log",
+				"envoy-uid", "exclude-dns-uids", "gid", "home-dir",
+				"ready-file", "uid", "username",
+			},
+		},
+		"one name": {
+			names: []string{"config"},
+			want:  []string{"config"},
+		},
+		"several names": {
+			names: []string{"envoy-log", "ca-dir", "ready-file"},
+			want:  []string{"ca-dir", "envoy-log", "ready-file"},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			u := config.NewUser()
+			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+			u.RegisterFlags(fs, tt.names...)
+
+			var got []string
+
+			fs.VisitAll(func(f *pflag.Flag) {
+				got = append(got, f.Name)
+			})
+
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestUserRegisterFlagsBindsFields(t *testing.T) {
+	t.Parallel()
+
+	u := config.NewUser()
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	u.RegisterFlags(fs, u.Flags.CADir)
+
+	require.NoError(t, fs.Parse([]string{"--ca-dir", "/custom/ca"}))
+
+	assert.Equal(t, "/custom/ca", u.CADir)
+	assert.Equal(t, "1000", u.UID, "the field of an unregistered flag keeps its default")
+
+	err := fs.Parse([]string{"--uid", "0"})
+	require.ErrorContains(t, err, "unknown flag: --uid")
+}
+
+func TestUserRegisterFlagsCustomName(t *testing.T) {
+	t.Parallel()
+
+	u := config.NewUser()
+	u.Flags.ConfigPath = "policy"
+
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	u.RegisterFlags(fs, u.Flags.ConfigPath)
+
+	require.NoError(t, fs.Parse([]string{"--policy", "/etc/policy.yaml"}))
+	assert.Equal(t, "/etc/policy.yaml", u.ConfigPath)
+}
+
+func TestUserRegisterFlagsUnknownName(t *testing.T) {
+	t.Parallel()
+
+	u := config.NewUser()
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+
+	assert.PanicsWithValue(t, `unknown user flag "no-such-flag"`, func() {
+		u.RegisterFlags(fs, "no-such-flag")
+	})
 }

@@ -22,6 +22,29 @@ import (
 func main() {
 	platformDispatch(os.Args)
 
+	err := fang.Execute(context.Background(), newRootCmd(),
+		fang.WithErrorHandler(fangs.ErrorHandler),
+		fang.WithoutCompletions(),
+		fang.WithoutManpage(),
+		fang.WithVersion(version.GetVersion()),
+	)
+	if err != nil {
+		var exitErr *ExitError
+
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
+
+		os.Exit(1)
+	}
+}
+
+// newRootCmd builds the terrarium command tree. The root command holds
+// the flags that every command reads: --config and the logging flags.
+// Each subcommand registers the other [config.User] flags that it
+// accepts, so the help of a command lists only those flags. The init
+// command accepts --username and --home-dir, which no code reads.
+func newRootCmd() *cobra.Command {
 	usr := config.NewUser()
 	logCfg := log.NewConfig()
 
@@ -40,7 +63,7 @@ func main() {
 		},
 	}
 
-	usr.RegisterFlags(rootCmd.PersistentFlags())
+	usr.RegisterFlags(rootCmd.PersistentFlags(), usr.Flags.ConfigPath)
 	logCfg.RegisterFlags(rootCmd.PersistentFlags())
 
 	err := usr.RegisterCompletions(rootCmd)
@@ -58,34 +81,34 @@ func main() {
 	}
 
 	rootCmd.AddCommand(
-		&cobra.Command{
-			Use:   "generate",
-			Short: "Generate nftables/envoy configs from YAML",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				_, err := Generate(cmd.Context(), usr, false)
-				return err
-			},
-		},
+		generateCmd(usr),
 		proxyCmd(usr),
 		statsCmd(usr),
 	)
 
 	rootCmd.AddCommand(platformCommands(usr)...)
 
-	err = fang.Execute(context.Background(), rootCmd,
-		fang.WithErrorHandler(fangs.ErrorHandler),
-		fang.WithoutCompletions(),
-		fang.WithoutManpage(),
-		fang.WithVersion(version.GetVersion()),
-	)
-	if err != nil {
-		var exitErr *ExitError
+	return rootCmd
+}
 
-		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.Code)
-		}
-
-		os.Exit(1)
+// generateCmd builds the `terrarium generate` subcommand, which writes
+// the MITM certificates and the Envoy bootstrap for a policy.
+func generateCmd(usr *config.User) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "generate",
+		Short: "Generate nftables/envoy configs from YAML",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := Generate(cmd.Context(), usr, false)
+			return err
+		},
 	}
+
+	usr.RegisterFlags(cmd.Flags(),
+		usr.Flags.CADir,
+		usr.Flags.CertsDir,
+		usr.Flags.EnvoyConfigPath,
+	)
+
+	return cmd
 }

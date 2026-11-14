@@ -39,6 +39,22 @@ func platformCommands(usr *config.User) []*cobra.Command {
 	daemonCmd.PersistentFlags().StringVar(&pidFile, "pid-file",
 		config.DefaultPIDFile, "path to PID file")
 
+	// The daemon does not start a user command, so it does not register
+	// --gid, which names the group of that command. The daemon reads
+	// --uid to set the owner of the event store. These flags are local
+	// to the daemon command, so `daemon reload` inherits only --pid-file
+	// from it.
+	usr.RegisterFlags(daemonCmd.Flags(),
+		usr.Flags.UID,
+		usr.Flags.EnvoyUID,
+		usr.Flags.ExcludeDNSUIDs,
+		usr.Flags.CADir,
+		usr.Flags.CertsDir,
+		usr.Flags.EnvoyConfigPath,
+		usr.Flags.EnvoyLogPath,
+		usr.Flags.ReadyFile,
+	)
+
 	daemonCmd.AddCommand(&cobra.Command{
 		Use:   "reload",
 		Short: "Validate config and signal the daemon to reload",
@@ -56,6 +72,22 @@ func platformCommands(usr *config.User) []*cobra.Command {
 			return Init(cmd.Context(), usr, args)
 		},
 	}
+
+	// No code reads the fields of --username and --home-dir. The init
+	// command accepts both flags and ignores their values.
+	usr.RegisterFlags(initCmd.Flags(),
+		usr.Flags.UID,
+		usr.Flags.GID,
+		usr.Flags.Username,
+		usr.Flags.HomeDir,
+		usr.Flags.EnvoyUID,
+		usr.Flags.ExcludeDNSUIDs,
+		usr.Flags.CADir,
+		usr.Flags.CertsDir,
+		usr.Flags.EnvoyConfigPath,
+		usr.Flags.EnvoyLogPath,
+		usr.Flags.ReadyFile,
+	)
 
 	return []*cobra.Command{initCmd, daemonCmd, statusCmd(usr)}
 }
