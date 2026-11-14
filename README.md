@@ -538,7 +538,7 @@ itself.
 stats:
   enabled: true # opt-in; default off
   path: $XDG_DATA_HOME/terrarium/stats.db # default
-  socket: /run/terrarium/accesslog.sock # gRPC ALS UDS
+  socket: /run/terrarium/accesslog.sock # gRPC ALS UDS; default for init, daemon, and generate
   firewall:
     nflogGroup: 5000 # netlink group for kernel log emission
   retention:
@@ -557,6 +557,22 @@ emissions when `logging.firewall.enabled` is also true. None of these paths
 can block the data plane. Terrarium's writer channel uses non-blocking sends
 with a drop counter; Envoy buffers internally; the nflog reader translates
 kernel log records to events and emits through the same drop-on-full channel.
+
+The default `socket` depends on the command, because a user without root
+cannot create `/run/terrarium`.
+
+| Command                                                    | Default `socket`                            |
+| ---------------------------------------------------------- | ------------------------------------------- |
+| `terrarium init`, `terrarium daemon`, `terrarium generate` | `/run/terrarium/accesslog.sock`             |
+| `terrarium proxy`                                          | `$XDG_RUNTIME_DIR/terrarium/accesslog.sock` |
+
+When `XDG_RUNTIME_DIR` is not set, as on macOS, `terrarium proxy` uses
+`$XDG_STATE_HOME/terrarium/accesslog.sock`. When `XDG_STATE_HOME` is not set
+either, it uses `~/.local/state/terrarium/accesslog.sock`.
+
+A Unix socket path holds at most 103 bytes on macOS and 107 bytes on Linux.
+For a longer `socket`, terrarium logs a warning that names the limit and
+records no Envoy events. Set `socket` to a shorter path.
 
 Read events with the CLI:
 

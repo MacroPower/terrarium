@@ -678,8 +678,9 @@ type Stats struct {
 	// resolves via the user data dir (`$XDG_DATA_HOME/terrarium/stats.db`).
 	Path string `yaml:"path,omitempty"`
 	// Socket is the Unix domain socket path Envoy connects to for
-	// the gRPC AccessLog Service. Defaults to
-	// [DefaultStatsSocket] when empty.
+	// the gRPC AccessLog Service. When empty, container mode uses
+	// [DefaultStatsSocket] and proxy mode uses
+	// [ProxyStatsSocketDefault].
 	Socket string `yaml:"socket,omitempty"`
 	// BufferBytes is the Envoy gRPC ALS client buffer; events past
 	// the watermark are dropped client-side. Defaults to
@@ -737,8 +738,10 @@ type PerSourceRetention struct {
 
 // Stats default constants.
 const (
-	// DefaultStatsSocket is the gRPC ALS UDS path used when
-	// [Stats.Socket] is empty.
+	// DefaultStatsSocket is the gRPC ALS UDS path that container
+	// mode uses when [Stats.Socket] is empty. Proxy mode uses
+	// [ProxyStatsSocketDefault], because an unprivileged user cannot
+	// create a directory under /run.
 	DefaultStatsSocket = "/run/terrarium/accesslog.sock"
 
 	// DefaultStatsBufferBytes is the Envoy gRPC ALS client buffer
@@ -1023,14 +1026,15 @@ func (c *Config) StatsPath(fallback string) string {
 	return fallback
 }
 
-// StatsSocket returns the configured Envoy gRPC ALS socket path,
-// or [DefaultStatsSocket] when unset.
-func (c *Config) StatsSocket() string {
+// StatsSocket returns the configured Envoy gRPC ALS socket path, or
+// fallback when the YAML omits it. Pass [DefaultStatsSocket] in
+// container mode and [ProxyStatsSocketDefault] in proxy mode.
+func (c *Config) StatsSocket(fallback string) string {
 	if c.Stats != nil && c.Stats.Socket != "" {
 		return c.Stats.Socket
 	}
 
-	return DefaultStatsSocket
+	return fallback
 }
 
 // StatsBufferBytes returns the Envoy gRPC ALS client buffer size,

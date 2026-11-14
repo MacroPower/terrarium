@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"go.jacobcolvin.com/niceyaml"
 
+	"go.jacobcolvin.com/terrarium/accesslog"
 	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/envoy"
@@ -90,11 +92,41 @@ func collectMITMRules(ctx context.Context, cfg *config.Config) []config.Resolved
 // alsConfig captures the shared gRPC ALS config used by every
 // listener. Empty values mean stats is disabled and no access loggers
 // are emitted.
+//
+// Create instances with [newALSConfig].
 type alsConfig struct {
 	socket   string
 	bufBytes uint32
 	flushMs  uint32
 	enabled  bool
+}
+
+// newALSConfig creates a new [alsConfig] from the stats block of cfg.
+// The socket argument is the path that the access log server binds.
+//
+// Envoy rejects a whole bootstrap that names a socket path longer than
+// [accesslog.MaxSocketPathLen]. For such a path, newALSConfig logs a
+// warning that names the limit and disables the access loggers, so
+// Envoy still starts.
+func newALSConfig(ctx context.Context, cfg *config.Config, socket string) alsConfig {
+	enabled := cfg.StatsEnabled()
+	if enabled {
+		err := accesslog.CheckSocketPath(socket)
+		if err != nil {
+			slog.WarnContext(ctx, "stats: socket path too long, envoy access loggers omitted",
+				slog.String("socket", socket),
+				slog.Any("err", err))
+
+			enabled = false
+		}
+	}
+
+	return alsConfig{
+		enabled:  enabled,
+		socket:   socket,
+		bufBytes: cfg.StatsBufferBytes(),
+		flushMs:  cfg.StatsFlushIntervalMs(),
+	}
 }
 
 // httpListenerLog returns the per-listener HttpGrpcAccessLog slice.
@@ -134,12 +166,7 @@ func GenerateEnvoyFromConfig(
 	certsDir, caBundlePath string,
 	vmMode bool,
 ) (string, error) {
-	als := alsConfig{
-		enabled:  cfg.StatsEnabled(),
-		socket:   cfg.StatsSocket(),
-		bufBytes: cfg.StatsBufferBytes(),
-		flushMs:  cfg.StatsFlushIntervalMs(),
-	}
+	als := newALSConfig(ctx, cfg, cfg.StatsSocket(config.DefaultStatsSocket))
 
 	resolvedPorts := cfg.ResolvePorts(ctx)
 

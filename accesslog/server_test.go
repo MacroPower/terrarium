@@ -5,6 +5,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,4 +150,94 @@ func TestServerDefaultSocketMode(t *testing.T) {
 	fi, err := os.Stat(socket)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o660), fi.Mode().Perm())
+}
+
+func TestCheckSocketPath(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		socket string
+		err    error
+	}{
+		"short path": {
+			socket: "/run/terrarium/accesslog.sock",
+		},
+		"path at the limit": {
+			socket: "/" + strings.Repeat("a", accesslog.MaxSocketPathLen-1),
+		},
+		"path one byte past the limit": {
+			socket: "/" + strings.Repeat("a", accesslog.MaxSocketPathLen),
+			err:    accesslog.ErrSocketPathTooLong,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := accesslog.CheckSocketPath(tt.socket)
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+				require.ErrorContains(t, err, "path is "+strconv.Itoa(len(tt.socket))+" bytes")
+				require.ErrorContains(t, err, "limit is "+strconv.Itoa(accesslog.MaxSocketPathLen)+" bytes")
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestStartSocketPathTooLong(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	socketDir := filepath.Join(dir, strings.Repeat("a", accesslog.MaxSocketPathLen))
+	socket := filepath.Join(socketDir, "als.sock")
+
+	store, err := eventstore.Open(t.Context(), filepath.Join(dir, "stats.db"))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+	_, err = accesslog.Start(t.Context(), socket, store)
+	require.ErrorIs(t, err, accesslog.ErrSocketPathTooLong)
+
+	// Start rejects the path before it creates the socket directory.
+	assert.NoDirExists(t, socketDir)
+}
+
+func TestStartSocketPathAtLimit(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Pad the file name so that the whole path has the maximum length.
+	pad := accesslog.MaxSocketPathLen - len(dir) - len("/.sock")
+	if pad < 1 {
+		t.Skipf("temp dir %q leaves no room for a socket path", dir)
+	}
+
+	socket := filepath.Join(dir, strings.Repeat("a", pad)+".sock")
+	require.Len(t, socket, accesslog.MaxSocketPathLen)
+
+	store, err := eventstore.Open(t.Context(), filepath.Join(dir, "stats.db"))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+	srv, err := accesslog.Start(t.Context(), socket, store)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+
+		srv.Shutdown(ctx)
+	})
+
+	fi, err := os.Stat(socket)
+	require.NoError(t, err)
+	assert.Equal(t, os.ModeSocket, fi.Mode().Type())
 }

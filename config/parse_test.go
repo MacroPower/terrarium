@@ -561,7 +561,7 @@ stats:
 			if tt.wantEnabled {
 				assert.Equal(t, tt.wantMaxAge, cfg.StatsRetentionMaxAge())
 				assert.Equal(t, tt.wantMaxRows, cfg.StatsRetentionMaxRows())
-				assert.Equal(t, tt.wantSocket, cfg.StatsSocket())
+				assert.Equal(t, tt.wantSocket, cfg.StatsSocket(config.DefaultStatsSocket))
 				assert.Equal(t, tt.wantBufBytes, cfg.StatsBufferBytes())
 				assert.Equal(t, tt.wantFlushMs, cfg.StatsFlushIntervalMs())
 

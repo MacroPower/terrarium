@@ -97,3 +97,45 @@ func TestRegisterFlagsXDGDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyStatsSocketDefault(t *testing.T) {
+	tests := map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"runtime dir set": {
+			env: map[string]string{
+				"HOME":            "/home/user",
+				"XDG_STATE_HOME":  "/custom/state",
+				"XDG_RUNTIME_DIR": "/run/user/1000",
+			},
+			want: "/run/user/1000/terrarium/accesslog.sock",
+		},
+		"runtime dir falls back to state dir": {
+			env: map[string]string{
+				"HOME":            "/home/user",
+				"XDG_STATE_HOME":  "/custom/state",
+				"XDG_RUNTIME_DIR": "",
+			},
+			want: "/custom/state/terrarium/accesslog.sock",
+		},
+		"HOME only": {
+			env: map[string]string{
+				"HOME":            "/Users/user",
+				"XDG_STATE_HOME":  "",
+				"XDG_RUNTIME_DIR": "",
+			},
+			want: "/Users/user/.local/state/terrarium/accesslog.sock",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+
+			assert.Equal(t, tt.want, config.ProxyStatsSocketDefault())
+		})
+	}
+}

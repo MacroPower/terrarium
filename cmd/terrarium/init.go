@@ -415,7 +415,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		boundStats: boundStats{
 			enabled:    cfg.StatsEnabled(),
 			path:       cfg.StatsPath(config.StatsDBDefault()),
-			socket:     cfg.StatsSocket(),
+			socket:     cfg.StatsSocket(config.DefaultStatsSocket),
 			nflogGroup: cfg.StatsFirewallNFLogGroup(),
 		},
 	}
@@ -497,7 +497,7 @@ func openAccessLog(
 		return nil
 	}
 
-	socket := cfg.StatsSocket()
+	socket := cfg.StatsSocket(config.DefaultStatsSocket)
 
 	srv, err := accesslog.Start(ctx, socket, store,
 		accesslog.WithSocketOwner(int(envoyUID)))

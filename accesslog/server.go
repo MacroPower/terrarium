@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
@@ -19,6 +20,28 @@ import (
 
 	"go.jacobcolvin.com/terrarium/eventstore"
 )
+
+// MaxSocketPathLen is the longest Unix domain socket path, in bytes,
+// that the platform can bind. The kernel stores the path and a
+// terminating NUL in a fixed array, which holds 104 bytes on macOS and
+// 108 bytes on Linux. Envoy applies the same limit to the path that it
+// connects to.
+const MaxSocketPathLen = len(syscall.RawSockaddrUnix{}.Path) - 1
+
+// ErrSocketPathTooLong is returned when a socket path is longer than
+// [MaxSocketPathLen].
+var ErrSocketPathTooLong = errors.New("socket path exceeds the platform limit")
+
+// CheckSocketPath returns [ErrSocketPathTooLong] when socket is longer
+// than [MaxSocketPathLen]. The error names both lengths.
+func CheckSocketPath(socket string) error {
+	if len(socket) > MaxSocketPathLen {
+		return fmt.Errorf("%w: path is %d bytes, limit is %d bytes",
+			ErrSocketPathTooLong, len(socket), MaxSocketPathLen)
+	}
+
+	return nil
+}
 
 // Option configures optional behavior of a [Server].
 //
@@ -91,15 +114,22 @@ type Server struct {
 // in a background goroutine. The returned [*Server] runs until
 // [Server.Shutdown] or the listener is closed.
 //
-// If binding or chmod fails, Start returns the error and the caller
-// should log and continue without ingestion.
+// Start returns [ErrSocketPathTooLong] before it touches the file
+// system when socket fails [CheckSocketPath]. If binding or chmod
+// fails, Start returns the error. In both cases the caller should log
+// the error and continue without ingestion.
 func Start(ctx context.Context, socket string, store *eventstore.Store, opts ...Option) (*Server, error) {
 	o := defaultServerOptions()
 	for _, opt := range opts {
 		opt(&o)
 	}
 
-	err := os.MkdirAll(filepath.Dir(socket), 0o755)
+	err := CheckSocketPath(socket)
+	if err != nil {
+		return nil, err
+	}
+
+	err = os.MkdirAll(filepath.Dir(socket), 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("creating socket dir: %w", err)
 	}

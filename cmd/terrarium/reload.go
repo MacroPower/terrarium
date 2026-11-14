@@ -336,7 +336,7 @@ func warnStartupOnlyStatsChanges(ctx context.Context, bound boundStats, cfg *con
 			slog.String("requested", newPath))
 	}
 
-	newSocket := cfg.StatsSocket()
+	newSocket := cfg.StatsSocket(config.DefaultStatsSocket)
 	if bound.enabled && bound.socket != newSocket {
 		slog.WarnContext(ctx,
 			"reload: stats.socket change ignored (restart required)",

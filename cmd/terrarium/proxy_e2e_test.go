@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,9 +21,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.jacobcolvin.com/terrarium/accesslog"
 	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnstest"
+	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
 // requireEnvoy skips the test when no envoy binary is on PATH.
@@ -428,4 +431,112 @@ func TestProxyE2EBlocked(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
 			getStatus(t, client, "http://anything.example/"))
 	})
+}
+
+// shortTempDir creates a temp dir directly under /tmp and removes it
+// when the test ends. A Unix socket path has a small length limit, and
+// the [testing.T.TempDir] path on macOS uses most of it.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+
+	//nolint:usetesting // t.TempDir is too long, see comment above.
+	dir, err := os.MkdirTemp("/tmp", "terrarium-")
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, os.RemoveAll(dir))
+	})
+
+	return dir
+}
+
+// countEnvoyEvents returns the number of Envoy events for domain in
+// the stats DB at dbPath, or zero when the DB is not readable yet.
+func countEnvoyEvents(t *testing.T, dbPath, domain string) int {
+	t.Helper()
+
+	db, err := eventstore.OpenReadOnly(t.Context(), dbPath)
+	if err != nil {
+		return 0
+	}
+
+	defer func() {
+		assert.NoError(t, db.Close())
+	}()
+
+	var n int
+
+	err = db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM events WHERE source = 'envoy' AND domain = ?`, domain).Scan(&n)
+	if err != nil {
+		return 0
+	}
+
+	return n
+}
+
+// TestProxyE2EStatsDefaultSocket checks that the proxy records Envoy
+// access events when the policy omits stats.socket. The default
+// socket sits in a per-user directory, so the proxy can create it
+// without root.
+//
+//nolint:paralleltest // e2e tests set env and run envoy subprocesses.
+func TestProxyE2EStatsDefaultSocket(t *testing.T) {
+	requireEnvoy(t)
+
+	runtimeDir := shortTempDir(t)
+	dbPath := filepath.Join(t.TempDir(), "stats.db")
+
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+	policy := "stats:\n" +
+		"  enabled: true\n" +
+		"  path: " + dbPath + "\n" +
+		"  flushIntervalMs: 100\n" +
+		"egress: []\n"
+
+	proxyURL, _ := startProxy(t, policy, "")
+	client := proxyClient(t, proxyURL, x509.NewCertPool())
+
+	fi, err := os.Stat(filepath.Join(runtimeDir, "terrarium", "accesslog.sock"))
+	require.NoError(t, err)
+	assert.Equal(t, os.ModeSocket, fi.Mode().Type())
+
+	// Only the owner can connect. The events counted at the end of the
+	// test show that Envoy, which runs as the same user, still does.
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
+
+	assert.Equal(t, http.StatusForbidden,
+		getStatus(t, client, "http://recorded.example/"))
+
+	assert.Eventually(t, func() bool {
+		return countEnvoyEvents(t, dbPath, "recorded.example") > 0
+	}, 15*time.Second, 250*time.Millisecond)
+}
+
+// TestProxyBootstrapStatsSocketTooLong checks that Envoy accepts the
+// proxy bootstrap when stats.socket is longer than the platform limit.
+// Envoy rejects a bootstrap that names such a path, so the bootstrap
+// must leave the access loggers out.
+func TestProxyBootstrapStatsSocketTooLong(t *testing.T) {
+	t.Parallel()
+	requireEnvoy(t)
+
+	cfg := parseProxyConfig(t, "stats:\n"+
+		"  enabled: true\n"+
+		"  socket: /"+strings.Repeat("a", accesslog.MaxSocketPathLen)+"\n"+
+		"egress: []\n")
+
+	bootstrap, err := GenerateProxyEnvoyFromConfig(
+		t.Context(), cfg, "", "", "127.0.0.1", 8080, nil)
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "envoy-proxy.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(bootstrap), 0o644))
+
+	cmd := exec.CommandContext(t.Context(), "envoy",
+		"--mode", "validate", "-c", path, "--disable-hot-restart")
+
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
 }

@@ -5,11 +5,13 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.jacobcolvin.com/terrarium/accesslog"
 	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/envoy"
@@ -183,6 +185,30 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 				"port_value: 5353",
 			},
 		},
+		"stats with explicit socket": {
+			yaml: "stats:\n" +
+				"  enabled: true\n" +
+				"  socket: /tmp/als.sock\n" +
+				"egress: []\n",
+			want: []string{
+				"terrarium_accesslog",
+				"envoy.access_loggers.http_grpc",
+				"path: /tmp/als.sock",
+			},
+		},
+		"stats socket past the platform limit drops grpc accesslog": {
+			yaml: "stats:\n" +
+				"  enabled: true\n" +
+				"  socket: /" + strings.Repeat("a", accesslog.MaxSocketPathLen) + "\n" +
+				"egress: []\n",
+			want: []string{
+				"name: deny",
+			},
+			wantAbsent: []string{
+				"terrarium_accesslog",
+				"envoy.access_loggers.http_grpc",
+			},
+		},
 	}
 
 	for name, tt := range tests {
@@ -217,6 +243,52 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 			for _, absent := range tt.wantAbsent {
 				assert.NotContains(t, out, absent)
 			}
+		})
+	}
+}
+
+// TestGenerateProxyEnvoyFromConfigStatsSocketDefault uses t.Setenv,
+// which is incompatible with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestGenerateProxyEnvoyFromConfigStatsSocketDefault(t *testing.T) {
+	tests := map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"runtime dir set": {
+			env: map[string]string{
+				"HOME":            "/Users/user",
+				"XDG_STATE_HOME":  "",
+				"XDG_RUNTIME_DIR": "/run/user/4242",
+			},
+			want: "path: /run/user/4242/terrarium/accesslog.sock",
+		},
+		"no runtime dir": {
+			env: map[string]string{
+				"HOME":            "/Users/user",
+				"XDG_STATE_HOME":  "",
+				"XDG_RUNTIME_DIR": "",
+			},
+			want: "path: /Users/user/.local/state/terrarium/accesslog.sock",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+
+			cfg := parseProxyConfig(t, "stats:\n  enabled: true\negress: []\n")
+
+			out, err := GenerateProxyEnvoyFromConfig(
+				t.Context(), cfg, "", "", "127.0.0.1", 8080, nil)
+			require.NoError(t, err)
+
+			assert.Contains(t, out, "terrarium_accesslog")
+			assert.Contains(t, out, tt.want)
+			assert.NotContains(t, out, config.DefaultStatsSocket)
 		})
 	}
 }

@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.jacobcolvin.com/terrarium/accesslog"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/envoy"
 )
@@ -130,6 +137,128 @@ func egressRules(rules ...config.EgressRule) *[]config.EgressRule {
 	return &rules
 }
 
+// lockedBuffer is a [bytes.Buffer] that goroutines can share.
+type lockedBuffer struct {
+	buf bytes.Buffer
+	mu  sync.Mutex
+}
+
+// Write appends p to the buffer.
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+// String returns the buffered text.
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// captureLogs sends the default [slog.Logger] to a buffer until the
+// test ends, and returns the buffer. The default logger is process
+// state, so the calling test must not run in parallel.
+//
+// [slog.SetDefault] also points the standard log package at the new
+// handler. It does not undo that redirection when it restores the
+// built-in default logger, which writes through the log package. The
+// cleanup therefore restores the writer and the flags of the log
+// package too.
+func captureLogs(t *testing.T) *lockedBuffer {
+	t.Helper()
+
+	buf := &lockedBuffer{}
+	prev := slog.Default()
+	prevWriter, prevFlags := log.Writer(), log.Flags()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	})
+
+	return buf
+}
+
+// TestCaptureLogsRestoresLoggers replaces the default logger, which is
+// incompatible with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestCaptureLogsRestoresLoggers(t *testing.T) {
+	wantLogger := slog.Default()
+	wantWriter, wantFlags := log.Writer(), log.Flags()
+
+	t.Run("capture", func(t *testing.T) {
+		logs := captureLogs(t)
+
+		slog.InfoContext(t.Context(), "during capture")
+		assert.Contains(t, logs.String(), "during capture")
+	})
+
+	// Later tests in the package log through the default logger, so
+	// their output must reach the original writer again.
+	assert.Same(t, wantLogger, slog.Default())
+	assert.Same(t, wantWriter, log.Writer())
+	assert.Equal(t, wantFlags, log.Flags())
+}
+
+// TestNewALSConfig replaces the default logger, which is incompatible
+// with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestNewALSConfig(t *testing.T) {
+	longSocket := "/" + strings.Repeat("a", accesslog.MaxSocketPathLen)
+
+	tests := map[string]struct {
+		stats       *config.Stats
+		wantEnabled bool
+		wantWarning bool
+	}{
+		"stats disabled": {
+			stats: &config.Stats{Socket: longSocket},
+		},
+		"stats enabled": {
+			stats:       &config.Stats{Enabled: true},
+			wantEnabled: true,
+		},
+		"socket past the platform limit": {
+			stats:       &config.Stats{Enabled: true, Socket: longSocket},
+			wantWarning: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			logs := captureLogs(t)
+
+			cfg := &config.Config{Stats: tt.stats}
+			socket := cfg.StatsSocket(config.DefaultStatsSocket)
+
+			als := newALSConfig(t.Context(), cfg, socket)
+
+			assert.Equal(t, tt.wantEnabled, als.enabled)
+			assert.Equal(t, socket, als.socket)
+
+			if !tt.wantWarning {
+				assert.NotContains(t, logs.String(), "socket path too long")
+
+				return
+			}
+
+			out := logs.String()
+			assert.Contains(t, out, "level=WARN")
+			assert.Contains(t, out, "stats: socket path too long, envoy access loggers omitted")
+			assert.Contains(t, out, "socket="+longSocket)
+			assert.Contains(t, out, "limit is "+strconv.Itoa(accesslog.MaxSocketPathLen)+" bytes")
+		})
+	}
+}
+
 func TestGenerateEnvoyFromConfig(t *testing.T) {
 	t.Parallel()
 
@@ -212,6 +341,25 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				Stats: &config.Stats{Enabled: true},
 			},
 			want: []string{
+				"terrarium_accesslog",
+				"envoy.access_loggers.http_grpc",
+				"envoy.access_loggers.tcp_grpc",
+				"path: /run/terrarium/accesslog.sock",
+			},
+		},
+		"stats socket past the platform limit drops grpc accesslog": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
+				}),
+				Stats: &config.Stats{
+					Enabled: true,
+					Socket:  "/" + strings.Repeat("a", accesslog.MaxSocketPathLen),
+				},
+			},
+			want: []string{"tls_passthrough", "http_forward"},
+			notWant: []string{
 				"terrarium_accesslog",
 				"envoy.access_loggers.http_grpc",
 				"envoy.access_loggers.tcp_grpc",

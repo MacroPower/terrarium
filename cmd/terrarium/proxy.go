@@ -324,6 +324,9 @@ func writeFileAtomic(path string, data []byte) error {
 // TCP forwards) cannot be enforced by a forward proxy: allow rules of
 // those kinds are skipped with a warning (fail-closed), and deny
 // rules are rejected with [ErrDenyRulesUnsupported].
+//
+// When stats is enabled, the access loggers send to stats.socket,
+// which defaults to [config.ProxyStatsSocketDefault].
 func GenerateProxyEnvoyFromConfig(
 	ctx context.Context,
 	cfg *config.Config,
@@ -341,12 +344,7 @@ func GenerateProxyEnvoyFromConfig(
 		return "", err
 	}
 
-	als := alsConfig{
-		enabled:  cfg.StatsEnabled(),
-		socket:   cfg.StatsSocket(),
-		bufBytes: cfg.StatsBufferBytes(),
-		flushMs:  cfg.StatsFlushIntervalMs(),
-	}
+	als := newALSConfig(ctx, cfg, cfg.StatsSocket(config.ProxyStatsSocketDefault()))
 
 	params := envoy.ProxyListenerParams{
 		BindAddress: bindAddress,
@@ -712,8 +710,14 @@ func openProxyEventStore(ctx context.Context, cfg *config.Config) *eventstore.St
 }
 
 // openProxyAccessLog binds the gRPC AccessLog UDS when stats is
-// enabled. On failure it logs and returns nil; the data plane is
-// never blocked by stats ingestion.
+// enabled. The socket defaults to [config.ProxyStatsSocketDefault],
+// which the invoking user can create without root. On failure it logs
+// and returns nil; the data plane is never blocked by stats ingestion.
+//
+// The socket has mode 0o600. Envoy runs as the invoking user in proxy
+// mode, so the owner is the only user who must connect. The default
+// socket directory can be open to other local users, and a wider mode
+// lets a member of the socket's group write forged events.
 func openProxyAccessLog(
 	ctx context.Context, cfg *config.Config, store *eventstore.Store,
 ) *accesslog.Server {
@@ -721,9 +725,10 @@ func openProxyAccessLog(
 		return nil
 	}
 
-	socket := cfg.StatsSocket()
+	socket := cfg.StatsSocket(config.ProxyStatsSocketDefault())
 
-	srv, err := accesslog.Start(ctx, socket, store)
+	srv, err := accesslog.Start(ctx, socket, store,
+		accesslog.WithSocketMode(0o600))
 	if err != nil {
 		slog.WarnContext(ctx, "stats: opening accesslog socket, ingestion disabled",
 			slog.String("socket", socket),
