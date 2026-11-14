@@ -139,7 +139,8 @@ directory:
     "SSL_CERT_FILE": "/Users/me/.local/share/terrarium/proxy/bundle.pem",
     "NIX_SSL_CERT_FILE": "/Users/me/.local/share/terrarium/proxy/bundle.pem",
     "REQUESTS_CA_BUNDLE": "/Users/me/.local/share/terrarium/proxy/bundle.pem",
-    "CURL_CA_BUNDLE": "/Users/me/.local/share/terrarium/proxy/bundle.pem"
+    "CURL_CA_BUNDLE": "/Users/me/.local/share/terrarium/proxy/bundle.pem",
+    "NODE_USE_ENV_PROXY": "1"
   }
 }
 ```
@@ -151,6 +152,13 @@ commands outside the sandbox still verify servers. Set both
 `SSL_CERT_FILE` and `NIX_SSL_CERT_FILE`, because tools built by Nix
 differ on which one wins. Nix's `curl` prefers `SSL_CERT_FILE`, and
 Nix's `git` prefers `NIX_SSL_CERT_FILE`.
+
+The sandbox sets `HTTP_PROXY` and `HTTPS_PROXY`, but Node's built-in
+`fetch` reads them only when `NODE_USE_ENV_PROXY` is `1`. Without
+`NODE_USE_ENV_PROXY`, `fetch` connects directly, the sandbox blocks the
+connection, and the request fails with `ENOTFOUND`. Node reads
+`NODE_USE_ENV_PROXY` in versions 22.21.0 and later of the 22 release
+line, and in versions 24.0.0 and later.
 
 Setting `httpProxyPort` routes every sandboxed HTTP request through
 terrarium and skips Claude's built-in HTTP proxy and hostname allowlist.
