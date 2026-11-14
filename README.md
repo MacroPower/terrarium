@@ -95,14 +95,16 @@ the host binary):
   native path. Bottles can trail the Linux release by a version or two,
   which terrarium tolerates.
 
-Run it, writing the CA files where the sandbox can read them:
+Run it, writing the CA files where the sandbox can read them. The example
+writes them to a `proxy` directory beside the CA directory under
+`$XDG_DATA_HOME/terrarium`, so one `denyRead` entry covers the key alone:
 
 ```sh
 terrarium proxy \
   --config ./policy.yaml \
   --http-port 8080 \
-  --ca-out ~/.terrarium/proxy/ca.pem \
-  --ca-bundle-out ~/.terrarium/proxy/bundle.pem
+  --ca-out ~/.local/share/terrarium/proxy/ca.pem \
+  --ca-bundle-out ~/.local/share/terrarium/proxy/bundle.pem
 ```
 
 The two output files serve different clients:
@@ -128,16 +130,16 @@ directory:
       "strictAllowlist": true
     },
     "filesystem": {
-      "allowRead": ["~/.terrarium/proxy"],
-      "denyRead": ["~/.local/share/terrarium"]
+      "allowRead": ["~/.local/share/terrarium/proxy"],
+      "denyRead": ["~/.local/share/terrarium/ca"]
     }
   },
   "env": {
-    "NODE_EXTRA_CA_CERTS": "/Users/me/.terrarium/proxy/ca.pem",
-    "SSL_CERT_FILE": "/Users/me/.terrarium/proxy/bundle.pem",
-    "NIX_SSL_CERT_FILE": "/Users/me/.terrarium/proxy/bundle.pem",
-    "REQUESTS_CA_BUNDLE": "/Users/me/.terrarium/proxy/bundle.pem",
-    "CURL_CA_BUNDLE": "/Users/me/.terrarium/proxy/bundle.pem"
+    "NODE_EXTRA_CA_CERTS": "/Users/me/.local/share/terrarium/proxy/ca.pem",
+    "SSL_CERT_FILE": "/Users/me/.local/share/terrarium/proxy/bundle.pem",
+    "NIX_SSL_CERT_FILE": "/Users/me/.local/share/terrarium/proxy/bundle.pem",
+    "REQUESTS_CA_BUNDLE": "/Users/me/.local/share/terrarium/proxy/bundle.pem",
+    "CURL_CA_BUNDLE": "/Users/me/.local/share/terrarium/proxy/bundle.pem"
   }
 }
 ```
@@ -176,8 +178,8 @@ delete the directory and restart the proxy.
 
 Only your user can read the CA key, but sandboxed commands run as your
 user. The `denyRead` entry in the example keeps them from reading the
-key and signing certificates that your clients trust. Adjust it when you
-set `--ca-dir` or `XDG_DATA_HOME`.
+key and signing certificates that your clients trust. Adjust it and the
+`allowRead` entry when you set `--ca-dir` or `XDG_DATA_HOME`.
 
 Go-based tools on macOS verify certificates through the system keychain
 and ignore the variables above. To make them trust the CA, add it to your
@@ -186,7 +188,7 @@ true`, which lets sandboxed tools reach the trust service:
 
 ```sh
 security add-trusted-cert -r trustRoot \
-  -k ~/Library/Keychains/login.keychain-db ~/.terrarium/proxy/ca.pem
+  -k ~/Library/Keychains/login.keychain-db ~/.local/share/terrarium/proxy/ca.pem
 ```
 
 Otherwise, list those tools in `excludedCommands`. A Go tool needs the CA
