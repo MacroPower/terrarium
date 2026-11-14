@@ -54,7 +54,7 @@ func ParseUpstreamDNS(resolvConf string) string {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
 				addr := fields[1]
-				if addr == "127.0.0.1" || addr == "::1" {
+				if addr == loopbackIPv4 || addr == loopbackIPv6 {
 					continue
 				}
 
@@ -1003,6 +1003,26 @@ func ensurePathTraversable(path string) error {
 				return fmt.Errorf("chmod %s: %w", d, err)
 			}
 		}
+	}
+
+	return nil
+}
+
+// copyFile copies a file from src to dst, creating parent directories.
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", src, err)
+	}
+
+	err = os.MkdirAll(filepath.Dir(dst), 0o755)
+	if err != nil {
+		return fmt.Errorf("creating dir for %s: %w", dst, err)
+	}
+
+	err = os.WriteFile(dst, data, 0o644) //nolint:gosec // G703: path from caller.
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", dst, err)
 	}
 
 	return nil

@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -75,24 +73,4 @@ func stopEnvoy(ctx context.Context, cmd *exec.Cmd, drainTimeout time.Duration) {
 	case <-time.After(drainTimeout):
 		slog.WarnContext(ctx, "envoy did not exit within drain timeout, proceeding")
 	}
-}
-
-// copyFile copies a file from src to dst, creating parent directories.
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", src, err)
-	}
-
-	err = os.MkdirAll(filepath.Dir(dst), 0o755)
-	if err != nil {
-		return fmt.Errorf("creating dir for %s: %w", dst, err)
-	}
-
-	err = os.WriteFile(dst, data, 0o644) //nolint:gosec // G703: path from caller.
-	if err != nil {
-		return fmt.Errorf("writing %s: %w", dst, err)
-	}
-
-	return nil
 }

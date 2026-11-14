@@ -116,8 +116,11 @@ func startTLSServer(t *testing.T, addr string, cfg *tls.Config, body string) {
 
 // startProxy writes the policy, runs [Proxy] in the background on a
 // fresh port, waits for readiness, and returns the proxy URL and the
-// user state (for the generated MITM CA).
-func startProxy(t *testing.T, policy, resolverAddr string) (*url.URL, *config.User) {
+// user state (for the generated MITM CA). Each setOpts function edits
+// the proxy options before the proxy starts.
+func startProxy(
+	t *testing.T, policy, resolverAddr string, setOpts ...func(*proxyOptions),
+) (*url.URL, *config.User) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -139,6 +142,10 @@ func startProxy(t *testing.T, policy, resolverAddr string) (*url.URL, *config.Us
 	}
 	if resolverAddr != "" {
 		opts.resolvers = []string{resolverAddr}
+	}
+
+	for _, set := range setOpts {
+		set(&opts)
 	}
 
 	// context.Background, not t.Context: t.Context is canceled before
@@ -343,8 +350,9 @@ func TestProxyE2EMITM(t *testing.T) {
 
 	require.NoError(t, probe.Close())
 
-	caPath, tlsCfg := e2eCerts(t, "test.example")
+	caPath, tlsCfg := e2eCerts(t, "test.example", "plain.example")
 	startTLSServer(t, "127.0.0.1:443", tlsCfg, "mitm upstream")
+	startTLSServer(t, "127.0.0.1:18444", tlsCfg, "tunneled upstream")
 
 	// The proxy validates its re-encrypted upstream connection against
 	// the system bundle; point it at the test CA.
@@ -360,9 +368,18 @@ func TestProxyE2EMITM(t *testing.T) {
 		"          - port: \"443\"\n" +
 		"        rules:\n" +
 		"          http:\n" +
-		"            - path: /allowed.*\n"
+		"            - path: /allowed.*\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: plain.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"18444\"\n"
 
-	proxyURL, usr := startProxy(t, policy, dnsAddr)
+	bundlePath := filepath.Join(t.TempDir(), "bundle.pem")
+
+	proxyURL, usr := startProxy(t, policy, dnsAddr, func(o *proxyOptions) {
+		o.caBundleOut = bundlePath
+	})
 
 	// The client sees the proxy's MITM leaf, so it must trust the
 	// generated terrarium CA, not the upstream's.
@@ -376,6 +393,20 @@ func TestProxyE2EMITM(t *testing.T) {
 	t.Run("denied path", func(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
 			getStatus(t, client, "https://test.example/forbidden"))
+	})
+
+	// A client that trusts only the exported bundle verifies both the
+	// MITM leaf and the upstream certificate of a tunneled host.
+	bundleClient := proxyClient(t, proxyURL, loadPool(t, bundlePath))
+
+	t.Run("bundle trusts the MITM leaf", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK,
+			getStatus(t, bundleClient, "https://test.example/allowed"))
+	})
+
+	t.Run("bundle trusts tunneled hosts", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK,
+			getStatus(t, bundleClient, "https://plain.example:18444/"))
 	})
 }
 
