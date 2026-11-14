@@ -147,8 +147,6 @@ func TestCommandRejectsUnreadFlags(t *testing.T) {
 	}{
 		"proxy --uid=1000 --help":                  {err: "unknown flag: --uid"},
 		"proxy --gid=1000 --help":                  {err: "unknown flag: --gid"},
-		"proxy --username=dev --help":              {err: "unknown flag: --username"},
-		"proxy --home-dir=/home/dev --help":        {err: "unknown flag: --home-dir"},
 		"proxy --envoy-uid=1001 --help":            {err: "unknown flag: --envoy-uid"},
 		"proxy --exclude-dns-uids=53 --help":       {err: "unknown flag: --exclude-dns-uids"},
 		"--uid=1000 proxy --help":                  {err: "unknown flag: --uid"},

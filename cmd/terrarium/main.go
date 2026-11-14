@@ -42,8 +42,7 @@ func main() {
 // newRootCmd builds the terrarium command tree. The root command holds
 // the flags that every command reads: --config and the logging flags.
 // Each subcommand registers the other [config.User] flags that it
-// accepts, so the help of a command lists only those flags. The init
-// command accepts --username and --home-dir, which no code reads.
+// accepts, so the help of a command lists only those flags.
 func newRootCmd() *cobra.Command {
 	usr := config.NewUser()
 	logCfg := log.NewConfig()

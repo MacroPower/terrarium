@@ -780,8 +780,6 @@ type UserFlags struct {
 	GID             string
 	EnvoyUID        string
 	ExcludeDNSUIDs  string
-	Username        string
-	HomeDir         string
 	ConfigPath      string
 	CertsDir        string
 	CADir           string
@@ -798,8 +796,6 @@ type User struct {
 	ConfigPath      string
 	GID             string
 	EnvoyUID        string
-	Username        string
-	HomeDir         string
 	CertsDir        string
 	CADir           string
 	EnvoyConfigPath string
@@ -817,8 +813,6 @@ func NewUser() *User {
 			GID:             "gid",
 			EnvoyUID:        "envoy-uid",
 			ExcludeDNSUIDs:  "exclude-dns-uids",
-			Username:        "username",
-			HomeDir:         "home-dir",
 			ConfigPath:      "config",
 			CertsDir:        "certs-dir",
 			CADir:           "ca-dir",
@@ -848,9 +842,6 @@ func (u *User) RegisterFlags(flags *pflag.FlagSet, names ...string) {
 	all.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "1001", "Envoy process UID")
 	all.UintSliceVar(&u.ExcludeDNSUIDs, u.Flags.ExcludeDNSUIDs, nil,
 		"UIDs excluded from DNS interception (e.g., local DNS forwarder)")
-	all.StringVar(&u.Username, u.Flags.Username, "dev", "terrarium username")
-	all.StringVar(&u.HomeDir, u.Flags.HomeDir,
-		userHomeDir(), "terrarium user home directory")
 	all.StringVar(&u.ConfigPath, u.Flags.ConfigPath,
 		filepath.Join(userConfigDir(), "terrarium", "config.yaml"), "terrarium config file path")
 	all.StringVar(&u.CertsDir, u.Flags.CertsDir,

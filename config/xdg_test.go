@@ -25,7 +25,6 @@ func TestRegisterFlagsXDGDefaults(t *testing.T) {
 				"XDG_RUNTIME_DIR": "/run/user/1000",
 			},
 			want: map[string]string{
-				"home-dir":     "/home/user",
 				"config":       "/custom/config/terrarium/config.yaml",
 				"certs-dir":    "/custom/data/terrarium/certs",
 				"ca-dir":       "/custom/data/terrarium/ca",
@@ -41,7 +40,6 @@ func TestRegisterFlagsXDGDefaults(t *testing.T) {
 				"XDG_RUNTIME_DIR": "",
 			},
 			want: map[string]string{
-				"home-dir":     "/home/user",
 				"config":       "/home/user/.config/terrarium/config.yaml",
 				"certs-dir":    "/home/user/.local/share/terrarium/certs",
 				"ca-dir":       "/home/user/.local/share/terrarium/ca",
@@ -57,7 +55,6 @@ func TestRegisterFlagsXDGDefaults(t *testing.T) {
 				"XDG_RUNTIME_DIR": "",
 			},
 			want: map[string]string{
-				"home-dir":     "/home/dev",
 				"config":       "/home/dev/.config/terrarium/config.yaml",
 				"certs-dir":    "/home/dev/.local/share/terrarium/certs",
 				"ca-dir":       "/home/dev/.local/share/terrarium/ca",

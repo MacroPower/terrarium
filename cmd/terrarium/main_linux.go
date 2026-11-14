@@ -73,13 +73,9 @@ func platformCommands(usr *config.User) []*cobra.Command {
 		},
 	}
 
-	// No code reads the fields of --username and --home-dir. The init
-	// command accepts both flags and ignores their values.
 	usr.RegisterFlags(initCmd.Flags(),
 		usr.Flags.UID,
 		usr.Flags.GID,
-		usr.Flags.Username,
-		usr.Flags.HomeDir,
 		usr.Flags.EnvoyUID,
 		usr.Flags.ExcludeDNSUIDs,
 		usr.Flags.CADir,

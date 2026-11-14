@@ -273,8 +273,7 @@ func TestUserRegisterFlags(t *testing.T) {
 		"no names registers every flag": {
 			want: []string{
 				"ca-dir", "certs-dir", "config", "envoy-config", "envoy-log",
-				"envoy-uid", "exclude-dns-uids", "gid", "home-dir",
-				"ready-file", "uid", "username",
+				"envoy-uid", "exclude-dns-uids", "gid", "ready-file", "uid",
 			},
 		},
 		"one name": {
