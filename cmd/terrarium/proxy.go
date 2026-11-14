@@ -40,6 +40,11 @@ var (
 	// ErrSystemCABundleMissing means that --ca-bundle-out is set but no
 	// system CA bundle exists, so the client bundle has no roots.
 	ErrSystemCABundleMissing = errors.New("no system CA bundle found")
+
+	// ErrReadyFileIsDir means that --ready-file names a directory. The
+	// proxy removes the ready file at startup and on exit, and it must
+	// not remove a directory.
+	ErrReadyFileIsDir = errors.New("ready file is a directory")
 )
 
 // The loopback addresses. The proxy binds loopbackIPv4 by default, and
@@ -107,9 +112,78 @@ func parseResolvers(resolvers []string) ([]netip.AddrPort, error) {
 
 // proxyBootstrapPath returns the proxy-mode Envoy bootstrap path:
 // envoy-proxy.yaml next to the container-mode bootstrap, so the two
-// modes never clobber each other's configs.
+// modes never clobber each other's configs. The file name is fixed, so
+// only the directory of usr.EnvoyConfigPath has an effect.
 func proxyBootstrapPath(usr *config.User) string {
 	return filepath.Join(filepath.Dir(usr.EnvoyConfigPath), "envoy-proxy.yaml")
+}
+
+// prepareProxyEnvoyLog creates the Envoy process log file at path, and
+// its parent directory, before Envoy opens the file.
+//
+// A new file has mode 0o600, because a verbose Envoy log level records
+// request headers. Envoy appends to the file, so an existing file keeps
+// its contents and its mode.
+func prepareProxyEnvoyLog(path string) error {
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
+	if err != nil {
+		return fmt.Errorf("creating envoy log directory: %w", err)
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: path from CLI flags.
+	if err != nil {
+		return fmt.Errorf("creating envoy log file: %w", err)
+	}
+
+	err = f.Close()
+	if err != nil {
+		return fmt.Errorf("closing envoy log file: %w", err)
+	}
+
+	return nil
+}
+
+// createReadyFile creates an empty file at path to signal that the
+// proxy accepts connections.
+func createReadyFile(path string) error {
+	f, err := os.Create(path) //nolint:gosec // G304: path from CLI flags.
+	if err != nil {
+		return fmt.Errorf("creating ready file: %w", err)
+	}
+
+	err = f.Close()
+	if err != nil {
+		return fmt.Errorf("closing ready file: %w", err)
+	}
+
+	return nil
+}
+
+// removeReadyFile removes the ready file at path. A missing file is
+// not an error.
+//
+// It returns [ErrReadyFileIsDir] and leaves path in place when path is
+// a directory. It removes a symbolic link, not the target of the link.
+func removeReadyFile(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("checking ready file: %w", err)
+	}
+
+	if info.IsDir() {
+		return fmt.Errorf("%w: %s", ErrReadyFileIsDir, path)
+	}
+
+	err = os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing ready file: %w", err)
+	}
+
+	return nil
 }
 
 // GenerateProxy reads the policy from usr.ConfigPath and generates
@@ -589,6 +663,17 @@ func openTCPPorts(openPortRules []config.ResolvedOpenPort) map[int]bool {
 // root, network namespaces, or nftables involved: the only privilege
 // needed is binding the listen port.
 //
+// Envoy writes its process log to the logging.envoy.path of the policy,
+// or to usr.EnvoyLogPath when the policy does not set one. When both
+// are empty, Envoy logs to the stderr of the proxy.
+//
+// When usr.ReadyFile is set, Proxy creates that file after the listener
+// accepts connections and removes it before it returns. Proxy also
+// removes a ready file that an earlier run left behind, so the file
+// exists only while the proxy is ready. Proxy returns
+// [ErrReadyFileIsDir] before it starts Envoy when usr.ReadyFile is a
+// directory.
+//
 // A signal or a cancellation of ctx stops Envoy and makes Proxy return
 // nil. Proxy also returns nil when either arrives before Envoy starts
 // or before the listener accepts connections. Proxy returns
@@ -597,6 +682,13 @@ func openTCPPorts(openPortRules []config.ResolvedOpenPort) map[int]bool {
 func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if usr.ReadyFile != "" {
+		err := removeReadyFile(usr.ReadyFile)
+		if err != nil {
+			return err
+		}
+	}
 
 	cfg, bootstrapPath, err := GenerateProxy(ctx, usr, opts)
 	if err != nil {
@@ -624,14 +716,34 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 
 	envoySettings := cfg.EnvoyDefaults()
 
-	//nolint:gosec // G204: binary from PATH lookup, args from CLI flags.
-	cmd := exec.CommandContext(ctx, envoyBin,
+	envoyArgs := []string{
 		"-c", bootstrapPath,
 		"--log-level", cfg.EnvoyLogLevel(),
 		// Hot restart uses a shared-memory region keyed by base-id;
 		// disabling it lets multiple Envoys coexist on one host.
 		"--disable-hot-restart",
-	)
+	}
+
+	envoyLogPath := cfg.EnvoyLogPath(usr.EnvoyLogPath)
+	if envoyLogPath != "" {
+		err = prepareProxyEnvoyLog(envoyLogPath)
+		if err != nil {
+			return err
+		}
+
+		envoyArgs = append(envoyArgs, "--log-path", envoyLogPath)
+
+		// The Envoy log does not reach the terminal, so name the
+		// file before Envoy starts.
+		slog.InfoContext(ctx, "proxy: starting envoy",
+			slog.String("envoy_log", envoyLogPath))
+	}
+
+	//nolint:gosec // G204: binary from PATH lookup, args from CLI flags.
+	cmd := exec.CommandContext(ctx, envoyBin, envoyArgs...)
+
+	// Envoy writes here what it does not send to its log file, such as
+	// a command line that it rejects.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -662,6 +774,23 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 
 	switch {
 	case err == nil:
+		if usr.ReadyFile != "" {
+			err = createReadyFile(usr.ReadyFile)
+			if err != nil {
+				stopEnvoy(ctx, cmd, envoySettings.DrainTimeout.Duration)
+
+				return err
+			}
+
+			defer func() {
+				removeErr := removeReadyFile(usr.ReadyFile)
+				if removeErr != nil {
+					slog.WarnContext(ctx, "proxy: ready file left behind",
+						slog.Any("err", removeErr))
+				}
+			}()
+		}
+
 		slog.InfoContext(ctx, "proxy: ready",
 			slog.String("address", addr),
 			slog.String("bootstrap", bootstrapPath))

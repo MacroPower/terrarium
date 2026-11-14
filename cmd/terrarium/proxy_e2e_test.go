@@ -433,6 +433,31 @@ func TestProxyE2EBlocked(t *testing.T) {
 	})
 }
 
+// TestProxyE2EEnvoyLog checks that Envoy writes its process log to
+// the file that the proxy names.
+//
+//nolint:paralleltest // e2e tests run envoy subprocesses.
+func TestProxyE2EEnvoyLog(t *testing.T) {
+	requireEnvoy(t)
+
+	logPath := filepath.Join(t.TempDir(), "logs", "envoy.log")
+
+	// Envoy logs its startup at the info level.
+	policy := "logging:\n" +
+		"  envoy:\n" +
+		"    level: info\n" +
+		"    path: " + logPath + "\n" +
+		"egress: []\n"
+
+	startProxy(t, policy, "")
+
+	assert.Eventually(t, func() bool {
+		info, err := os.Stat(logPath)
+
+		return err == nil && info.Size() > 0
+	}, 15*time.Second, 100*time.Millisecond, "envoy did not write to its log file")
+}
+
 // shortTempDir creates a temp dir directly under /tmp and removes it
 // when the test ends. A Unix socket path has a small length limit, and
 // the [testing.T.TempDir] path on macOS uses most of it.

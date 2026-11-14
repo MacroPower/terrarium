@@ -218,6 +218,26 @@ above does not make terrarium trust its own CA. Point terrarium at a real
 system bundle. Any other copy of the MITM CA breaks every upstream
 handshake.
 
+The following flags, which the proxy shares with container mode, name
+the files that the proxy writes while it runs:
+
+| Flag             | Effect in proxy mode                                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--ready-file`   | The proxy creates this file after the listener accepts connections and removes it on exit.                                                 |
+| `--envoy-log`    | Envoy writes its process log to this file. The `logging.envoy.path` policy setting overrides the flag.                                     |
+| `--envoy-config` | The proxy writes the Envoy bootstrap to `envoy-proxy.yaml` in the directory of this path, so it never replaces a container-mode bootstrap. |
+
+A script that starts the proxy can wait for the ready file before it
+sends requests. The proxy removes a ready file from an earlier run at
+startup, so the file exists only while the proxy is ready. When
+`--ready-file` names a directory, the proxy exits with an error and
+leaves the directory in place.
+
+The Envoy log does not appear on the terminal. The proxy logs the path
+of the `--envoy-log` file before it starts Envoy, so you can find the
+log when Envoy exits early. To send the Envoy log to the proxy's stderr,
+pass `--envoy-log ""`.
+
 Proxy mode filters TCP egress only. UDP egress (DNS, QUIC) is not
 proxied and stays blocked by the sandbox. Allow-rule kinds a forward
 proxy cannot enforce -- bare `toCIDR`/`toCIDRSet` ranges, `icmps`, open

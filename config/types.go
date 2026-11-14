@@ -848,11 +848,12 @@ func (u *User) RegisterFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&u.CADir, u.Flags.CADir,
 		filepath.Join(userDataDir(), "terrarium", "ca"), "CA cert and key directory")
 	flags.StringVar(&u.EnvoyConfigPath, u.Flags.EnvoyConfigPath,
-		envoyConfigDefault(), "Envoy config output path")
+		envoyConfigDefault(),
+		"Envoy config output path (proxy writes envoy-proxy.yaml in the same directory)")
 	flags.StringVar(&u.EnvoyLogPath, u.Flags.EnvoyLogPath,
 		envoyLogDefault(), "Envoy process log file path")
 	flags.StringVar(&u.ReadyFile, u.Flags.ReadyFile,
-		"", "path to create when init is ready")
+		"", "path to create when init or proxy is ready")
 }
 
 // RegisterCompletions registers shell completions for [User] flags.
