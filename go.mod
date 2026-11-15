@@ -12,6 +12,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.11.1
+	github.com/ulikunitz/xz v0.5.17
 	github.com/vishvananda/netlink v1.3.1
 	go.jacobcolvin.com/niceyaml v0.0.0-20260221203657-9862fde753d7
 	go.jacobcolvin.com/x v0.0.0-20260219184143-22313fb1414d

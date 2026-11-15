@@ -136,3 +136,29 @@ func TestProxyStatsSocketDefault(t *testing.T) {
 		})
 	}
 }
+
+func TestEnvoyDirDefault(t *testing.T) {
+	tests := map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"XDG_DATA_HOME set": {
+			env:  map[string]string{"HOME": "/home/user", "XDG_DATA_HOME": "/custom/data"},
+			want: "/custom/data/terrarium/envoy",
+		},
+		"HOME only": {
+			env:  map[string]string{"HOME": "/home/user", "XDG_DATA_HOME": ""},
+			want: "/home/user/.local/share/terrarium/envoy",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+
+			assert.Equal(t, tt.want, config.EnvoyDirDefault())
+		})
+	}
+}

@@ -88,3 +88,10 @@ func ProxyStatsSocketDefault() string {
 
 	return filepath.Join(userStateDir(), "terrarium", "accesslog.sock")
 }
+
+// EnvoyDirDefault returns the default directory for managed Envoy
+// binaries, $XDG_DATA_HOME/terrarium/envoy. The directory has the same
+// parent as the CA directory, so one sandbox rule can cover both.
+func EnvoyDirDefault() string {
+	return filepath.Join(userDataDir(), "terrarium", "envoy")
+}

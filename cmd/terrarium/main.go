@@ -15,6 +15,7 @@ import (
 	"go.jacobcolvin.com/x/version"
 
 	"go.jacobcolvin.com/terrarium/config"
+	"go.jacobcolvin.com/terrarium/envoybin"
 )
 
 func main() {
@@ -38,9 +39,11 @@ func run(ctx context.Context, root *cobra.Command) int {
 }
 
 // newRootCmd builds the terrarium command tree. The root command holds
-// the flags that every command reads: --config and the logging flags.
-// Each subcommand registers the other [config.User] flags that it
-// accepts, so the help of a command lists only those flags.
+// the flags that every command accepts: --config and the logging flags.
+// The envoy commands accept --config and do not read it, because they
+// load no policy. Each subcommand registers the other [config.User]
+// flags that it accepts, so the help of a command lists only those
+// flags.
 func newRootCmd() *cobra.Command {
 	usr := config.NewUser()
 	logCfg := log.NewConfig()
@@ -79,6 +82,7 @@ func newRootCmd() *cobra.Command {
 
 	rootCmd.AddCommand(
 		generateCmd(usr),
+		envoyCmd(envoybin.NewInstaller(config.EnvoyDirDefault())),
 		proxyCmd(usr),
 		statsCmd(usr),
 	)

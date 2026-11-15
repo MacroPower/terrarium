@@ -58,6 +58,12 @@ func TestCommandUserFlags(t *testing.T) {
 		"terrarium generate": {
 			want: []string{"ca-dir", "certs-dir", "config", "envoy-config"},
 		},
+		"terrarium envoy": {
+			want: []string{"config"},
+		},
+		"terrarium envoy install": {
+			want: []string{"config"},
+		},
 		"terrarium proxy": {
 			want: []string{
 				"ca-dir", "certs-dir", "config", "envoy-config", "envoy-log", "ready-file",
@@ -157,6 +163,9 @@ func TestCommandRejectsUnreadFlags(t *testing.T) {
 		"stats --ready-file=/ready --help":         {err: "unknown flag: --ready-file"},
 		"stats top --envoy-uid=1001 --help":        {err: "unknown flag: --envoy-uid"},
 		"stats list --envoy-log=/envoy.log --help": {err: "unknown flag: --envoy-log"},
+		"envoy --ca-dir=/ca --help":                {err: "unknown flag: --ca-dir"},
+		"envoy install --ca-dir=/ca --help":        {err: "unknown flag: --ca-dir"},
+		"envoy install --uid=1000 --help":          {err: "unknown flag: --uid"},
 	}
 
 	for line, tt := range tests {
