@@ -658,7 +658,8 @@ nftables NAT output rules REDIRECT terrarium-UID TCP to Envoy, except the TCP
 that an `egressDeny` rule denies. The NAT chain evaluates its rules in this
 order:
 
-1. Deny CIDR chains ACCEPT the TCP to each CIDR of an `egressDeny` rule.
+1. Deny CIDR chains ACCEPT the TCP to each CIDR of an `egressDeny` rule. A
+   rule with `icmps` denies only ICMP, so it gets no deny CIDR chain.
 2. Deny port rules ACCEPT the TCP to each port of an `egressDeny` rule that has
    ports and no destination. TCP to `127.0.0.0/8` and `::1` skips these rules
    and goes on to the REDIRECT rules.

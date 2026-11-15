@@ -163,6 +163,9 @@ egressDeny:
       - ports:
           - port: "3306"
             protocol: TCP
+  # ICMP deny rule scoped to an entity. A deny rule with icmps denies
+  # only the listed ICMP types to its destinations, and no TCP or UDP
+  # port.
   - toEntities:
       - world
     icmps:

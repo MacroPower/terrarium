@@ -1136,6 +1136,111 @@ func TestApplyRules_DenyICMP(t *testing.T) {
 	assert.Equal(t, 1, icmpDrops)
 }
 
+// assertOnlyICMPDrops fails the test when a DROP of the named chain
+// matches packets of a protocol other than ICMP and ICMPv6.
+func assertOnlyICMPDrops(t *testing.T, rec *ruleRecorder, chain string) {
+	t.Helper()
+
+	for i, r := range rec.rulesForChain(chain) {
+		if v, _ := ruleVerdict(r); v != expr.VerdictDrop {
+			continue
+		}
+
+		assert.True(t,
+			ruleMatchesL4Proto(r, unix.IPPROTO_ICMP) || ruleMatchesL4Proto(r, unix.IPPROTO_ICMPV6),
+			"rule %d of chain %s drops a protocol other than ICMP", i, chain)
+	}
+}
+
+func TestApplyRules_DenyICMPWithCIDR(t *testing.T) {
+	t.Parallel()
+
+	// Validate normalizes the fields in place, so each case gets its
+	// own slice.
+	echo := func() []config.ICMPRule {
+		return []config.ICMPRule{{
+			Fields: []config.ICMPField{
+				{Family: "IPv4", Type: "8"},
+			},
+		}}
+	}
+
+	tests := map[string]struct {
+		rule config.EgressDenyRule
+		uids firewall.UIDs
+	}{
+		"toCIDR": {
+			rule: config.EgressDenyRule{ToCIDR: []string{"203.0.113.0/24"}, ICMPs: echo()},
+			uids: testUIDs,
+		},
+		"toCIDRSet": {
+			rule: config.EgressDenyRule{
+				ToCIDRSet: []config.CIDRRule{{CIDR: "203.0.113.0/24", Except: []string{"203.0.113.128/25"}}},
+				ICMPs:     echo(),
+			},
+			uids: testUIDs,
+		},
+		"toEntities": {
+			rule: config.EgressDenyRule{ToEntities: []string{"world"}, ICMPs: echo()},
+			uids: testUIDs,
+		},
+		"toCIDR in VM mode": {
+			rule: config.EgressDenyRule{ToCIDR: []string{"203.0.113.0/24"}, ICMPs: echo()},
+			uids: testVMUIDs,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+			cfg := &config.Config{
+				Egress:     egressRules(config.EgressRule{ToCIDR: []string{"0.0.0.0/0"}}),
+				EgressDeny: &[]config.EgressDenyRule{tc.rule},
+			}
+
+			// Validate expands toEntities into CIDRs.
+			require.NoError(t, cfg.Validate(t.Context()))
+
+			err := firewall.ApplyRules(t.Context(), rec, cfg, tc.uids)
+			require.NoError(t, err)
+
+			// The rule denies only ICMP to its CIDR, so the CIDR
+			// gets no chain that drops TCP or UDP, and no chain
+			// that keeps its TCP away from Envoy.
+			for _, name := range rec.chainNames() {
+				assert.False(t, strings.HasPrefix(name, "deny_cidr_"),
+					"ICMP rule must not create the deny CIDR chain %s", name)
+			}
+
+			// The ICMP chain holds one DROP, for the ICMP type of
+			// the rule.
+			var icmpDrops int
+
+			for _, r := range rec.rulesForChain("deny_icmp_0") {
+				if v, _ := ruleVerdict(r); v == expr.VerdictDrop {
+					icmpDrops++
+				}
+			}
+
+			assert.Equal(t, 1, icmpDrops)
+			assertOnlyICMPDrops(t, rec, "deny_icmp_0")
+
+			// The only other DROP that the user traffic reaches
+			// is the catch-all at the end of terrarium_output.
+			rules := rec.rulesForChain("terrarium_output")
+			require.NotEmpty(t, rules)
+
+			for i, r := range rules[:len(rules)-1] {
+				v, _ := ruleVerdict(r)
+				assert.NotEqual(t, expr.VerdictDrop, v,
+					"rule %d of terrarium_output drops traffic before the allow rules", i)
+			}
+		})
+	}
+}
+
 // natSendsTCPToEnvoy reports whether a rule of a NAT base chain sends
 // TCP to an Envoy listener. Such a rule is a REDIRECT or a DNAT that
 // does not match port 53, or a jump to a per-rule CIDR chain.
@@ -3594,10 +3699,10 @@ func TestApplyRules_LogRules_DenyRuleIndex(t *testing.T) {
 				},
 			},
 			want: map[string][]int{
-				"output":      {-1},
+				"output": {-1},
+				// Rule 1 drops only ICMP, so it does not resolve
+				// as a CIDR rule.
 				"deny_icmp_0": {1},
-				// The CIDR of rule 1 also resolves as a CIDR rule.
-				"deny_cidr_0": {1},
 				// Deny ICMP of rule 0, then the catch-all.
 				"terrarium_output": {0, -1},
 			},

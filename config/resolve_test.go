@@ -2013,13 +2013,59 @@ func TestResolveDenyCIDRRules(t *testing.T) {
 		return &rules
 	}
 
+	// Validate normalizes the fields in place, so each case gets its
+	// own slice.
+	echo := func() []config.ICMPRule {
+		return []config.ICMPRule{{
+			Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+		}}
+	}
+
 	tests := map[string]struct {
-		cfg    *config.Config
-		wantV4 []config.ResolvedCIDR
-		wantV6 []config.ResolvedCIDR
+		cfg *config.Config
+		// validate runs Validate first, which expands toEntities
+		// into CIDRs.
+		validate bool
+		wantV4   []config.ResolvedCIDR
+		wantV6   []config.ResolvedCIDR
 	}{
 		"nil egressDeny": {
 			cfg: &config.Config{},
+		},
+		"ICMP rule scoped to toCIDR is skipped": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToCIDR: []string{"203.0.113.0/24", "2001:db8::/32"},
+					ICMPs:  echo(),
+				}),
+			},
+			validate: true,
+		},
+		"ICMP rule scoped to toCIDRSet is skipped": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(
+					config.EgressDenyRule{
+						ToCIDRSet: []config.CIDRRule{{CIDR: "203.0.113.0/24", Except: []string{"203.0.113.8/29"}}},
+						ICMPs:     echo(),
+					},
+					config.EgressDenyRule{
+						ToCIDR: []string{"198.51.100.0/24"},
+					},
+				),
+			},
+			validate: true,
+			wantV4: []config.ResolvedCIDR{
+				{CIDR: "198.51.100.0/24", RuleIndex: 1},
+			},
+		},
+		"ICMP rule scoped to toEntities is skipped": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToEntities: []string{"world"},
+					ICMPs:      echo(),
+				}),
+			},
+			validate: true,
 		},
 		"deny CIDR v4": {
 			cfg: &config.Config{
@@ -2063,6 +2109,10 @@ func TestResolveDenyCIDRRules(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
+
+			if tt.validate {
+				require.NoError(t, tt.cfg.Validate(t.Context()))
+			}
 
 			v4, v6 := tt.cfg.ResolveDenyCIDRRules(t.Context())
 			assert.Equal(t, tt.wantV4, v4)

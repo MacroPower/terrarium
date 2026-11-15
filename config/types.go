@@ -274,7 +274,9 @@ type EgressDenyRule struct {
 	// (0.0.0.0/0 and ::/0) during validation.
 	ToEntities []string `yaml:"toEntities,omitempty"`
 	// ICMPs specifies ICMP type filtering for deny rules. Mutually
-	// exclusive with ToPorts on the same rule.
+	// exclusive with ToPorts on the same rule. A rule with ICMPs
+	// denies only those ICMP types to its L3 destinations, and no
+	// TCP or UDP port.
 	ICMPs []ICMPRule `yaml:"icmps,omitempty"`
 
 	// Unsupported Cilium selectors. These fields exist so that the

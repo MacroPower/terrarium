@@ -1266,13 +1266,23 @@ func classifyCIDR(cidr CIDRRule, ports []ResolvedPortProto, ruleIndex int) (*Res
 // ResolveDenyCIDRRules collects toCIDR and toCIDRSet entries from all
 // egress deny rules, preserving port associations, and separates them
 // by address family. Same shape as [Config.ResolveCIDRRules] but for
-// deny rules.
+// deny rules. ResolveDenyCIDRRules skips rules with icmps, because
+// they deny only ICMP to their CIDRs. [Config.ResolveDenyICMPRules]
+// resolves them.
 func (c *Config) ResolveDenyCIDRRules(ctx context.Context) ([]ResolvedCIDR, []ResolvedCIDR) {
 	var ipv4, ipv6 []ResolvedCIDR
 
 	denyRules := c.EgressDenyRules()
 	for ri := range denyRules {
 		if len(denyRules[ri].ToCIDRSet) == 0 && len(denyRules[ri].ToCIDR) == 0 {
+			continue
+		}
+
+		// Under Cilium semantics, icmps is an L4 selector like
+		// toPorts, and validation rejects a rule that has both. A
+		// CIDR entry without ports denies every protocol, so an
+		// entry for a rule with icmps widens the rule.
+		if len(denyRules[ri].ICMPs) > 0 {
 			continue
 		}
 
