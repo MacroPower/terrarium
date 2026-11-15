@@ -261,8 +261,14 @@ A `headerMatches` entry with `mismatch: LOG` allows the request, as in Cilium,
 but the log entry appears in another place. Cilium records the header in the
 access log of its proxy. In Terrarium, Envoy writes one `HEADER_MISMATCH` line
 to its stderr for each request in which a `LOG` header is missing or holds
-another value. The following table names the stream that receives the lines in
-each mode.
+another value.
+
+Envoy rejects some requests before it reads their header values. For example,
+Envoy answers a request for an upgrade other than WebSocket with status 403.
+When a `headerMatches` entry of the policy has a `value`, Envoy might write no
+line for such a request, even when a `LOG` header of the request mismatches.
+
+The following table names the stream that receives the lines in each mode.
 
 | Mode                              | Stream                                                                                                        |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
