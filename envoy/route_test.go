@@ -88,7 +88,7 @@ func TestMismatchActions(t *testing.T) {
 				Domain: "api.example.com",
 				HTTPRules: []config.ResolvedHTTPRule{{
 					HeaderMatches: []config.HeaderMatch{
-						{Name: "X-Bad", Mismatch: config.MismatchDELETE},
+						{Name: "X-Bad", Value: "good", Mismatch: config.MismatchDELETE},
 					},
 				}},
 			}},
@@ -441,11 +441,13 @@ func routingOf(t *testing.T, listener envoy.Listener) hcmRouting {
 // mismatchRoute describes one forwarding route of an HTTP rule whose
 // headerMatches carry a mismatch action.
 type mismatchRoute struct {
-	// match lists the exact header matchers of the route as
-	// "name=value".
+	// match lists the header matchers of the route. An exact matcher
+	// is "name=value", and a matcher on the presence of the header is
+	// "name present".
 	match []string
 	// add lists the request_headers_to_add entries of the route as
-	// "name=value append_action".
+	// "name=value append_action". An entry that keeps an empty value
+	// ends with " keep_empty_value".
 	add []string
 	// remove lists the request_headers_to_remove entries of the route.
 	remove []string
@@ -456,12 +458,17 @@ type mismatchRoute struct {
 // so the order of the routes decides which header changes a request
 // gets. A route must append the value of an ADD header only when no
 // earlier route takes the requests that already hold the value.
+//
+// A headerMatches entry without a value matches on the presence of
+// the header. Envoy rejects an exact matcher on the empty string, so
+// no route of such an entry holds one.
 func TestMismatchRouteOrder(t *testing.T) {
 	t.Parallel()
 
 	const (
 		appendAction    = " APPEND_IF_EXISTS_OR_ADD"
 		overwriteAction = " OVERWRITE_IF_EXISTS_OR_ADD"
+		absentAction    = " ADD_IF_ABSENT keep_empty_value"
 	)
 
 	tests := map[string]struct {
@@ -589,6 +596,74 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{add: []string{"X-Rep=rep" + overwriteAction}},
 			},
 		},
+		"required header without a value": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Required"},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Required present"}},
+			},
+		},
+		"LOG without a value": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Log", Mismatch: config.MismatchLOG},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Log present"}},
+				{},
+			},
+		},
+		"ADD without a value": {
+			matches: []config.HeaderMatch{
+				{Name: "X-One", Mismatch: config.MismatchADD},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-One present"}},
+				{add: []string{"X-One=" + absentAction}},
+			},
+		},
+		"REPLACE without a value": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Rep", Mismatch: config.MismatchREPLACE},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Rep present"}},
+				{add: []string{"X-Rep=" + absentAction}},
+			},
+		},
+		// The route that adds X-One also takes requests that hold
+		// X-Rep, so it must not overwrite X-Rep.
+		"REPLACE without a value with ADD": {
+			matches: []config.HeaderMatch{
+				{Name: "X-One", Value: "one", Mismatch: config.MismatchADD},
+				{Name: "X-Rep", Mismatch: config.MismatchREPLACE},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-One=one", "X-Rep present"}},
+				{match: []string{"X-One=one"}, add: []string{"X-Rep=" + absentAction}},
+				{add: []string{"X-One=one" + appendAction, "X-Rep=" + absentAction}},
+			},
+		},
+		"DELETE without a value": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Del", Mismatch: config.MismatchDELETE},
+			},
+			want: []mismatchRoute{
+				{},
+			},
+		},
+		// The route that replaces X-Rep also takes requests that hold
+		// X-Del, so it must not remove X-Del.
+		"DELETE without a value with REPLACE": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Del", Mismatch: config.MismatchDELETE},
+				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Rep=rep"}},
+				{add: []string{"X-Rep=rep" + overwriteAction}},
+			},
+		},
 	}
 
 	for name, tt := range tests {
@@ -629,10 +704,11 @@ func mismatchRoutes(t *testing.T, listener envoy.Listener) []mismatchRoute {
 								Match struct {
 									Grpc    *struct{} `yaml:"grpc"`
 									Headers []struct {
-										StringMatch struct {
+										StringMatch *struct {
 											Exact string `yaml:"exact"`
 										} `yaml:"string_match"`
-										Name string `yaml:"name"`
+										Name         string `yaml:"name"`
+										PresentMatch bool   `yaml:"present_match"`
 									} `yaml:"headers"`
 								} `yaml:"match"`
 								RequestHeadersToAdd []struct {
@@ -640,7 +716,8 @@ func mismatchRoutes(t *testing.T, listener envoy.Listener) []mismatchRoute {
 										Key   string `yaml:"key"`
 										Value string `yaml:"value"`
 									} `yaml:"header"`
-									AppendAction string `yaml:"append_action"`
+									AppendAction   string `yaml:"append_action"`
+									KeepEmptyValue bool   `yaml:"keep_empty_value"`
 								} `yaml:"request_headers_to_add"`
 								RequestHeadersToRemove []string `yaml:"request_headers_to_remove"`
 							} `yaml:"routes"`
@@ -672,11 +749,29 @@ func mismatchRoutes(t *testing.T, listener envoy.Listener) []mismatchRoute {
 		var mr mismatchRoute
 
 		for _, h := range r.Match.Headers {
+			// Envoy requires exactly one specifier in a matcher, and
+			// a string matcher must hold a pattern.
+			if h.PresentMatch {
+				require.Nil(t, h.StringMatch, "matcher on %s", h.Name)
+
+				mr.match = append(mr.match, h.Name+" present")
+
+				continue
+			}
+
+			require.NotNil(t, h.StringMatch, "matcher on %s", h.Name)
+			require.NotEmpty(t, h.StringMatch.Exact, "matcher on %s", h.Name)
+
 			mr.match = append(mr.match, h.Name+"="+h.StringMatch.Exact)
 		}
 
 		for _, h := range r.RequestHeadersToAdd {
-			mr.add = append(mr.add, fmt.Sprintf("%s=%s %s", h.Header.Key, h.Header.Value, h.AppendAction))
+			entry := fmt.Sprintf("%s=%s %s", h.Header.Key, h.Header.Value, h.AppendAction)
+			if h.KeepEmptyValue {
+				entry += " keep_empty_value"
+			}
+
+			mr.add = append(mr.add, entry)
 		}
 
 		mr.remove = append(mr.remove, r.RequestHeadersToRemove...)

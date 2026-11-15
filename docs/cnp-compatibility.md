@@ -63,7 +63,10 @@ egress:
                   mismatch: ADD
                   value: "injected"
                 - name: "X-Strip"
+                  # DELETE removes the header when it holds another value.
+                  # Without a value, the entry removes nothing.
                   mismatch: DELETE
+                  value: "allowed"
 
   # FQDN rule with DNS L7 filtering.
   - toFQDNs:
@@ -249,6 +252,13 @@ A `headerMatches` entry with `mismatch: ADD` works as in Cilium. When the
 request header is missing or holds another value, Terrarium adds the value of
 the entry as one more value of the header. The header keeps each value that
 the client sent, so the upstream receives both.
+
+A `headerMatches` entry without a `value` works as in Cilium. The entry matches
+every request that holds the header, with any value, so its `mismatch` action
+applies only to a request that lacks the header. Without a `mismatch` action,
+Terrarium denies that request, and `LOG` logs it. `ADD` and `REPLACE` add the
+header with an empty value. `DELETE` has no header to remove, so an entry with
+`mismatch: DELETE` and no `value` changes no request.
 
 Each HTTP rule can hold at most 8 `headerMatches` entries with
 `mismatch: ADD` or `mismatch: LOG`, counted together. Cilium has no limit.

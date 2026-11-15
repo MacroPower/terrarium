@@ -83,12 +83,17 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 			var actionMatches []config.HeaderMatch
 
 			for _, hm := range hr.HeaderMatches {
-				if hm.Mismatch == "" {
-					match.Headers = append(match.Headers, headerMatcher{
-						Name:        hm.Name,
-						StringMatch: &stringMatch{Exact: hm.Value},
-					})
-				} else {
+				switch {
+				case hm.Mismatch == "":
+					match.Headers = append(match.Headers, headerMatchMatcher(hm))
+
+				case hm.Mismatch == config.MismatchDELETE && hm.Value == "":
+					// The entry matches each request that holds the
+					// header, and a request that mismatches has no
+					// header to remove. The entry therefore changes
+					// no request, as in Cilium.
+
+				default:
 					actionMatches = append(actionMatches, hm)
 				}
 			}
@@ -244,7 +249,9 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // the header changes of that route to the request. The first route
 // matches when every header of matches holds its value, and it changes
 // nothing. Every later route applies each REPLACE and DELETE action of
-// matches.
+// matches. The header of an entry without a value counts as a header
+// that holds its value when the request has the header, see
+// [headerMatchMatcher].
 //
 // An ADD action appends a value, so a route must not apply it to a
 // header that already holds the value. A LOG action logs the request,
@@ -340,17 +347,31 @@ func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluste
 	return routes
 }
 
+// headerMatchMatcher builds the Envoy header matcher for hm. The
+// matcher passes when the header holds the value of hm. When hm has no
+// value, the matcher passes when the request has the header, with any
+// value, as in Cilium.
+//
+// Envoy rejects a string matcher without a pattern, so an entry
+// without a value cannot use an exact match on the empty string.
+func headerMatchMatcher(hm config.HeaderMatch) headerMatcher {
+	if hm.Value == "" {
+		return headerMatcher{Name: hm.Name, PresentMatch: boolPtr(true)}
+	}
+
+	return headerMatcher{
+		Name:        hm.Name,
+		StringMatch: &stringMatch{Exact: hm.Value},
+	}
+}
+
 // mismatchHeaderMatchers builds one Envoy header matcher for each
-// entry of matches. The matcher passes when the header holds the
-// value of the entry.
+// entry of matches, see [headerMatchMatcher].
 func mismatchHeaderMatchers(matches []config.HeaderMatch) []headerMatcher {
 	var result []headerMatcher
 
 	for _, hm := range matches {
-		result = append(result, headerMatcher{
-			Name:        hm.Name,
-			StringMatch: &stringMatch{Exact: hm.Value},
-		})
+		result = append(result, headerMatchMatcher(hm))
 	}
 
 	return result
@@ -361,10 +382,26 @@ func mismatchHeaderMatchers(matches []config.HeaderMatch) []headerMatcher {
 // adds its value as one more value of the header and keeps the values
 // that the request already holds, as Cilium does. A REPLACE entry
 // removes those values.
+//
+// An ADD or REPLACE entry without a value mismatches only on a request
+// that lacks the header. Cilium gives that request the header with an
+// empty value, so the entry adds the empty header only when the header
+// is absent. A route can apply a REPLACE entry to a request that has
+// the header, and that header keeps its values.
 func mismatchHeadersToAdd(matches []config.HeaderMatch) []headerValueOption {
 	var result []headerValueOption
 
 	for _, hm := range matches {
+		if hm.Value == "" && (hm.Mismatch == config.MismatchADD || hm.Mismatch == config.MismatchREPLACE) {
+			result = append(result, headerValueOption{
+				Header:         headerValue{Key: hm.Name},
+				AppendAction:   "ADD_IF_ABSENT",
+				KeepEmptyValue: true,
+			})
+
+			continue
+		}
+
 		switch hm.Mismatch {
 		case config.MismatchADD:
 			result = append(result, headerValueOption{

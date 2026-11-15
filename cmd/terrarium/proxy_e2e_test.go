@@ -504,12 +504,45 @@ func startHeaderEchoServer(t *testing.T, addr string, names ...string) {
 		}
 	})
 
+	startHTTPServer(t, addr, mux)
+}
+
+// startHeaderListServer serves plain HTTP on addr. The body of each
+// response holds one line for each name in names, as "name=values".
+// The values are the Go syntax of the list of values of that request
+// header. A header with an empty value gives `[""]`, and a missing
+// header gives `[]`.
+func startHeaderListServer(t *testing.T, addr string, names ...string) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		var body strings.Builder
+
+		for _, name := range names {
+			fmt.Fprintf(&body, "%s=%q\n", name, r.Header.Values(name))
+		}
+
+		_, err := io.WriteString(w, body.String())
+		if err != nil {
+			t.Logf("upstream write: %v", err)
+		}
+	})
+
+	startHTTPServer(t, addr, mux)
+}
+
+// startHTTPServer serves plain HTTP on addr with handler until the
+// test ends.
+func startHTTPServer(t *testing.T, addr string, handler http.Handler) {
+	t.Helper()
+
 	lc := net.ListenConfig{}
 
 	ln, err := lc.Listen(t.Context(), "tcp", addr)
 	require.NoError(t, err)
 
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
 		serveErr := srv.Serve(ln)
@@ -670,6 +703,26 @@ func TestProxyE2EHeaderMismatchAdd(t *testing.T) {
 	}
 }
 
+// envoyStderrWrapper writes a script that runs the Envoy of the host
+// and appends the stderr of Envoy to a file. It returns the path of
+// the script and the path of the file. The proxy gives its own stderr
+// to Envoy, so a test runs the script as Envoy to read the access log
+// lines that Envoy writes to stderr.
+func envoyStderrWrapper(t *testing.T) (string, string) {
+	t.Helper()
+
+	hostEnvoy, err := exec.LookPath(envoyCommand)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	stderrPath := filepath.Join(dir, "envoy-stderr")
+	wrapperPath := filepath.Join(dir, "envoy-wrapper")
+	wrapper := "#!/bin/sh\nexec '" + hostEnvoy + "' \"$@\" 2>>'" + stderrPath + "'\n"
+	require.NoError(t, os.WriteFile(wrapperPath, []byte(wrapper), 0o755))
+
+	return wrapperPath, stderrPath
+}
+
 // headerMismatchLines returns the lines that the HEADER_MISMATCH access
 // logger of Envoy wrote to the file at path, each without its
 // timestamp.
@@ -722,17 +775,7 @@ func TestProxyE2EHeaderMismatchLog(t *testing.T) {
 		require.NoError(t, probe.Close())
 	}
 
-	hostEnvoy, err := exec.LookPath(envoyCommand)
-	require.NoError(t, err)
-
-	// The proxy gives its own stderr to Envoy. This wrapper sends the
-	// stderr of Envoy to a file, so that the test can read the access
-	// log lines.
-	dir := t.TempDir()
-	stderrPath := filepath.Join(dir, "envoy-stderr")
-	wrapperPath := filepath.Join(dir, "envoy-wrapper")
-	wrapper := "#!/bin/sh\nexec '" + hostEnvoy + "' \"$@\" 2>>'" + stderrPath + "'\n"
-	require.NoError(t, os.WriteFile(wrapperPath, []byte(wrapper), 0o755))
+	wrapperPath, stderrPath := envoyStderrWrapper(t)
 
 	caPath, tlsCfg := e2eCerts(t, "test.example")
 
@@ -907,6 +950,199 @@ func TestProxyE2EHeaderMismatchLog(t *testing.T) {
 		"HEADER_MISMATCH headers=X-Log GET test.example:80/mixed/http-log-other-rep-match 200",
 		"HEADER_MISMATCH headers=X-Log GET test.example:80/mixed/http-log-other-rep-other 200",
 		"HEADER_MISMATCH headers=X-Log GET test.example:443/mixed/tls-log-other-rep-other 200",
+	}, headerMismatchLines(t, stderrPath))
+}
+
+// TestProxyE2EHeaderMatchWithoutValue checks rules whose headerMatches
+// have no value. Such an entry matches each request that holds the
+// header, with any value. The proxy must start with these entries, and
+// it must treat each request as Cilium does. Without a mismatch
+// action, the proxy denies a request that lacks the header. ADD and
+// REPLACE give such a request the header with an empty value, LOG
+// logs the request, and DELETE changes no request.
+//
+//nolint:paralleltest // e2e tests bind fixed ports and run envoy subprocesses.
+func TestProxyE2EHeaderMatchWithoutValue(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	// The proxy forwards plain HTTP to port 80 only. Binding port 80
+	// needs CAP_NET_BIND_SERVICE or a permissive
+	// ip_unprivileged_port_start.
+	lc := net.ListenConfig{}
+
+	probe, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:80")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.1:80: %v", err)
+	}
+
+	require.NoError(t, probe.Close())
+
+	wrapperPath, stderrPath := envoyStderrWrapper(t)
+
+	startHeaderListServer(t, "127.0.0.1:80", "X-Val", "X-Other")
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	policy := "egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: test.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /deny/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"            - path: /log/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: LOG\n" +
+		"            - path: /add/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: ADD\n" +
+		"            - path: /delete/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: DELETE\n" +
+		"            - path: /replace/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: REPLACE\n" +
+		"            - path: /delete-mixed/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: DELETE\n" +
+		"                - name: X-Other\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: other\n" +
+		"            - path: /replace-mixed/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: REPLACE\n" +
+		"                - name: X-Other\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: other\n"
+
+	tests := map[string]struct {
+		headers    map[string]string
+		path       string
+		want       string
+		wantStatus int
+	}{
+		"no action denies a request without the header": {
+			path:       "/deny/missing",
+			wantStatus: http.StatusForbidden,
+		},
+		"no action forwards a request with the header": {
+			path:       "/deny/present",
+			headers:    map[string]string{"X-Val": "user"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"user\"]\nX-Other=[]\n",
+		},
+		"LOG forwards a request without the header": {
+			path:       "/log/missing",
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[]\nX-Other=[]\n",
+		},
+		"LOG forwards a request with the header": {
+			path:       "/log/present",
+			headers:    map[string]string{"X-Val": "user"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"user\"]\nX-Other=[]\n",
+		},
+		"ADD gives a request without the header an empty value": {
+			path:       "/add/missing",
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"\"]\nX-Other=[]\n",
+		},
+		"ADD keeps the header of a request": {
+			path:       "/add/present",
+			headers:    map[string]string{"X-Val": "user"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"user\"]\nX-Other=[]\n",
+		},
+		"DELETE forwards a request without the header": {
+			path:       "/delete/missing",
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[]\nX-Other=[]\n",
+		},
+		"DELETE keeps the header of a request": {
+			path:       "/delete/present",
+			headers:    map[string]string{"X-Val": "user"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"user\"]\nX-Other=[]\n",
+		},
+		"REPLACE gives a request without the header an empty value": {
+			path:       "/replace/missing",
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"\"]\nX-Other=[]\n",
+		},
+		"REPLACE keeps the header of a request": {
+			path:       "/replace/present",
+			headers:    map[string]string{"X-Val": "user"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"user\"]\nX-Other=[]\n",
+		},
+		"DELETE keeps the header when another header mismatches": {
+			path:       "/delete-mixed/present",
+			headers:    map[string]string{"X-Val": "user", "X-Other": "user"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"user\"]\nX-Other=[\"other\"]\n",
+		},
+		"REPLACE keeps the header when another header mismatches": {
+			path:       "/replace-mixed/present",
+			headers:    map[string]string{"X-Val": "user", "X-Other": "user"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"user\"]\nX-Other=[\"other\"]\n",
+		},
+	}
+
+	// Envoy buffers its access log lines, and it writes every line
+	// that it still holds when it exits. The proxy stops when this
+	// subtest ends, so the file holds every line after the subtest.
+	//
+	//nolint:paralleltest // The subtest owns the proxy of the parent test.
+	t.Run("requests", func(t *testing.T) {
+		proxyURL, _ := startProxy(t, policy, dnsAddr, func(o *proxyOptions) {
+			o.envoyPath = wrapperPath
+		})
+		client := proxyClient(t, proxyURL, x509.NewCertPool())
+
+		//nolint:paralleltest // The subtests share the proxy of the parent test.
+		for name, tt := range tests {
+			t.Run(name, func(t *testing.T) {
+				req, err := http.NewRequestWithContext(
+					t.Context(), http.MethodGet, "http://test.example"+tt.path, http.NoBody)
+				require.NoError(t, err)
+
+				for k, v := range tt.headers {
+					req.Header.Set(k, v)
+				}
+
+				resp, err := client.Do(req)
+				require.NoError(t, err)
+
+				defer func() {
+					assert.NoError(t, resp.Body.Close())
+				}()
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+
+				require.Equal(t, tt.wantStatus, resp.StatusCode, string(body))
+
+				if tt.wantStatus == http.StatusOK {
+					assert.Equal(t, tt.want, string(body))
+				}
+			})
+		}
+	})
+
+	assert.Equal(t, []string{
+		"HEADER_MISMATCH headers=X-Val GET test.example:80/log/missing 200",
 	}, headerMismatchLines(t, stderrPath))
 }
 

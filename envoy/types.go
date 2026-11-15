@@ -472,10 +472,12 @@ type rbacPrincipal struct {
 
 // headerValueOption models Envoy's HeaderValueOption message used
 // by request_headers_to_add on routes. AppendAction controls whether
-// the header value is appended or overwrites an existing value.
+// the header value is appended or overwrites an existing value. Envoy
+// adds a header with an empty value only when KeepEmptyValue is set.
 type headerValueOption struct {
-	Header       headerValue `yaml:"header"`
-	AppendAction string      `yaml:"append_action,omitempty"`
+	Header         headerValue `yaml:"header"`
+	AppendAction   string      `yaml:"append_action,omitempty"`
+	KeepEmptyValue bool        `yaml:"keep_empty_value,omitempty"`
 }
 
 // headerValue models Envoy's HeaderValue message with a key/value pair.

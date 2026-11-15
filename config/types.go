@@ -489,6 +489,11 @@ type HTTPRule struct {
 // specified action instead of denial: LOG logs via Envoy access log,
 // ADD adds Value as one more value of the header, DELETE removes the
 // header, and REPLACE overwrites it.
+//
+// An entry without a Value matches each request that holds the header,
+// with any value, as in Cilium. Only a request that lacks the header
+// mismatches. ADD and REPLACE give that request the header with an
+// empty value, and DELETE changes no request.
 type HeaderMatch struct {
 	// Secret is a Cilium field for referencing Kubernetes Secrets
 	// to populate the header value. Terrarium does not run inside
@@ -503,7 +508,8 @@ type HeaderMatch struct {
 	Mismatch MismatchAction `yaml:"mismatch,omitempty"`
 	// Name is the header field name to match.
 	Name string `yaml:"name"`
-	// Value is the expected header value.
+	// Value is the expected header value. When Value is empty, the
+	// entry matches on the presence of the header.
 	Value string `yaml:"value,omitempty"`
 }
 
