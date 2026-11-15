@@ -30,8 +30,8 @@ var (
 	ErrEnvoyNotRunning = errors.New("envoy process not running")
 
 	// ErrEnvoyExited means that the Envoy process exited before it
-	// answered on its ready socket.
-	ErrEnvoyExited = errors.New("envoy exited before it answered on its ready socket")
+	// answered the ready request or the probe request.
+	ErrEnvoyExited = errors.New("envoy exited before it was ready")
 
 	// ErrListenerNotReady means that a listener did not answer the
 	// probe request or the ready request before the startup timeout
@@ -392,10 +392,21 @@ func requestReady(ctx context.Context, client *http.Client) (bool, error) {
 // accepts the connection and sends no HTTP response does not end the
 // wait.
 //
+// The channel exited closes when the process of that Envoy has exited.
+// A process that has exited never answers, so waitForProxyListener
+// returns [ErrEnvoyExited] at that point and does not wait for the
+// timeout. It reads the channel between two probe requests, so the
+// answer of another process to the probe request that is in flight
+// still returns [ErrListenAddressUnavailable]. A nil channel never
+// ends the wait.
+//
 // It returns [ErrListenerNotReady] when the timeout expires first.
 // When the caller cancels ctx first, it returns the context's error
-// without waiting for the next poll.
-func waitForProxyListener(ctx context.Context, addr, token string, timeout time.Duration) error {
+// without waiting for the next poll. The caller can then tell a
+// shutdown from an Envoy that never became ready.
+func waitForProxyListener(
+	ctx context.Context, addr, token string, exited <-chan struct{}, timeout time.Duration,
+) error {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -415,7 +426,8 @@ func waitForProxyListener(ctx context.Context, addr, token string, timeout time.
 		switch {
 		case err != nil:
 			// No HTTP response yet. Envoy resets early connections
-			// while its workers start.
+			// while its workers start, and it does not listen after
+			// it has exited.
 
 		case own:
 			return nil
@@ -426,14 +438,25 @@ func waitForProxyListener(ctx context.Context, addr, token string, timeout time.
 		}
 
 		select {
-		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return fmt.Errorf("waiting for listener %s: %w", addr, ctx.Err())
-			}
-
-			return fmt.Errorf("%w: %s after %v", ErrListenerNotReady, addr, timeout)
-
 		case <-time.After(listenerPollInterval):
+			continue
+
+		case <-exited:
+		case <-waitCtx.Done():
+		}
+
+		// A cancellation of ctx can also end the process, so the
+		// cancellation comes before the exit.
+		if ctx.Err() != nil {
+			return fmt.Errorf("waiting for listener %s: %w", addr, ctx.Err())
+		}
+
+		select {
+		case <-exited:
+			return fmt.Errorf("waiting for listener %s: %w", addr, ErrEnvoyExited)
+
+		default:
+			return fmt.Errorf("%w: %s after %v", ErrListenerNotReady, addr, timeout)
 		}
 	}
 }

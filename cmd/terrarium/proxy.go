@@ -840,7 +840,9 @@ func newProbeToken() (string, error) {
 // which includes the install of the managed build, or before Envoy
 // answers the probe. Proxy returns [ErrEnvoyNotRunning] when Envoy
 // exits by itself or does not answer the probe within the startup
-// timeout.
+// timeout. When Envoy exits before it answers the probe, Proxy returns
+// without a wait for the startup timeout, and the error also wraps
+// [ErrEnvoyExited] and gives the exit status of Envoy.
 func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts proxyOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -952,7 +954,8 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 
 	// A connection to addr can reach a process that took addr after
 	// the check, so wait for the probe answer of this Envoy.
-	err = waitForProxyListener(ctx, addr, probeToken, envoySettings.StartupTimeout.Duration)
+	err = waitForProxyListener(ctx, addr, probeToken, proc.exited,
+		envoySettings.StartupTimeout.Duration)
 
 	switch {
 	case err == nil:
@@ -1007,6 +1010,11 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 		stopEnvoy(ctx, proc, envoySettings.DrainTimeout.Duration)
 
 		return err
+
+	case errors.Is(err, ErrEnvoyExited):
+		// The process state exists, because the wait for the process
+		// has returned.
+		return fmt.Errorf("%w: %w: %s", ErrEnvoyNotRunning, err, cmd.ProcessState)
 
 	default:
 		stopEnvoy(ctx, proc, envoySettings.DrainTimeout.Duration)

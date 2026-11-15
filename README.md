@@ -339,6 +339,14 @@ To learn which process serves its address, the proxy sends a request for
 the host `probe.terrarium.invalid` to that address at startup. Envoy
 answers the request itself and does not record it as an event.
 
+When Envoy does not answer the request, the proxy exits with an error
+and does not create the ready file. The following table lists the cases.
+
+| Case                                                                                                 | Result                                                                            |
+| ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Envoy exits before it answers, for example because it rejects its bootstrap or its command line.     | The proxy exits at that moment with an error that gives the exit status of Envoy. |
+| Envoy keeps running and does not answer within `envoy.startupTimeout`, which defaults to 10 seconds. | The proxy stops Envoy and exits with an error.                                    |
+
 With `stats.enabled: true`, the proxy records Envoy events from the
 moment it creates the ready file. Envoy can answer a request earlier,
 and the proxy might not record that request.

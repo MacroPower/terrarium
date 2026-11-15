@@ -1262,6 +1262,64 @@ func TestProxyListenAddressTakenAfterStart(t *testing.T) {
 	}
 }
 
+// TestProxyEnvoyExits checks that [Proxy] returns when its Envoy exits
+// before it answers the probe request. Proxy does not wait for the
+// startup timeout, and the error gives the exit status of Envoy.
+func TestProxyEnvoyExits(t *testing.T) {
+	t.Parallel()
+
+	const startupTimeout = time.Minute
+
+	tests := map[string]struct {
+		// command exits when it starts, and stands for Envoy.
+		command string
+		want    string
+	}{
+		"exit status": {
+			command: "false",
+			want:    "exit status 1",
+		},
+		"exit without an error": {
+			command: "true",
+			want:    "exit status 0",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			usr := stubProxyUser(t, dir, "envoy:\n"+
+				"  startupTimeout: "+startupTimeout.String()+"\n"+
+				"egress: []\n")
+			usr.ReadyFile = filepath.Join(dir, "ready")
+
+			opts := proxyOptions{
+				envoyPath:   tt.command,
+				bindAddress: loopbackIPv4,
+				httpPort:    freePort(t),
+			}
+
+			start := time.Now()
+
+			err := Proxy(t.Context(), usr, noManagedEnvoy(), opts)
+
+			elapsed := time.Since(start)
+
+			require.ErrorIs(t, err, ErrEnvoyNotRunning)
+			require.ErrorIs(t, err, ErrEnvoyExited)
+			require.NotErrorIs(t, err, ErrListenerNotReady)
+			require.ErrorContains(t, err, tt.want)
+			require.ErrorContains(t, err, net.JoinHostPort(opts.bindAddress, strconv.Itoa(opts.httpPort)))
+
+			assert.Less(t, elapsed, startupTimeout/2,
+				"the proxy must not wait for the startup timeout")
+			assert.NoFileExists(t, usr.ReadyFile, "a proxy whose envoy exited must not signal readiness")
+		})
+	}
+}
+
 // TestProxyProbeToken checks that [Proxy] gives its Envoy one probe
 // token in two places. The bootstrap names the token in the path of
 // the probe route, and the environment of Envoy holds the token for

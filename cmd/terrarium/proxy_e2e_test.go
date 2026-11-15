@@ -716,7 +716,7 @@ func TestProxyE2EProbeAnswer(t *testing.T) {
 
 			addr := net.JoinHostPort(loopbackIPv4, strconv.Itoa(port))
 
-			err = waitForProxyListener(t.Context(), addr, own, 15*time.Second)
+			err = waitForProxyListener(t.Context(), addr, own, nil, 15*time.Second)
 			if tt.err == nil {
 				require.NoError(t, err)
 

@@ -871,6 +871,9 @@ func TestWaitForProxyListener(t *testing.T) {
 		// no response.
 		silent   bool
 		canceled bool
+		// exited closes the channel that reports the exit of Envoy
+		// before the wait starts.
+		exited bool
 	}{
 		"own envoy answers": {
 			handler: answer(http.StatusOK, token),
@@ -921,6 +924,44 @@ func TestWaitForProxyListener(t *testing.T) {
 			err:      context.Canceled,
 			notErr:   ErrListenerNotReady,
 		},
+		"envoy exits": {
+			exited:  true,
+			timeout: 15 * time.Second,
+			err:     ErrEnvoyExited,
+			notErr:  ErrListenerNotReady,
+		},
+		"envoy exits and the listener sends no response": {
+			silent:  true,
+			exited:  true,
+			timeout: 15 * time.Second,
+			err:     ErrEnvoyExited,
+			notErr:  ErrListenerNotReady,
+		},
+		"own envoy answers and exits": {
+			handler: answer(http.StatusOK, token),
+			exited:  true,
+			timeout: 15 * time.Second,
+		},
+		// Envoy exits when another process holds the address, and the
+		// answer of that process names the cause.
+		"envoy exits and another process answers": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			exited:  true,
+			timeout: 15 * time.Second,
+			err:     ErrListenAddressUnavailable,
+			notErr:  ErrEnvoyExited,
+		},
+		// A cancellation ends the process of the caller, so the exit
+		// does not hide the cancellation.
+		"caller cancels and envoy exits": {
+			canceled: true,
+			exited:   true,
+			timeout:  15 * time.Second,
+			err:      context.Canceled,
+			notErr:   ErrEnvoyExited,
+		},
 	}
 
 	for name, tt := range tests {
@@ -929,6 +970,11 @@ func TestWaitForProxyListener(t *testing.T) {
 
 			opts := proxyOptions{bindAddress: loopbackIPv4, httpPort: freePort(t)}
 			addr := fmt.Sprintf("%s:%d", opts.bindAddress, opts.httpPort)
+
+			exited := make(chan struct{})
+			if tt.exited {
+				close(exited)
+			}
 
 			switch {
 			case tt.handler != nil:
@@ -945,7 +991,15 @@ func TestWaitForProxyListener(t *testing.T) {
 				cancel()
 			}
 
-			err := waitForProxyListener(ctx, addr, token, tt.timeout)
+			start := time.Now()
+
+			err := waitForProxyListener(ctx, addr, token, exited, tt.timeout)
+
+			if tt.exited {
+				assert.Less(t, time.Since(start), tt.timeout/2,
+					"the wait must not last for the timeout")
+			}
+
 			if tt.err == nil {
 				require.NoError(t, err)
 
@@ -956,6 +1010,10 @@ func TestWaitForProxyListener(t *testing.T) {
 
 			if tt.notErr != nil {
 				require.NotErrorIs(t, err, tt.notErr)
+			}
+
+			if errors.Is(tt.err, ErrEnvoyExited) {
+				require.ErrorContains(t, err, addr)
 			}
 		})
 	}
@@ -987,7 +1045,7 @@ func TestWaitForProxyListenerZone(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	require.NoError(t, waitForProxyListener(t.Context(), addr, token, 15*time.Second))
+	require.NoError(t, waitForProxyListener(t.Context(), addr, token, nil, 15*time.Second))
 }
 
 // TestWaitForProxyListenerLate checks that the wait continues while
@@ -1004,7 +1062,7 @@ func TestWaitForProxyListenerLate(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- waitForProxyListener(t.Context(), addr, token, 15*time.Second)
+		errCh <- waitForProxyListener(t.Context(), addr, token, nil, 15*time.Second)
 	}()
 
 	select {
@@ -1025,5 +1083,39 @@ func TestWaitForProxyListenerLate(t *testing.T) {
 
 	case <-time.After(15 * time.Second):
 		t.Fatal("wait did not end")
+	}
+}
+
+// TestWaitForProxyListenerExitsLate checks that the wait ends when
+// Envoy exits after the wait has started.
+func TestWaitForProxyListenerExitsLate(t *testing.T) {
+	t.Parallel()
+
+	const token = "0123456789abcdef0123456789abcdef"
+
+	addr := fmt.Sprintf("%s:%d", loopbackIPv4, freePort(t))
+
+	exited := make(chan struct{})
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- waitForProxyListener(t.Context(), addr, token, exited, 15*time.Second)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("wait ended while envoy ran: %v", err)
+
+	case <-time.After(3 * listenerPollInterval):
+	}
+
+	close(exited)
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, ErrEnvoyExited)
+
+	case <-time.After(10 * time.Second):
+		t.Fatal("wait did not end after envoy exited")
 	}
 }
