@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
 	"net/netip"
 	"net/url"
 	"os"
@@ -88,7 +89,7 @@ func TestOpenReadOnly_MissingFile(t *testing.T) {
 			dir := t.TempDir()
 
 			db, err := eventstore.OpenReadOnly(t.Context(), tc.path(dir))
-			require.Error(t, err)
+			require.ErrorIs(t, err, fs.ErrNotExist)
 			assert.Nil(t, db)
 
 			entries, err := os.ReadDir(dir)
@@ -142,6 +143,78 @@ func TestOpenReadOnly_CloseRemovesWALFiles(t *testing.T) {
 
 	assert.NoFileExists(t, path+"-wal")
 	assert.NoFileExists(t, path+"-shm")
+}
+
+func TestOpenReadOnly_KeepsWALOfStoppedStore(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		// open returns the path to open for the path of the copied
+		// database.
+		open func(t *testing.T, path string) string
+	}{
+		"database path": {
+			open: func(_ *testing.T, path string) string { return path },
+		},
+		// SQLite keeps the -wal file beside the target of the link.
+		"symbolic link": {
+			open: func(t *testing.T, path string) string {
+				t.Helper()
+
+				link := filepath.Join(t.TempDir(), "link.db")
+				require.NoError(t, os.Symlink(path, link))
+
+				return link
+			},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// A copy of the files of an open store holds the
+			// write-ahead log that a store leaves when it stops
+			// without a clean close. No other connection opens the
+			// copy, so the reader is the last connection to close it.
+			live := filepath.Join(t.TempDir(), "live.db")
+
+			store, err := eventstore.Open(t.Context(), live)
+			require.NoError(t, err)
+
+			t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			files := map[string][]byte{}
+
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				data, err := os.ReadFile(live + suffix)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path+suffix, data, 0o600))
+
+				files[suffix] = data
+			}
+
+			require.NotEmpty(t, files["-wal"])
+
+			db, err := eventstore.OpenReadOnly(t.Context(), tc.open(t, path))
+			require.NoError(t, err)
+
+			assert.Equal(t, 1, countInstances(t, db))
+
+			_, err = db.ExecContext(t.Context(), `DELETE FROM instances`)
+			require.ErrorContains(t, err, "attempt to write a readonly database")
+
+			require.NoError(t, db.Close())
+
+			for _, suffix := range []string{"", "-wal"} {
+				data, err := os.ReadFile(path + suffix)
+				require.NoError(t, err)
+				assert.Equal(t, files[suffix], data, "the reader changed the file %q", "stats.db"+suffix)
+			}
+		})
+	}
 }
 
 func TestOpenReadOnly_Paths(t *testing.T) {

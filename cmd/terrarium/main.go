@@ -88,6 +88,7 @@ func newRootCmd() *cobra.Command {
 		envoyCmd(envoyInst),
 		proxyCmd(usr, envoyInst),
 		statsCmd(usr),
+		mcpCmd(usr),
 	)
 
 	rootCmd.AddCommand(platformCommands(usr)...)

@@ -81,7 +81,7 @@ Three security modes drive the design: unrestricted (nil/empty egress rules), bl
 
 The data flow is: YAML config -> `config` (parse, validate, normalize, resolve) -> `firewall` (nftables rules) + `envoy` (bootstrap config) + `certs` (MITM CA/leaf for L7-restricted rules). The `dnsproxy` package handles FQDN resolution and updates nftables IP sets in real-time with per-element TTLs.
 
-- **cmd/terrarium**: CLI with `generate` (config + certs + Envoy bootstrap) and `init` (firewall + DNS proxy + Envoy + privilege drop + exec) commands. Uses cobra + charmbracelet/fang for arg parsing.
+- **cmd/terrarium**: CLI with `generate` (config + certs + Envoy bootstrap), `init` (firewall + DNS proxy + Envoy + privilege drop + exec), and `mcp` (MCP server for the stats event store) commands. Uses cobra + charmbracelet/fang for arg parsing.
 - **cmd/envoymanifest**: Maintains the Envoy pin of `envoybin`, which is `Version` and the SHA-256 hashes in `envoybin/manifest.go`. `update` downloads every build of the pinned version and replaces the hashes in that file. `verify` checks the hashes, the publisher's signature or build attestation, and the version commit of the build for the host platform. It is a separate module in `go.work`, so its OpenPGP dependency (`github.com/ProtonMail/go-crypto`) stays out of the root `go.mod`.
 - **cmd/vendorhash**: Maintains the `vendorHash` of the Lima flake in `lima/flake.nix`. `check` creates the vendor tree of the root module with `go mod vendor` and computes the hash that Nix computes for the tree. It fails when the flake holds another hash. `update` writes that hash into the flake. The tool computes the hash in Go, so it does not need Nix.
 - **cmd/modsum**: Maintains `go.sum` in the Dagger modules in `ci` and `ci/tests`, where `go mod tidy` cannot run. `check` reads `go.mod` and `go.sum` and fails when `go.sum` does not hold the two hashes of a required module version, or holds the hash of another version of a required module. `update` removes the hashes of those other versions and adds the missing hashes with `go mod download`.
@@ -92,6 +92,7 @@ The data flow is: YAML config -> `config` (parse, validate, normalize, resolve) 
 - **dnsproxy**: DNS proxy using miekg/dns that resolves FQDNs and updates firewall IP sets dynamically.
 - **dnstest**: Shared test helpers that start a mock DNS server (`StartServer(t, ip)`) or a DNS proxy (`StartProxy(t, cfg, upstream)`) on a free loopback port. `Listen(t)` binds one port for UDP and TCP.
 - **certs**: MITM certificate generation (CA + leaf) for L7-restricted TLS rules.
+- **mcpserver**: Model Context Protocol (MCP) server on `github.com/modelcontextprotocol/go-sdk` that backs `terrarium mcp`. Its tools (`list_instances`, `summarize_events`, `top_events`, `list_events`, `get_health`) read the stats event store through `eventstore.Reader`, which each tool call opens read-only. No tool writes, takes SQL, or takes a file path. The server limits the rows of each result and truncates long strings. Event fields hold values that the sandboxed workload chooses, so the tools return them only as JSON field values.
 
 ## Code Style
 

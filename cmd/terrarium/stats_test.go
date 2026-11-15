@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"net/netip"
 	"path/filepath"
 	"strings"
@@ -436,6 +437,9 @@ func TestStatsMissingDB(t *testing.T) {
 
 			err := cmd.ExecuteContext(t.Context())
 			require.ErrorContains(t, err, "opening stats db")
+			require.ErrorIs(t, err, fs.ErrNotExist)
+			require.ErrorContains(t, err, dbPath)
+			require.ErrorContains(t, err, "stats.enabled: true")
 
 			assert.NoFileExists(t, dbPath)
 		})

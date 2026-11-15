@@ -715,7 +715,8 @@ effective value is `max(conf.all, conf.<iface>)` and both must be loose.
 Every egress decision (DNS allow/deny/error, Envoy HTTP/TCP allow/deny,
 firewall allow/deny/leak) can be recorded into an embedded SQLite database.
 The `terrarium stats` CLI surfaces the data; the daemon never reads the DB
-itself.
+itself. The `terrarium mcp` command serves the same data to a coding agent,
+see [MCP server](#mcp-server).
 
 ```yaml
 stats:
@@ -898,6 +899,63 @@ DNS events and Envoy events hold no `rule_index` either.
 Events without a `dst_ip` or a `rule_index` have an empty cell in the table
 and in the CSV. In JSON, their `dst_ip` is the empty string and their
 `rule_index` is `null`.
+
+### MCP server
+
+`terrarium mcp` serves the stats event store to a Model Context Protocol
+(MCP) client, such as a coding agent, on its standard input and output. The
+agent calls the tools of the server to find the requests that the policy
+denied, so it does not need a shell to run `terrarium stats`. No tool writes
+to the database or changes the policy.
+
+Add the server to Claude Code:
+
+```
+claude mcp add terrarium -- terrarium mcp
+```
+
+The server reads the database that `terrarium stats` reads, and terrarium
+writes that database only with `stats.enabled: true`. The server finds the
+database at each tool call: the `--db` path, then `stats.path` of the config
+file, then the default path. When the terrarium process reads a config file
+at another path than the default, pass that path to the server:
+
+```
+claude mcp add terrarium -- terrarium --config /path/to/config.yaml mcp
+```
+
+Tool calls return an error when the config file does not enable stats, and
+when the database does not exist. The error names the path of the database
+and says to set `stats.enabled: true`. The server keeps running, so a later
+call succeeds after terrarium creates the database.
+
+The server has these tools:
+
+| Tool               | Result                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| `list_instances`   | The runs of terrarium that the store holds, latest start first.                                |
+| `summarize_events` | The number of events of one run for each source and decision.                                  |
+| `top_events`       | The domains, the TLS server names, or the HTTP paths with the most denied or allowed events.   |
+| `list_events`      | The events of one run, the latest recorded first, one page at a time.                          |
+| `get_health`       | The counters of the latest heartbeat, the time of the latest event, and the size of the store. |
+
+The event tools take `since` and `until`, which accept the values of the
+`--since` and `--until` flags of `terrarium stats`. A call without `since`
+reads the last 24 hours. A call without `instance` reads the run that
+`terrarium stats` reads without `--instance`. Each result names the instance
+that the tool read.
+
+Each result has a bounded size. `list_instances`, `top_events`, and
+`list_events` take `limit`, which is 50 when the call omits it and 200 at
+most. A full page of `list_events` holds `next_cursor`, and a call with that
+value as `cursor` returns the next page. String values longer than 256 bytes
+end in `...[truncated]`.
+
+Treat the values of event fields as untrusted data. The sandboxed workload
+chooses the domain names, the TLS server names, and the HTTP methods and
+paths of its requests. It can therefore write text there that reads like an
+instruction to the agent. The server returns those values only as JSON field
+values, and its instructions tell the client not to follow them.
 
 ### Daemon mode
 

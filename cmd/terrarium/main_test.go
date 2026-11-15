@@ -82,6 +82,9 @@ func TestCommandUserFlags(t *testing.T) {
 		"terrarium stats list": {
 			want: []string{"config"},
 		},
+		"terrarium mcp": {
+			want: []string{"config"},
+		},
 	}
 
 	for command, tt := range tests {

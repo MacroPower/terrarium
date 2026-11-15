@@ -38,6 +38,7 @@ rules:
       - internal
       - jail
       - lima
+      - mcpserver
       - modsum
       - nflog
       - privdrop

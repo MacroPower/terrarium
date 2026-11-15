@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"strconv"
 	"strings"
 	"time"
@@ -135,62 +137,84 @@ func resolveFlags(f *statsFlags, now time.Time) (resolvedFlags, error) {
 	return resolvedFlags{since: since, until: until, source: source, format: format}, nil
 }
 
-// resolveSince accepts either a Go-style duration ("24h", "30m",
-// "168h") read as "ago" relative to now, or an RFC3339 timestamp.
+// resolveSince parses the --since flag with [eventstore.ParseSince].
 func resolveSince(value string, now time.Time) (time.Time, error) {
-	if value == "" {
-		return time.Time{}, nil
-	}
-
-	d, err := time.ParseDuration(value)
-	if err == nil {
-		return now.Add(-d), nil
-	}
-
-	t, err := time.Parse(time.RFC3339, value)
+	t, err := eventstore.ParseSince(value, now)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("parsing --since %q: %w", value, err)
+		return time.Time{}, fmt.Errorf("parsing --since: %w", err)
 	}
 
 	return t, nil
 }
 
-// resolveUntil accepts an RFC3339 timestamp; an empty value means now.
+// resolveUntil parses the --until flag with [eventstore.ParseUntil].
 func resolveUntil(value string, now time.Time) (time.Time, error) {
-	if value == "" {
-		return now, nil
-	}
-
-	t, err := time.Parse(time.RFC3339, value)
+	t, err := eventstore.ParseUntil(value, now)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("parsing --until %q: %w", value, err)
+		return time.Time{}, fmt.Errorf("parsing --until: %w", err)
 	}
 
 	return t, nil
 }
 
-// dbPathOrDefault picks the DB file path with the same precedence
-// the daemon writes through: explicit --db, then the YAML
-// stats.path, then the XDG default.
-func dbPathOrDefault(ctx context.Context, usr *config.User, override string) string {
+// statsDB is the stats database that a command reads.
+type statsDB struct {
+	// Path is the path of the database file.
+	path string
+
+	// Disabled reports that the config file does not enable stats,
+	// so no terrarium process with that config writes the database.
+	// It is false when no config file decides: for an explicit --db
+	// value, and for a config file that does not exist.
+	disabled bool
+}
+
+// resolveStatsDB picks the DB file path with the same precedence the
+// daemon writes through: explicit --db, then the YAML stats.path,
+// then the XDG default. It returns an error when the config file
+// exists and does not load.
+func resolveStatsDB(ctx context.Context, usr *config.User, override string) (statsDB, error) {
 	if override != "" {
-		return override
+		return statsDB{path: override}, nil
 	}
 
 	def := config.StatsDBDefault()
 
 	cfg, err := status.LoadConfig(ctx, usr.ConfigPath)
-	if err != nil || cfg == nil {
-		return def
+
+	switch {
+	case err != nil:
+		return statsDB{}, err
+	case cfg == nil:
+		return statsDB{path: def}, nil
 	}
 
-	return cfg.StatsPath(def)
+	return statsDB{path: cfg.StatsPath(def), disabled: !cfg.StatsEnabled()}, nil
+}
+
+// dbPathOrDefault returns the path of [resolveStatsDB] for the stats
+// commands. They read the database at the XDG default path when the
+// config file does not load.
+func dbPathOrDefault(ctx context.Context, usr *config.User, override string) string {
+	db, err := resolveStatsDB(ctx, usr, override)
+	if err != nil {
+		return config.StatsDBDefault()
+	}
+
+	return db.path
 }
 
 // openStatsReader opens a reader on the event store at the given
-// path.
+// path. When the file does not exist, the error says which config
+// value makes terrarium create it.
 func openStatsReader(ctx context.Context, path string) (*eventstore.Reader, error) {
 	r, err := eventstore.OpenReader(ctx, path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("opening stats db %q: %w "+
+			"(terrarium creates the database when its config sets `stats.enabled: true`)",
+			path, err)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("opening stats db %q: %w", path, err)
 	}
