@@ -227,22 +227,6 @@ func waitProxyReady(t *testing.T, proxyURL *url.URL) {
 	t.Fatal("proxy did not become ready")
 }
 
-// freePort reserves an ephemeral TCP port and returns it.
-func freePort(t *testing.T) int {
-	t.Helper()
-
-	lc := net.ListenConfig{}
-
-	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	require.True(t, ok)
-	require.NoError(t, ln.Close())
-
-	return addr.Port
-}
-
 // proxyClient returns an HTTP client routed through proxyURL that
 // trusts roots for upstream TLS.
 func proxyClient(t *testing.T, proxyURL *url.URL, roots *x509.CertPool) *http.Client {
