@@ -104,9 +104,8 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 				httpRoute := route{
 					Match: match,
 					Route: &routeAction{
-						Cluster:         cluster,
-						AutoHostRewrite: true,
-						Timeout:         routeTimeout1h,
+						Cluster: cluster,
+						Timeout: routeTimeout1h,
 					},
 				}
 				routes = append(routes, grpcRouteVariant(httpRoute), httpRoute)
@@ -133,9 +132,8 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 		allowRoute := route{
 			Match: routeMatch{Prefix: "/"},
 			Route: &routeAction{
-				Cluster:         cluster,
-				AutoHostRewrite: true,
-				Timeout:         routeTimeout1h,
+				Cluster: cluster,
+				Timeout: routeTimeout1h,
 			},
 		}
 		vhosts = append(vhosts, virtualHost{
@@ -164,7 +162,6 @@ func grpcRouteVariant(r route) route {
 			MaxStreamDuration: &maxStreamDuration{GrpcTimeoutHeaderMax: "0s"},
 			Cluster:           r.Route.Cluster,
 			Timeout:           r.Route.Timeout,
-			AutoHostRewrite:   r.Route.AutoHostRewrite,
 		},
 		RequestHeadersToAdd:    r.RequestHeadersToAdd,
 		RequestHeadersToRemove: r.RequestHeadersToRemove,
@@ -280,9 +277,8 @@ func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluste
 			RequestHeadersToRemove: mismatchHeadersToRemove(apply),
 			Metadata:               mismatchLogMetadata(apply),
 			Route: &routeAction{
-				Cluster:         cluster,
-				AutoHostRewrite: true,
-				Timeout:         routeTimeout1h,
+				Cluster: cluster,
+				Timeout: routeTimeout1h,
 			},
 		}
 

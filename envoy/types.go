@@ -497,7 +497,6 @@ type routeAction struct {
 	Cluster           string               `yaml:"cluster"`
 	Timeout           string               `yaml:"timeout,omitempty"`
 	UpgradeConfigs    []routeUpgradeConfig `yaml:"upgrade_configs,omitempty"`
-	AutoHostRewrite   bool                 `yaml:"auto_host_rewrite"`
 }
 
 // routeUpgradeConfig models the route-level

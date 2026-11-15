@@ -239,8 +239,11 @@ func BuildHTTPForwardListener(
 // The connection manager removes the port and the trailing dot of the
 // host from the Host header of each request before it matches the
 // header against the virtual hosts. A request for "example.com." then
-// matches the rule for "example.com", and the upstream receives the
-// host without the dot.
+// matches the rule for "example.com". The routes do not change the
+// Host header, so the upstream receives the host without the port and
+// without the dot. Envoy does not add the port of the upstream to the
+// header. Some upstreams compare the header as text, such as an
+// upstream that checks a request signature that covers the header.
 //
 // The connection manager serves HTTP/1.0 requests, and the virtual
 // hosts apply the same policy to the requests of every HTTP version.
@@ -271,9 +274,8 @@ func buildHTTPForwardHCM(
 		openRoute := route{
 			Match: routeMatch{Prefix: "/"},
 			Route: &routeAction{
-				Cluster:         dynamicForwardProxyCluster,
-				AutoHostRewrite: true,
-				Timeout:         routeTimeout1h,
+				Cluster: dynamicForwardProxyCluster,
+				Timeout: routeTimeout1h,
 			},
 		}
 		vhosts = append(vhosts, virtualHost{

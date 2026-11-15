@@ -92,25 +92,38 @@ func e2eCerts(t *testing.T, domains ...string) (string, *tls.Config) {
 	return caPath, &tls.Config{Certificates: tlsCerts, MinVersion: tls.VersionTLS12}
 }
 
-// startTLSServer serves a fixed body over TLS on addr using cfg,
-// failing the test if the port is taken.
-func startTLSServer(t *testing.T, addr string, cfg *tls.Config, body string) {
+// fixedBodyHandler answers each request with body.
+func fixedBodyHandler(t *testing.T, body string) http.Handler {
 	t.Helper()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, err := io.WriteString(w, body)
 		if err != nil {
 			t.Logf("upstream write: %v", err)
 		}
 	})
+}
+
+// startTLSServer serves a fixed body over TLS on addr using cfg,
+// failing the test if the port is taken.
+func startTLSServer(t *testing.T, addr string, cfg *tls.Config, body string) {
+	t.Helper()
+
+	startTLSHandlerServer(t, addr, cfg, fixedBodyHandler(t, body))
+}
+
+// startTLSHandlerServer serves handler over TLS on addr using cfg
+// until the test ends. The test fails when another process holds the
+// port.
+func startTLSHandlerServer(t *testing.T, addr string, cfg *tls.Config, handler http.Handler) {
+	t.Helper()
 
 	lc := net.ListenConfig{}
 
 	ln, err := lc.Listen(t.Context(), "tcp", addr)
 	require.NoError(t, err)
 
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
 		serveErr := srv.Serve(tls.NewListener(ln, cfg))
@@ -405,7 +418,13 @@ func TestProxyE2EMITM(t *testing.T) {
 	require.NoError(t, probe.Close())
 
 	caPath, tlsCfg := e2eCerts(t, "test.example", "plain.example")
-	startTLSServer(t, "127.0.0.1:443", tlsCfg, "mitm upstream")
+	// The upstream of the decrypted requests answers the path
+	// /allowed/host with the Host header that it received.
+	mitmMux := http.NewServeMux()
+	mitmMux.Handle("/", fixedBodyHandler(t, "mitm upstream"))
+	mitmMux.Handle("/allowed/host", headerEchoHandler(t, "Host"))
+
+	startTLSHandlerServer(t, "127.0.0.1:443", tlsCfg, mitmMux)
 	startTLSServer(t, "127.0.0.1:18444", tlsCfg, "tunneled upstream")
 
 	// The proxy validates its re-encrypted upstream connection against
@@ -460,6 +479,29 @@ func TestProxyE2EMITM(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
 			getStatus(t, client, "https://test.example./forbidden"))
 	})
+
+	// The proxy removes the trailing dot from the Host header of a
+	// decrypted request, and it does not add the port of the upstream.
+	hostTests := map[string]string{
+		"upstream receives the Host header of the client":            "https://test.example/allowed/host",
+		"upstream receives the Host header without the trailing dot": "https://test.example./allowed/host",
+	}
+
+	for name, rawURL := range hostTests {
+		t.Run(name, func(t *testing.T) {
+			resp, err := client.Get(rawURL) //nolint:noctx // test client has a timeout.
+			require.NoError(t, err)
+
+			defer func() {
+				assert.NoError(t, resp.Body.Close())
+			}()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+			assert.Equal(t, "Host=test.example\n", string(body))
+		})
+	}
 
 	// The proxy applies the L7 rules to an HTTP/1.0 request inside the
 	// TLS session as it does to an HTTP/1.1 request. Without a Host
@@ -523,8 +565,15 @@ func TestProxyE2EMITM(t *testing.T) {
 func startHeaderEchoServer(t *testing.T, addr string, names ...string) {
 	t.Helper()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	startHTTPServer(t, addr, headerEchoHandler(t, names...))
+}
+
+// headerEchoHandler answers each request with the body that
+// [startHeaderEchoServer] describes.
+func headerEchoHandler(t *testing.T, names ...string) http.Handler {
+	t.Helper()
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body strings.Builder
 
 		for _, name := range names {
@@ -541,8 +590,6 @@ func startHeaderEchoServer(t *testing.T, addr string, names ...string) {
 			t.Logf("upstream write: %v", err)
 		}
 	})
-
-	startHTTPServer(t, addr, mux)
 }
 
 // startHeaderListServer serves plain HTTP on addr. The body of each
@@ -1164,15 +1211,15 @@ func TestProxyE2EHeaderMismatchLog(t *testing.T) {
 	})
 
 	// Each line names the authority that the upstream receives, which
-	// holds the port.
+	// is the authority of the client.
 	assert.ElementsMatch(t, []string{
-		"HEADER_MISMATCH headers=X-Log GET test.example:80/log/http-other 200",
-		"HEADER_MISMATCH headers=X-Log GET test.example:80/log/http-missing 200",
-		"HEADER_MISMATCH headers=X-Log GET test.example:443/log/tls-other 200",
-		"HEADER_MISMATCH headers=X-Log GET test.example:443/log/tls-missing 200",
-		"HEADER_MISMATCH headers=X-Log GET test.example:80/mixed/http-log-other-rep-match 200",
-		"HEADER_MISMATCH headers=X-Log GET test.example:80/mixed/http-log-other-rep-other 200",
-		"HEADER_MISMATCH headers=X-Log GET test.example:443/mixed/tls-log-other-rep-other 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example/log/http-other 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example/log/http-missing 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example/log/tls-other 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example/log/tls-missing 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example/mixed/http-log-other-rep-match 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example/mixed/http-log-other-rep-other 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example/mixed/tls-log-other-rep-other 200",
 	}, headerMismatchLines(t, stderrPath))
 }
 
@@ -1365,7 +1412,7 @@ func TestProxyE2EHeaderMatchWithoutValue(t *testing.T) {
 	})
 
 	assert.Equal(t, []string{
-		"HEADER_MISMATCH headers=X-Val GET test.example:80/log/missing 200",
+		"HEADER_MISMATCH headers=X-Val GET test.example/log/missing 200",
 	}, headerMismatchLines(t, stderrPath))
 }
 
@@ -1406,8 +1453,9 @@ func TestProxyE2EPlainHTTP(t *testing.T) {
 	proxyURL, _ := startProxy(t, policy, dnsAddr)
 	client := proxyClient(t, proxyURL, x509.NewCertPool())
 
-	// The proxy sends the upstream the host without the dot, and it
-	// adds the port of the upstream.
+	// The proxy removes the trailing dot and the port from the Host
+	// header, and it adds no port of its own. The upstream of a request
+	// without them therefore receives the Host header of the client.
 	tests := map[string]struct {
 		url      string
 		wantHost string
@@ -1416,22 +1464,22 @@ func TestProxyE2EPlainHTTP(t *testing.T) {
 		"allowed exact FQDN": {
 			url:      "http://test.example/",
 			want:     http.StatusOK,
-			wantHost: "test.example:80",
+			wantHost: "test.example",
 		},
 		"allowed exact FQDN with a trailing dot": {
 			url:      "http://test.example./",
 			want:     http.StatusOK,
-			wantHost: "test.example:80",
+			wantHost: "test.example",
 		},
 		"allowed exact FQDN with a trailing dot and a port": {
 			url:      "http://test.example.:80/",
 			want:     http.StatusOK,
-			wantHost: "test.example:80",
+			wantHost: "test.example",
 		},
 		"allowed wildcard FQDN with a trailing dot": {
 			url:      "http://sub.wild.example./",
 			want:     http.StatusOK,
-			wantHost: "sub.wild.example:80",
+			wantHost: "sub.wild.example",
 		},
 		"wildcard depth enforced with a trailing dot": {
 			url:  "http://a.b.wild.example./",
@@ -1481,7 +1529,7 @@ func TestProxyE2EPlainHTTP(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, "Host=test.example:80\n", string(body))
+		assert.Equal(t, "Host=test.example\n", string(body))
 	})
 
 	// The proxy applies the policy to an HTTP/1.0 request inside a
@@ -1491,7 +1539,7 @@ func TestProxyE2EPlainHTTP(t *testing.T) {
 
 		status, body := rawRoundTrip(t, tunnel, "GET / HTTP/1.0\r\nHost: test.example\r\n\r\n")
 		assert.Equal(t, http.StatusOK, status)
-		assert.Equal(t, "Host=test.example:80\n", body)
+		assert.Equal(t, "Host=test.example\n", body)
 	})
 
 	t.Run("HTTP/1.0 request in a tunnel to a denied domain gets 403", func(t *testing.T) {
@@ -1514,6 +1562,98 @@ func TestProxyE2EPlainHTTP(t *testing.T) {
 		assert.Equal(t, http.StatusOK,
 			rawRequestStatus(t, proxyURL, "GET http://test.example/ HTTP/1.0\r\n\r\n"))
 	})
+}
+
+// TestProxyE2EPlainHTTPHost checks the Host header that the upstream
+// of a plain HTTP request receives. The proxy must not add the port of
+// the upstream to the header, because some upstreams compare the
+// header as text. Each policy sends the request through another route
+// of the proxy.
+//
+//nolint:paralleltest // e2e tests bind fixed ports and run envoy subprocesses.
+func TestProxyE2EPlainHTTPHost(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	// The proxy connects to the HTTP default port of the upstream.
+	// Binding port 80 needs CAP_NET_BIND_SERVICE or a permissive
+	// ip_unprivileged_port_start (macOS allows it unprivileged).
+	lc := net.ListenConfig{}
+
+	probe, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:80")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.1:80: %v", err)
+	}
+
+	require.NoError(t, probe.Close())
+
+	// The upstream answers with the Host header that it received.
+	startHTTPServer(t, "127.0.0.1:80", headerEchoHandler(t, "Host"))
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	tests := map[string]struct {
+		want   map[string]string
+		policy string
+	}{
+		"unrestricted policy": {
+			// The proxy forwards every request, and it keeps the port
+			// that the client sent in the Host header.
+			policy: "{}\n",
+			want: map[string]string{
+				"http://test.example/":    "test.example",
+				"http://test.example./":   "test.example",
+				"http://test.example:80/": "test.example:80",
+			},
+		},
+		"rule that opens port 80": {
+			policy: "egress:\n" +
+				"  - toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"80\"\n",
+			want: map[string]string{
+				"http://test.example/":    "test.example",
+				"http://test.example./":   "test.example",
+				"http://test.example:80/": "test.example",
+			},
+		},
+		"FQDN rule with an HTTP rule": {
+			policy: "egress:\n" +
+				"  - toFQDNs:\n" +
+				"      - matchName: test.example\n" +
+				"    toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"80\"\n" +
+				"        rules:\n" +
+				"          http:\n" +
+				"            - method: GET\n",
+			want: map[string]string{
+				"http://test.example/":    "test.example",
+				"http://test.example./":   "test.example",
+				"http://test.example:80/": "test.example",
+			},
+		},
+	}
+
+	//nolint:paralleltest // Each subtest runs a proxy, and all share the upstream on port 80.
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			proxyURL, _ := startProxy(t, tt.policy, dnsAddr)
+			client := proxyClient(t, proxyURL, x509.NewCertPool())
+
+			for rawURL, wantHost := range tt.want {
+				resp, err := client.Get(rawURL) //nolint:noctx // test client has a timeout.
+				require.NoError(t, err)
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, resp.Body.Close())
+				require.NoError(t, err)
+
+				require.Equal(t, http.StatusOK, resp.StatusCode, "%s: %s", rawURL, body)
+				assert.Equal(t, "Host="+wantHost+"\n", string(body), rawURL)
+			}
+		})
+	}
 }
 
 //nolint:paralleltest // e2e tests run envoy subprocesses.

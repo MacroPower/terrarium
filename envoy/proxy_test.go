@@ -231,6 +231,22 @@ func TestListeners_StripTrailingHostDot(t *testing.T) {
 	}
 }
 
+// TestListeners_KeepHost checks that no route of a listener sets
+// auto_host_rewrite. With the option, Envoy replaces the Host header
+// with the address of the upstream, which holds the port. The upstream
+// of a request for "example.com" then receives "example.com:80".
+func TestListeners_KeepHost(t *testing.T) {
+	t.Parallel()
+
+	for name, l := range policyListeners() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.NotContains(t, marshalYAML(t, l), "auto_host_rewrite")
+		})
+	}
+}
+
 // TestBuildProxyListener_Probe checks that the front listener answers
 // the probe request for the probe token in every mode, and that its
 // access loggers skip the probe request.

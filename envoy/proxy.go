@@ -320,14 +320,15 @@ func denyRoutes() []route {
 
 // buildOpenProxyVhost returns the unrestricted catch-all vhost:
 // CONNECT tunnels and plain HTTP both go straight through the dynamic
-// forward proxy, which resolves the authority itself.
+// forward proxy, which resolves the authority itself. The upstream of
+// a plain HTTP request receives the authority of the request, with the
+// port only when the client sent one.
 func buildOpenProxyVhost() virtualHost {
 	openRoute := route{
 		Match: routeMatch{Prefix: "/"},
 		Route: &routeAction{
-			Cluster:         dynamicForwardProxyCluster,
-			AutoHostRewrite: true,
-			Timeout:         routeTimeout1h,
+			Cluster: dynamicForwardProxyCluster,
+			Timeout: routeTimeout1h,
 		},
 	}
 

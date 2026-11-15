@@ -95,6 +95,11 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 				"trusted_ca:",
 				"filename: /etc/ssl/bundle.pem",
 			},
+			// With auto_host_rewrite, Envoy sends the upstream the
+			// Host header with the port of the upstream.
+			wantAbsent: []string{
+				"auto_host_rewrite",
+			},
 		},
 		"l7 restricted without CA bundle": {
 			yaml: "egress:\n" +
@@ -126,6 +131,7 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 			},
 			wantAbsent: []string{
 				"tls_internal_443",
+				"auto_host_rewrite",
 			},
 		},
 		"open port": {
@@ -161,6 +167,7 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 			wantAbsent: []string{
 				"internal_listener:",
 				"status: 403",
+				"auto_host_rewrite",
 			},
 		},
 		"unrestricted open ports override l7": {
