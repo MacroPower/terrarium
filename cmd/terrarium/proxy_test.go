@@ -619,12 +619,40 @@ func listenProxyPort(t *testing.T, opts proxyOptions) {
 
 	lc := net.ListenConfig{}
 
-	ln, err := lc.Listen(t.Context(), "tcp", fmt.Sprintf("%s:%d", opts.bindAddress, opts.httpPort))
+	ln, err := lc.Listen(t.Context(), "tcp", net.JoinHostPort(opts.bindAddress, strconv.Itoa(opts.httpPort)))
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		assert.NoError(t, ln.Close())
 	})
+}
+
+// requireLoopback skips the test when the host cannot listen on the
+// loopback address ip, for example ::1 on a host without IPv6.
+func requireLoopback(t *testing.T, ip string) {
+	t.Helper()
+
+	err := loopbackError(t, ip)
+	if err != nil {
+		t.Skip(err)
+	}
+}
+
+// loopbackError returns an error when the host cannot listen on the
+// loopback address ip, and nil otherwise.
+func loopbackError(t *testing.T, ip string) error {
+	t.Helper()
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(t.Context(), "tcp", net.JoinHostPort(ip, "0"))
+	if err != nil {
+		return fmt.Errorf("loopback address %s unavailable: %w", ip, err)
+	}
+
+	require.NoError(t, ln.Close())
+
+	return nil
 }
 
 // requireReadyFile waits until the proxy creates the ready file.
@@ -711,21 +739,101 @@ func TestProxyCancelDuringStartup(t *testing.T) {
 // after the listener accepts connections, and removes it on shutdown.
 // The stub envoy never listens, so the test opens the listener itself.
 //
-//nolint:paralleltest // sets PATH for the whole process.
+//nolint:paralleltest,tparallel // sets PATH for the whole process.
 func TestProxyReadyFile(t *testing.T) {
+	tests := map[string]struct {
+		bindAddress string
+	}{
+		"IPv4 bind address": {bindAddress: loopbackIPv4},
+		"IPv6 bind address": {bindAddress: loopbackIPv6},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			requireLoopback(t, tt.bindAddress)
+
+			started, _ := stubEnvoy(t)
+
+			dir := t.TempDir()
+			usr := stubProxyUser(t, dir, "egress: []\n")
+			usr.ReadyFile = filepath.Join(dir, "ready")
+
+			// An earlier run that did not shut down cleanly leaves its file.
+			require.NoError(t, os.WriteFile(usr.ReadyFile, nil, 0o600))
+
+			opts := proxyOptions{
+				bindAddress: tt.bindAddress,
+				httpPort:    freePort(t),
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			errCh := make(chan error, 1)
+
+			go func() {
+				errCh <- Proxy(ctx, usr, opts)
+			}()
+
+			requireStubStarted(t, started)
+			assert.NoFileExists(t, usr.ReadyFile, "the ready file must not exist before the listener is up")
+
+			listenProxyPort(t, opts)
+			requireReadyFile(t, usr.ReadyFile)
+
+			cancel()
+			requireProxyShutDown(t, errCh)
+
+			assert.NoFileExists(t, usr.ReadyFile, "shutdown must remove the ready file")
+		})
+	}
+}
+
+// TestProxyListenAddressInUse checks that [Proxy] returns
+// [ErrListenAddressUnavailable] when another process holds the listen
+// address. The proxy must not take the listener of that process for
+// its own, so it starts no Envoy and creates no ready file.
+//
+// The other process can be a proxy with the same policy, which shares
+// the stats paths. The refused proxy must leave the access log socket
+// of that proxy in place, and it must not open the event store.
+//
+//nolint:paralleltest // sets PATH for the whole process.
+func TestProxyListenAddressInUse(t *testing.T) {
 	started, _ := stubEnvoy(t)
 
 	dir := t.TempDir()
-	usr := stubProxyUser(t, dir, "egress: []\n")
+	statsDB := filepath.Join(dir, "stats.db")
+	socket := filepath.Join(shortTempDir(t), "accesslog.sock")
+
+	usr := stubProxyUser(t, dir, "stats:\n"+
+		"  enabled: true\n"+
+		"  path: "+statsDB+"\n"+
+		"  socket: "+socket+"\n"+
+		"egress: []\n")
 	usr.ReadyFile = filepath.Join(dir, "ready")
 
 	// An earlier run that did not shut down cleanly leaves its file.
+	// The proxy removes the file although it does not start.
 	require.NoError(t, os.WriteFile(usr.ReadyFile, nil, 0o600))
+
+	lc := net.ListenConfig{}
+
+	// The listener stands for the access log socket of the proxy that
+	// holds the port.
+	accessLog, err := lc.Listen(t.Context(), "unix", socket)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, accessLog.Close())
+	})
 
 	opts := proxyOptions{
 		bindAddress: loopbackIPv4,
 		httpPort:    freePort(t),
 	}
+
+	listenProxyPort(t, opts)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -736,16 +844,23 @@ func TestProxyReadyFile(t *testing.T) {
 		errCh <- Proxy(ctx, usr, opts)
 	}()
 
-	requireStubStarted(t, started)
-	assert.NoFileExists(t, usr.ReadyFile, "the ready file must not exist before the listener is up")
+	select {
+	case err = <-errCh:
+		require.ErrorIs(t, err, ErrListenAddressUnavailable)
+		require.ErrorIs(t, err, syscall.EADDRINUSE)
+		require.ErrorContains(t, err, net.JoinHostPort(opts.bindAddress, strconv.Itoa(opts.httpPort)))
 
-	listenProxyPort(t, opts)
-	requireReadyFile(t, usr.ReadyFile)
+	case <-time.After(15 * time.Second):
+		t.Fatal("proxy did not return")
+	}
 
-	cancel()
-	requireProxyShutDown(t, errCh)
+	assert.NoFileExists(t, started, "envoy must not start")
+	assert.NoFileExists(t, usr.ReadyFile, "a proxy that cannot bind its address must not signal readiness")
+	assert.NoFileExists(t, statsDB, "a proxy that cannot bind its address must not open the event store")
 
-	assert.NoFileExists(t, usr.ReadyFile, "shutdown must remove the ready file")
+	fi, err := os.Stat(socket)
+	require.NoError(t, err, "a proxy that cannot bind its address must keep the access log socket of the other proxy")
+	assert.Equal(t, os.ModeSocket, fi.Mode().Type())
 }
 
 // TestProxyReadyFileError checks that [Proxy] stops Envoy and returns

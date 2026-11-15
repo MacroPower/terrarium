@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -83,7 +85,7 @@ func proxyCmd(usr *config.User) *cobra.Command {
 	cmd.Flags().IntVar(&opts.httpPort, "http-port", 8080,
 		"port for the HTTP proxy listener")
 	cmd.Flags().StringVar(&opts.bindAddress, "bind-address", loopbackIPv4,
-		"address the proxy listener binds")
+		"IP address the proxy listener binds")
 	cmd.Flags().StringVar(&opts.caOut, "ca-out", "",
 		"write the MITM CA certificate PEM to this path (only when the policy has L7 rules)")
 	cmd.Flags().StringVar(&opts.caBundleOut, "ca-bundle-out", "",
@@ -684,6 +686,17 @@ func openTCPPorts(openPortRules []config.ResolvedOpenPort) map[int]bool {
 // [ErrReadyFileIsDir] before it starts Envoy when usr.ReadyFile is a
 // directory.
 //
+// Proxy returns [ErrListenAddressUnavailable] before it starts Envoy
+// when it cannot bind the listen address, for example because another
+// process holds the port or because opts.bindAddress is not an IP
+// address. The proxy therefore reports that it is ready only for a
+// listener that came up after that check. Proxy makes the check before
+// it opens the event store and the access log socket. A refused start
+// therefore leaves the access log socket of a running proxy in place.
+// A refused start still removes usr.ReadyFile, also when a running
+// proxy that shares the path created it. Proxy cannot tell that file
+// from a stale one.
+//
 // A signal or a cancellation of ctx stops Envoy and makes Proxy return
 // nil. Proxy also returns nil when either arrives before Envoy starts
 // or before the listener accepts connections. Proxy returns
@@ -708,6 +721,19 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 	envoyBin, err := exec.LookPath("envoy")
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrEnvoyNotFound, err)
+	}
+
+	addr := net.JoinHostPort(opts.bindAddress, strconv.Itoa(opts.httpPort))
+
+	// A listener of another process on addr answers the readiness
+	// wait, so refuse to start while one exists. The check runs before
+	// the proxy opens the event store and the access log socket,
+	// because a second proxy on addr shares those paths with the first
+	// proxy. Opening the access log socket removes the socket of the
+	// first proxy.
+	err = checkListenAddress(ctx, addr)
+	if err != nil {
+		return err
 	}
 
 	store := openProxyEventStore(ctx, cfg)
@@ -777,8 +803,6 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 
 		return fmt.Errorf("starting envoy: %w", err)
 	}
-
-	addr := fmt.Sprintf("%s:%d", opts.bindAddress, opts.httpPort)
 
 	err = waitForListener(ctx, addr, envoySettings.StartupTimeout.Duration)
 

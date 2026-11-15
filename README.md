@@ -233,6 +233,17 @@ startup, so the file exists only while the proxy is ready. When
 `--ready-file` names a directory, the proxy exits with an error and
 leaves the directory in place.
 
+When another process already listens on the proxy's address, the proxy
+exits with an error that names the address. It does not start Envoy, and
+it does not create the ready file. A second proxy on the same port is
+such a process.
+
+A proxy that cannot bind its address still removes the file that
+`--ready-file` names. It cannot tell a stale file from the file of a
+running proxy. Give each proxy its own ready file. When two proxies
+share one ready file, a refused start of the second proxy removes the
+file, and the first proxy keeps running without it.
+
 The Envoy log does not appear on the terminal. The proxy logs the path
 of the `--envoy-log` file before it starts Envoy, so you can find the
 log when Envoy exits early. To send the Envoy log to the proxy's stderr,
