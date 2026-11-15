@@ -46,8 +46,10 @@ require (
 
 // The Dagger code generator writes the replace directives of the
 // OpenTelemetry log modules each time it generates the code of this
-// module, so a change to them does not last. v0.16.0 of otlploggrpc, of
-// otlploghttp, and of otel/sdk/log has advisories of MODERATE severity.
+// module, so a change to them does not last. A package rule in
+// .github/renovate.json5 stops Renovate from proposing versions for
+// them. v0.16.0 of otlploggrpc, of otlploghttp, and of otel/sdk/log has
+// advisories of MODERATE severity.
 replace go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc => go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.16.0
 
 replace go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp => go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.16.0
@@ -68,7 +70,8 @@ replace go.opentelemetry.io/otel/sdk/log => go.opentelemetry.io/otel/sdk/log v0.
 // Keep every go.opentelemetry.io/otel module at a version before v1.47.0
 // while otel/log is at v0.16.0. otel/internal/global v1.47.0 imports
 // otel/log, and otel/log v0.16.0 imports otel/internal/global, so the
-// module does not compile.
+// module does not compile. A package rule in .github/renovate.json5
+// holds Renovate to the versions before v1.47.0.
 //
 // Check the selected versions for advisories after each `dagger develop`
 // that changes this file.

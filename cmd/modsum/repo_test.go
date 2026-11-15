@@ -14,11 +14,39 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 )
 
-// repoRoot is the path of the root of the repository, relative to the
-// directory of this package.
-var repoRoot = filepath.Join("..", "..")
+// otelPath is the path of the root module of OpenTelemetry for Go. The
+// paths of its other modules start with this path and a slash.
+const otelPath = "go.opentelemetry.io/otel"
+
+// otelLogPath is the path of the OpenTelemetry log module.
+const otelLogPath = otelPath + "/log"
+
+// otelLimit is the first version of the OpenTelemetry modules in which
+// otel/internal/global imports otel/log. A Dagger module does not compile
+// when it selects this version or a later one of an OpenTelemetry module
+// and a version of otel/log that imports otel/internal/global. v0.16.0
+// of otel/log, which the Dagger code generator selects, has that import,
+// and v1.47.0 does not.
+const otelLimit = "v1.47.0"
+
+var (
+	// repoRoot is the path of the root of the repository, relative to
+	// the directory of this package.
+	repoRoot = filepath.Join("..", "..")
+
+	// generatorReplaces holds the paths of the OpenTelemetry log
+	// modules. The Dagger code generator writes a replace directive for
+	// each of them into the go.mod of each Dagger module.
+	generatorReplaces = []string{
+		otelPath + "/exporters/otlp/otlplog/otlploggrpc",
+		otelPath + "/exporters/otlp/otlplog/otlploghttp",
+		otelLogPath,
+		otelPath + "/sdk/log",
+	}
+)
 
 // readRepoFile returns the text of the file at path, which is relative to
 // the root of the repository.
@@ -35,6 +63,19 @@ func readRepoFile(t *testing.T, path string) string {
 // Renovate configuration.
 func quoteList(items []string) string {
 	return `["` + strings.Join(items, `", "`) + `"]`
+}
+
+// quoted returns each string that list holds in double quotes. The list
+// argument is the text between the brackets of a list of strings in the
+// Renovate configuration.
+func quoted(list string) []string {
+	var items []string
+
+	for _, match := range regexp.MustCompile(`"([^"]*)"`).FindAllStringSubmatch(list, -1) {
+		items = append(items, match[1])
+	}
+
+	return items
 }
 
 // moduleFiles returns the path of the file called name in each module
@@ -188,4 +229,69 @@ func TestRenovateRunsUpdate(t *testing.T) {
 	}
 
 	assert.Len(t, permits, 1, "want one pattern of %q that permits %q", allowed, command)
+}
+
+// TestRenovateKeepsOpenTelemetryVersions checks that Renovate proposes no
+// OpenTelemetry version that a Dagger module cannot use. One package rule
+// must disable the modules that the Dagger code generator replaces.
+// Another rule must limit the other OpenTelemetry modules to the versions
+// before [otelLimit]. Each go.mod must still give the reason for both
+// rules.
+func TestRenovateKeepsOpenTelemetryVersions(t *testing.T) {
+	t.Parallel()
+
+	config := readRepoFile(t, ".github/renovate.json5")
+
+	// The matchers that open each rule for the go.mod of the Dagger
+	// modules, and the list of package names after them.
+	packages := `(?s)matchManagers: \["gomod"\],\s+matchFileNames: ` +
+		regexp.QuoteMeta(quoteList(moduleFiles("go.mod"))) +
+		`,\s+matchPackageNames: \[([^\]]*)\],\s+`
+
+	disabled := regexp.MustCompile(packages + `enabled: false,`).FindStringSubmatch(config)
+	require.NotNil(
+		t,
+		disabled,
+		"the Renovate configuration has no rule that disables modules in the go.mod of each Dagger module",
+	)
+
+	assert.ElementsMatch(t, generatorReplaces, quoted(disabled[1]))
+
+	limit := regexp.MustCompile(packages + `allowedVersions: "([^"]*)",`).FindStringSubmatch(config)
+	require.NotNil(
+		t,
+		limit,
+		"the Renovate configuration has no rule that limits versions in the go.mod of each Dagger module",
+	)
+
+	// A glob of Renovate matches a slash only with a path segment of two
+	// asterisks, so the root module needs a pattern of its own.
+	assert.ElementsMatch(t, []string{otelPath, otelPath + "/**"}, quoted(limit[1]))
+
+	// The range has the syntax of npm, so it names the version without
+	// the v of a Go version.
+	assert.Equal(t, "<"+strings.TrimPrefix(otelLimit, "v"), limit[2])
+
+	for _, file := range moduleFiles("go.mod") {
+		mod, err := modfile.Parse(file, []byte(readRepoFile(t, file)), nil)
+		require.NoError(t, err)
+
+		replaced := map[string]string{}
+		for _, rep := range mod.Replace {
+			replaced[rep.Old.Path] = rep.New.Version
+		}
+
+		for _, path := range generatorReplaces {
+			assert.Contains(t, replaced, path,
+				"%s does not replace %s, so remove the module from the rule that disables it", file, path)
+		}
+
+		// The limit has a reason only for a version of the log module
+		// that imports otel/internal/global.
+		version, ok := replaced[otelLogPath]
+		if ok {
+			assert.Negative(t, semver.Compare(version, otelLimit),
+				"%s replaces %s with %s, so remove the rule that limits the versions", file, otelLogPath, version)
+		}
+	}
 }

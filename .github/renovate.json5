@@ -80,6 +80,44 @@
         },
       },
     },
+    // The go.mod of the Dagger Go SDK replaces the OpenTelemetry log modules
+    // with v0.16.0. The Dagger code generator writes those replace directives
+    // into the go.mod of a Dagger module each time it generates the code of
+    // the module, and the engine generates the code before it builds the
+    // module. A version that Renovate writes into one of the directives has
+    // no effect on the build, and the next `dagger develop` reverts it. This
+    // rule stops Renovate from proposing a version for those modules. Remove
+    // a module from the rule when the code generator stops writing its
+    // replace directive.
+    {
+      matchManagers: ["gomod"],
+      matchFileNames: ["ci/go.mod", "ci/tests/go.mod"],
+      matchPackageNames: [
+        "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc",
+        "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp",
+        "go.opentelemetry.io/otel/log",
+        "go.opentelemetry.io/otel/sdk/log",
+      ],
+      enabled: false,
+    },
+    // A Dagger module does not compile when it selects v1.47.0 or later of a
+    // go.opentelemetry.io/otel module and v0.16.0 of otel/log.
+    // otel/internal/global v1.47.0 imports otel/log, and otel/log v0.16.0
+    // imports otel/internal/global. Each go.opentelemetry.io/otel module
+    // requires the otel module of its own release, so an update of one of
+    // them selects otel v1.47.0. This rule holds the modules at the versions
+    // before v1.47.0. Remove the rule when the code generator replaces
+    // otel/log with v1.47.0 or later, or stops replacing it.
+    //
+    // A glob matches a slash only with a path segment of two asterisks, so
+    // the first pattern matches the otel module and the second pattern
+    // matches the modules in its subdirectories.
+    {
+      matchManagers: ["gomod"],
+      matchFileNames: ["ci/go.mod", "ci/tests/go.mod"],
+      matchPackageNames: ["go.opentelemetry.io/otel", "go.opentelemetry.io/otel/**"],
+      allowedVersions: "<1.47.0",
+    },
   ],
   customManagers: [
     // Tool and image versions pinned as Go constants in the ci module,
