@@ -790,6 +790,32 @@ func TestResolveRulesForPort(t *testing.T) {
 				{Domain: "queue.example.com"},
 			},
 		},
+		"ICMP rule scoped to an FQDN matches no port": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "ping.example.com"}},
+				ICMPs: []config.ICMPRule{{
+					Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+				}},
+			})},
+			port:     443,
+			wantNone: true,
+		},
+		"ICMP rule adds no domain to the port of another rule": {
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "github.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "ping.example.com"}},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+					}},
+				},
+			)},
+			port: 443,
+			want: []config.ResolvedRule{{Domain: "github.com"}},
+		},
 	}
 
 	for name, tt := range tests {
@@ -1688,6 +1714,36 @@ func TestResolveCIDRRules(t *testing.T) {
 				{CIDR: "fd00::1/128"},
 			},
 		},
+		"ICMP rule scoped to toCIDR is skipped": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"203.0.113.0/24", "2001:db8::/32"},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+					}},
+				}),
+			},
+			validate: true,
+		},
+		"ICMP rule scoped to toCIDRSet is skipped": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToCIDRSet: []config.CIDRRule{{CIDR: "203.0.113.0/24", Except: []string{"203.0.113.8/29"}}},
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+						}},
+					},
+					config.EgressRule{
+						ToCIDR: []string{"198.51.100.0/24"},
+					},
+				),
+			},
+			validate: true,
+			wantIPv4: []config.ResolvedCIDR{
+				{CIDR: "198.51.100.0/24", RuleIndex: 1},
+			},
+		},
 	}
 
 	for name, tt := range tests {
@@ -2373,6 +2429,33 @@ func TestResolveCatchAllFQDNRules(t *testing.T) {
 				{RuleIndex: 1, EgressIndex: 2},
 			},
 		},
+		"ICMP rule not catch-all": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "ping.example.com"}},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+					}},
+				}),
+			},
+			want: nil,
+		},
+		"ICMP rule before a catch-all rule": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "ping.example.com"}},
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+						}},
+					},
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					},
+				),
+			},
+			want: []config.CatchAllFQDNRule{{RuleIndex: 0, EgressIndex: 1}},
+		},
 		"unrestricted returns nil": {
 			cfg:  &config.Config{},
 			want: nil,
@@ -2417,6 +2500,37 @@ func TestCompileCatchAllFQDNPatterns(t *testing.T) {
 	assert.True(t, patterns[0].Regex.MatchString("example.com."))
 	assert.False(t, patterns[0].Regex.MatchString("sub.example.com."))
 	assert.True(t, patterns[1].Regex.MatchString("foo.test.com."))
+}
+
+func TestCompileCatchAllFQDNPatterns_SkipsICMPRules(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "ping.example.com"}},
+				ICMPs: []config.ICMPRule{{
+					Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+				}},
+			},
+			config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+			},
+		),
+	}
+	require.NoError(t, cfg.Validate(t.Context()))
+
+	// The pattern of the catch-all rule holds the rule index that
+	// ResolveCatchAllFQDNRules gives the rule.
+	patterns := cfg.CompileCatchAllFQDNPatterns()
+	require.Len(t, patterns, 1)
+	assert.Equal(t, "example.com", patterns[0].Original)
+	assert.Equal(t, 0, patterns[0].RuleIndex)
+
+	icmpPatterns := cfg.CompileICMPFQDNPatterns()
+	require.Len(t, icmpPatterns, 1)
+	assert.Equal(t, "ping.example.com", icmpPatterns[0].Original)
+	assert.Equal(t, 0, icmpPatterns[0].RuleIndex)
 }
 
 func TestResolveICMPFQDNRules(t *testing.T) {

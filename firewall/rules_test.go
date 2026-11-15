@@ -1133,46 +1133,92 @@ func TestApplyRules_DenyICMP(t *testing.T) {
 	assert.Equal(t, 1, icmpDrops)
 }
 
+// assertOnlyICMPAccepts fails the test when an ACCEPT of the named
+// chain matches packets of a protocol other than ICMP and ICMPv6.
+func assertOnlyICMPAccepts(t *testing.T, rec *ruleRecorder, chain string) {
+	t.Helper()
+
+	for i, r := range rec.rulesForChain(chain) {
+		if v, _ := ruleVerdict(r); v != expr.VerdictAccept {
+			continue
+		}
+
+		assert.True(t,
+			ruleMatchesL4Proto(r, unix.IPPROTO_ICMP) || ruleMatchesL4Proto(r, unix.IPPROTO_ICMPV6),
+			"rule %d of chain %s accepts a protocol other than ICMP", i, chain)
+	}
+}
+
 func TestApplyRules_ICMPWithCIDR(t *testing.T) {
 	t.Parallel()
 
-	rec := &ruleRecorder{}
-	cfg := &config.Config{
-		Egress: egressRules(
-			config.EgressRule{
-				ToCIDR: []string{"10.0.0.0/8"},
-				ICMPs: []config.ICMPRule{{
-					Fields: []config.ICMPField{
-						{Family: "IPv4", Type: "8"},
-					},
-				}},
+	icmps := []config.ICMPRule{{
+		Fields: []config.ICMPField{
+			{Family: "IPv4", Type: "8"},
+		},
+	}}
+
+	tests := map[string]struct {
+		rule config.EgressRule
+		uids firewall.UIDs
+	}{
+		"toCIDR": {
+			rule: config.EgressRule{ToCIDR: []string{"203.0.113.0/24"}, ICMPs: icmps},
+			uids: testUIDs,
+		},
+		"toCIDRSet": {
+			rule: config.EgressRule{
+				ToCIDRSet: []config.CIDRRule{{CIDR: "203.0.113.0/24"}},
+				ICMPs:     icmps,
 			},
-		),
+			uids: testUIDs,
+		},
+		"toCIDR in VM mode": {
+			rule: config.EgressRule{ToCIDR: []string{"203.0.113.0/24"}, ICMPs: icmps},
+			uids: testVMUIDs,
+		},
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
-	require.NoError(t, err)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	// CIDR chain created for the CIDR part.
-	cidrRules := rec.rulesForChain("cidr_0")
-	assert.NotEmpty(t, cidrRules, "CIDR chain should be created")
+			rec := &ruleRecorder{}
+			cfg := &config.Config{Egress: egressRules(tc.rule)}
 
-	// ICMP with CIDRs uses a per-rule chain instead of flat rules
-	// on the output chain.
-	icmpChainRules := rec.rulesForChain("icmp_0")
-	assert.NotEmpty(t, icmpChainRules, "ICMP chain should be created for CIDR-scoped rule")
+			err := firewall.ApplyRules(t.Context(), rec, cfg, tc.uids)
+			require.NoError(t, err)
 
-	// The ICMP chain should have a CIDR-scoped ACCEPT with payload.
-	var icmpAccepts int
+			// The rule allows only ICMP to its CIDR, so the CIDR
+			// gets no chain that accepts, redirects, or routes
+			// TCP or UDP.
+			for _, name := range rec.chainNames() {
+				assert.False(t, strings.HasPrefix(name, "cidr_"),
+					"ICMP rule must not create the CIDR chain %s", name)
+			}
 
-	for _, r := range icmpChainRules {
-		v, _ := ruleVerdict(r)
-		if v == expr.VerdictAccept && ruleHasPayload(r) {
-			icmpAccepts++
-		}
+			// ICMP with CIDRs uses a per-rule chain instead of
+			// flat rules on the output chain.
+			icmpChainRules := rec.rulesForChain("icmp_0")
+			assert.NotEmpty(t, icmpChainRules, "ICMP chain should be created for CIDR-scoped rule")
+
+			// The ICMP chain should have a CIDR-scoped ACCEPT
+			// with payload.
+			var icmpAccepts int
+
+			for _, r := range icmpChainRules {
+				v, _ := ruleVerdict(r)
+				if v == expr.VerdictAccept && ruleHasPayload(r) {
+					icmpAccepts++
+				}
+			}
+
+			assert.Equal(t, 1, icmpAccepts)
+
+			assertOnlyICMPAccepts(t, rec, "icmp_0")
+			assertOnlyICMPAccepts(t, rec, "terrarium_output")
+		})
 	}
-
-	assert.Equal(t, 1, icmpAccepts)
 }
 
 func TestApplyRules_ICMPWithoutCIDR(t *testing.T) {
@@ -1264,16 +1310,14 @@ func TestApplyRules_ICMPWithFQDN(t *testing.T) {
 	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
 	require.NoError(t, err)
 
-	// ICMP FQDN sets should be created.
-	setNames := rec.setNames()
-	assert.Contains(t, setNames, "terrarium_fqdnicmp4_0")
-	assert.Contains(t, setNames, "terrarium_fqdnicmp6_0")
+	// The firewall creates only the ICMP FQDN sets. The rule allows
+	// only ICMP to its domains, so it is not a catch-all FQDN rule
+	// and gets no set that accepts every protocol.
+	assert.Equal(t, []string{"terrarium_fqdnicmp4_0", "terrarium_fqdnicmp6_0"}, rec.setNames())
 
 	// terrarium_output should have ICMP ESTABLISHED and set lookup
-	// rules. The rule also qualifies as catch-all FQDN, so both
-	// ICMP FQDN and catch-all sets are created.
-	assert.Contains(t, setNames, "terrarium_fqdnca4_0")
-	assert.Contains(t, setNames, "terrarium_fqdnca6_0")
+	// rules, and no ACCEPT for another protocol.
+	assertOnlyICMPAccepts(t, rec, "terrarium_output")
 
 	outputRules := rec.rulesForChain("terrarium_output")
 
@@ -2959,15 +3003,13 @@ func TestApplyRules_LogRules_PerRuleAllowIndex(t *testing.T) {
 			},
 			// Every ACCEPT of a per-rule chain has a log rule, so
 			// cidr_0 holds one ACCEPT, for UDP 53, and cidr_1 none.
-			// The ICMP rules also resolve as a CIDR rule (cidr_2)
-			// and as a catch-all FQDN rule, whose accepts log the
-			// same index.
+			// The ICMP rules accept only ICMP, so they resolve
+			// neither as a CIDR rule nor as a catch-all FQDN rule.
 			want: map[string][]int{
 				"cidr_0": {1},
-				"cidr_2": {5},
 				"icmp_0": {5},
-				// ICMP set lookup, TCP range, catch-all v4 and v6.
-				"terrarium_output": {4, 3, 4, 4},
+				// ICMP set lookup, TCP range.
+				"terrarium_output": {4, 3},
 			},
 		},
 		"port-only rule that opens every port": {

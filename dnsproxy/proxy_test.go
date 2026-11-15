@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -937,21 +936,11 @@ func TestProxyICMPFQDNPopulatesIPSet(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// The rule qualifies as both catch-all FQDN (no toPorts) and
-	// ICMP FQDN, so both sets are populated.
-	require.Len(t, recorded, 2)
-
-	var hasICMPSet bool
-
-	for _, entry := range recorded {
-		if strings.Contains(entry, "terrarium_fqdnicmp4_0") {
-			assert.Contains(t, entry, "10.0.0.1")
-
-			hasICMPSet = true
-		}
-	}
-
-	assert.True(t, hasICMPSet, "should populate ICMP FQDN set")
+	// The rule allows only ICMP, so it is not a catch-all FQDN rule,
+	// and the proxy populates only the ICMP FQDN set.
+	require.Len(t, recorded, 1)
+	assert.Contains(t, recorded[0], "terrarium_fqdnicmp4_0")
+	assert.Contains(t, recorded[0], "10.0.0.1")
 }
 
 func TestProxyEmitsEvents(t *testing.T) {

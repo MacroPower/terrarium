@@ -138,7 +138,8 @@ egress:
           - type: EchoRequest
             family: IPv6
 
-  # ICMP rule scoped to FQDNs.
+  # ICMP rule scoped to FQDNs. A rule with icmps allows only the listed
+  # ICMP types to its destinations, and no TCP or UDP port.
   - toFQDNs:
       - matchName: "ping-target.example.com"
     icmps:

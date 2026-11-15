@@ -165,7 +165,8 @@ func (c *Config) TCPForwardHosts() []string {
 
 // ResolveRulesForPort returns resolved rules scoped to a specific port.
 // Only rules whose toPorts match the given port (or that have no
-// toPorts, meaning all ports) are included. L7 rules are extracted
+// toPorts, meaning all ports) are included. Rules with icmps allow
+// only ICMP, so they match no port. L7 rules are extracted
 // only from matching [PortRule] entries. When the same domain appears
 // in multiple matching rules, L7 constraints are merged using OR
 // semantics; if any occurrence has no L7 rules, the merged result has
@@ -322,7 +323,13 @@ func fqdnDomains(fqdns []FQDNSelector) []string {
 // Cilium semantics: if ANY matching PortRule for this port has no L7
 // rules and no serverNames (plain L4), it nullifies sibling L7 rules
 // on the same port within this EgressRule.
+//
+// A rule with icmps matches no port. See [ruleHasICMPs].
 func matchRuleForPort(ctx context.Context, rule EgressRule, port int) (bool, bool, []ResolvedHTTPRule, []string) {
+	if ruleHasICMPs(rule) {
+		return false, false, nil, nil
+	}
+
 	if len(rule.ToPorts) == 0 {
 		// No toPorts: domain allowed on all ports, no L7
 		// restrictions from this rule.
@@ -977,13 +984,19 @@ func isBareWildcard(pattern string) bool {
 // and separates them by address family. Under Cilium semantics, CIDR
 // rules are direct L3 allow selectors that bypass the Envoy proxy. If
 // the parent rule has toPorts, the CIDR is port-scoped (L3 AND L4);
-// otherwise the CIDR allows any port.
+// otherwise the CIDR allows any port. ResolveCIDRRules skips rules
+// with icmps, because they allow only ICMP to their CIDRs.
+// [Config.ResolveICMPRules] resolves them.
 func (c *Config) ResolveCIDRRules(ctx context.Context) ([]ResolvedCIDR, []ResolvedCIDR) {
 	var ipv4, ipv6 []ResolvedCIDR
 
 	cidrRules := c.EgressRules()
 	for ri := range cidrRules {
 		if len(cidrRules[ri].ToCIDRSet) == 0 && len(cidrRules[ri].ToCIDR) == 0 {
+			continue
+		}
+
+		if ruleHasICMPs(cidrRules[ri]) {
 			continue
 		}
 
@@ -1453,9 +1466,10 @@ func (c *Config) ResolveDenyPortOnlyRules(ctx context.Context) []ResolvedPortPro
 // isCatchAllFQDNRule reports whether an egress rule has toFQDNs but no
 // explicit ports, meaning it should allow all ports to matched domains.
 // This includes rules with no toPorts at all, and rules where all ports
-// are wildcard port 0 (without L7).
+// are wildcard port 0 (without L7). A rule with icmps is not a
+// catch-all rule, because it allows only ICMP to its domains.
 func isCatchAllFQDNRule(rule EgressRule) bool {
-	if len(rule.ToFQDNs) == 0 {
+	if len(rule.ToFQDNs) == 0 || ruleHasICMPs(rule) {
 		return false
 	}
 
@@ -1509,10 +1523,19 @@ func (c *Config) ResolveCatchAllFQDNRules() []CatchAllFQDNRule {
 	return result
 }
 
+// ruleHasICMPs reports whether an egress rule has icmps. Under Cilium
+// semantics, icmps is an L4 selector like toPorts, and validation
+// rejects a rule that has both. A rule with icmps therefore allows
+// only its ICMP types to its destinations, and no TCP or UDP port.
+// [Config.ResolveICMPRules] resolves these rules.
+func ruleHasICMPs(rule EgressRule) bool {
+	return len(rule.ICMPs) > 0
+}
+
 // isICMPFQDNRule reports whether an egress rule has both ICMPs and
 // toFQDNs, qualifying it for ICMP FQDN set enforcement.
 func isICMPFQDNRule(rule EgressRule) bool {
-	return len(rule.ICMPs) > 0 && len(rule.ToFQDNs) > 0
+	return ruleHasICMPs(rule) && len(rule.ToFQDNs) > 0
 }
 
 // ResolveICMPFQDNRules returns rule indices for rules with both ICMPs

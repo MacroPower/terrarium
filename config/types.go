@@ -149,11 +149,17 @@ func (c *Config) IsEgressBlocked() bool {
 }
 
 // HasCIDRRules reports whether any non-deny egress rule has CIDR
-// selectors (toCIDR or toCIDRSet). When true, the CIDR catch-all
-// Envoy listener and its NAT redirect rules are needed.
+// selectors (toCIDR or toCIDRSet) and no icmps. When true, the CIDR
+// catch-all Envoy listener and its NAT redirect rules are needed. A
+// rule with icmps allows only ICMP to its CIDRs, which Envoy does not
+// handle.
 func (c *Config) HasCIDRRules() bool {
 	rules := c.EgressRules()
 	for i := range rules {
+		if ruleHasICMPs(rules[i]) {
+			continue
+		}
+
 		if len(rules[i].ToCIDR) > 0 || len(rules[i].ToCIDRSet) > 0 {
 			return true
 		}
@@ -235,7 +241,9 @@ type EgressRule struct {
 	// ICMPs specifies ICMP type filtering rules. Each [ICMPRule]
 	// contains a list of allowed ICMP type fields, scoped by address
 	// family. ICMPs is mutually exclusive with ToPorts on the same
-	// rule (Cilium: rule_validation.go:328-330).
+	// rule (Cilium: rule_validation.go:328-330). A rule with ICMPs
+	// allows only those ICMP types to its L3 destinations, and no TCP
+	// or UDP port.
 	ICMPs []ICMPRule `yaml:"icmps,omitempty"`
 }
 

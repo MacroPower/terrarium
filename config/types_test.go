@@ -92,6 +92,69 @@ func TestDenyOnlySemantics(t *testing.T) {
 	assert.True(t, cfg.IsEgressBlocked(), "deny-only config with no allow rules is blocked")
 }
 
+func TestHasCIDRRules(t *testing.T) {
+	t.Parallel()
+
+	icmps := []config.ICMPRule{{
+		Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}},
+	}}
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		want bool
+	}{
+		"toCIDR rule": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToCIDR: []string{"10.0.0.0/8"},
+			})},
+			want: true,
+		},
+		"toCIDRSet rule": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToCIDRSet: []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+			})},
+			want: true,
+		},
+		"FQDN rule": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+			})},
+		},
+		"deny CIDR rule": {
+			cfg: &config.Config{EgressDeny: egressDenyRules(config.EgressDenyRule{
+				ToCIDR: []string{"10.0.0.0/8"},
+			})},
+		},
+		"ICMP rule scoped to toCIDR": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToCIDR: []string{"10.0.0.0/8"},
+				ICMPs:  icmps,
+			})},
+		},
+		"ICMP rule scoped to toCIDRSet": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToCIDRSet: []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+				ICMPs:     icmps,
+			})},
+		},
+		"ICMP rule scoped to a CIDR, then a CIDR rule": {
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}, ICMPs: icmps},
+				config.EgressRule{ToCIDR: []string{"192.0.2.0/24"}},
+			)},
+			want: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.cfg.HasCIDRRules())
+		})
+	}
+}
+
 func TestEnvoyDefaults(t *testing.T) {
 	t.Parallel()
 
