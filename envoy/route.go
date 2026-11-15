@@ -1,7 +1,6 @@
 package envoy
 
 import (
-	"fmt"
 	"math/bits"
 	"slices"
 	"strings"
@@ -164,7 +163,7 @@ func grpcRouteVariant(r route) route {
 		},
 		RequestHeadersToAdd:    r.RequestHeadersToAdd,
 		RequestHeadersToRemove: r.RequestHeadersToRemove,
-		TypedPerFilterConfig:   r.TypedPerFilterConfig,
+		Metadata:               r.Metadata,
 	}
 }
 
@@ -244,20 +243,23 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // Envoy takes the first route that matches a request, and it applies
 // the header changes of that route to the request. The first route
 // matches when every header of matches holds its value, and it changes
-// nothing. Every later route applies each REPLACE, DELETE, and LOG
-// action of matches.
+// nothing. Every later route applies each REPLACE and DELETE action of
+// matches.
 //
 // An ADD action appends a value, so a route must not apply it to a
-// header that already holds the value. The later routes therefore
-// cover each combination of the ADD headers that hold their value.
-// Such a route matches on those headers and appends the value of each
-// other ADD header. The routes that match on more ADD headers come
-// first. A request that a route takes therefore mismatches on each
-// ADD header that the route does not match on.
+// header that already holds the value. A LOG action logs the request,
+// so a route must not apply it to a header that holds the value
+// either. The later routes therefore cover each combination of the ADD
+// and LOG headers that hold their value. Such a route matches on those
+// headers, and it applies the action of each other ADD and LOG header.
+// The routes that match on more of these headers come first. A request
+// that a route takes therefore mismatches on each ADD and LOG header
+// that the route does not match on. A route applies its LOG actions
+// through its metadata, see [mismatchLogMetadata].
 //
-// The number of these routes doubles with each ADD header.
-// [config.Config.Validate] limits the ADD headers of one HTTP rule
-// for that reason.
+// The number of these routes doubles with each ADD and LOG header.
+// [config.Config.Validate] limits the ADD and LOG headers of one HTTP
+// rule for that reason.
 func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluster string) []route {
 	forward := func(matched, apply []config.HeaderMatch) []route {
 		m := match
@@ -267,6 +269,7 @@ func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluste
 			Match:                  m,
 			RequestHeadersToAdd:    mismatchHeadersToAdd(apply),
 			RequestHeadersToRemove: mismatchHeadersToRemove(apply),
+			Metadata:               mismatchLogMetadata(apply),
 			Route: &routeAction{
 				Cluster:         cluster,
 				AutoHostRewrite: true,
@@ -274,27 +277,28 @@ func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluste
 			},
 		}
 
-		if logConfig := mismatchLogConfig(apply); logConfig != nil {
-			r.TypedPerFilterConfig = logConfig
-		}
-
 		return []route{grpcRouteVariant(r), r}
 	}
 
 	routes := forward(matches, nil)
 
-	adds := 0
+	// Combined reports whether hm takes one bit of each combination.
+	combined := func(hm config.HeaderMatch) bool {
+		return hm.Mismatch == config.MismatchADD || hm.Mismatch == config.MismatchLOG
+	}
+
+	count := 0
 
 	for _, hm := range matches {
-		if hm.Mismatch == config.MismatchADD {
-			adds++
+		if combined(hm) {
+			count++
 		}
 	}
 
-	// Each bit of a combination stands for one ADD header, in the
-	// order of matches. A set bit means that the header holds its
+	// Each bit of a combination stands for one ADD or LOG header, in
+	// the order of matches. A set bit means that the header holds its
 	// value.
-	combinations := make([]uint, 1<<adds)
+	combinations := make([]uint, 1<<count)
 	for i := range combinations {
 		combinations[i] = uint(i)
 	}
@@ -309,7 +313,7 @@ func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluste
 		bit := 0
 
 		for _, hm := range matches {
-			if hm.Mismatch != config.MismatchADD {
+			if !combined(hm) {
 				apply = append(apply, hm)
 
 				continue
@@ -396,11 +400,16 @@ func mismatchHeadersToRemove(matches []config.HeaderMatch) []string {
 	return result
 }
 
-// mismatchLogConfig builds a typed_per_filter_config map for the
-// mismatch route when any headerMatch has a LOG action. The config
-// overrides the HTTP router filter to add upstream access logging
-// with a format that identifies the mismatched headers.
-func mismatchLogConfig(matches []config.HeaderMatch) map[string]any {
+// mismatchLogMetadata builds the metadata of a route that applies
+// matches. The metadata holds the names of the headers with a LOG
+// action. The names are the value of [mismatchLogHeadersKey] in the
+// namespace [mismatchMetadataNamespace]. The result is nil when no
+// entry of matches has a LOG action.
+//
+// The Envoy router filter does not accept a config for one route, so a
+// route cannot carry an access logger of its own. The metadata marks
+// the route for the logger of [withMismatchAccessLog] instead.
+func mismatchLogMetadata(matches []config.HeaderMatch) *metadata {
 	var logHeaders []string
 
 	for _, hm := range matches {
@@ -413,25 +422,68 @@ func mismatchLogConfig(matches []config.HeaderMatch) map[string]any {
 		return nil
 	}
 
-	format := fmt.Sprintf(
-		"[%%START_TIME%%] HEADER_MISMATCH headers=%s %%REQ(:METHOD)%% %%REQ(:AUTHORITY)%%%%REQ(:PATH)%% %%RESPONSE_CODE%%\n",
-		strings.Join(logHeaders, ","),
-	)
-
-	return map[string]any{
-		httpRouterFilterName: routerFilterConfig{
-			AtType: httpRouterTypeURL,
-			UpstreamLog: []AccessLog{{
-				Name: "envoy.access_loggers.stderr",
-				TypedConfig: stderrAccessLogConfig{
-					AtType: "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StderrAccessLog",
-					LogFormat: &substitutionFormatString{
-						TextFormatSource: &dataSource{
-							InlineString: format,
-						},
-					},
-				},
-			}},
+	return &metadata{
+		FilterMetadata: map[string]map[string]string{
+			mismatchMetadataNamespace: {
+				mismatchLogHeadersKey: strings.Join(logHeaders, ","),
+			},
 		},
 	}
+}
+
+// withMismatchAccessLog returns the access loggers of an HTTP
+// connection manager that serves vhosts. The result is accessLog, plus
+// one more logger when a route of vhosts has the metadata of
+// [mismatchLogMetadata].
+//
+// That logger writes one HEADER_MISMATCH line to the stderr of Envoy
+// for each request that such a route takes. The line names the headers
+// of the metadata, the method, the authority, the path, and the
+// response code of the request. The authority is the one that the
+// upstream receives. The logger reads the header names from the
+// metadata, so that a "%" in a name is not part of the format.
+//
+// The filter of the logger is a Common Expression Language (CEL)
+// expression, because the other access log filters of Envoy cannot
+// read the metadata of a route.
+func withMismatchAccessLog(accessLog []AccessLog, vhosts []virtualHost) []AccessLog {
+	logs := slices.ContainsFunc(vhosts, func(vh virtualHost) bool {
+		return slices.ContainsFunc(vh.Routes, func(r route) bool {
+			if r.Metadata == nil {
+				return false
+			}
+
+			_, marked := r.Metadata.FilterMetadata[mismatchMetadataNamespace]
+
+			return marked
+		})
+	})
+	if !logs {
+		return accessLog
+	}
+
+	format := "[%START_TIME%] HEADER_MISMATCH" +
+		" headers=%METADATA(ROUTE:" + mismatchMetadataNamespace + ":" + mismatchLogHeadersKey + ")%" +
+		" %REQ(:METHOD)% %REQ(:AUTHORITY)%%REQ(:PATH)% %RESPONSE_CODE%\n"
+
+	return append(slices.Clone(accessLog), AccessLog{
+		Name: "envoy.access_loggers.stderr",
+		Filter: &accessLogFilter{
+			ExtensionFilter: &typedExtensionConfig{
+				Name: "envoy.access_loggers.extension_filters.cel",
+				TypedConfig: celAccessLogFilterConfig{
+					AtType:     "type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter",
+					Expression: "'" + mismatchMetadataNamespace + "' in xds.route_metadata.filter_metadata",
+				},
+			},
+		},
+		TypedConfig: stderrAccessLogConfig{
+			AtType: "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StderrAccessLog",
+			LogFormat: &substitutionFormatString{
+				TextFormatSource: &dataSource{
+					InlineString: format,
+				},
+			},
+		},
+	})
 }

@@ -2,6 +2,7 @@ package envoy_test
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/goccy/go-yaml"
@@ -112,7 +113,7 @@ func TestMismatchActions(t *testing.T) {
 				"append_action: OVERWRITE_IF_EXISTS_OR_ADD",
 			},
 		},
-		"LOG mismatch generates typed_per_filter_config with upstream_log": {
+		"LOG mismatch marks the route with metadata": {
 			rules: []config.ResolvedRule{{
 				Domain: "api.example.com",
 				HTTPRules: []config.ResolvedHTTPRule{{
@@ -122,12 +123,16 @@ func TestMismatchActions(t *testing.T) {
 				}},
 			}},
 			contains: []string{
-				"typed_per_filter_config:",
-				"envoy.filters.http.router:",
-				"upstream_log:",
+				"filter_metadata:",
+				"terrarium.header_mismatch:",
+				"log_headers: X-Token",
 				"envoy.access_loggers.stderr",
 				"HEADER_MISMATCH",
-				"X-Token",
+			},
+			// The Envoy router filter rejects a config for one route.
+			excludes: []string{
+				"typed_per_filter_config:",
+				"upstream_log:",
 			},
 		},
 		"deny headerMatch without mismatch has no transforms": {
@@ -146,7 +151,8 @@ func TestMismatchActions(t *testing.T) {
 			excludes: []string{
 				"request_headers_to_add:",
 				"request_headers_to_remove:",
-				"typed_per_filter_config:",
+				"filter_metadata:",
+				"HEADER_MISMATCH",
 			},
 		},
 		"mixed deny and mismatch headerMatches": {
@@ -187,6 +193,249 @@ func TestMismatchActions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// hcmAccessLog describes one access logger of an HTTP connection
+// manager.
+type hcmAccessLog struct {
+	// Name is the name of the logger.
+	Name string
+	// Filter is the name of the extension filter of the logger.
+	Filter string
+	// Expression is the CEL expression of that filter.
+	Expression string
+	// Format is the text format of the logger.
+	Format string
+}
+
+// hcmRouting describes the parts of an HTTP connection manager that
+// the HEADER_MISMATCH access logger depends on.
+type hcmRouting struct {
+	// accessLog lists the access loggers of the connection manager.
+	accessLog []hcmAccessLog
+	// logHeaders lists the log_headers metadata value of each
+	// forwarding route, in the order of the route table. The value
+	// is empty for a route without the metadata.
+	logHeaders []string
+}
+
+// TestMismatchAccessLog checks the access loggers and the route
+// metadata of the HTTP connection managers that match HTTP rules.
+// Envoy must write a HEADER_MISMATCH line only for the requests that
+// a route with a LOG action takes. The connection manager therefore
+// holds one logger whose filter matches the metadata of those routes.
+func TestMismatchAccessLog(t *testing.T) {
+	t.Parallel()
+
+	grpcLogger := hcmAccessLog{Name: "envoy.access_loggers.http_grpc"}
+	mismatchLogger := hcmAccessLog{
+		Name:       "envoy.access_loggers.stderr",
+		Filter:     "envoy.access_loggers.extension_filters.cel",
+		Expression: "'terrarium.header_mismatch' in xds.route_metadata.filter_metadata",
+		Format: "[%START_TIME%] HEADER_MISMATCH" +
+			" headers=%METADATA(ROUTE:terrarium.header_mismatch:log_headers)%" +
+			" %REQ(:METHOD)% %REQ(:AUTHORITY)%%REQ(:PATH)% %RESPONSE_CODE%\n",
+	}
+
+	tests := map[string]struct {
+		matches []config.HeaderMatch
+		want    hcmRouting
+	}{
+		"one LOG": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Log", Value: "expected", Mismatch: config.MismatchLOG},
+			},
+			want: hcmRouting{
+				accessLog:  []hcmAccessLog{grpcLogger, mismatchLogger},
+				logHeaders: []string{"", "", "X-Log", "X-Log"},
+			},
+		},
+		"two LOG": {
+			matches: []config.HeaderMatch{
+				{Name: "X-One", Value: "one", Mismatch: config.MismatchLOG},
+				{Name: "X-Two", Value: "two", Mismatch: config.MismatchLOG},
+			},
+			want: hcmRouting{
+				accessLog: []hcmAccessLog{grpcLogger, mismatchLogger},
+				// Each route names only the LOG headers that its
+				// requests mismatch on.
+				logHeaders: []string{
+					"", "",
+					"X-Two", "X-Two",
+					"X-One", "X-One",
+					"X-One,X-Two", "X-One,X-Two",
+				},
+			},
+		},
+		"LOG with ADD": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Log", Value: "expected", Mismatch: config.MismatchLOG},
+				{Name: "X-Add", Value: "add", Mismatch: config.MismatchADD},
+			},
+			want: hcmRouting{
+				accessLog: []hcmAccessLog{grpcLogger, mismatchLogger},
+				// The requests that hold the value of X-Log take the
+				// first route or the route that adds X-Add, so their
+				// routes have no metadata.
+				logHeaders: []string{"", "", "", "", "X-Log", "X-Log", "X-Log", "X-Log"},
+			},
+		},
+		"LOG with REPLACE": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Log", Value: "expected", Mismatch: config.MismatchLOG},
+				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
+			},
+			want: hcmRouting{
+				accessLog: []hcmAccessLog{grpcLogger, mismatchLogger},
+				// A request that holds the value of X-Log but not the
+				// value of X-Rep takes the second route, which has no
+				// metadata.
+				logHeaders: []string{"", "", "", "", "X-Log", "X-Log"},
+			},
+		},
+		"header name with a format character": {
+			matches: []config.HeaderMatch{
+				{Name: "X-%Log", Value: "expected", Mismatch: config.MismatchLOG},
+			},
+			want: hcmRouting{
+				accessLog:  []hcmAccessLog{grpcLogger, mismatchLogger},
+				logHeaders: []string{"", "", "X-%Log", "X-%Log"},
+			},
+		},
+		"ADD without LOG": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Add", Value: "add", Mismatch: config.MismatchADD},
+			},
+			want: hcmRouting{
+				accessLog:  []hcmAccessLog{grpcLogger},
+				logHeaders: []string{"", "", "", ""},
+			},
+		},
+		"required header without a mismatch action": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Required", Value: "yes"},
+			},
+			want: hcmRouting{
+				accessLog:  []hcmAccessLog{grpcLogger},
+				logHeaders: []string{"", ""},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rules := []config.ResolvedRule{{
+				Domain:    "api.example.com",
+				HTTPRules: []config.ResolvedHTTPRule{{HeaderMatches: tt.matches}},
+			}}
+
+			// The builders must not change the loggers of the caller.
+			httpAL := envoy.BuildHTTPGrpcAccessLog("http", 0, 0)
+			given := slices.Clone(httpAL)
+
+			listeners := map[string]envoy.Listener{
+				"container HTTP listener":      envoy.BuildHTTPForwardListener(rules, false, httpAL, false),
+				"proxy internal HTTP listener": envoy.BuildInternalHTTPListener(rules, false, httpAL, nil),
+				"container TLS listener": envoy.BuildTLSListener(
+					"tls_443", 15443, 443, "tls_443", rules, false, nil, httpAL, "/certs", false,
+				),
+				"proxy internal TLS listener": envoy.BuildInternalTLSListener(
+					443, rules, false, nil, httpAL, "/certs", nil,
+				),
+			}
+
+			for listenerName, listener := range listeners {
+				assert.Equal(t, tt.want, routingOf(t, listener), listenerName)
+			}
+
+			assert.Equal(t, given, httpAL)
+		})
+	}
+}
+
+// routingOf returns the [hcmRouting] of the only filter chain of
+// listener, which must hold one HTTP connection manager.
+func routingOf(t *testing.T, listener envoy.Listener) hcmRouting {
+	t.Helper()
+
+	out, err := yaml.Marshal(listener)
+	require.NoError(t, err)
+
+	var doc struct {
+		FilterChains []struct {
+			Filters []struct {
+				TypedConfig struct {
+					AccessLog []struct {
+						Name   string `yaml:"name"`
+						Filter struct {
+							ExtensionFilter struct {
+								Name        string `yaml:"name"`
+								TypedConfig struct {
+									Expression string `yaml:"expression"`
+								} `yaml:"typed_config"`
+							} `yaml:"extension_filter"`
+						} `yaml:"filter"`
+						TypedConfig struct {
+							LogFormat struct {
+								TextFormatSource struct {
+									InlineString string `yaml:"inline_string"`
+								} `yaml:"text_format_source"`
+							} `yaml:"log_format"`
+						} `yaml:"typed_config"`
+					} `yaml:"access_log"`
+					RouteConfig struct {
+						VirtualHosts []struct {
+							Routes []struct {
+								Route *struct {
+									Cluster string `yaml:"cluster"`
+								} `yaml:"route"`
+								Metadata struct {
+									FilterMetadata map[string]map[string]string `yaml:"filter_metadata"`
+								} `yaml:"metadata"`
+							} `yaml:"routes"`
+						} `yaml:"virtual_hosts"`
+					} `yaml:"route_config"`
+				} `yaml:"typed_config"`
+			} `yaml:"filters"`
+		} `yaml:"filter_chains"`
+	}
+
+	require.NoError(t, yaml.Unmarshal(out, &doc))
+	require.Len(t, doc.FilterChains, 1)
+	require.Len(t, doc.FilterChains[0].Filters, 1)
+
+	hcm := doc.FilterChains[0].Filters[0].TypedConfig
+
+	var got hcmRouting
+
+	for _, al := range hcm.AccessLog {
+		got.accessLog = append(got.accessLog, hcmAccessLog{
+			Name:       al.Name,
+			Filter:     al.Filter.ExtensionFilter.Name,
+			Expression: al.Filter.ExtensionFilter.TypedConfig.Expression,
+			Format:     al.TypedConfig.LogFormat.TextFormatSource.InlineString,
+		})
+	}
+
+	for _, vh := range hcm.RouteConfig.VirtualHosts {
+		for _, r := range vh.Routes {
+			// The other routes deny their requests.
+			if r.Route == nil {
+				continue
+			}
+
+			// A route without the metadata holds no namespace, and
+			// the lookups then return the empty string.
+			require.LessOrEqual(t, len(r.Metadata.FilterMetadata), 1)
+
+			got.logHeaders = append(got.logHeaders,
+				r.Metadata.FilterMetadata["terrarium.header_mismatch"]["log_headers"])
+		}
+	}
+
+	return got
 }
 
 // mismatchRoute describes one forwarding route of an HTTP rule whose
@@ -306,6 +555,29 @@ func TestMismatchRouteOrder(t *testing.T) {
 					add:    []string{"X-One=one" + appendAction},
 					remove: []string{"X-Del"},
 				},
+			},
+		},
+		"LOG with REPLACE": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Log", Value: "expected", Mismatch: config.MismatchLOG},
+				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Log=expected", "X-Rep=rep"}},
+				{match: []string{"X-Log=expected"}, add: []string{"X-Rep=rep" + overwriteAction}},
+				{add: []string{"X-Rep=rep" + overwriteAction}},
+			},
+		},
+		"LOG with ADD": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Log", Value: "expected", Mismatch: config.MismatchLOG},
+				{Name: "X-Add", Value: "add", Mismatch: config.MismatchADD},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Log=expected", "X-Add=add"}},
+				{match: []string{"X-Log=expected"}, add: []string{"X-Add=add" + appendAction}},
+				{match: []string{"X-Add=add"}},
+				{add: []string{"X-Add=add" + appendAction}},
 			},
 		},
 		"REPLACE without ADD": {

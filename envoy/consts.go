@@ -56,6 +56,15 @@ const (
 	// Enables WebSocket upgrades in HCM upgrade configs.
 	upgradeTypeWebsocket = "websocket"
 
+	// The namespace of the route metadata that marks a route for the
+	// HEADER_MISMATCH access logger.
+	mismatchMetadataNamespace = "terrarium.header_mismatch"
+
+	// The key in [mismatchMetadataNamespace] whose value holds the
+	// names of the headers with a LOG mismatch action, joined with
+	// commas.
+	mismatchLogHeadersKey = "log_headers"
+
 	// The response body for policy 403s.
 	accessDeniedBody = "Access denied"
 

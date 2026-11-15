@@ -217,15 +217,25 @@ type AccessLog struct {
 }
 
 // accessLogFilter models Envoy's AccessLogFilter message. An
-// [AccessLog] writes only the requests that the filter matches.
+// [AccessLog] writes only the requests that the filter matches. Envoy
+// accepts one field of the filter.
 type accessLogFilter struct {
-	HeaderFilter *accessLogHeaderFilter `yaml:"header_filter,omitempty"`
+	HeaderFilter    *accessLogHeaderFilter `yaml:"header_filter,omitempty"`
+	ExtensionFilter *typedExtensionConfig  `yaml:"extension_filter,omitempty"`
 }
 
 // accessLogHeaderFilter models Envoy's HeaderFilter message, which
 // matches a request by one of its headers.
 type accessLogHeaderFilter struct {
 	Header headerMatcher `yaml:"header"`
+}
+
+// celAccessLogFilterConfig models Envoy's ExpressionFilter message.
+// It is the config of the access log filter that matches each request
+// for which a Common Expression Language (CEL) expression is true.
+type celAccessLogFilterConfig struct {
+	AtType     string `yaml:"@type"`
+	Expression string `yaml:"expression"`
 }
 
 // stderrAccessLogConfig models the StderrAccessLog typed config with
@@ -354,7 +364,7 @@ type virtualHost struct {
 }
 
 type route struct {
-	TypedPerFilterConfig   map[string]any        `yaml:"typed_per_filter_config,omitempty"`
+	Metadata               *metadata             `yaml:"metadata,omitempty"`
 	Route                  *routeAction          `yaml:"route,omitempty"`
 	DirectResponse         *directResponseAction `yaml:"direct_response,omitempty"`
 	Match                  routeMatch            `yaml:"match"`
@@ -474,12 +484,10 @@ type headerValue struct {
 	Value string `yaml:"value,omitempty"`
 }
 
-// routerFilterConfig models the per-route override for Envoy's HTTP
-// router filter. UpstreamLog adds access logging for requests
-// forwarded to upstream clusters.
-type routerFilterConfig struct {
-	AtType      string      `yaml:"@type"`
-	UpstreamLog []AccessLog `yaml:"upstream_log,omitempty"`
+// metadata models Envoy's core.v3.Metadata message. FilterMetadata
+// maps each namespace to the keys of that namespace and their values.
+type metadata struct {
+	FilterMetadata map[string]map[string]string `yaml:"filter_metadata"`
 }
 
 type routeAction struct {

@@ -27,10 +27,10 @@ const maxFQDNEndPortRange = 100
 // fail in RE2.
 const maxRegexLen = 1000
 
-// maxMismatchAddHeaders is the maximum number of headerMatches with
-// the ADD mismatch action in a single [HTTPRule]. The number of Envoy
-// routes for the rule doubles with each of these headerMatches.
-const maxMismatchAddHeaders = 8
+// maxMismatchAddLogHeaders is the maximum number of headerMatches with
+// the ADD or LOG mismatch action in a single [HTTPRule]. The number of
+// Envoy routes for the rule doubles with each of these headerMatches.
+const maxMismatchAddLogHeaders = 8
 
 // cidrAllIPv4 and cidrAllIPv6 are the default routes matching every
 // IPv4 / IPv6 address, used to expand the world/all entity selectors.
@@ -759,15 +759,15 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 	}
 
 	for _, h := range pr.Rules.HTTP {
-		adds := 0
+		addLogs := 0
 
 		for i, hm := range h.HeaderMatches {
 			if hm.Name == "" {
 				return fmt.Errorf("%w: rule %d headerMatches[%d]", ErrHeaderMatchNameEmpty, ruleIdx, i)
 			}
 
-			if hm.Mismatch == MismatchADD {
-				adds++
+			if hm.Mismatch == MismatchADD || hm.Mismatch == MismatchLOG {
+				addLogs++
 			}
 
 			if hm.Mismatch != "" {
@@ -789,10 +789,10 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 			}
 		}
 
-		if adds > maxMismatchAddHeaders {
+		if addLogs > maxMismatchAddLogHeaders {
 			return fmt.Errorf(
 				"%w: rule %d has %d",
-				ErrHeaderMatchAddTooMany, ruleIdx, adds,
+				ErrHeaderMatchAddLogTooMany, ruleIdx, addLogs,
 			)
 		}
 

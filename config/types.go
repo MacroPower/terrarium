@@ -513,7 +513,9 @@ type HeaderMatch struct {
 type MismatchAction string
 
 const (
-	// MismatchLOG logs when the header value does not match.
+	// MismatchLOG logs the request when the header value does not
+	// match. Envoy writes a HEADER_MISMATCH line for the request to
+	// its stderr.
 	MismatchLOG MismatchAction = "LOG"
 	// MismatchADD adds the value to the header when the value does not
 	// match. The header keeps each value that the request already

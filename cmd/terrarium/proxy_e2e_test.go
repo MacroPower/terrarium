@@ -670,6 +670,246 @@ func TestProxyE2EHeaderMismatchAdd(t *testing.T) {
 	}
 }
 
+// headerMismatchLines returns the lines that the HEADER_MISMATCH access
+// logger of Envoy wrote to the file at path, each without its
+// timestamp.
+func headerMismatchLines(t *testing.T, path string) []string {
+	t.Helper()
+
+	out, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var lines []string
+
+	for line := range strings.Lines(string(out)) {
+		_, entry, found := strings.Cut(strings.TrimSuffix(line, "\n"), "] HEADER_MISMATCH ")
+		if found {
+			lines = append(lines, "HEADER_MISMATCH "+entry)
+		}
+	}
+
+	return lines
+}
+
+// TestProxyE2EHeaderMismatchLog checks rules whose headerMatches use
+// the LOG mismatch action. The proxy must forward each request that
+// matches the other conditions of the rule. It must leave the headers
+// of the request as the client sent them. Envoy must write one
+// HEADER_MISMATCH line to its stderr for each request whose LOG header
+// does not hold the value of the policy. It must not write a line for
+// a request whose LOG header holds the value, also when another header
+// of the rule mismatches.
+//
+// The test covers the plain HTTP listener and the listener that
+// terminates TLS, because each has its own access loggers.
+//
+//nolint:paralleltest // e2e tests bind fixed ports, set env, and run envoy subprocesses.
+func TestProxyE2EHeaderMismatchLog(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	// The proxy forwards plain HTTP to port 80 and TLS to port 443.
+	// Binding these ports needs CAP_NET_BIND_SERVICE or a permissive
+	// ip_unprivileged_port_start.
+	lc := net.ListenConfig{}
+
+	for _, addr := range []string{"127.0.0.1:80", "127.0.0.1:443"} {
+		probe, err := lc.Listen(t.Context(), "tcp", addr)
+		if err != nil {
+			t.Skipf("cannot bind %s: %v", addr, err)
+		}
+
+		require.NoError(t, probe.Close())
+	}
+
+	hostEnvoy, err := exec.LookPath(envoyCommand)
+	require.NoError(t, err)
+
+	// The proxy gives its own stderr to Envoy. This wrapper sends the
+	// stderr of Envoy to a file, so that the test can read the access
+	// log lines.
+	dir := t.TempDir()
+	stderrPath := filepath.Join(dir, "envoy-stderr")
+	wrapperPath := filepath.Join(dir, "envoy-wrapper")
+	wrapper := "#!/bin/sh\nexec '" + hostEnvoy + "' \"$@\" 2>>'" + stderrPath + "'\n"
+	require.NoError(t, os.WriteFile(wrapperPath, []byte(wrapper), 0o755))
+
+	caPath, tlsCfg := e2eCerts(t, "test.example")
+
+	startHeaderEchoServer(t, "127.0.0.1:80", "X-Log", "X-Rep")
+	startTLSServer(t, "127.0.0.1:443", tlsCfg, "tls upstream")
+
+	// The proxy validates its re-encrypted upstream connection against
+	// the system bundle. Point it at the test CA.
+	t.Setenv("SSL_CERT_FILE", caPath)
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	policy := "egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: test.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"          - port: \"443\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /log/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Log\n" +
+		"                  mismatch: LOG\n" +
+		"                  value: expected\n" +
+		"            - path: /mixed/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Log\n" +
+		"                  mismatch: LOG\n" +
+		"                  value: expected\n" +
+		"                - name: X-Rep\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: rep\n" +
+		"            - path: /quiet/.*\n"
+
+	tests := []struct {
+		headers map[string]string
+		name    string
+		url     string
+		want    string
+	}{
+		{
+			name:    "plain HTTP with the value",
+			url:     "http://test.example/log/http-match",
+			headers: map[string]string{"X-Log": "expected"},
+			want:    "X-Log=expected\nX-Rep=\n",
+		},
+		{
+			name:    "plain HTTP with another value",
+			url:     "http://test.example/log/http-other",
+			headers: map[string]string{"X-Log": "other"},
+			want:    "X-Log=other\nX-Rep=\n",
+		},
+		{
+			name: "plain HTTP without the header",
+			url:  "http://test.example/log/http-missing",
+			want: "X-Log=\nX-Rep=\n",
+		},
+		{
+			name: "plain HTTP through a rule without headerMatches",
+			url:  "http://test.example/quiet/http",
+			want: "X-Log=\nX-Rep=\n",
+		},
+		{
+			name:    "plain HTTP with the LOG value and another REPLACE value",
+			url:     "http://test.example/mixed/http-log-match-rep-other",
+			headers: map[string]string{"X-Log": "expected", "X-Rep": "other"},
+			want:    "X-Log=expected\nX-Rep=rep\n",
+		},
+		{
+			name:    "plain HTTP with the LOG value and without the REPLACE header",
+			url:     "http://test.example/mixed/http-log-match-rep-missing",
+			headers: map[string]string{"X-Log": "expected"},
+			want:    "X-Log=expected\nX-Rep=rep\n",
+		},
+		{
+			name:    "plain HTTP with another LOG value and the REPLACE value",
+			url:     "http://test.example/mixed/http-log-other-rep-match",
+			headers: map[string]string{"X-Log": "other", "X-Rep": "rep"},
+			want:    "X-Log=other\nX-Rep=rep\n",
+		},
+		{
+			name:    "plain HTTP with another LOG value and another REPLACE value",
+			url:     "http://test.example/mixed/http-log-other-rep-other",
+			headers: map[string]string{"X-Log": "other", "X-Rep": "other"},
+			want:    "X-Log=other\nX-Rep=rep\n",
+		},
+		{
+			name:    "TLS with the value",
+			url:     "https://test.example/log/tls-match",
+			headers: map[string]string{"X-Log": "expected"},
+			want:    "tls upstream",
+		},
+		{
+			name:    "TLS with another value",
+			url:     "https://test.example/log/tls-other",
+			headers: map[string]string{"X-Log": "other"},
+			want:    "tls upstream",
+		},
+		{
+			name: "TLS without the header",
+			url:  "https://test.example/log/tls-missing",
+			want: "tls upstream",
+		},
+		{
+			name: "TLS through a rule without headerMatches",
+			url:  "https://test.example/quiet/tls",
+			want: "tls upstream",
+		},
+		{
+			name:    "TLS with the LOG value and another REPLACE value",
+			url:     "https://test.example/mixed/tls-log-match-rep-other",
+			headers: map[string]string{"X-Log": "expected", "X-Rep": "other"},
+			want:    "tls upstream",
+		},
+		{
+			name:    "TLS with another LOG value and another REPLACE value",
+			url:     "https://test.example/mixed/tls-log-other-rep-other",
+			headers: map[string]string{"X-Log": "other", "X-Rep": "other"},
+			want:    "tls upstream",
+		},
+	}
+
+	// Envoy buffers its access log lines, and it writes every line
+	// that it still holds when it exits. The proxy stops when this
+	// subtest ends, so the file holds every line after the subtest.
+	//
+	//nolint:paralleltest // The subtest owns the proxy of the parent test.
+	t.Run("requests", func(t *testing.T) {
+		proxyURL, usr := startProxy(t, policy, dnsAddr, func(o *proxyOptions) {
+			o.envoyPath = wrapperPath
+		})
+
+		// The client sees the MITM leaf of the proxy, so it must trust
+		// the generated terrarium CA.
+		client := proxyClient(t, proxyURL, loadPool(t, filepath.Join(usr.CADir, "ca.pem")))
+
+		//nolint:paralleltest // The subtests share the proxy of the parent test.
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, tt.url, http.NoBody)
+				require.NoError(t, err)
+
+				for name, value := range tt.headers {
+					req.Header.Set(name, value)
+				}
+
+				resp, err := client.Do(req)
+				require.NoError(t, err)
+
+				defer func() {
+					assert.NoError(t, resp.Body.Close())
+				}()
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+
+				require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+				assert.Equal(t, tt.want, string(body))
+			})
+		}
+	})
+
+	// Each line names the authority that the upstream receives, which
+	// holds the port.
+	assert.ElementsMatch(t, []string{
+		"HEADER_MISMATCH headers=X-Log GET test.example:80/log/http-other 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example:80/log/http-missing 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example:443/log/tls-other 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example:443/log/tls-missing 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example:80/mixed/http-log-other-rep-match 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example:80/mixed/http-log-other-rep-other 200",
+		"HEADER_MISMATCH headers=X-Log GET test.example:443/mixed/tls-log-other-rep-other 200",
+	}, headerMismatchLines(t, stderrPath))
+}
+
 // TestProxyE2EPlainHTTP checks the plain HTTP requests that the proxy
 // forwards to port 80 of an allowed FQDN. A trailing dot on the host
 // names the same FQDN, so it matches the same rule.

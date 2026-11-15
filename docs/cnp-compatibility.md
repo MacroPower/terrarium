@@ -251,11 +251,11 @@ the entry as one more value of the header. The header keeps each value that
 the client sent, so the upstream receives both.
 
 Each HTTP rule can hold at most 8 `headerMatches` entries with
-`mismatch: ADD`. Cilium has no limit. Envoy applies the header changes of a
-route to every request that the route takes. Terrarium therefore generates one
-route for each combination of ADD headers that already hold their value. The
-number of routes doubles with each entry, and the limit bounds the route
-table.
+`mismatch: ADD` or `mismatch: LOG`, counted together. Cilium has no limit.
+Envoy applies the header changes and the logging of a route to every request
+that the route takes. Terrarium therefore generates one route for each
+combination of ADD and LOG headers that already hold their value. The number
+of routes doubles with each entry, and the limit bounds the route table.
 
 ### Proxy port and range limits
 

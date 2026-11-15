@@ -1225,9 +1225,25 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrHeaderMatchAddTooMany,
+			err: config.ErrHeaderMatchAddLogTooMany,
 		},
-		"headerMatches other mismatch actions do not count toward the ADD limit": {
+		"headerMatches mismatch ADD and LOG past the limit rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: append(addHeaderMatches(8),
+								config.HeaderMatch{Name: "X-Log", Value: "expected", Mismatch: config.MismatchLOG},
+							)},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrHeaderMatchAddLogTooMany,
+		},
+		"headerMatches other mismatch actions do not count toward the ADD and LOG limit": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},

@@ -182,6 +182,10 @@ func buildPassthroughFilterChain(
 // header against the virtual host of the domain. A request for
 // "example.com." then matches the rule for "example.com", and the
 // upstream receives the host without the dot.
+//
+// The access loggers of the connection manager are accessLog and, when
+// a headerMatches entry of rule has the LOG mismatch action, the logger
+// of [withMismatchAccessLog].
 func buildMITMFilterChain(
 	rule config.ResolvedRule,
 	accessLog []AccessLog,
@@ -250,7 +254,7 @@ func buildMITMFilterChain(
 				RouteConfig: routeConfig{
 					VirtualHosts: vhosts,
 				},
-				AccessLog:      accessLog,
+				AccessLog:      withMismatchAccessLog(accessLog, vhosts),
 				UpgradeConfigs: []upgradeConfig{{UpgradeType: upgradeTypeWebsocket}},
 				HTTPFilters:    httpFilters,
 			},
