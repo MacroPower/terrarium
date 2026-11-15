@@ -31,7 +31,9 @@ var (
 	ErrNotRoot = fmt.Errorf("must be run as root")
 
 	// ErrDaemonNotRunning indicates the PID file references a process
-	// that is no longer alive.
+	// that is no longer alive. [DaemonReload] also returns it when the
+	// daemon exits during the wait for a reload without an outcome of
+	// that reload.
 	ErrDaemonNotRunning = fmt.Errorf("daemon not running")
 
 	// ErrReloadRejected means that a reload of the daemon stopped
@@ -41,24 +43,66 @@ var (
 	// certificate of that Envoy.
 	ErrReloadRejected = errors.New("reload rejected")
 
+	// ErrDaemonKeptConfig means that the daemon rejected the new
+	// config of a reload. The daemon runs the previous config
+	// unchanged. [DaemonReload] returns it for a reload that stopped
+	// in the daemon with [ErrReloadRejected].
+	ErrDaemonKeptConfig = errors.New("daemon keeps the previous config")
+
+	// ErrReloadEndedDaemon means that a reload stopped after the
+	// daemon started to replace a running part, so the daemon shuts
+	// down.
+	ErrReloadEndedDaemon = errors.New("reload ended the daemon")
+
+	// ErrReloadStatus means that [DaemonReload] cannot use the reload
+	// status file. The running daemon did not write the file, another
+	// daemon wrote it, the file cannot be read or parsed, or it names
+	// an outcome that this build does not know.
+	ErrReloadStatus = errors.New("unusable reload status")
+
 	// ErrReloadNFLogGroupChanged is returned by
 	// [validateStartupOnlyStatsChanges] when the new config requests a
 	// different nflog group than the running reader is bound to.
 	ErrReloadNFLogGroupChanged = errors.New("stats.firewall.nflogGroup change requires restart")
 )
 
-// DaemonReload triggers a live configuration reload of the running
-// terrarium daemon. It pre-validates the config at usr.ConfigPath so
-// obviously broken YAML never reaches the daemon, then sends SIGHUP
-// to the PID recorded in pidFile. The daemon re-reads the config
-// independently on receipt of SIGHUP; DaemonReload only polls to
-// confirm the daemon stayed alive after the signal.
+// reloadPollInterval is the time between two reads of the reload
+// status by [DaemonReload]. A short interval makes it likely that
+// [DaemonReload] reads the status of a reload that ends the daemon
+// before a supervisor removes the directory of the status file.
+const reloadPollInterval = 20 * time.Millisecond
+
+// DaemonReload reloads the configuration of the running terrarium
+// daemon and waits for the result. It pre-validates the config at
+// usr.ConfigPath so obviously broken YAML never reaches the daemon,
+// and then sends SIGHUP to the PID recorded in pidFile. The daemon
+// re-reads the config independently on receipt of SIGHUP.
 //
-// The daemon exits when a reload stops after it started to replace the
-// installed CA certificate, the running rules, the DNS proxy, or
-// Envoy. DaemonReload returns an error when the daemon exits during
-// the 5 seconds of the poll. A reload that waits longer for the new
-// Envoy can end the daemon after DaemonReload returned nil.
+// The daemon records each reload in the reload status file, whose
+// path [reloadStatusPath] derives from pidFile. DaemonReload returns
+// when the status names the outcome of a reload that started after
+// the call, or when the daemon exits. It does not limit the time of
+// the wait, so cancel ctx to end the wait early.
+//
+// DaemonReload returns nil only when the daemon runs the new config.
+// The error tells the caller what the daemon runs:
+//
+//   - [ErrDaemonKeptConfig] means that the daemon rejected the new
+//     config and runs the previous config unchanged.
+//   - [ErrReloadEndedDaemon] means that the reload stopped after it
+//     started to replace the installed CA certificate, the running
+//     rules, the DNS proxy, or Envoy. The daemon shuts down.
+//   - [ErrDaemonNotRunning] means that no daemon runs. The daemon
+//     exited before the call, or it exited during the wait and
+//     DaemonReload read no outcome of a reload. A termination signal
+//     ends the daemon without an outcome. After a reload that ends
+//     the daemon, a supervisor can remove the status file before
+//     DaemonReload reads the outcome. systemd removes the runtime
+//     directory of a unit when the daemon exits.
+//
+// Before DaemonReload sends the signal, it also returns an error when
+// the config does not parse and when it cannot use the reload status.
+// The daemon then runs unchanged.
 func DaemonReload(ctx context.Context, usr *config.User, pidFile string) error {
 	if os.Getuid() != 0 {
 		return ErrNotRoot
@@ -75,7 +119,6 @@ func DaemonReload(ctx context.Context, usr *config.User, pidFile string) error {
 		return fmt.Errorf("parsing config: %w", err)
 	}
 
-	// Read PID file and verify the daemon is alive.
 	pidData, err := os.ReadFile(pidFile)
 	if err != nil {
 		return fmt.Errorf("reading PID file: %w", err)
@@ -91,33 +134,113 @@ func DaemonReload(ctx context.Context, usr *config.User, pidFile string) error {
 		return fmt.Errorf("%w: %w", ErrDaemonNotRunning, err)
 	}
 
-	// Signal 0 checks if the process exists without sending a real signal.
-	err = proc.Signal(syscall.Signal(0))
+	return requestReload(ctx, reloadStatusPath(pidFile), pid, proc.Signal)
+}
+
+// requestReload sends SIGHUP to the daemon with the given PID and
+// waits for the outcome of a reload that the daemon starts after the
+// call. See [DaemonReload] for the errors. The daemon writes the
+// reload status file at statusPath, and signal sends a signal to the
+// daemon.
+//
+// Before requestReload sends the signal, it reads the number of
+// reloads that the daemon started. Every reload with a greater number
+// starts after that read, so it reads the config file as it is during
+// the call or later. The daemon starts such a reload for the signal,
+// also when a reload runs at the time of the signal. The wait
+// therefore ends when the daemon finishes a reload with a greater
+// number.
+func requestReload(ctx context.Context, statusPath string, pid int, signal func(os.Signal) error) error {
+	// Signal 0 checks whether the process exists and sends no signal.
+	err := signal(syscall.Signal(0))
 	if err != nil {
 		return fmt.Errorf("%w (pid %d): %w", ErrDaemonNotRunning, pid, err)
 	}
 
+	before, err := readReloadStatus(statusPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: the daemon did not write %s, so restart the daemon: %w",
+			ErrReloadStatus, statusPath, err)
+	}
+
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrReloadStatus, err)
+	}
+
+	if before.PID != pid {
+		return fmt.Errorf("%w: pid %d wrote %s, and the daemon has pid %d",
+			ErrReloadStatus, before.PID, statusPath, pid)
+	}
+
 	slog.InfoContext(ctx, "sending SIGHUP to terrarium daemon", slog.Int("pid", pid))
 
-	err = proc.Signal(syscall.SIGHUP)
+	err = signal(syscall.SIGHUP)
 	if err != nil {
 		return fmt.Errorf("sending SIGHUP: %w", err)
 	}
 
-	// Poll to confirm the daemon is still alive after reload.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(200 * time.Millisecond)
-
-		err = proc.Signal(syscall.Signal(0))
-		if err != nil {
-			return fmt.Errorf("daemon exited during reload (pid %d): %w", pid, err)
-		}
+	err = awaitReload(ctx, statusPath, pid, before.Started+1, signal)
+	if err != nil {
+		return err
 	}
 
-	slog.InfoContext(ctx, "daemon reload signaled successfully")
+	slog.InfoContext(ctx, "terrarium daemon reloaded its configuration")
 
 	return nil
+}
+
+// awaitReload polls the reload status file at statusPath until the
+// daemon with the given PID finishes a reload whose number is target
+// or greater. It then returns the error of [reloadStatus.err] for the
+// reload that finished last.
+//
+// The wait ends earlier in these cases:
+//
+//   - The status names a reload that ends the daemon. The error wraps
+//     [ErrReloadEndedDaemon], whatever the number of that reload.
+//   - The daemon exits without such a status. The error wraps
+//     [ErrDaemonNotRunning].
+//   - ctx ends. The error wraps the error of ctx.
+func awaitReload(
+	ctx context.Context, statusPath string, pid int, target uint64, signal func(os.Signal) error,
+) error {
+	ticker := time.NewTicker(reloadPollInterval)
+	defer ticker.Stop()
+
+	for {
+		// Check the daemon before the status. A daemon that writes the
+		// outcome and then exits therefore never reads as a daemon
+		// that exited without an outcome.
+		aliveErr := signal(syscall.Signal(0))
+
+		status, err := readReloadStatus(statusPath)
+
+		switch {
+		// The daemon removes the status when it shuts down for a
+		// termination signal.
+		case errors.Is(err, fs.ErrNotExist):
+
+		case err != nil:
+			return fmt.Errorf("%w: %w", ErrReloadStatus, err)
+
+		// A daemon that restarted during the wait wrote a status with
+		// its own PID, which names none of the awaited reloads.
+		case status.PID != pid:
+
+		case status.Finished >= target, status.Outcome == reloadFailed:
+			return status.err()
+		}
+
+		if aliveErr != nil {
+			return fmt.Errorf("daemon exited during reload: %w (pid %d): %w", ErrDaemonNotRunning, pid, aliveErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for the reload: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // reloadInputs holds what [prepareReload] reads and creates for one

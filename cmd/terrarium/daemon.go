@@ -35,6 +35,11 @@ import (
 // proxy, or Envoy. The daemon then shuts down as it does for a
 // termination signal, so a supervisor such as systemd can restart it.
 //
+// Daemon records each reload in the reload status file, so
+// [DaemonReload] can wait for the reload and report its outcome. See
+// [reloadRecorder] for the content of the file and [serveReloads] for
+// when Daemon removes it.
+//
 // The restarted daemon generates its configs from the config file
 // again, so a corrected config file takes effect.
 // [setupInfrastructure] generates the configs only when the Envoy
@@ -69,6 +74,16 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 		return err
 	}
 
+	// Write the reload status before the PID file, so that
+	// `terrarium daemon reload` finds the status of each daemon that
+	// it finds through the PID file.
+	recorder, err := newReloadRecorder(reloadStatusPath(pidFile))
+	if err != nil {
+		daemonShutdown(ctx, inf)
+
+		return err
+	}
+
 	// Write PID file so `terrarium daemon reload` can discover us.
 	err = writePIDFile(pidFile)
 	if err != nil {
@@ -91,18 +106,50 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-	err = serveSignals(ctx, sigCh, sdNotify, func(ctx context.Context) error {
-		return reloadInfrastructure(ctx, usr, uids, inf)
+	return serveReloads(ctx, sigCh, sdNotify, recorder,
+		func(ctx context.Context) error {
+			return reloadInfrastructure(ctx, usr, uids, inf)
+		},
+		func(ctx context.Context) {
+			watchdogCancel()
+
+			// Shut down Envoy and DNS proxy but intentionally leave
+			// nftables rules and policy routes in place for
+			// fail-closed behavior. The stats DB still closes,
+			// because the rules and routes in the kernel keep the VM
+			// fail-closed, not stats ingestion.
+			daemonShutdown(ctx, inf)
+		},
+	)
+}
+
+// serveReloads runs the signal loop of the daemon with [serveSignals]
+// and returns the error of that loop. It passes reload to the loop
+// through recorder, so the reload status file records each reload.
+//
+// When the loop returns, serveReloads sends STOPPING=1 through notify
+// and calls shutdown. It then removes the status file only when the
+// loop returned nil. The loop returns nil for a termination signal
+// and when sigCh closes. After a reload that ends the daemon, the file
+// stays, so [DaemonReload] can report the error of that reload.
+func serveReloads(
+	ctx context.Context,
+	sigCh <-chan os.Signal,
+	notify func(ctx context.Context, state string),
+	recorder *reloadRecorder,
+	reload func(ctx context.Context) error,
+	shutdown func(ctx context.Context),
+) error {
+	err := serveSignals(ctx, sigCh, notify, func(ctx context.Context) error {
+		return recorder.record(ctx, reload)
 	})
 
-	sdNotify(ctx, "STOPPING=1")
-	watchdogCancel()
+	notify(ctx, "STOPPING=1")
+	shutdown(ctx)
 
-	// Shut down Envoy and DNS proxy but intentionally leave nftables
-	// rules and policy routes in place for fail-closed behavior. The
-	// stats DB still closes — the persistent on-disk state is the
-	// fail-closed mechanism, not stats ingestion.
-	daemonShutdown(ctx, inf)
+	if err == nil {
+		recorder.remove(ctx)
+	}
 
 	return err
 }

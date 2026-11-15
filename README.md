@@ -1100,13 +1100,45 @@ bootstrap when it generates the configs at startup and then cannot
 apply them. A corrected config file therefore takes effect on the next
 restart.
 
-`terrarium daemon reload` checks that the config parses and that the
-daemon runs before it sends the signal. When one of the checks does not
-pass, the command returns an error and does not send the signal. After
-the signal, the command waits 5 seconds and returns an error only when
-the daemon exits in that time. With the default `envoy.startupTimeout`
-of 10 seconds, a daemon whose new Envoy keeps running and does not
-answer exits after the command has returned without an error.
+`terrarium daemon reload` makes three checks before it sends the
+signal:
+
+- The config parses.
+- The daemon runs.
+- The daemon wrote the reload status file that this section describes
+  below, and the file names the PID of that daemon.
+
+When one of the checks does not pass, the command returns an error and
+does not send the signal. A daemon that an older build of terrarium
+started writes no status file, so restart the daemon after you upgrade
+terrarium. Until that restart, `terrarium daemon reload` and
+`systemctl reload terrarium` return an error.
+
+After the signal, the command waits until the daemon finishes the reload
+or exits. The command does not limit the time of that wait. It returns
+without an error only when the daemon runs the new config. It returns an
+error in each of these cases:
+
+- The daemon keeps the previous config. The error includes the reason
+  that the daemon logged.
+- The reload ends the daemon. The error includes the step that did not
+  succeed.
+- The daemon exits during the wait for another reason, such as a
+  termination signal.
+
+The daemon records the outcome of each reload in a status file, and the
+command reads the outcome from that file. The path of the status file is
+the path of the PID file with `.reload` at its end, which is
+`/run/terrarium/terrarium.pid.reload` by default. When you start the
+daemon with `--pid-file`, pass the same value to
+`terrarium daemon reload`.
+
+After a reload that ends the daemon, the daemon leaves the status file
+in place, so the command can read the step that did not succeed. systemd
+removes the `RuntimeDirectory` of a unit when the daemon exits. When
+that directory holds the status file, systemd can remove the file before
+the command reads the outcome. The error then says only that the daemon
+exited, and the log of the daemon names the step.
 
 One case stays open. A process that starts to listen on a listener port
 after Envoy binds the port, and before Envoy starts its workers, takes

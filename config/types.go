@@ -888,7 +888,9 @@ const (
 	// DefaultPIDFile is the path where the `terrarium daemon` process
 	// records its PID. The daemon writes and removes this file;
 	// `terrarium daemon reload` and `terrarium status` read it to
-	// locate the running process.
+	// locate the running process. The daemon records the outcome of
+	// each reload in a second file, whose path is this path with
+	// `.reload` at its end.
 	DefaultPIDFile = "/run/terrarium/terrarium.pid"
 
 	// DefaultEnvoyLogLevel is the Envoy --log-level flag value used

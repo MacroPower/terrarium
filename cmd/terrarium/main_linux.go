@@ -57,7 +57,7 @@ func platformCommands(usr *config.User) []*cobra.Command {
 
 	daemonCmd.AddCommand(&cobra.Command{
 		Use:   "reload",
-		Short: "Validate config and signal the daemon to reload",
+		Short: "Validate config, signal the daemon to reload, and wait for the result",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return DaemonReload(cmd.Context(), usr, pidFile)

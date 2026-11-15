@@ -3,10 +3,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -174,6 +178,73 @@ func TestDaemonReloadStalePID(t *testing.T) {
 
 	err = DaemonReload(t.Context(), usr, pidPath)
 	require.ErrorIs(t, err, ErrDaemonNotRunning)
+}
+
+// TestDaemonReloadEndsDaemon checks the reload command against a
+// daemon whose reload stops after it started to replace a running
+// part. The command must wait for the outcome of the reload and
+// return its error.
+//
+// The test process stands for the daemon. It records its own PID,
+// and it handles the SIGHUP of the command as the daemon does.
+func TestDaemonReloadEndsDaemon(t *testing.T) {
+	t.Parallel()
+
+	if os.Getuid() != 0 {
+		t.Skip("test requires root")
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	require.NoError(t, os.WriteFile(configPath, []byte("{}"), 0o644))
+
+	usr := config.NewUser()
+	usr.ConfigPath = configPath
+
+	pidPath := filepath.Join(dir, "test.pid")
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGHUP)
+
+	recorder, err := newReloadRecorder(reloadStatusPath(pidPath))
+	require.NoError(t, err)
+	require.NoError(t, writePIDFile(pidPath))
+
+	var finished atomic.Bool
+
+	errIncomplete := errors.New("starting envoy")
+	served := make(chan error, 1)
+	ctx := context.WithoutCancel(t.Context())
+
+	go func() {
+		served <- serveReloads(ctx, sigCh, func(context.Context, string) {}, recorder,
+			func(context.Context) error {
+				// The reload takes several polls of the status, so a
+				// command that does not wait for the outcome returns
+				// before the reload finishes.
+				time.Sleep(3 * reloadPollInterval)
+				finished.Store(true)
+
+				return errIncomplete
+			},
+			func(context.Context) {},
+		)
+	}()
+
+	// The signal loop returns when the channel closes, also when the
+	// command sent no signal.
+	t.Cleanup(func() {
+		signal.Stop(sigCh)
+		close(sigCh)
+		<-served
+	})
+
+	err = DaemonReload(t.Context(), usr, pidPath)
+
+	assert.True(t, finished.Load(), "the command returned before the reload finished")
+	require.ErrorIs(t, err, ErrReloadEndedDaemon)
+	require.ErrorContains(t, err, errIncomplete.Error())
 }
 
 // TestReloadInfrastructureRejected checks a reload that cannot read

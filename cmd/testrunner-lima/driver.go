@@ -295,10 +295,12 @@ const VMTerrariumStatsDB = "/var/lib/terrarium/stats.db"
 // because this path exercises terrarium's own pre-validation and
 // SIGHUP plumbing.
 //
-// On success the daemon stays alive after the SIGHUP; on failure the
-// CLI returns a non-zero exit code and prints a message describing
-// the rejection (invalid YAML, missing PID file, dead daemon) on
-// stderr.
+// The CLI returns after the daemon finished the reload. On success
+// the daemon runs the new config. On failure the CLI returns a
+// non-zero exit code and prints a message on stderr. The message
+// describes what stopped the reload, such as invalid YAML, a missing
+// PID file, a dead daemon, a config that the daemon rejected, or a
+// reload that ended the daemon.
 func (d *driver) reloadDaemonViaCli(ctx context.Context) (int, string, string, error) {
 	return d.runTerrarium(ctx, "daemon", "reload")
 }
