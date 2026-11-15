@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,6 +205,90 @@ func TestOpenReadOnly_Paths(t *testing.T) {
 			assert.Equal(t, 1, countInstances(t, db))
 		})
 	}
+}
+
+func TestOpen_Paths(t *testing.T) {
+	t.Parallel()
+
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+
+	tcs := map[string]struct {
+		// path returns the path to open for the absolute path of
+		// the database. A nil path opens the absolute path.
+		path func(abs string) (string, error)
+		// name is the file name of the database.
+		name string
+	}{
+		"plain":             {name: "stats.db"},
+		"question mark":     {name: "a?b.db"},
+		"name with a query": {name: "stats.db?_txlock=none"},
+		"number sign":       {name: "a#b.db"},
+		"percent sign":      {name: "a%41b.db"},
+		"space":             {name: "a b.db"},
+		"query separators":  {name: "a&b=c.db"},
+		"colon":             {name: "a:b.db"},
+		"non-ASCII":         {name: "caf\u00e9.db"},
+		"relative path": {
+			name: "a?b.db",
+			path: func(abs string) (string, error) { return filepath.Rel(wd, abs) },
+		},
+		"two leading slashes": {
+			name: "a?b.db",
+			path: func(abs string) (string, error) { return "/" + abs, nil },
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.name)
+
+			if tc.path != nil {
+				var err error
+
+				path, err = tc.path(path)
+				require.NoError(t, err)
+			}
+
+			// The second store finds the file of the first store,
+			// so the file holds one instance row for each of them.
+			closedStore(t, path)
+			closedStore(t, path)
+
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			assert.Equal(t, tc.name, entries[0].Name())
+
+			db := openReadOnly(t, path)
+
+			assert.Equal(t, 2, countInstances(t, db))
+		})
+	}
+}
+
+func TestOpen_EmptyPath(t *testing.T) {
+	t.Parallel()
+
+	store, err := eventstore.Open(t.Context(), "")
+	require.Error(t, err)
+	assert.Nil(t, store)
+}
+
+//nolint:paralleltest // t.Chdir does not allow a parallel test.
+func TestOpen_InMemoryName(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	closedStore(t, ":memory:")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, ":memory:", entries[0].Name())
 }
 
 func TestOpen_AppliesSchemaOnFreshDB(t *testing.T) {
@@ -612,6 +698,67 @@ func TestOpen_WaitsForWriteLockOnNewDB(t *testing.T) {
 	err = db.QueryRowContext(t.Context(), `PRAGMA journal_mode`).Scan(&mode)
 	require.NoError(t, err)
 	assert.Equal(t, "wal", mode)
+}
+
+func TestOpen_WaitsForWriteLockOnExistingDB(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]string{
+		"plain":         "stats.db",
+		"question mark": "a?b.db",
+	}
+
+	for name, file := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), file)
+			closedStore(t, path)
+
+			// Hold the write lock on the database from a second
+			// connection, as another process does in the middle of
+			// a batch. The data source name is a URI with an
+			// escaped path, so that the driver opens the file at
+			// path for each name.
+			raw, err := sql.Open("sqlite", "file://"+(&url.URL{Path: path}).EscapedPath())
+			require.NoError(t, err)
+
+			t.Cleanup(func() { assert.NoError(t, raw.Close()) })
+
+			conn, err := raw.Conn(t.Context())
+			require.NoError(t, err)
+
+			_, err = conn.ExecContext(t.Context(), `BEGIN IMMEDIATE`)
+			require.NoError(t, err)
+
+			var releasing atomic.Bool
+
+			released := make(chan error, 1)
+
+			time.AfterFunc(100*time.Millisecond, func() {
+				releasing.Store(true)
+
+				_, rollbackErr := conn.ExecContext(context.WithoutCancel(t.Context()), `ROLLBACK`)
+				released <- errors.Join(rollbackErr, conn.Close())
+			})
+
+			// Open takes the write lock to read the schema version,
+			// so it returns only after the second connection starts
+			// to release the lock.
+			store, err := eventstore.Open(t.Context(), path)
+			held := !releasing.Load()
+
+			require.NoError(t, <-released)
+			require.NoError(t, err)
+			require.NoError(t, store.Close())
+
+			assert.False(t, held, "Open returned before the release of the write lock")
+
+			db := openReadOnly(t, path)
+
+			assert.Equal(t, 2, countInstances(t, db))
+		})
+	}
 }
 
 func TestEmit_RecordsEvent(t *testing.T) {

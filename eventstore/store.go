@@ -37,7 +37,7 @@ const policyChanSize = 16
 const pruneChunkSize int64 = 1000
 
 // busyTimeout is how long a connection waits for the lock of another
-// connection before SQLite returns SQLITE_BUSY. [writerDSNSuffix] and
+// connection before SQLite returns SQLITE_BUSY. [writerDSNQuery] and
 // [readOnlyDSNQuery] set the same value in milliseconds.
 const busyTimeout = 2 * time.Second
 
@@ -45,21 +45,22 @@ const busyTimeout = 2 * time.Second
 // [enableWAL] to switch the journal mode.
 const walRetryInterval = 10 * time.Millisecond
 
-// writerDSNSuffix is the query string appended to the SQLite path by
-// [Open]. `_txlock=immediate` makes each transaction take the write
-// lock when it begins. The transaction then waits for another writer
-// under the busy timeout, and it never reads a state that the other
-// writer is about to change.
-const writerDSNSuffix = "?_pragma=busy_timeout(2000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+// writerDSNQuery is the query string that [Open] appends to the URI
+// of [fileURI]. `_txlock=immediate` makes each transaction take the
+// write lock when it begins. The transaction then waits for another
+// writer under the busy timeout, and it never reads a state that the
+// other writer is about to change.
+const writerDSNQuery = "?_pragma=busy_timeout(2000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 
-// readOnlyDSNQuery is the query string of the URI that [readOnlyDSN]
-// returns. SQLite reads `mode=rw`, so it opens an existing file and
-// does not create a missing one. The driver reads `_pragma`. It sets
-// `query_only` on each new connection, so each statement that changes
-// a table, an index, or the schema fails with `attempt to write a
-// readonly database` until a statement turns `query_only` off.
-// The pragma does not stop a change of `journal_mode`, a checkpoint,
-// or an `ATTACH`, and each of these still writes files.
+// readOnlyDSNQuery is the query string that [OpenReadOnly] appends to
+// the URI of [fileURI]. SQLite reads `mode=rw`, so it opens an
+// existing file and does not create a missing one. The driver reads
+// `_pragma`. It sets `query_only` on each new connection, so each
+// statement that changes a table, an index, or the schema fails with
+// `attempt to write a readonly database` until a statement turns
+// `query_only` off. The pragma does not stop a change of
+// `journal_mode`, a checkpoint, or an `ATTACH`, and each of these
+// still writes files.
 //
 // The query does not set `mode=ro`. A connection that SQLite opens for
 // reads only cannot remove the `-wal` and `-shm` files of the database
@@ -67,11 +68,15 @@ const writerDSNSuffix = "?_pragma=busy_timeout(2000)&_pragma=synchronous(NORMAL)
 // closes, and the next [Open] fails when another user owns them.
 const readOnlyDSNQuery = "?mode=rw&_pragma=query_only(1)&_pragma=busy_timeout(2000)"
 
-// readOnlyDSN returns the data source name that [OpenReadOnly] opens
-// for the SQLite file at path. The name is a `file:` URI. For a name
-// in another form, the driver removes the query string before SQLite
-// reads the name. SQLite then never reads `mode=rw`, so it creates a
-// missing file.
+// fileURI returns the `file:` URI of the SQLite file at path, without
+// a query string. [Open] and [OpenReadOnly] append a query string and
+// pass the result to the driver as the data source name, so both open
+// the same file for one path.
+//
+// For a name in another form, the driver reads the text after the
+// first `?` of the name as the query string, and it removes that text
+// before SQLite reads the name. A path that holds a `?` then names
+// another file, and SQLite never reads a parameter such as `mode=rw`.
 //
 // The URI escapes the characters of path that end the path of a URI,
 // such as `?` and `#`. The URI of an absolute path holds an empty
@@ -81,13 +86,13 @@ const readOnlyDSNQuery = "?mode=rw&_pragma=query_only(1)&_pragma=busy_timeout(20
 // `:memory:` as paths of files. Without the `./`, SQLite opens a
 // temporary database for the empty path and an in-memory database for
 // `:memory:`.
-func readOnlyDSN(path string) string {
+func fileURI(path string) string {
 	prefix := "file:./"
 	if filepath.IsAbs(path) {
 		prefix = "file://"
 	}
 
-	return prefix + (&url.URL{Path: path}).EscapedPath() + readOnlyDSNQuery
+	return prefix + (&url.URL{Path: path}).EscapedPath()
 }
 
 // OpenReadOnly opens the SQLite event store at path for reads only.
@@ -109,7 +114,7 @@ func readOnlyDSN(path string) string {
 // cannot write for reads only, and that connection leaves both files
 // behind.
 func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", readOnlyDSN(path))
+	db, err := sql.Open("sqlite", fileURI(path)+readOnlyDSNQuery)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
@@ -305,6 +310,11 @@ type Store struct {
 // [ErrSchemaTooNew]. The returned [*Store] starts a background writer
 // goroutine that runs until [Store.Close].
 //
+// Open reads path as the path of a file, whatever characters the path
+// holds. A `?` in path does not start a query string, and the name
+// `:memory:` is the name of a file in the working directory. An empty
+// path returns an error.
+//
 // Several processes can open one path at the same time, including a
 // path that does not exist yet. Each Open waits for the locks of the
 // other processes, and one of them creates the schema.
@@ -325,7 +335,7 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("creating db directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path+writerDSNSuffix)
+	db, err := sql.Open("sqlite", fileURI(path)+writerDSNQuery)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
