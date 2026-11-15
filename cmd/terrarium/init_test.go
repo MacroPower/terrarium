@@ -3,8 +3,10 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 
@@ -85,6 +87,174 @@ func TestParseUpstreamDNS(t *testing.T) {
 			assert.Equal(t, tt.want, ParseUpstreamDNS(tt.resolvConf))
 		})
 	}
+}
+
+// TestUserCommandResult names each test case after the way that the
+// user command ends. Each case runs its script in a shell and passes
+// the error from the wait to userCommandResult.
+func TestUserCommandResult(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		script string
+		// want is the code of the [*ExitError], or 0 for a nil result.
+		want int
+	}{
+		"exits with status 0": {
+			script: "exit 0",
+			want:   0,
+		},
+		"exits with status 42": {
+			script: "exit 42",
+			want:   42,
+		},
+		"ends on SIGKILL": {
+			script: "kill -KILL $$",
+			want:   -1,
+		},
+		"ends on SIGTERM": {
+			script: "kill -TERM $$",
+			want:   -1,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", tt.script)
+
+			err := userCommandResult(t.Context(), cmd.Run())
+			if tt.want == 0 {
+				require.NoError(t, err)
+
+				return
+			}
+
+			var exitErr *ExitError
+
+			require.ErrorAs(t, err, &exitErr)
+			assert.Equal(t, tt.want, exitErr.Code)
+		})
+	}
+}
+
+// TestUserCommandResultLogsSignal checks that userCommandResult logs
+// a warning only for a user command that a signal ends. It replaces
+// the default logger, which is incompatible with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestUserCommandResultLogsSignal(t *testing.T) {
+	const msg = "user command ended on a signal"
+
+	tests := map[string]struct {
+		script string
+		// want is the signal attribute of the warning, or empty
+		// when userCommandResult must log no warning.
+		want string
+	}{
+		"exits with status 0": {
+			script: "exit 0",
+		},
+		"exits with status 42": {
+			script: "exit 42",
+		},
+		// A shell exits with this status after a signal ends one of
+		// its own commands.
+		"exits with status 137": {
+			script: "exit 137",
+		},
+		"ends on SIGKILL": {
+			script: "kill -KILL $$",
+			want:   "signal=killed",
+		},
+		"ends on SIGTERM": {
+			script: "kill -TERM $$",
+			want:   "signal=terminated",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			logs := captureLogs(t)
+
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", tt.script)
+
+			//nolint:errcheck // TestUserCommandResult checks the result.
+			userCommandResult(t.Context(), cmd.Run())
+
+			if tt.want == "" {
+				assert.NotContains(t, logs.String(), msg)
+
+				return
+			}
+
+			assert.Contains(t, logs.String(), "level=WARN")
+			assert.Contains(t, logs.String(), msg)
+			assert.Contains(t, logs.String(), tt.want)
+		})
+	}
+}
+
+// TestEndingSignal names each test case after the way that the
+// process ends. Each case runs its script in a shell and passes the
+// error from the wait to endingSignal.
+func TestEndingSignal(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		script string
+		// want is the signal that ended the process, or 0 for a
+		// process that exited on its own.
+		want syscall.Signal
+	}{
+		"exits with status 42": {
+			script: "exit 42",
+		},
+		// A shell exits with this status after a signal ends one of
+		// its own commands.
+		"exits with status 137": {
+			script: "exit 137",
+		},
+		"ends on SIGKILL": {
+			script: "kill -KILL $$",
+			want:   syscall.SIGKILL,
+		},
+		"ends on SIGTERM": {
+			script: "kill -TERM $$",
+			want:   syscall.SIGTERM,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", tt.script)
+
+			var exitErr *exec.ExitError
+
+			require.ErrorAs(t, cmd.Run(), &exitErr)
+
+			got, ok := endingSignal(exitErr)
+			assert.Equal(t, tt.want != 0, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestUserCommandResultWaitError(t *testing.T) {
+	t.Parallel()
+
+	waitErr := errors.New("no child processes")
+
+	err := userCommandResult(t.Context(), waitErr)
+	require.ErrorIs(t, err, waitErr)
+	require.ErrorContains(t, err, "waiting for user command")
+
+	var exitErr *ExitError
+
+	assert.NotErrorAs(t, err, &exitErr)
 }
 
 func TestDNSProxyShutdownOnInitFailure(t *testing.T) {

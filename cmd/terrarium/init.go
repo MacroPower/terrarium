@@ -575,9 +575,11 @@ func openEventStore(
 // container mode: generates configs if needed, applies nftables
 // firewall rules, starts the DNS proxy and Envoy, then drops
 // privileges and execs the given command as a supervised child
-// process. It returns an [*ExitError] carrying the child's exit
-// code on normal termination. Use [Daemon] for VM-wide filtering
-// without a supervised child process.
+// process. It returns nil when the child exits with status 0, and
+// an [*ExitError] carrying the child's exit code when the child
+// exits with another status. When a signal ends the child, it logs
+// the signal and returns an [*ExitError] with the code -1. Use
+// [Daemon] for VM-wide filtering without a supervised child process.
 func Init(ctx context.Context, usr *config.User, args []string) error {
 	if len(args) == 0 {
 		return ErrNoCommand
@@ -677,20 +679,48 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 		}
 	}
 
-	// Propagate the user command's exit code.
-	exitCode := 0
+	return userCommandResult(ctx, waitErr)
+}
 
-	if waitErr != nil {
-		var exitErr *exec.ExitError
-
-		if errors.As(waitErr, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return fmt.Errorf("waiting for user command: %w", waitErr)
-		}
+// userCommandResult converts the error from the wait on the user
+// command into the result of [Init]. It returns nil when the command
+// exited with status 0. For a command that exited with another
+// status, it returns an [*ExitError] with the exit code of the
+// command. For a command that a signal ended, it logs a warning that
+// names the signal and returns an [*ExitError] with the code -1. It
+// wraps every other error.
+func userCommandResult(ctx context.Context, waitErr error) error {
+	if waitErr == nil {
+		return nil
 	}
 
-	return &ExitError{Code: exitCode}
+	var exitErr *exec.ExitError
+
+	if !errors.As(waitErr, &exitErr) {
+		return fmt.Errorf("waiting for user command: %w", waitErr)
+	}
+
+	// The user command cannot report a signal that ends it, and no
+	// shell stands between it and terrarium to report the signal.
+	sig, ok := endingSignal(exitErr)
+	if ok {
+		slog.WarnContext(ctx, "user command ended on a signal",
+			slog.String("signal", sig.String()),
+		)
+	}
+
+	return &ExitError{Code: exitErr.ExitCode()}
+}
+
+// endingSignal returns the signal that ended the process of exitErr.
+// The second result is false when the process exited on its own.
+func endingSignal(exitErr *exec.ExitError) (syscall.Signal, bool) {
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() {
+		return 0, false
+	}
+
+	return status.Signal(), true
 }
 
 // shutdown performs cleanup in order: Envoy first (with drain wait),

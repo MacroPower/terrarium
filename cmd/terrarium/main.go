@@ -6,13 +6,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 
 	"github.com/charmbracelet/fang"
 	"github.com/spf13/cobra"
-	"go.jacobcolvin.com/niceyaml/fangs"
 	"go.jacobcolvin.com/x/log"
 	"go.jacobcolvin.com/x/version"
 
@@ -22,21 +20,21 @@ import (
 func main() {
 	platformDispatch(os.Args)
 
-	err := fang.Execute(context.Background(), newRootCmd(),
-		fang.WithErrorHandler(fangs.ErrorHandler),
+	os.Exit(run(context.Background(), newRootCmd()))
+}
+
+// run executes root and returns the exit code of terrarium. It prints
+// the error of the command to the error output of root, except for an
+// [*ExitError], whose code it returns without output.
+func run(ctx context.Context, root *cobra.Command) int {
+	err := fang.Execute(ctx, root,
+		fang.WithErrorHandler(errorHandler),
 		fang.WithoutCompletions(),
 		fang.WithoutManpage(),
 		fang.WithVersion(version.GetVersion()),
 	)
-	if err != nil {
-		var exitErr *ExitError
 
-		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.Code)
-		}
-
-		os.Exit(1)
-	}
+	return exitCode(err)
 }
 
 // newRootCmd builds the terrarium command tree. The root command holds
