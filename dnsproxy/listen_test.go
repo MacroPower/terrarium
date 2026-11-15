@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/dnstest"
 )
@@ -251,4 +253,47 @@ func TestStartFixedPortInUse(t *testing.T) {
 	// process can take the UDP port after the test closes it, and
 	// Start then fails before it binds TCP.
 	assert.LessOrEqual(t, len(taker.addrs), 1)
+}
+
+func TestStartBindErrorClosesLogFile(t *testing.T) {
+	t.Parallel()
+
+	// The log file is a FIFO, so that the test can tell whether a
+	// writer holds it open. The test opens the read end first, and
+	// Start then opens the write end without blocking.
+	logPath := filepath.Join(t.TempDir(), "dns.log")
+	require.NoError(t, syscall.Mkfifo(logPath, 0o600))
+
+	fd, err := syscall.Open(logPath, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, syscall.Close(fd)) })
+
+	errBind := errors.New("bind refused")
+	opened := false
+
+	listen := func(context.Context, *net.ListenConfig, string) (net.Listener, error) {
+		// A read reports EAGAIN when a writer holds the FIFO open and
+		// the FIFO is empty.
+		_, err := syscall.Read(fd, make([]byte, 1))
+		opened = errors.Is(err, syscall.EAGAIN)
+
+		return nil, errBind
+	}
+
+	cfg := &config.Config{Logging: &config.LoggingConfig{
+		DNS: &config.DNSLogging{Enabled: true, Path: logPath},
+	}}
+
+	_, err = dnsproxy.Start(t.Context(), cfg, unusedUpstream, "127.0.0.1:0", true,
+		dnsproxy.WithTCPListen(listen),
+	)
+	require.ErrorIs(t, err, errBind)
+	require.True(t, opened, "Start did not open the log file before it bound TCP")
+
+	// A read reports the end of the file, with no error and no bytes,
+	// after every writer closed the FIFO.
+	n, err := syscall.Read(fd, make([]byte, 1))
+	require.NoError(t, err, "Start left the log file open")
+	assert.Zero(t, n)
 }

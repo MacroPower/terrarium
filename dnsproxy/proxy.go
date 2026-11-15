@@ -179,6 +179,10 @@ func WithReverseCache(c ReverseCache) Option {
 // When listenAddr names a port and a socket of the proxy cannot bind
 // it, Start returns the bind error.
 //
+// When cfg enables DNS logging to a file, Start opens that file, and
+// [Proxy.Shutdown] closes it. Start closes its sockets and the file
+// before it returns an error.
+//
 // IPv6 listener: if ipv6Disabled is true, only IPv4 listeners are
 // created. If ipv6Disabled is false and binding [::1] fails, startup
 // returns an error (IPv6 bypass risk).
@@ -270,6 +274,15 @@ func Start(
 	socks, err := p.listen(ctx, listenAddr)
 	if err != nil {
 		cancel()
+
+		// The caller gets no Proxy to shut down, so close the DNS
+		// log file here.
+		if p.logFile != nil {
+			closeErr := p.logFile.Close()
+			if closeErr != nil {
+				slog.WarnContext(ctx, "closing DNS log", slog.Any("err", closeErr))
+			}
+		}
 
 		return nil, err
 	}
