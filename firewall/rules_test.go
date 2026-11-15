@@ -3,6 +3,7 @@
 package firewall_test
 
 import (
+	"bytes"
 	"net"
 	"slices"
 	"strconv"
@@ -1488,6 +1489,8 @@ func TestApplyRules_DenyPortOnly_SkipsNAT(t *testing.T) {
 								"%s: ACCEPT %d must match the input interface", acceptChain, i)
 							assert.True(t, ruleMatchesNFProto(r, unix.NFPROTO_IPV4),
 								"%s: ACCEPT %d must match IPv4", acceptChain, i)
+							assert.True(t, ruleMatchesNotLocalDst(r),
+								"%s: ACCEPT %d must not match TCP to an address of the host", acceptChain, i)
 
 						case mode.uids.VMMode:
 							assert.False(t, ruleHasMetaKey(r, expr.MetaKeySKUID),
@@ -2592,10 +2595,18 @@ func TestApplyRules_VMMode_NATPreRouting_TCPForwards(t *testing.T) {
 		"should have bridge-local DNAT for TCPForward port 22")
 }
 
-// ruleHasFib reports whether a rule holds a fib expression.
-func ruleHasFib(r *nftables.Rule) bool {
-	for _, e := range r.Exprs {
-		if _, ok := e.(*expr.Fib); ok {
+// ruleMatchesNotLocalDst reports whether a rule matches only packets
+// to a destination address that the host does not own.
+func ruleMatchesNotLocalDst(r *nftables.Rule) bool {
+	for i, e := range r.Exprs {
+		f, ok := e.(*expr.Fib)
+		if !ok || !f.FlagDADDR || !f.ResultADDRTYPE || i+1 >= len(r.Exprs) {
+			continue
+		}
+
+		c, ok := r.Exprs[i+1].(*expr.Cmp)
+		if ok && c.Op == expr.CmpOpNeq && c.Register == f.Register &&
+			bytes.Equal(c.Data, binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)) {
 			return true
 		}
 	}
@@ -2781,7 +2792,8 @@ func TestApplyRules_VMMode_NATPreRouting_DenyCIDR(t *testing.T) {
 					"jump to %s must match the input interface", target)
 				assert.True(t, ruleMatchesNFProto(r, unix.NFPROTO_IPV4), "jump to %s must match IPv4", target)
 				assert.True(t, ruleMatchesL4Proto(r, unix.IPPROTO_TCP), "jump to %s must match TCP", target)
-				assert.True(t, ruleHasFib(r), "jump to %s must match the destination address type", target)
+				assert.True(t, ruleMatchesNotLocalDst(r),
+					"jump to %s must not match TCP to an address of the host", target)
 			}
 
 			var wantJumps []string

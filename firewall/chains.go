@@ -1465,6 +1465,12 @@ func dnsGuardExprs() []expr.Any {
 // to the ports of port-only deny rules ([denyPortNATMatches]). That
 // TCP keeps its destination, so the FORWARD chain evaluates it and
 // the deny rules DROP it.
+//
+// The ACCEPT rules match only TCP to an address that the host does
+// not own. The FORWARD chain never sees TCP to an address of the
+// host, so the ACCEPT rules leave that TCP to the DNAT rules. An
+// ACCEPT for it opens a direct path from a container to the services
+// of the host.
 func addNATPreRouting(
 	conn Conn, table *nftables.Table,
 	resolvedPorts []int, tcpForwards []config.TCPForward,
@@ -1498,7 +1504,9 @@ func addNATPreRouting(
 	addDenyCIDRNATPreRoutingAccept(conn, table, chain, denyCIDR4, uids)
 
 	// Deny port ACCEPT: forwarded TCP to the ports of port-only deny
-	// rules skips the DNAT rules below.
+	// rules skips the DNAT rules below. The kernel does not forward
+	// TCP to an address of the host, so that TCP continues to the DNAT
+	// rules.
 	for _, match := range denyPortNATMatches(denyPorts) {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
@@ -1506,6 +1514,7 @@ func addNATPreRouting(
 				matchNotIIFName("lo"),
 				matchNFProto(unix.NFPROTO_IPV4),
 				match,
+				matchNotLocalDst(),
 				verdictExprs(expr.VerdictAccept),
 			),
 		})

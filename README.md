@@ -992,13 +992,13 @@ Per-port DNAT rules redirect configured TCP ports to Envoy's proxy listeners
 (ProxyPortBase + port). Before those rules, the chain accepts the forwarded TCP
 that an `egressDeny` rule denies:
 
-- TCP to each IPv4 CIDR of an `egressDeny` rule, unless the destination is an
-  address of the VM.
+- TCP to each IPv4 CIDR of an `egressDeny` rule.
 - TCP to each port of an `egressDeny` rule that has ports and no destination.
 
 That TCP keeps its destination, so the `forward` chain evaluates it and the
 deny rules drop it. TCP to an address of the VM never reaches the `forward`
-chain, so the deny CIDR rules leave that TCP to the DNAT rules.
+chain, so the ACCEPT rules leave that TCP to the DNAT rules. An ACCEPT for it
+opens a direct path from a container to the services of the VM.
 
 The non-loopback interface check prevents the DNAT rules from matching
 locally-generated TPROXY traffic re-entering PREROUTING on loopback. Per-port
