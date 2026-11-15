@@ -29,6 +29,29 @@ vars:
   TEST_PKGS:
     sh: |
       for m in {{.TEST_MODULES}}; do printf './%s/... ' "$m"; done
+  # The go command reuses the cached result of a test until a file changes
+  # that the test read inside the directory of its own module. It does not
+  # track the files outside that directory. The tests of the modules in
+  # UNCACHED_TEST_MODULES read files of the repository outside their module,
+  # such as the Renovate configuration. The test tasks run these modules
+  # with -count=1, which turns the test cache off, so each run of a test
+  # task runs their tests. Add a module to the list when its tests read a
+  # file outside its directory. The directory of the root module holds
+  # every file of the repository, so the root module keeps the cache.
+  UNCACHED_TEST_MODULES: cmd/modsum cmd/vendorhash
+  UNCACHED_TEST_PKGS:
+    sh: |
+      for m in {{.UNCACHED_TEST_MODULES}}; do printf './%s/... ' "$m"; done
+  # CACHED_TEST_PKGS holds the patterns of TEST_PKGS without the patterns
+  # of UNCACHED_TEST_PKGS.
+  CACHED_TEST_PKGS:
+    sh: |
+      for m in {{.TEST_MODULES}}; do
+        case " {{.UNCACHED_TEST_MODULES}} " in
+          *" $m "*) ;;
+          *) printf './%s/... ' "$m" ;;
+        esac
+      done
   TEST_TIMEOUT: 30m
   # Test names matching this regex are integration tests: go:test skips them,
   # go:test:integration selects them.
@@ -183,29 +206,48 @@ tasks:
     cmd: go run ./cmd/modsum check
 
   # test, test:integration, and test:cover are deliberately not fingerprinted
-  # with `sources`. Go's build/test cache is content-addressed over the full
-  # transitive dependency graph and re-runs exactly the packages that changed;
-  # a file-glob fingerprint here would be coarser and could skip a stale test.
+  # with `sources`. The go command caches the result of each test package.
+  # It runs the package again after a change to its code, to the code of a
+  # package that it imports, or to a file that its tests read inside their
+  # module. A file-glob fingerprint here is coarser and can skip a stale
+  # test. The cache does not cover the files that a test reads outside its
+  # module. For that reason, test and test:integration run the modules of
+  # UNCACHED_TEST_MODULES in a second command with -count=1. test:cover
+  # writes one coverage profile, so it runs every module in one command
+  # with -count=1.
   test:
     desc: Runs Go unit tests (skips integration tests) with the race detector
     summary: |
-      Runs the workspace unit tests with the race detector.
+      Runs the workspace unit tests with the race detector. The tests of
+      the modules in UNCACHED_TEST_MODULES run without the test cache,
+      because they read files of the repository outside their module.
 
       For a single package or extra flags, call go directly:
         go test -run TestName ./config/...
+      Add -count=1 for a package of a module in UNCACHED_TEST_MODULES:
+        go test -count=1 ./cmd/modsum/...
     cmds:
-      - go test -timeout={{.TEST_TIMEOUT}} -skip {{.INTEGRATION_PATTERN}} -race {{.TEST_PKGS}}
+      - go test -timeout={{.TEST_TIMEOUT}} -skip {{.INTEGRATION_PATTERN}} -race {{.CACHED_TEST_PKGS}}
+      - go test -count=1 -timeout={{.TEST_TIMEOUT}} -skip {{.INTEGRATION_PATTERN}} -race {{.UNCACHED_TEST_PKGS}}
 
   test:integration:
     desc: Runs Go integration tests with the race detector
+    summary: |
+      Runs the workspace integration tests with the race detector. The
+      tests of the modules in UNCACHED_TEST_MODULES run without the test
+      cache, because they read files of the repository outside their
+      module.
     cmds:
-      - go test -timeout={{.TEST_TIMEOUT}} -run {{.INTEGRATION_PATTERN}} -race {{.TEST_PKGS}}
+      - go test -timeout={{.TEST_TIMEOUT}} -run {{.INTEGRATION_PATTERN}} -race {{.CACHED_TEST_PKGS}}
+      - go test -count=1 -timeout={{.TEST_TIMEOUT}} -run {{.INTEGRATION_PATTERN}} -race {{.UNCACHED_TEST_PKGS}}
 
   test:cover:
     desc: Runs all Go tests with coverage profiling
     summary: |
-      Runs every test (unit and integration) with -coverprofile, which
-      disables Go's test result cache. Writes the profile to OUTPUT.
+      Runs every test (unit and integration) with -coverprofile and
+      -count=1. The go command also caches the result of a test that
+      writes a coverage profile, and -count=1 turns the test cache off.
+      Writes the profile to OUTPUT.
 
       Args:
         OUTPUT: Coverage profile path (default: .test/coverage.txt)
@@ -215,7 +257,7 @@ tasks:
       CGO_ENABLED: "1"
     cmds:
       - mkdir -p .test
-      - go test -timeout={{.TEST_TIMEOUT}} -race -coverprofile={{.OUTPUT}} {{.TEST_PKGS}}
+      - go test -count=1 -timeout={{.TEST_TIMEOUT}} -race -coverprofile={{.OUTPUT}} {{.TEST_PKGS}}
 
   generate:
     desc: Runs go generate across all workspace modules
