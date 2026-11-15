@@ -455,9 +455,14 @@ func TestProxyE2EListenAddressNotShared(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 
+	port, err := strconv.Atoi(proxyURL.Port())
+	require.NoError(t, err)
+
+	opts := proxyOptions{bindAddress: proxyURL.Hostname(), httpPort: port}
+
 	// The bootstrap of the running proxy names the same listen address.
 	cmd := exec.CommandContext(ctx, "envoy",
-		"-c", proxyBootstrapPath(usr), "--disable-hot-restart")
+		"-c", proxyBootstrapPath(usr, opts), "--disable-hot-restart")
 
 	// Envoy rejects the bootstrap without the probe token variable.
 	cmd.Env = append(os.Environ(), envoy.ProxyProbeTokenEnv+"=second")

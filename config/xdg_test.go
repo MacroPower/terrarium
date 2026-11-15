@@ -137,6 +137,69 @@ func TestProxyStatsSocketDefault(t *testing.T) {
 	}
 }
 
+func TestProxyEnvoyLogDefault(t *testing.T) {
+	tests := map[string]struct {
+		env      map[string]string
+		instance string
+		want     string
+	}{
+		"runtime dir set": {
+			env: map[string]string{
+				"HOME":            "/home/user",
+				"XDG_STATE_HOME":  "/custom/state",
+				"XDG_RUNTIME_DIR": "/run/user/1000",
+			},
+			instance: "127.0.0.1-8080",
+			want:     "/run/user/1000/terrarium/envoy-proxy-127.0.0.1-8080.log",
+		},
+		"another instance": {
+			env: map[string]string{
+				"HOME":            "/home/user",
+				"XDG_STATE_HOME":  "/custom/state",
+				"XDG_RUNTIME_DIR": "/run/user/1000",
+			},
+			instance: "::1-3128",
+			want:     "/run/user/1000/terrarium/envoy-proxy-::1-3128.log",
+		},
+		"runtime dir falls back to state dir": {
+			env: map[string]string{
+				"HOME":            "/home/user",
+				"XDG_STATE_HOME":  "/custom/state",
+				"XDG_RUNTIME_DIR": "",
+			},
+			instance: "127.0.0.1-8080",
+			want:     "/custom/state/terrarium/envoy-proxy-127.0.0.1-8080.log",
+		},
+		"HOME only": {
+			env: map[string]string{
+				"HOME":            "/Users/user",
+				"XDG_STATE_HOME":  "",
+				"XDG_RUNTIME_DIR": "",
+			},
+			instance: "127.0.0.1-8080",
+			want:     "/Users/user/.local/state/terrarium/envoy-proxy-127.0.0.1-8080.log",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+
+			u := config.NewUser()
+			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+			u.RegisterFlags(fs)
+
+			got := config.ProxyEnvoyLogDefault(tt.instance)
+			assert.Equal(t, tt.want, got)
+
+			// Container mode keeps its own log file.
+			assert.NotEqual(t, fs.Lookup("envoy-log").DefValue, got)
+		})
+	}
+}
+
 func TestEnvoyDirDefault(t *testing.T) {
 	tests := map[string]struct {
 		env  map[string]string

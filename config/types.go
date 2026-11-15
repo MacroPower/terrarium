@@ -851,7 +851,7 @@ func (u *User) RegisterFlags(flags *pflag.FlagSet, names ...string) {
 		filepath.Join(userDataDir(), "terrarium", "ca"), "CA cert and key directory")
 	all.StringVar(&u.EnvoyConfigPath, u.Flags.EnvoyConfigPath,
 		envoyConfigDefault(),
-		"Envoy config output path (proxy writes envoy-proxy.yaml in the same directory)")
+		"Envoy config output path (proxy writes envoy-proxy-<bind-address>-<http-port>.yaml in the same directory)")
 	all.StringVar(&u.EnvoyLogPath, u.Flags.EnvoyLogPath,
 		envoyLogDefault(), "Envoy process log file path")
 	all.StringVar(&u.ReadyFile, u.Flags.ReadyFile,

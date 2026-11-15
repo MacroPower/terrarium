@@ -433,7 +433,7 @@ func TestProxyManagedEnvoy(t *testing.T) {
 			// The stub that started is the installed build.
 			args, err := os.ReadFile(argsPath) //nolint:gosec // test fixture path.
 			require.NoError(t, err)
-			assert.Contains(t, string(args), proxyBootstrapPath(usr))
+			assert.Contains(t, string(args), proxyBootstrapPath(usr, opts))
 
 			assert.Equal(t, int64(1), requests.Load())
 			assert.FileExists(t, path)

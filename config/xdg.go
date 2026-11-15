@@ -69,6 +69,18 @@ func envoyLogDefault() string {
 	return filepath.Join(userStateDir(), "terrarium", "envoy.log")
 }
 
+// ProxyEnvoyLogDefault returns the default Envoy process log path of
+// the proxy that has the name instance. The path is the file
+// envoy-proxy-<instance>.log in the directory of the container-mode
+// log. That directory is $XDG_RUNTIME_DIR/terrarium, or the state
+// directory when XDG_RUNTIME_DIR is not set. Each proxy name
+// therefore has its own log file, which container mode does not write.
+//
+// The instance argument must be one path element.
+func ProxyEnvoyLogDefault(instance string) string {
+	return filepath.Join(filepath.Dir(envoyLogDefault()), "envoy-proxy-"+instance+".log")
+}
+
 // StatsDBDefault returns the default SQLite event store path. It
 // follows XDG conventions ($XDG_DATA_HOME/terrarium/stats.db) so the
 // store sits alongside the CA and certs directories.

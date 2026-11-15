@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -62,6 +63,10 @@ type proxyOptions struct {
 	// The name of an Envoy binary that replaces the managed build. See
 	// [proxyEnvoyPath].
 	envoyPath string
+	// The value of the --envoy-log flag. The proxy command copies it
+	// to the user, or the default when the command line has no such
+	// flag. [Proxy] reads the path from the user.
+	envoyLog  string
 	resolvers []string
 	httpPort  int
 }
@@ -90,6 +95,14 @@ func proxyCmd(usr *config.User, inst *envoybin.Installer) *cobra.Command {
 			"that binary.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The default log path holds the listen address, which
+			// the flags set. An empty --envoy-log value is a choice
+			// of the user, so only a missing flag selects the default.
+			usr.EnvoyLogPath = opts.envoyLog
+			if !cmd.Flags().Changed(usr.Flags.EnvoyLogPath) {
+				usr.EnvoyLogPath = proxyEnvoyLogDefault(opts)
+			}
+
 			return Proxy(cmd.Context(), usr, inst, opts)
 		},
 	}
@@ -114,9 +127,15 @@ func proxyCmd(usr *config.User, inst *envoybin.Installer) *cobra.Command {
 		usr.Flags.CADir,
 		usr.Flags.CertsDir,
 		usr.Flags.EnvoyConfigPath,
-		usr.Flags.EnvoyLogPath,
 		usr.Flags.ReadyFile,
 	)
+
+	// The proxy registers this flag itself, because the default of
+	// [config.User.RegisterFlags] is the log file of container mode.
+	// The command fills in the default of the proxy when it runs.
+	cmd.Flags().StringVar(&opts.envoyLog, usr.Flags.EnvoyLogPath, "",
+		"Envoy process log file path, or an empty value to log to stderr "+
+			"(default: "+config.ProxyEnvoyLogDefault("<bind-address>-<http-port>")+")")
 
 	return cmd
 }
@@ -149,12 +168,35 @@ func proxyEnvoyPath(cfg *config.Config, opts proxyOptions) string {
 	return cfg.EnvoyDefaults().Path
 }
 
-// proxyBootstrapPath returns the proxy-mode Envoy bootstrap path:
-// envoy-proxy.yaml next to the container-mode bootstrap, so the two
-// modes never clobber each other's configs. The file name is fixed, so
-// only the directory of usr.EnvoyConfigPath has an effect.
-func proxyBootstrapPath(usr *config.User) string {
-	return filepath.Join(filepath.Dir(usr.EnvoyConfigPath), "envoy-proxy.yaml")
+// proxyInstanceName returns the name that the default file paths of
+// one proxy hold: the bind address and the port of opts, such as
+// 127.0.0.1-8080. At most one proxy serves a listen address, so the
+// names of two running proxies differ.
+//
+// The name is one path element, because an underscore replaces each
+// path separator of the bind address.
+func proxyInstanceName(opts proxyOptions) string {
+	addr := strings.ReplaceAll(opts.bindAddress, string(filepath.Separator), "_")
+
+	return addr + "-" + strconv.Itoa(opts.httpPort)
+}
+
+// proxyBootstrapPath returns the proxy-mode Envoy bootstrap path: the
+// file envoy-proxy-<name>.yaml next to the container-mode bootstrap.
+// The [proxyInstanceName] of opts stands for <name>. A proxy therefore
+// never replaces the bootstrap of container mode or of a proxy on
+// another listen address. Of usr.EnvoyConfigPath, only the directory
+// changes the path.
+func proxyBootstrapPath(usr *config.User, opts proxyOptions) string {
+	return filepath.Join(filepath.Dir(usr.EnvoyConfigPath),
+		"envoy-proxy-"+proxyInstanceName(opts)+".yaml")
+}
+
+// proxyEnvoyLogDefault returns the Envoy process log path of a proxy
+// that runs without the --envoy-log flag. See
+// [config.ProxyEnvoyLogDefault] for the path.
+func proxyEnvoyLogDefault(opts proxyOptions) string {
+	return config.ProxyEnvoyLogDefault(proxyInstanceName(opts))
 }
 
 // prepareProxyEnvoyLog creates the Envoy process log file at path, and
@@ -289,7 +331,7 @@ func GenerateProxy(
 		return nil, "", fmt.Errorf("generating envoy config: %w", err)
 	}
 
-	path := proxyBootstrapPath(usr)
+	path := proxyBootstrapPath(usr, opts)
 
 	err = os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
@@ -759,10 +801,13 @@ func newProbeToken() (string, error) {
 // answers the probe, Proxy stops its Envoy and returns
 // [ErrListenAddressUnavailable].
 //
-// Two proxies that start at the same moment and write their bootstraps
-// to one path can both return an error. The Envoy of one proxy can load
-// the bootstrap of the other proxy and then take the address, and no
-// proxy accepts the probe answer of that Envoy.
+// Proxies on different listen addresses write their bootstraps to
+// different paths, see [proxyBootstrapPath]. Two proxies on one listen
+// address that share a bootstrap directory write their bootstraps to
+// one path. When they start at the same moment, both can return an
+// error. The Envoy of one proxy can load the bootstrap of the other
+// proxy and then take the address. No proxy accepts the probe answer of
+// that Envoy.
 //
 // Proxy opens the event store and the access log socket after its own
 // Envoy answers the probe, and before it reports that it is ready. A

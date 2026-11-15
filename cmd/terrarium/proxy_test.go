@@ -729,11 +729,11 @@ func stubProbeToken(t *testing.T, started string) string {
 }
 
 // bootstrapProbeToken returns the probe token in the bootstrap that
-// the proxy wrote for usr.
-func bootstrapProbeToken(t *testing.T, usr *config.User) string {
+// the proxy with opts wrote for usr.
+func bootstrapProbeToken(t *testing.T, usr *config.User, opts proxyOptions) string {
 	t.Helper()
 
-	bootstrap, err := os.ReadFile(proxyBootstrapPath(usr))
+	bootstrap, err := os.ReadFile(proxyBootstrapPath(usr, opts))
 	require.NoError(t, err)
 
 	m := probeTokenPattern.FindSubmatch(bootstrap)
@@ -774,7 +774,7 @@ func serveProxyPort(t *testing.T, opts proxyOptions, handler http.HandlerFunc) {
 func serveProxyProbe(t *testing.T, started string, usr *config.User, opts proxyOptions) {
 	t.Helper()
 
-	path := "/" + bootstrapProbeToken(t, usr)
+	path := "/" + bootstrapProbeToken(t, usr, opts)
 	body := stubProbeToken(t, started)
 
 	serveProxyPort(t, opts, func(w http.ResponseWriter, r *http.Request) {
@@ -1188,7 +1188,7 @@ func TestProxyProbeToken(t *testing.T) {
 
 	token := stubProbeToken(t, started)
 	assert.Len(t, token, 32)
-	assert.Equal(t, bootstrapProbeToken(t, usr), token)
+	assert.Equal(t, bootstrapProbeToken(t, usr, opts), token)
 
 	cancel()
 	requireProxyShutDown(t, errCh)
@@ -1513,6 +1513,190 @@ func TestProxyEnvoyLog(t *testing.T) {
 				assert.NoFileExists(t, filepath.Join(dir, tt.flag))
 			}
 		})
+	}
+}
+
+// TestProxyCmdEnvoyLog checks which --log-path the proxy command passes
+// to Envoy. Without the --envoy-log flag, the path holds the listen
+// address, so each proxy and container mode write their own log file.
+// The stub envoy records its arguments.
+//
+//nolint:paralleltest,tparallel // sets PATH and XDG_RUNTIME_DIR for the whole process.
+func TestProxyCmdEnvoyLog(t *testing.T) {
+	tests := map[string]struct {
+		// args builds the --envoy-log arguments from the test
+		// directory.
+		args func(dir string) []string
+		// want builds the expected log path from the test directory,
+		// the runtime directory, and the port. An empty result means
+		// that Envoy gets no --log-path.
+		want func(dir, runtimeDir string, port int) string
+	}{
+		"no flag": {
+			args: func(string) []string { return nil },
+			want: func(_, runtimeDir string, port int) string {
+				return filepath.Join(runtimeDir, "terrarium",
+					"envoy-proxy-127.0.0.1-"+strconv.Itoa(port)+".log")
+			},
+		},
+		"flag path": {
+			args: func(dir string) []string {
+				return []string{"--envoy-log", filepath.Join(dir, "logs", "envoy.log")}
+			},
+			want: func(dir, _ string, _ int) string {
+				return filepath.Join(dir, "logs", "envoy.log")
+			},
+		},
+		"empty flag": {
+			args: func(string) []string { return []string{"--envoy-log="} },
+			want: func(string, string, int) string { return "" },
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			started, argsPath := stubEnvoy(t)
+
+			dir := t.TempDir()
+			runtimeDir := t.TempDir()
+			t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+			port := freePort(t)
+
+			// The command sets the default of every user field, so
+			// the test sets the policy path after it.
+			usr := config.NewUser()
+			cmd := proxyCmd(usr, noManagedEnvoy())
+			usr.ConfigPath = stubProxyUser(t, dir, "egress: []\n").ConfigPath
+
+			cmd.SetArgs(append([]string{
+				"--envoy-path", envoyCommand,
+				"--http-port", strconv.Itoa(port),
+				"--ca-dir", filepath.Join(dir, "ca"),
+				"--certs-dir", filepath.Join(dir, "certs"),
+				"--envoy-config", filepath.Join(dir, "envoy.yaml"),
+			}, tt.args(dir)...))
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			errCh := make(chan error, 1)
+
+			go func() {
+				errCh <- cmd.ExecuteContext(ctx)
+			}()
+
+			requireStubStarted(t, started)
+			cancel()
+			requireProxyShutDown(t, errCh)
+
+			data, err := os.ReadFile(argsPath) //nolint:gosec // test fixture path.
+			require.NoError(t, err)
+
+			args := strings.Split(strings.TrimSpace(string(data)), "\n")
+
+			// The bootstrap sits in the --envoy-config directory, and
+			// its name holds the listen address too.
+			i := slices.Index(args, "-c")
+			require.GreaterOrEqual(t, i, 0, "envoy args: %v", args)
+			require.Less(t, i+1, len(args))
+			assert.Equal(t,
+				filepath.Join(dir, "envoy-proxy-127.0.0.1-"+strconv.Itoa(port)+".yaml"),
+				args[i+1])
+
+			want := tt.want(dir, runtimeDir, port)
+			if want == "" {
+				assert.NotContains(t, args, "--log-path")
+
+				return
+			}
+
+			i = slices.Index(args, "--log-path")
+			require.GreaterOrEqual(t, i, 0, "envoy args: %v", args)
+			require.Less(t, i+1, len(args))
+			assert.Equal(t, want, args[i+1])
+			assert.FileExists(t, want)
+		})
+	}
+}
+
+func TestProxyInstanceName(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		opts proxyOptions
+		want string
+	}{
+		"IPv4 address": {
+			opts: proxyOptions{bindAddress: "127.0.0.1", httpPort: 8080},
+			want: "127.0.0.1-8080",
+		},
+		"another port": {
+			opts: proxyOptions{bindAddress: "127.0.0.1", httpPort: 3128},
+			want: "127.0.0.1-3128",
+		},
+		"IPv6 address": {
+			opts: proxyOptions{bindAddress: "::1", httpPort: 8080},
+			want: "::1-8080",
+		},
+		"IPv6 address with a zone": {
+			opts: proxyOptions{bindAddress: "fe80::1%lo", httpPort: 8080},
+			want: "fe80::1%lo-8080",
+		},
+		"path separators": {
+			opts: proxyOptions{bindAddress: "../../etc", httpPort: 8080},
+			want: ".._.._etc-8080",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := proxyInstanceName(tt.opts)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, filepath.Base(got), "the name must be one path element")
+		})
+	}
+}
+
+// TestGenerateProxyBootstrapPerListenAddress checks that proxies on
+// different listen addresses that share every path flag each keep
+// their own bootstrap. A shared file holds only the bootstrap of the
+// proxy that started last.
+func TestGenerateProxyBootstrapPerListenAddress(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	usr := stubProxyUser(t, dir, "egress: []\n")
+
+	listens := []proxyOptions{
+		{bindAddress: "127.0.0.1", httpPort: 18080},
+		{bindAddress: "127.0.0.1", httpPort: 18081},
+		{bindAddress: "::1", httpPort: 18080},
+	}
+
+	paths := make([]string, 0, len(listens))
+
+	for _, opts := range listens {
+		_, path, err := GenerateProxy(t.Context(), usr, opts, "")
+		require.NoError(t, err)
+
+		assert.Equal(t, dir, filepath.Dir(path))
+		assert.NotEqual(t, usr.EnvoyConfigPath, path, "the path must not be the container-mode bootstrap")
+		assert.NotContains(t, paths, path)
+
+		paths = append(paths, path)
+	}
+
+	// Each bootstrap still names the listen address of its proxy
+	// after the other proxies wrote theirs.
+	for i, opts := range listens {
+		bootstrap, err := os.ReadFile(paths[i])
+		require.NoError(t, err)
+
+		assert.Contains(t, string(bootstrap), opts.bindAddress)
+		assert.Contains(t, string(bootstrap), "port_value: "+strconv.Itoa(opts.httpPort)+"\n")
 	}
 }
 
