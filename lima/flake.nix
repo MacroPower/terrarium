@@ -30,7 +30,7 @@
           pname = "terrarium";
           version = "dev";
           src = lib.cleanSource source;
-          vendorHash = "sha256-MJNyu4NtDsDKbcUfi6PbRe4qHRHlxtnBMUNP/NBAf3M=";
+          vendorHash = "sha256-ORiuXDrvDALJDgAkyBpJM568RDpdSSoamZVzWSV6rj8=";
           env.CGO_ENABLED = 0;
           env.GOWORK = "off";
           subPackages = [ "cmd/terrarium" ];
