@@ -265,8 +265,10 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 //nolint:paralleltest // see comment above.
 func TestGenerateProxyEnvoyFromConfigStatsSocketDefault(t *testing.T) {
 	tests := map[string]struct {
-		env  map[string]string
-		want string
+		env         map[string]string
+		bindAddress string
+		want        string
+		httpPort    int
 	}{
 		"runtime dir set": {
 			env: map[string]string{
@@ -274,7 +276,29 @@ func TestGenerateProxyEnvoyFromConfigStatsSocketDefault(t *testing.T) {
 				"XDG_STATE_HOME":  "",
 				"XDG_RUNTIME_DIR": "/run/user/4242",
 			},
-			want: "path: /run/user/4242/terrarium/accesslog.sock",
+			bindAddress: "127.0.0.1",
+			httpPort:    8080,
+			want:        "path: /run/user/4242/terrarium/accesslog-127.0.0.1-8080.sock\n",
+		},
+		"another port": {
+			env: map[string]string{
+				"HOME":            "/Users/user",
+				"XDG_STATE_HOME":  "",
+				"XDG_RUNTIME_DIR": "/run/user/4242",
+			},
+			bindAddress: "127.0.0.1",
+			httpPort:    3128,
+			want:        "path: /run/user/4242/terrarium/accesslog-127.0.0.1-3128.sock\n",
+		},
+		"IPv6 bind address": {
+			env: map[string]string{
+				"HOME":            "/Users/user",
+				"XDG_STATE_HOME":  "",
+				"XDG_RUNTIME_DIR": "/run/user/4242",
+			},
+			bindAddress: "::1",
+			httpPort:    8080,
+			want:        "path: /run/user/4242/terrarium/accesslog-::1-8080.sock\n",
 		},
 		"no runtime dir": {
 			env: map[string]string{
@@ -282,7 +306,9 @@ func TestGenerateProxyEnvoyFromConfigStatsSocketDefault(t *testing.T) {
 				"XDG_STATE_HOME":  "",
 				"XDG_RUNTIME_DIR": "",
 			},
-			want: "path: /Users/user/.local/state/terrarium/accesslog.sock",
+			bindAddress: "127.0.0.1",
+			httpPort:    8080,
+			want:        "path: /Users/user/.local/state/terrarium/accesslog-127.0.0.1-8080.sock\n",
 		},
 	}
 
@@ -295,13 +321,91 @@ func TestGenerateProxyEnvoyFromConfigStatsSocketDefault(t *testing.T) {
 			cfg := parseProxyConfig(t, "stats:\n  enabled: true\negress: []\n")
 
 			out, err := GenerateProxyEnvoyFromConfig(
-				t.Context(), cfg, "", "", "127.0.0.1", 8080, nil, "")
+				t.Context(), cfg, "", "", tt.bindAddress, tt.httpPort, nil, "")
 			require.NoError(t, err)
 
 			assert.Contains(t, out, "terrarium_accesslog")
 			assert.Contains(t, out, tt.want)
 			assert.NotContains(t, out, config.DefaultStatsSocket)
 		})
+	}
+}
+
+// TestProxyAccessLogSocketPerListenAddress checks that proxies on
+// different listen addresses each open their own access log socket.
+// The proxies share one policy, which sets no stats.socket. The
+// bootstrap of each proxy names the socket of that proxy.
+//
+// On one shared path, a proxy removes the socket of the proxy that
+// started before it. Its shutdown then leaves no socket for the Envoy
+// of the other proxy.
+//
+//nolint:paralleltest // sets XDG_RUNTIME_DIR for the whole process.
+func TestProxyAccessLogSocketPerListenAddress(t *testing.T) {
+	runtimeDir := shortTempDir(t)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+	cfg := parseProxyConfig(t, "stats:\n"+
+		"  enabled: true\n"+
+		"  path: "+filepath.Join(t.TempDir(), "stats.db")+"\n"+
+		"egress: []\n")
+
+	store := openProxyEventStore(t.Context(), cfg)
+	require.NotNil(t, store)
+
+	t.Cleanup(func() {
+		assert.NoError(t, store.Close())
+	})
+
+	listens := []proxyOptions{
+		{bindAddress: "127.0.0.1", httpPort: 18080},
+		{bindAddress: "127.0.0.1", httpPort: 18081},
+		{bindAddress: "::1", httpPort: 18080},
+	}
+
+	sockets := make([]string, 0, len(listens))
+	servers := make([]*accesslog.Server, 0, len(listens))
+
+	for _, opts := range listens {
+		socket := proxyStatsSocket(cfg, opts)
+
+		assert.Equal(t, filepath.Join(runtimeDir, "terrarium"), filepath.Dir(socket))
+		assert.NotContains(t, sockets, socket)
+
+		srv := openProxyAccessLog(t.Context(), cfg, store, opts)
+		require.NotNil(t, srv, "the proxy must open its access log socket")
+
+		// The Envoy of the proxy sends its events to the socket that
+		// the proxy opened.
+		bootstrap, err := GenerateProxyEnvoyFromConfig(
+			t.Context(), cfg, "", "", opts.bindAddress, opts.httpPort, nil, "")
+		require.NoError(t, err)
+		assert.Contains(t, bootstrap, "path: "+socket+"\n")
+
+		sockets = append(sockets, socket)
+		servers = append(servers, srv)
+	}
+
+	requireSockets := func(paths []string) {
+		t.Helper()
+
+		for _, path := range paths {
+			fi, err := os.Stat(path)
+			require.NoError(t, err)
+			assert.Equal(t, os.ModeSocket, fi.Mode().Type())
+		}
+	}
+
+	// A proxy that starts later leaves the sockets of the running
+	// proxies in place.
+	requireSockets(sockets)
+
+	// A proxy that exits removes only its own socket.
+	for i, v := range slices.Backward(servers) {
+		v.Shutdown(t.Context())
+
+		assert.NoFileExists(t, sockets[i])
+		requireSockets(sockets[:i])
 	}
 }
 

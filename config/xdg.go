@@ -88,17 +88,22 @@ func StatsDBDefault() string {
 	return filepath.Join(userDataDir(), "terrarium", "stats.db")
 }
 
-// ProxyStatsSocketDefault returns the default gRPC ALS socket path for
-// proxy mode. It prefers $XDG_RUNTIME_DIR/terrarium/accesslog.sock and
-// falls back to the state directory, so the user who runs the proxy
-// can create the socket without root. Container mode uses
-// [DefaultStatsSocket].
-func ProxyStatsSocketDefault() string {
+// ProxyStatsSocketDefault returns the default gRPC ALS socket path of
+// the proxy that has the name instance. The path is the file
+// accesslog-<instance>.sock in $XDG_RUNTIME_DIR/terrarium, or in the
+// state directory when XDG_RUNTIME_DIR is not set. The user who runs
+// the proxy can create the socket there without root. Each proxy name
+// has its own socket. Container mode uses [DefaultStatsSocket].
+//
+// The instance argument must be one path element.
+func ProxyStatsSocketDefault(instance string) string {
+	name := "accesslog-" + instance + ".sock"
+
 	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
-		return filepath.Join(d, "terrarium", "accesslog.sock")
+		return filepath.Join(d, "terrarium", name)
 	}
 
-	return filepath.Join(userStateDir(), "terrarium", "accesslog.sock")
+	return filepath.Join(userStateDir(), "terrarium", name)
 }
 
 // EnvoyDirDefault returns the default directory for managed Envoy

@@ -199,6 +199,15 @@ func proxyEnvoyLogDefault(opts proxyOptions) string {
 	return config.ProxyEnvoyLogDefault(proxyInstanceName(opts))
 }
 
+// proxyStatsSocket returns the access log socket path of the proxy
+// with opts, which is the stats.socket of cfg. When cfg does not set
+// one, the path is the result of [config.ProxyStatsSocketDefault] for
+// the [proxyInstanceName] of opts. Proxies on different listen
+// addresses therefore have different default sockets.
+func proxyStatsSocket(cfg *config.Config, opts proxyOptions) string {
+	return cfg.StatsSocket(config.ProxyStatsSocketDefault(proxyInstanceName(opts)))
+}
+
 // prepareProxyEnvoyLog creates the Envoy process log file at path, and
 // its parent directory, before Envoy opens the file.
 //
@@ -482,8 +491,8 @@ func writeFileAtomic(path string, data []byte) error {
 // those kinds are skipped with a warning (fail-closed), and deny
 // rules are rejected with [ErrDenyRulesUnsupported].
 //
-// When stats is enabled, the access loggers send to stats.socket,
-// which defaults to [config.ProxyStatsSocketDefault].
+// When stats is enabled, the access loggers send to the socket that
+// [proxyStatsSocket] returns for bindAddress and httpPort.
 //
 // When probeToken is not empty, the front listener answers the probe
 // request of [waitForProxyListener] for that token. Envoy then loads
@@ -508,7 +517,8 @@ func GenerateProxyEnvoyFromConfig(
 		return "", err
 	}
 
-	als := newALSConfig(ctx, cfg, cfg.StatsSocket(config.ProxyStatsSocketDefault()))
+	als := newALSConfig(ctx, cfg, proxyStatsSocket(cfg,
+		proxyOptions{bindAddress: bindAddress, httpPort: httpPort}))
 
 	params := envoy.ProxyListenerParams{
 		BindAddress: bindAddress,
@@ -812,8 +822,13 @@ func newProbeToken() (string, error) {
 // Proxy opens the event store and the access log socket after its own
 // Envoy answers the probe, and before it reports that it is ready. A
 // proxy that does not serve its address therefore leaves the access log
-// socket of a running proxy in place. Opening the socket removes a
-// socket of another proxy at the same path.
+// socket of a running proxy in place.
+//
+// Proxies on different listen addresses open different default sockets,
+// see [proxyStatsSocket]. Proxies whose policies set one stats.socket
+// share that path. Opening the socket removes the socket of another
+// proxy at the same path. When the Envoy of that proxy connects again,
+// it sends its events to the proxy that started last.
 //
 // Envoy might lose the events of the requests that it serves before
 // Proxy opens the socket. It buffers the events until the next flush of
@@ -954,7 +969,7 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 			}
 		}()
 
-		accessLogSrv := openProxyAccessLog(ctx, cfg, store)
+		accessLogSrv := openProxyAccessLog(ctx, cfg, store, opts)
 		if accessLogSrv != nil {
 			defer accessLogSrv.Shutdown(context.WithoutCancel(ctx))
 		}
@@ -1054,23 +1069,24 @@ func openProxyEventStore(ctx context.Context, cfg *config.Config) *eventstore.St
 	return store
 }
 
-// openProxyAccessLog binds the gRPC AccessLog UDS when stats is
-// enabled. The socket defaults to [config.ProxyStatsSocketDefault],
-// which the invoking user can create without root. On failure it logs
-// and returns nil; the data plane is never blocked by stats ingestion.
+// openProxyAccessLog binds the gRPC AccessLog UDS of the proxy with
+// opts when stats is enabled. See [proxyStatsSocket] for the socket
+// path. The invoking user can create the default socket without root.
+// On failure it logs and returns nil, so stats ingestion never blocks
+// the data plane.
 //
 // The socket has mode 0o600. Envoy runs as the invoking user in proxy
 // mode, so the owner is the only user who must connect. The default
 // socket directory can be open to other local users, and a wider mode
 // lets a member of the socket's group write forged events.
 func openProxyAccessLog(
-	ctx context.Context, cfg *config.Config, store *eventstore.Store,
+	ctx context.Context, cfg *config.Config, store *eventstore.Store, opts proxyOptions,
 ) *accesslog.Server {
 	if !cfg.StatsEnabled() || store == nil {
 		return nil
 	}
 
-	socket := cfg.StatsSocket(config.ProxyStatsSocketDefault())
+	socket := proxyStatsSocket(cfg, opts)
 
 	srv, err := accesslog.Start(ctx, socket, store,
 		accesslog.WithSocketMode(0o600))

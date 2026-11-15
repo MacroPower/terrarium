@@ -295,15 +295,21 @@ the files that the proxy writes while it runs:
 | `--envoy-log`    | Envoy writes its process log to this file. The `logging.envoy.path` policy setting overrides the flag.               |
 | `--envoy-config` | The proxy writes the Envoy bootstrap to `envoy-proxy-<bind-address>-<http-port>.yaml` in the directory of this path. |
 
-The default paths of the bootstrap and of the Envoy log hold the listen
-address of the proxy. A proxy on `127.0.0.1:8080` writes
-`envoy-proxy-127.0.0.1-8080.yaml` and `envoy-proxy-127.0.0.1-8080.log`
-in `$XDG_RUNTIME_DIR/terrarium`. When `XDG_RUNTIME_DIR` is not set, as
-on macOS, the proxy uses `$XDG_STATE_HOME/terrarium`, and
-`~/.local/state/terrarium` when `XDG_STATE_HOME` is not set either.
+The default paths of the bootstrap, of the Envoy log, and of the access
+log socket hold the listen address of the proxy. A proxy on
+`127.0.0.1:8080` writes `envoy-proxy-127.0.0.1-8080.yaml` and
+`envoy-proxy-127.0.0.1-8080.log` in `$XDG_RUNTIME_DIR/terrarium`. With
+`stats.enabled: true`, it also creates the socket
+`accesslog-127.0.0.1-8080.sock` in that directory. When
+`XDG_RUNTIME_DIR` is not set, as on macOS, the proxy uses
+`$XDG_STATE_HOME/terrarium`, and `~/.local/state/terrarium` when
+`XDG_STATE_HOME` is not set either.
+
 Proxies on different addresses therefore do not share these files, and
 no proxy shares them with container mode. Proxies that name the same
 file in `--envoy-log` or in `logging.envoy.path` write to that one file.
+Proxies that name the same `stats.socket` path replace the socket of
+each other, see [Stats event store](#stats-event-store).
 
 A script that starts the proxy can wait for the ready file before it
 sends requests. The proxy removes a ready file from an earlier run at
@@ -691,14 +697,22 @@ kernel log records to events and emits through the same drop-on-full channel.
 The default `socket` depends on the command, because a user without root
 cannot create `/run/terrarium`.
 
-| Command                                                    | Default `socket`                            |
-| ---------------------------------------------------------- | ------------------------------------------- |
-| `terrarium init`, `terrarium daemon`, `terrarium generate` | `/run/terrarium/accesslog.sock`             |
-| `terrarium proxy`                                          | `$XDG_RUNTIME_DIR/terrarium/accesslog.sock` |
+| Command                                                    | Default `socket`                                                       |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `terrarium init`, `terrarium daemon`, `terrarium generate` | `/run/terrarium/accesslog.sock`                                        |
+| `terrarium proxy`                                          | `$XDG_RUNTIME_DIR/terrarium/accesslog-<bind-address>-<http-port>.sock` |
 
-When `XDG_RUNTIME_DIR` is not set, as on macOS, `terrarium proxy` uses
-`$XDG_STATE_HOME/terrarium/accesslog.sock`. When `XDG_STATE_HOME` is not set
-either, it uses `~/.local/state/terrarium/accesslog.sock`.
+When `XDG_RUNTIME_DIR` is not set, as on macOS, `terrarium proxy` creates
+the socket in `$XDG_STATE_HOME/terrarium`. When `XDG_STATE_HOME` is not set
+either, it uses `~/.local/state/terrarium`.
+
+The default socket name of a proxy holds its listen address, so a proxy on
+`127.0.0.1:8080` uses `accesslog-127.0.0.1-8080.sock`. Proxies on different
+listen addresses therefore each record their own events. When you set
+`socket` for a proxy, give each proxy its own path. The proxy that starts
+last on a shared path replaces the socket. It might then record the events
+of the other proxy under its own instance ID, and it removes the socket
+when it exits.
 
 A Unix socket path holds at most 103 bytes on macOS and 107 bytes on Linux.
 For a longer `socket`, terrarium logs a warning that names the limit and

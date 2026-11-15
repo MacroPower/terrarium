@@ -97,8 +97,9 @@ func TestRegisterFlagsXDGDefaults(t *testing.T) {
 
 func TestProxyStatsSocketDefault(t *testing.T) {
 	tests := map[string]struct {
-		env  map[string]string
-		want string
+		env      map[string]string
+		instance string
+		want     string
 	}{
 		"runtime dir set": {
 			env: map[string]string{
@@ -106,7 +107,17 @@ func TestProxyStatsSocketDefault(t *testing.T) {
 				"XDG_STATE_HOME":  "/custom/state",
 				"XDG_RUNTIME_DIR": "/run/user/1000",
 			},
-			want: "/run/user/1000/terrarium/accesslog.sock",
+			instance: "127.0.0.1-8080",
+			want:     "/run/user/1000/terrarium/accesslog-127.0.0.1-8080.sock",
+		},
+		"another instance": {
+			env: map[string]string{
+				"HOME":            "/home/user",
+				"XDG_STATE_HOME":  "/custom/state",
+				"XDG_RUNTIME_DIR": "/run/user/1000",
+			},
+			instance: "::1-3128",
+			want:     "/run/user/1000/terrarium/accesslog-::1-3128.sock",
 		},
 		"runtime dir falls back to state dir": {
 			env: map[string]string{
@@ -114,7 +125,8 @@ func TestProxyStatsSocketDefault(t *testing.T) {
 				"XDG_STATE_HOME":  "/custom/state",
 				"XDG_RUNTIME_DIR": "",
 			},
-			want: "/custom/state/terrarium/accesslog.sock",
+			instance: "127.0.0.1-8080",
+			want:     "/custom/state/terrarium/accesslog-127.0.0.1-8080.sock",
 		},
 		"HOME only": {
 			env: map[string]string{
@@ -122,7 +134,8 @@ func TestProxyStatsSocketDefault(t *testing.T) {
 				"XDG_STATE_HOME":  "",
 				"XDG_RUNTIME_DIR": "",
 			},
-			want: "/Users/user/.local/state/terrarium/accesslog.sock",
+			instance: "127.0.0.1-8080",
+			want:     "/Users/user/.local/state/terrarium/accesslog-127.0.0.1-8080.sock",
 		},
 	}
 
@@ -132,7 +145,7 @@ func TestProxyStatsSocketDefault(t *testing.T) {
 				t.Setenv(k, v)
 			}
 
-			assert.Equal(t, tt.want, config.ProxyStatsSocketDefault())
+			assert.Equal(t, tt.want, config.ProxyStatsSocketDefault(tt.instance))
 		})
 	}
 }

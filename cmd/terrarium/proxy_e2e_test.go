@@ -1003,7 +1003,8 @@ func rawRequestStatus(t *testing.T, proxyURL *url.URL, request string) int {
 // TestProxyE2EStatsDefaultSocket checks that the proxy records Envoy
 // access events when the policy omits stats.socket. The default
 // socket sits in a per-user directory, so the proxy can create it
-// without root.
+// without root. The name of the socket holds the listen address, so
+// each proxy has its own socket.
 //
 //nolint:paralleltest // e2e tests set env and run envoy subprocesses.
 func TestProxyE2EStatsDefaultSocket(t *testing.T) {
@@ -1023,7 +1024,8 @@ func TestProxyE2EStatsDefaultSocket(t *testing.T) {
 	proxyURL, _ := startProxy(t, policy, "")
 	client := proxyClient(t, proxyURL, x509.NewCertPool())
 
-	fi, err := os.Stat(filepath.Join(runtimeDir, "terrarium", "accesslog.sock"))
+	fi, err := os.Stat(filepath.Join(runtimeDir, "terrarium",
+		"accesslog-127.0.0.1-"+proxyURL.Port()+".sock"))
 	require.NoError(t, err)
 	assert.Equal(t, os.ModeSocket, fi.Mode().Type())
 
