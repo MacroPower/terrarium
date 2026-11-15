@@ -273,10 +273,15 @@ type envoyGrpcConfig struct {
 	ClusterName string `yaml:"cluster_name"`
 }
 
-// pipeAddress models Envoy's core.Pipe address: a Unix domain socket
-// path the gRPC ALS cluster points to.
+// pipeAddress models Envoy's core.Pipe address: the path of a Unix
+// domain socket. A cluster endpoint connects to the socket, and a
+// listener binds it.
+//
+// Mode is the file mode that Envoy gives a socket that it binds. A
+// zero value leaves the mode to the umask of the Envoy process.
 type pipeAddress struct {
 	Path string `yaml:"path"`
+	Mode uint32 `yaml:"mode,omitempty"`
 }
 
 // explicitHTTPConfig wraps the HTTP/2 options used by the gRPC ALS

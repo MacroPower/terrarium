@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,21 +11,27 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"go.jacobcolvin.com/niceyaml"
+
+	"go.jacobcolvin.com/terrarium/accesslog"
+	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/envoy"
 )
 
 var (
 	// ErrEnvoyNotRunning is returned when the Envoy proxy process exits
-	// or cannot be signaled after startup.
+	// or does not become ready before the startup timeout expires.
 	ErrEnvoyNotRunning = errors.New("envoy process not running")
 
-	// ErrListenerNotReady means that a listener did not accept
-	// connections, or did not answer the probe request, before the
-	// startup timeout expired.
+	// ErrListenerNotReady means that a listener did not answer the
+	// probe request or the ready request before the startup timeout
+	// expired.
 	ErrListenerNotReady = errors.New("listener not ready")
 
 	// ErrListenAddressUnavailable means that the proxy cannot serve its
@@ -34,13 +41,21 @@ var (
 )
 
 const (
-	// The pause between two attempts of [waitForListener] and of
+	// The pause between two attempts of [waitForEnvoy] and of
 	// [waitForProxyListener].
 	listenerPollInterval = 100 * time.Millisecond
 
-	// The time that [waitForProxyListener] allows for one probe
-	// request.
+	// The time that [waitForEnvoy] allows for one ready request, and
+	// that [waitForProxyListener] allows for one probe request.
 	probeTimeout = time.Second
+
+	// The name of the ready socket inside its directory.
+	readySocketName = "ready.sock"
+
+	// The URL of the ready request. The client of [waitForEnvoy] dials
+	// the ready socket for every host, so the host of the URL names no
+	// address.
+	readyURL = "http://envoy/"
 )
 
 // checkListenAddress binds the TCP address addr and releases it again.
@@ -91,43 +106,190 @@ func checkListenAddress(ctx context.Context, addr string) error {
 	return nil
 }
 
-// waitForListener polls a TCP address until it accepts connections.
-// A connection shows only that some process listens on addr. See
-// [checkListenAddress] for a way to exclude a listener that exists
-// before Envoy starts.
+// newReadySocket creates a directory for the ready socket of one Envoy
+// start inside parent and returns the path of the socket inside the
+// new directory. It creates parent when parent does not exist. See
+// [envoy.ReadyOverlay] for the listener that binds the socket.
+//
+// The directory has a random name and the mode 0o770. The user of the
+// calling process owns it, and its group has the ID gid. That user and
+// the members of that group can therefore create the socket, connect
+// to it, and remove it. They do not need a capability that overrides
+// file permissions. No other user can open the directory.
+//
+// The caller starts Envoy with the group ID gid, and it removes the
+// directory with [removeReadySocket] after the wait for Envoy.
+//
+// It returns [accesslog.ErrSocketPathTooLong] when the path of parent
+// leaves no room for the socket.
+func newReadySocket(ctx context.Context, parent string, gid int) (string, error) {
+	err := os.MkdirAll(parent, 0o755)
+	if err != nil {
+		return "", fmt.Errorf("creating ready socket directory: %w", err)
+	}
+
+	// The new directory has the mode 0o700.
+	dir, err := os.MkdirTemp(parent, "ready-")
+	if err != nil {
+		return "", fmt.Errorf("creating ready socket directory: %w", err)
+	}
+
+	socket := filepath.Join(dir, readySocketName)
+
+	err = accesslog.CheckSocketPath(socket)
+	if err == nil {
+		// The group changes before the mode gives the group access.
+		err = os.Chown(dir, -1, gid)
+	}
+
+	if err == nil {
+		err = os.Chmod(dir, 0o770)
+	}
+
+	if err != nil {
+		removeErr := os.RemoveAll(dir)
+		if removeErr != nil {
+			slog.DebugContext(ctx, "removing ready socket directory", slog.Any("err", removeErr))
+		}
+
+		return "", fmt.Errorf("preparing ready socket %s: %w", socket, err)
+	}
+
+	return socket, nil
+}
+
+// removeReadySocket removes the directory that [newReadySocket] created
+// for socket. Envoy keeps its ready listener, but no process can
+// connect to a socket that has no path.
+func removeReadySocket(ctx context.Context, socket string) {
+	err := os.RemoveAll(filepath.Dir(socket))
+	if err != nil {
+		slog.WarnContext(ctx, "removing ready socket directory", slog.Any("err", err))
+	}
+}
+
+// readyOverlayYAML returns the YAML of the [envoy.ReadyOverlay] for
+// socket, which is the value of the --config-yaml flag of Envoy.
+func readyOverlayYAML(socket string) (string, error) {
+	var buf bytes.Buffer
+
+	err := niceyaml.NewEncoder(&buf).Encode(envoy.BuildReadyOverlay(socket))
+	if err != nil {
+		return "", fmt.Errorf("marshaling ready overlay: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+// startEnvoyAndWait starts cmd, which runs Envoy with the ready overlay
+// for socket, and waits until that Envoy answers on socket. See
+// [waitForEnvoy] for the wait.
+//
+// When Envoy does not answer, startEnvoyAndWait stops the process and
+// returns [ErrEnvoyNotRunning]. The caller therefore never keeps an
+// Envoy that did not become ready.
+func startEnvoyAndWait(
+	ctx context.Context, cmd *exec.Cmd, socket string, settings config.EnvoySettings,
+) error {
+	err := cmd.Start()
+	if err != nil {
+		return fmt.Errorf("starting envoy: %w", err)
+	}
+
+	err = waitForEnvoy(ctx, socket, settings.StartupTimeout.Duration)
+	if err != nil {
+		stopEnvoy(ctx, cmd, settings.DrainTimeout.Duration)
+
+		return fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
+	}
+
+	return nil
+}
+
+// waitForEnvoy polls the ready socket at socket until the ready
+// listener of Envoy answers a request with status 200. The answer
+// shows that the listeners of that Envoy accept connections. See
+// [envoy.ReadyOverlay] for the reason and for its limit.
+//
+// A connection to a TCP listener port shows only that some process
+// listens there. The ready socket is in a directory that
+// [newReadySocket] creates for one Envoy start. Only the user of the
+// calling process and the group of that Envoy can open the directory.
+// An answer on the socket therefore comes from the Envoy that the
+// caller started with the overlay for socket. That Envoy never answers
+// when it exits because another process holds one of its listener
+// ports.
 //
 // It returns [ErrListenerNotReady] when the timeout expires first.
 // When the caller cancels ctx first, it returns the context's error
 // without waiting for the next poll. The caller can then tell a
-// shutdown from a listener that never came up.
-func waitForListener(ctx context.Context, addr string, timeout time.Duration) error {
+// shutdown from an Envoy that never became ready.
+func waitForEnvoy(ctx context.Context, socket string, timeout time.Duration) error {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	dialer := net.Dialer{Timeout: listenerPollInterval}
+	dialer := net.Dialer{}
+
+	client := &http.Client{
+		Timeout: probeTimeout,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, "unix", socket)
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	for {
-		conn, err := dialer.DialContext(waitCtx, "tcp", addr)
-		if err == nil {
-			err := conn.Close()
-			if err != nil {
-				slog.DebugContext(ctx, "closing connectivity check connection", slog.Any("err", err))
-			}
-
+		ready, err := requestReady(waitCtx, client)
+		if err == nil && ready {
 			return nil
 		}
 
+		// Without an answer, Envoy has not bound the socket or has not
+		// started its workers.
 		select {
 		case <-waitCtx.Done():
 			if ctx.Err() != nil {
-				return fmt.Errorf("waiting for listener %s: %w", addr, ctx.Err())
+				return fmt.Errorf("waiting for envoy on %s: %w", socket, ctx.Err())
 			}
 
-			return fmt.Errorf("%w: %s after %v", ErrListenerNotReady, addr, timeout)
+			return fmt.Errorf("%w: %s after %v", ErrListenerNotReady, socket, timeout)
 
 		case <-time.After(listenerPollInterval):
 		}
 	}
+}
+
+// requestReady sends one ready request through client. It reports
+// whether the response has status 200. It returns an error when it
+// receives no complete HTTP response.
+func requestReady(ctx context.Context, client *http.Client) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, readyURL, http.NoBody)
+	if err != nil {
+		return false, fmt.Errorf("building ready request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("sending ready request: %w", err)
+	}
+
+	_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+
+	closeErr := resp.Body.Close()
+	if closeErr != nil {
+		slog.DebugContext(ctx, "closing ready response", slog.Any("err", closeErr))
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("reading ready response: %w", err)
+	}
+
+	return resp.StatusCode == http.StatusOK, nil
 }
 
 // waitForProxyListener polls the proxy listener on addr until the

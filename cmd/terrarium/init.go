@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -829,28 +828,14 @@ func verifyIPv6State(ctx context.Context, sys *sysctl.Sysctl) bool {
 	return val == "1"
 }
 
-// firstListenerPort returns the first Envoy listener port to wait on.
-// In non-blocked modes, 15443 is always present (TLS passthrough).
-// Falls back to [config.CatchAllProxyPort] as a final safety net.
-func firstListenerPort(ctx context.Context, cfg *config.Config) int {
-	ports := cfg.ResolvePorts(ctx)
-	if slices.Contains(ports, 443) || cfg.IsEgressUnrestricted() {
-		return 15443
-	}
-
-	if len(cfg.TCPForwards) > 0 {
-		return config.ProxyPortBase + cfg.TCPForwards[0].Port
-	}
-
-	if len(ports) > 0 {
-		return config.ProxyPortBase + ports[0]
-	}
-
-	return config.CatchAllProxyPort
-}
-
-// startEnvoy prepares the log files, starts the Envoy process, and
-// waits for the first listener to become ready.
+// startEnvoy prepares the log file, starts the Envoy process, and
+// waits until that Envoy answers on its ready socket. See
+// [waitForEnvoy] for the wait.
+//
+// It returns [ErrEnvoyNotRunning] when Envoy does not answer before the
+// startup timeout expires, for example because Envoy exits when another
+// process holds one of its listener ports. In that case it stops the
+// Envoy process before it returns.
 func startEnvoy(
 	ctx context.Context, usr *config.User,
 	settings config.EnvoySettings, cfg *config.Config,
@@ -867,6 +852,32 @@ func startEnvoy(
 		return nil, err
 	}
 
+	// The runtime directory of terrarium holds the ready socket. The
+	// path of that directory is short and does not depend on the
+	// environment, so the socket path always fits the limit of the
+	// platform. Envoy runs with the group ID usr.EnvoyUID.
+	runtimeDir := filepath.Dir(config.DefaultStatsSocket)
+
+	readySocket, err := newReadySocket(ctx, runtimeDir, int(envoyUID))
+	if err != nil {
+		return nil, err
+	}
+
+	defer removeReadySocket(ctx, readySocket)
+
+	// The walk starts at the parent of the path that it receives,
+	// which is runtimeDir, so the directory of the socket keeps its
+	// mode.
+	err = ensurePathTraversable(filepath.Dir(readySocket))
+	if err != nil {
+		return nil, fmt.Errorf("making ready socket path traversable: %w", err)
+	}
+
+	readyOverlay, err := readyOverlayYAML(readySocket)
+	if err != nil {
+		return nil, err
+	}
+
 	//nolint:gosec // G204: args from config.User populated via CLI flags.
 	// Envoy v1.37 added cgroup-aware CPU detection that uses
 	// conservative floor rounding. In constrained containers
@@ -876,27 +887,15 @@ func startEnvoy(
 		"--reuid="+usr.EnvoyUID, "--regid="+usr.EnvoyUID, "--clear-groups",
 		"--inh-caps=+cap_net_admin", "--ambient-caps=+cap_net_admin",
 		"--", "envoy", "-c", usr.EnvoyConfigPath,
+		"--config-yaml", readyOverlay,
 		"--log-level", cfg.EnvoyLogLevel(),
 		"--log-path", envoyLogPath,
 		"--concurrency", "2")
 	cmd.Stderr = os.Stderr
 
-	err = cmd.Start()
+	err = startEnvoyAndWait(ctx, cmd, readySocket, settings)
 	if err != nil {
-		return nil, fmt.Errorf("starting envoy: %w", err)
-	}
-
-	// Wait on the first available listener port.
-	waitPort := firstListenerPort(ctx, cfg)
-
-	err = waitForListener(ctx, fmt.Sprintf("127.0.0.1:%d", waitPort), settings.StartupTimeout.Duration)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
-	}
-
-	err = cmd.Process.Signal(syscall.Signal(0))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
+		return nil, err
 	}
 
 	return cmd, nil

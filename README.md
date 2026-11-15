@@ -939,8 +939,34 @@ explicitly turned off via sysctl on all interfaces as defense-in-depth. The
 4. Apply nftables rules atomically via netlink
 5. Set up policy routing for UDP TPROXY (if egress is not blocked)
 6. Start DNS proxy (nftables NAT OUTPUT redirects port 53 to loopback)
-7. Start Envoy (if egress is not blocked), wait for listener readiness
+7. Start Envoy (if egress is not blocked), wait until that Envoy accepts connections
 8. Create ready-file if configured (signals all infrastructure is up)
 9. Drop privileges, exec user command
 10. Forward signals to user command, reap zombies
 11. On exit: drain Envoy, stop DNS proxy, remove policy routes, flush nftables
+
+Init and the daemon learn from Envoy itself that it accepts connections.
+They add a listener on a Unix domain socket to the Envoy that they
+start. That Envoy answers a request there after its other listeners
+accept connections.
+
+Each Envoy start gets a directory of its own in `/run/terrarium` for the
+socket. Only the user that runs terrarium and the group of Envoy can
+open the directory, and terrarium removes the directory when the wait
+ends. Init and the daemon create `/run/terrarium` when it does not
+exist. When the root file system is read-only, you must mount a writable
+file system at `/run/terrarium`.
+
+Envoy exits when another process holds one of its listener ports, so it
+never answers. The wait for the answer ends after `envoy.startupTimeout`,
+which defaults to 10 seconds. Init and the daemon then stop Envoy and
+exit with an error, and init does not create the ready file. A daemon
+reload that gets no answer logs the error and leaves the daemon without
+Envoy. To start Envoy again, free the port and restart the daemon.
+
+One case stays open. A process that starts to listen on a listener port
+after Envoy binds the port, and before Envoy starts its workers, takes
+the port. Envoy then keeps running without that listener and still
+answers, so init and the daemon report that they are ready. The interval
+lasts a few milliseconds. When the `host` of a `tcpForwards` entry is a
+host name, the interval also includes the DNS lookup of that name.
