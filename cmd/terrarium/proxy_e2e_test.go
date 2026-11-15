@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -752,8 +753,15 @@ func headerEchoHandler(t *testing.T, names ...string) http.Handler {
 func startHeaderListServer(t *testing.T, addr string, names ...string) {
 	t.Helper()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	startHTTPServer(t, addr, headerListHandler(t, names...))
+}
+
+// headerListHandler answers each request with the body that
+// [startHeaderListServer] describes.
+func headerListHandler(t *testing.T, names ...string) http.Handler {
+	t.Helper()
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body strings.Builder
 
 		for _, name := range names {
@@ -765,8 +773,6 @@ func startHeaderListServer(t *testing.T, addr string, names ...string) {
 			t.Logf("upstream write: %v", err)
 		}
 	})
-
-	startHTTPServer(t, addr, mux)
 }
 
 // startHTTPServer serves plain HTTP on addr with handler until the
@@ -1565,6 +1571,336 @@ func TestProxyE2EHeaderMatchWithoutValue(t *testing.T) {
 
 	assert.Equal(t, []string{
 		"HEADER_MISMATCH headers=X-Val GET test.example/log/missing 200",
+	}, headerMismatchLines(t, stderrPath))
+}
+
+// TestProxyE2EHeaderMatchRepeated checks rules whose headerMatches
+// have a value against requests that repeat the header. The proxy
+// must compare the value of the policy with all values of the header,
+// joined with commas in the order of the request, as Cilium does. A
+// request whose header holds the value in one field and another value
+// in a second field mismatches. A request whose fields give the value
+// of the policy when joined matches.
+//
+// The test sends each request over plain HTTP and over TLS, because
+// each listener has its own HTTP filters and routes.
+//
+//nolint:paralleltest // e2e tests bind fixed ports, set env, and run envoy subprocesses.
+func TestProxyE2EHeaderMatchRepeated(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	// The proxy forwards plain HTTP to port 80 and TLS to port 443.
+	// Binding these ports needs CAP_NET_BIND_SERVICE or a permissive
+	// ip_unprivileged_port_start.
+	lc := net.ListenConfig{}
+
+	for _, addr := range []string{"127.0.0.1:80", "127.0.0.1:443"} {
+		probe, err := lc.Listen(t.Context(), "tcp", addr)
+		if err != nil {
+			t.Skipf("cannot bind %s: %v", addr, err)
+		}
+
+		require.NoError(t, probe.Close())
+	}
+
+	wrapperPath, stderrPath := envoyStderrWrapper(t)
+
+	caPath, tlsCfg := e2eCerts(t, "test.example")
+
+	const header = "X-Val"
+
+	startHeaderListServer(t, "127.0.0.1:80", header)
+	startTLSHandlerServer(t, "127.0.0.1:443", tlsCfg, headerListHandler(t, header))
+
+	// The proxy validates its re-encrypted upstream connection against
+	// the system bundle. Point it at the test CA.
+	t.Setenv("SSL_CERT_FILE", caPath)
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	policy := "egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: test.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"          - port: \"443\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /deny/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  value: one\n" +
+		"            - path: /deny-list/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  value: one,two\n" +
+		"            - path: /deny-hyphen/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  value: \"-\"\n" +
+		"            - path: /deny-name/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: \"X-It's%Val\"\n" +
+		"                  value: one\n" +
+		"            - path: /add/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: one\n" +
+		"            - path: /delete/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: DELETE\n" +
+		"                  value: one\n" +
+		"            - path: /replace/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: one\n" +
+		"            - path: /log/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: LOG\n" +
+		"                  value: one\n" +
+		"            - path: /log-list/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Val\n" +
+		"                  mismatch: LOG\n" +
+		"                  value: one,two\n"
+
+	// Each path gets the scheme of the request as a suffix, so each
+	// HEADER_MISMATCH line names one request. A request holds one
+	// field of the header for each value in values. The header is
+	// X-Val when a test names no header.
+	tests := []struct {
+		name       string
+		path       string
+		header     string
+		want       string
+		values     []string
+		wantStatus int
+	}{
+		{
+			name:       "no action forwards one field with the value",
+			path:       "/deny/single-",
+			values:     []string{"one"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\"]\n",
+		},
+		{
+			name:       "no action denies the value before another field",
+			path:       "/deny/first-",
+			values:     []string{"one", "other"},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "no action denies the value after another field",
+			path:       "/deny/last-",
+			values:     []string{"other", "one"},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "no action denies the value in two fields",
+			path:       "/deny/twice-",
+			values:     []string{"one", "one"},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "no action forwards two fields that join to the value",
+			path:       "/deny-list/fields-",
+			values:     []string{"one", "two"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\" \"two\"]\n",
+		},
+		{
+			name:       "no action forwards one field with a value that holds a comma",
+			path:       "/deny-list/single-",
+			values:     []string{"one,two"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one,two\"]\n",
+		},
+		{
+			name:       "no action denies two fields in another order",
+			path:       "/deny-list/reversed-",
+			values:     []string{"two", "one"},
+			wantStatus: http.StatusForbidden,
+		},
+		// Envoy formats a missing value as a hyphen by default. A
+		// request without the header must not match that value.
+		{
+			name:       "no action denies a request without the header for a hyphen",
+			path:       "/deny-hyphen/missing-",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "no action forwards a hyphen",
+			path:       "/deny-hyphen/single-",
+			values:     []string{"-"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"-\"]\n",
+		},
+		// The proxy reads the header in an expression, where a quote
+		// ends a string and a percent sign ends the expression.
+		{
+			name:       "no action forwards one field of a header with a quote in its name",
+			path:       "/deny-name/single-",
+			header:     "X-It's%Val",
+			values:     []string{"one"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[]\n",
+		},
+		{
+			name:       "no action denies two fields of a header with a quote in its name",
+			path:       "/deny-name/first-",
+			header:     "X-It's%Val",
+			values:     []string{"one", "other"},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "ADD keeps one field with the value",
+			path:       "/add/single-",
+			values:     []string{"one"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\"]\n",
+		},
+		{
+			name:       "ADD appends the value to two fields that hold it",
+			path:       "/add/first-",
+			values:     []string{"one", "other"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\" \"other\" \"one\"]\n",
+		},
+		{
+			name:       "DELETE keeps one field with the value",
+			path:       "/delete/single-",
+			values:     []string{"one"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\"]\n",
+		},
+		{
+			name:       "DELETE removes two fields that hold the value",
+			path:       "/delete/last-",
+			values:     []string{"other", "one"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[]\n",
+		},
+		{
+			name:       "REPLACE keeps one field with the value",
+			path:       "/replace/single-",
+			values:     []string{"one"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\"]\n",
+		},
+		{
+			name:       "REPLACE replaces two fields that hold the value",
+			path:       "/replace/first-",
+			values:     []string{"one", "other"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\"]\n",
+		},
+		{
+			name:       "LOG does not log one field with the value",
+			path:       "/log/single-",
+			values:     []string{"one"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\"]\n",
+		},
+		{
+			name:       "LOG logs two fields that hold the value",
+			path:       "/log/last-",
+			values:     []string{"other", "one"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"other\" \"one\"]\n",
+		},
+		{
+			name:       "LOG does not log two fields that join to the value",
+			path:       "/log-list/fields-",
+			values:     []string{"one", "two"},
+			wantStatus: http.StatusOK,
+			want:       "X-Val=[\"one\" \"two\"]\n",
+		},
+	}
+
+	schemes := []string{"http", "https"}
+
+	// Envoy buffers its access log lines, and it writes every line
+	// that it still holds when it exits. The proxy stops when this
+	// subtest ends, so the file holds every line after the subtest.
+	//
+	//nolint:paralleltest // The subtest owns the proxy of the parent test.
+	t.Run("requests", func(t *testing.T) {
+		proxyURL, usr := startProxy(t, policy, dnsAddr, func(o *proxyOptions) {
+			o.envoyPath = wrapperPath
+		})
+
+		// The client sees the MITM leaf of the proxy, so it must trust
+		// the generated terrarium CA.
+		client := proxyClient(t, proxyURL, loadPool(t, filepath.Join(usr.CADir, "ca.pem")))
+
+		//nolint:paralleltest // The subtests share the proxy of the parent test.
+		for _, scheme := range schemes {
+			for _, tt := range tests {
+				t.Run(scheme+" "+tt.name, func(t *testing.T) {
+					req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+						scheme+"://test.example"+tt.path+scheme, http.NoBody)
+					require.NoError(t, err)
+
+					name := cmp.Or(tt.header, header)
+					for _, value := range tt.values {
+						req.Header.Add(name, value)
+					}
+
+					resp, err := client.Do(req)
+					require.NoError(t, err)
+
+					defer func() {
+						assert.NoError(t, resp.Body.Close())
+					}()
+
+					body, err := io.ReadAll(resp.Body)
+					require.NoError(t, err)
+
+					require.Equal(t, tt.wantStatus, resp.StatusCode, string(body))
+
+					if tt.wantStatus == http.StatusOK {
+						assert.Equal(t, tt.want, string(body))
+					}
+				})
+			}
+		}
+
+		// Envoy rejects a request for an upgrade other than websocket
+		// before it reads the headers of the request for the rules.
+		// The header of these requests holds the value, so Envoy must
+		// not write a HEADER_MISMATCH line for them. Each request goes
+		// through a tunnel, because the proxy listener itself rejects
+		// the upgrade of a request that it forwards.
+		const upgrade = "Host: test.example\r\nX-Val: one\r\nConnection: Upgrade\r\nUpgrade: unknown\r\n\r\n"
+
+		t.Run("http LOG does not log a rejected upgrade with the value", func(t *testing.T) {
+			conn := connectHTTP10(t, proxyURL, "test.example:80")
+
+			status, body := rawRoundTrip(t, conn, "GET /log/upgrade-http HTTP/1.1\r\n"+upgrade)
+			assert.Equal(t, http.StatusForbidden, status, body)
+		})
+
+		t.Run("https LOG does not log a rejected upgrade with the value", func(t *testing.T) {
+			conn := tls.Client(connectHTTP10(t, proxyURL, "test.example:443"), &tls.Config{
+				ServerName: "test.example",
+				RootCAs:    loadPool(t, filepath.Join(usr.CADir, "ca.pem")),
+				MinVersion: tls.VersionTLS12,
+			})
+
+			status, body := rawRoundTrip(t, conn, "GET /log/upgrade-https HTTP/1.1\r\n"+upgrade)
+			assert.Equal(t, http.StatusForbidden, status, body)
+		})
+	})
+
+	assert.ElementsMatch(t, []string{
+		"HEADER_MISMATCH headers=X-Val GET test.example/log/last-http 200",
+		"HEADER_MISMATCH headers=X-Val GET test.example/log/last-https 200",
 	}, headerMismatchLines(t, stderrPath))
 }
 

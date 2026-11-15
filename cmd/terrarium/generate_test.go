@@ -1034,12 +1034,14 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
 				"restricted_api.example.com",
-				"name: X-Token",
+				"%CEL(request.headers['x-token'])%",
+				"clear_route_cache: true",
+				"key: terrarium.header_value.x-token",
 				"exact: secret",
 				"direct_response",
 				"403",
 			},
-			notWant: []string{"present_match"},
+			notWant: []string{"present_match", "name: X-Token"},
 		},
 		"headers combined with method and path": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{

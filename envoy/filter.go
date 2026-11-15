@@ -213,6 +213,10 @@ func buildPassthroughFilterChain(
 // version. An HTTP/1.0 request without a Host header names no host to
 // match, so Envoy answers it with status 400.
 //
+// When a headerMatches entry of rule has a value, the first HTTP
+// filter of the chain is the filter of [headerValueFilter]. That
+// filter stores the header values that the routes compare.
+//
 // The access loggers of the connection manager are accessLog and, when
 // a headerMatches entry of rule has the LOG mismatch action, the logger
 // of [withMismatchAccessLog].
@@ -231,7 +235,15 @@ func buildMITMFilterChain(
 	vhosts, _, _ := buildHTTPVirtualHosts([]config.ResolvedRule{rule}, mitmForwardProxyCluster)
 	appendHostPort(vhosts, upstreamPort)
 
-	httpFilters := make([]filter, 0, 4)
+	httpFilters := make([]filter, 0, 5)
+
+	// The filter clears the route of the request, so it comes before
+	// every HTTP filter that reads the route.
+	valueFilter, stored := headerValueFilter([]config.ResolvedRule{rule})
+	if stored {
+		httpFilters = append(httpFilters, valueFilter)
+	}
+
 	if httpRBACFilter != nil {
 		httpFilters = append(httpFilters, *httpRBACFilter)
 	}
@@ -300,7 +312,7 @@ func buildMITMFilterChain(
 				RouteConfig: routeConfig{
 					VirtualHosts: vhosts,
 				},
-				AccessLog:      withMismatchAccessLog(accessLog, vhosts),
+				AccessLog:      withMismatchAccessLog(accessLog, vhosts, stored),
 				UpgradeConfigs: []upgradeConfig{{UpgradeType: upgradeTypeWebsocket}},
 				HTTPFilters:    httpFilters,
 			},

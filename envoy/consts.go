@@ -44,6 +44,19 @@ const (
 	// connects to, in place of the default port of its cluster.
 	dynamicPortFilterStateKey = "envoy.upstream.dynamic_port"
 
+	// The prefix of the filter state key of the object that holds the
+	// value of a request header. The name of the header in lowercase
+	// follows the prefix.
+	headerValueStatePrefix = "terrarium.header_value."
+
+	// The filter state key of the object that marks a request whose
+	// header values the filter state holds.
+	headerValuesStoredStateKey = "terrarium.header_values_stored"
+
+	// The Envoy object factory that creates a filter state object that
+	// holds a string.
+	stringFilterStateFactory = "envoy.string"
+
 	// The Any type URL for the HTTP router filter configuration.
 	httpRouterTypeURL = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
 

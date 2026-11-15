@@ -501,6 +501,12 @@ type HTTPRule struct {
 // ADD adds Value as one more value of the header, DELETE removes the
 // header, and REPLACE overwrites it.
 //
+// A request can hold the header more than one time. The entry then
+// compares Value with all the values of the header, joined with commas
+// in the order of the request, as in Cilium. The request "X-A: 1" and
+// "X-A: 2" therefore matches the Value "1,2", and it mismatches the
+// Value "1".
+//
 // An entry without a Value matches each request that holds the header,
 // with any value, as in Cilium. Only a request that lacks the header
 // mismatches. ADD and REPLACE give that request the header with an
@@ -537,7 +543,9 @@ type MismatchAction string
 const (
 	// MismatchLOG logs the request when the header value does not
 	// match. Envoy writes a HEADER_MISMATCH line for the request to
-	// its stderr.
+	// its stderr. Envoy rejects some requests before it reads their
+	// header values, such as a request for an upgrade other than
+	// WebSocket. Envoy might write no line for such a request.
 	MismatchLOG MismatchAction = "LOG"
 	// MismatchADD adds the value to the header when the value does not
 	// match. The header keeps each value that the request already

@@ -301,6 +301,13 @@ Terrarium denies that request, and `LOG` logs it. `ADD` and `REPLACE` add the
 header with an empty value. `DELETE` has no header to remove, so an entry with
 `mismatch: DELETE` and no `value` changes no request.
 
+A `headerMatches` entry with a `value` compares a repeated header as in Cilium.
+When a request holds the header more than one time, Terrarium joins the values
+with commas, in the order of the request. Terrarium then compares the result
+with the `value` of the entry. A request that holds `X-Val: one` and
+`X-Val: two` therefore matches the value `one,two`, and it mismatches the value
+`one`.
+
 Each HTTP rule can hold at most 8 `headerMatches` entries that use `ADD`,
 `LOG`, or `DELETE` with a `value` as the `mismatch` action, counted together.
 Cilium has no limit. Envoy applies the header changes and the logging of a

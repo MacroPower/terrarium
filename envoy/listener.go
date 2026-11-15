@@ -255,6 +255,11 @@ func BuildHTTPForwardListener(
 // An HTTP/1.0 request without a Host header names no host to match,
 // so Envoy answers it with status 400.
 //
+// When a headerMatches entry of rules has a value, the first HTTP
+// filter of the connection manager is the filter of
+// [headerValueFilter]. That filter stores the header values that the
+// routes compare.
+//
 // The access loggers of the connection manager are accessLog and, when
 // a headerMatches entry of rules has the LOG mismatch action, the
 // logger of [withMismatchAccessLog].
@@ -329,6 +334,13 @@ func buildHTTPForwardHCM(
 		httpFilters = append([]filter{rbacFilter}, httpFilters...)
 	}
 
+	// The filter clears the route of the request, so it comes before
+	// every HTTP filter that reads the route.
+	valueFilter, stored := headerValueFilter(rules)
+	if stored {
+		httpFilters = append([]filter{valueFilter}, httpFilters...)
+	}
+
 	return filter{
 		Name: hcmFilterName,
 		TypedConfig: httpConnManagerConfig{
@@ -346,7 +358,7 @@ func buildHTTPForwardHCM(
 			RouteConfig: routeConfig{
 				VirtualHosts: vhosts,
 			},
-			AccessLog:      withMismatchAccessLog(accessLog, vhosts),
+			AccessLog:      withMismatchAccessLog(accessLog, vhosts, stored),
 			UpgradeConfigs: []upgradeConfig{{UpgradeType: upgradeTypeWebsocket}},
 			HTTPFilters:    httpFilters,
 		},

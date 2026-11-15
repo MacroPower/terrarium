@@ -1,6 +1,7 @@
 package envoy
 
 import (
+	"fmt"
 	"math/bits"
 	"slices"
 	"strings"
@@ -85,7 +86,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 			for _, hm := range hr.HeaderMatches {
 				switch {
 				case hm.Mismatch == "":
-					match.Headers = append(match.Headers, headerMatchMatcher(hm))
+					match = withHeaderMatch(match, hm)
 
 				case hm.Mismatch == config.MismatchDELETE && hm.Value == "":
 					// The entry matches each request that holds the
@@ -249,7 +250,7 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // because a REPLACE action leaves a header that holds its value as it
 // is. The header of an entry without a value counts as a header that
 // holds its value when the request has the header, see
-// [headerMatchMatcher].
+// [withHeaderMatch].
 //
 // An ADD action appends a value, a DELETE action removes the header
 // whatever its value, and a LOG action logs the request. A route must
@@ -273,7 +274,9 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluster string) []route {
 	forward := func(matched, apply []config.HeaderMatch) []route {
 		m := match
-		m.Headers = append(append([]headerMatcher{}, match.Headers...), mismatchHeaderMatchers(matched)...)
+		for _, hm := range matched {
+			m = withHeaderMatch(m, hm)
+		}
 
 		r := route{
 			Match:                  m,
@@ -354,34 +357,161 @@ func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluste
 	return routes
 }
 
-// headerMatchMatcher builds the Envoy header matcher for hm. The
-// matcher passes when the header holds the value of hm. When hm has no
-// value, the matcher passes when the request has the header, with any
-// value, as in Cilium.
+// withHeaderMatch returns a copy of match that also requires the
+// header of hm to hold the value of hm. A header that the request
+// repeats holds the values of all its fields, joined with commas, as
+// in Cilium. The request "X-A: 1" and "X-A: 2" therefore holds the
+// value "1,2", and it does not hold the value "1".
 //
-// Envoy rejects a string matcher without a pattern, so an entry
-// without a value cannot use an exact match on the empty string.
-func headerMatchMatcher(hm config.HeaderMatch) headerMatcher {
+// In Envoy 1.39 and later, an Envoy header matcher compares each field
+// of a repeated header on its own. The matcher passes when one field
+// holds the value. The copy therefore compares the value of hm with the
+// filter state object that the filter of [headerValueFilter] stores
+// for the header. That comparison gives the same result in Envoy 1.38
+// and earlier, where a header matcher compares the joined values. A
+// request that lacks the header has no such object, and the copy does
+// not match it.
+//
+// When hm has no value, the copy matches each request that has the
+// header, with any value, as in Cilium. Envoy rejects a string matcher
+// without a pattern, so an entry without a value cannot use an exact
+// match on the empty string.
+//
+// The copy does not share a slice with match, so the caller can derive
+// more than one route match from match.
+func withHeaderMatch(match routeMatch, hm config.HeaderMatch) routeMatch {
 	if hm.Value == "" {
-		return headerMatcher{Name: hm.Name, PresentMatch: boolPtr(true)}
+		match.Headers = append(slices.Clone(match.Headers), headerMatcher{
+			Name:         hm.Name,
+			PresentMatch: boolPtr(true),
+		})
+
+		return match
 	}
 
-	return headerMatcher{
-		Name:        hm.Name,
-		StringMatch: &stringMatch{Exact: hm.Value},
-	}
+	match.FilterState = append(slices.Clone(match.FilterState), filterStateMatcher{
+		Key:         headerValueStateKey(hm.Name),
+		StringMatch: stringMatch{Exact: hm.Value},
+	})
+
+	return match
 }
 
-// mismatchHeaderMatchers builds one Envoy header matcher for each
-// entry of matches, see [headerMatchMatcher].
-func mismatchHeaderMatchers(matches []config.HeaderMatch) []headerMatcher {
-	var result []headerMatcher
+// headerValueStateKey returns the filter state key of the object that
+// holds the value of the request header name. Header names do not
+// depend on case, so the key holds name in lowercase.
+func headerValueStateKey(name string) string {
+	return headerValueStatePrefix + strings.ToLower(name)
+}
 
-	for _, hm := range matches {
-		result = append(result, headerMatchMatcher(hm))
+// headerValueFilter builds the HTTP filter that stores the header
+// values that the routes of rules compare, see [withHeaderMatch]. The
+// result is false when no headerMatches entry of rules has a value,
+// because the routes then compare no header value.
+//
+// For each header of such an entry, the filter stores one string
+// object in the filter state of each request that has the header. The
+// object holds the values of all fields of the header, joined with
+// commas. Its key is the result of [headerValueStateKey]. The filter
+// stores no object for a header that the request lacks, and none for
+// a header whose joined value is empty.
+//
+// Envoy selects the route of a request before the HTTP filters run,
+// when the filter state does not hold the objects yet. The filter
+// therefore clears that route after it stored the objects, and Envoy
+// selects the route again for the next HTTP filter that reads it. The
+// filter must come before every HTTP filter that reads the route.
+//
+// Envoy answers some requests before the HTTP filters run, such as a
+// request for an upgrade that the connection manager does not allow.
+// Such a request keeps the route that Envoy selected without the
+// objects. The filter therefore also stores one object under
+// [headerValuesStoredStateKey] in each request, which marks the
+// requests whose route Envoy selected with the objects.
+func headerValueFilter(rules []config.ResolvedRule) (filter, bool) {
+	var values []filterStateValue
+
+	seen := make(map[string]bool)
+
+	for _, r := range rules {
+		if !r.IsRestricted() {
+			continue
+		}
+
+		for _, hr := range r.HTTPRules {
+			for _, hm := range hr.HeaderMatches {
+				key := headerValueStateKey(hm.Name)
+				if hm.Value == "" || seen[key] {
+					continue
+				}
+
+				seen[key] = true
+
+				// The Common Expression Language (CEL) reads a
+				// repeated header as the joined values of its fields.
+				// The REQ operator reads the first field only.
+				expr := "request.headers[" + celStringLiteral(strings.ToLower(hm.Name)) + "]"
+
+				values = append(values, filterStateValue{
+					ObjectKey:  key,
+					FactoryKey: stringFilterStateFactory,
+					FormatString: substitutionFormatString{
+						TextFormatSource: &dataSource{InlineString: "%CEL(" + expr + ")%"},
+						// The expression has no result for a request
+						// that lacks the header, and Envoy formats a
+						// missing result as "-" by default.
+						OmitEmptyValues: true,
+					},
+					SkipIfEmpty: true,
+				})
+			}
+		}
 	}
 
-	return result
+	if len(values) == 0 {
+		return filter{}, false
+	}
+
+	values = append(values, filterStateValue{
+		ObjectKey:  headerValuesStoredStateKey,
+		FactoryKey: stringFilterStateFactory,
+		FormatString: substitutionFormatString{
+			TextFormatSource: &dataSource{InlineString: "true"},
+		},
+	})
+
+	return filter{
+		Name: httpSetFilterStateFilterName,
+		TypedConfig: setFilterStateConfig{
+			AtType:           httpSetFilterStateTypeURL,
+			OnRequestHeaders: values,
+			ClearRouteCache:  true,
+		},
+	}, true
+}
+
+// celStringLiteral returns the string literal of the Common Expression
+// Language (CEL) that holds s. The literal holds each character other
+// than an ASCII letter, an ASCII digit, "-", and "_" as an escape
+// sequence. The caller can therefore put the literal into an Envoy
+// format string, where "%" and ")" end an operator.
+func celStringLiteral(s string) string {
+	var b strings.Builder
+
+	b.WriteByte('\'')
+
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			fmt.Fprintf(&b, `\U%08x`, r)
+		}
+	}
+
+	b.WriteByte('\'')
+
+	return b.String()
 }
 
 // mismatchHeadersToAdd builds request_headers_to_add entries for
@@ -490,7 +620,13 @@ func mismatchLogMetadata(matches []config.HeaderMatch) *metadata {
 // The filter of the logger is a Common Expression Language (CEL)
 // expression, because the other access log filters of Envoy cannot
 // read the metadata of a route.
-func withMismatchAccessLog(accessLog []AccessLog, vhosts []virtualHost) []AccessLog {
+//
+// The stored argument reports whether the connection manager holds the
+// filter of [headerValueFilter]. The logger then writes no line for a
+// request that this filter did not handle. Envoy selected the route of
+// such a request without the header values, so the route does not
+// tell whether a header of the request mismatches.
+func withMismatchAccessLog(accessLog []AccessLog, vhosts []virtualHost, stored bool) []AccessLog {
 	logs := slices.ContainsFunc(vhosts, func(vh virtualHost) bool {
 		return slices.ContainsFunc(vh.Routes, func(r route) bool {
 			if r.Metadata == nil {
@@ -506,6 +642,11 @@ func withMismatchAccessLog(accessLog []AccessLog, vhosts []virtualHost) []Access
 		return accessLog
 	}
 
+	expression := "'" + mismatchMetadataNamespace + "' in xds.route_metadata.filter_metadata"
+	if stored {
+		expression += " && '" + headerValuesStoredStateKey + "' in filter_state"
+	}
+
 	format := "[%START_TIME%] HEADER_MISMATCH" +
 		" headers=%METADATA(ROUTE:" + mismatchMetadataNamespace + ":" + mismatchLogHeadersKey + ")%" +
 		" %REQ(:METHOD)% %REQ(:AUTHORITY)%%REQ(:PATH)% %RESPONSE_CODE%\n"
@@ -517,7 +658,7 @@ func withMismatchAccessLog(accessLog []AccessLog, vhosts []virtualHost) []Access
 				Name: "envoy.access_loggers.extension_filters.cel",
 				TypedConfig: celAccessLogFilterConfig{
 					AtType:     "type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter",
-					Expression: "'" + mismatchMetadataNamespace + "' in xds.route_metadata.filter_metadata",
+					Expression: expression,
 				},
 			},
 		},

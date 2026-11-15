@@ -3,6 +3,7 @@ package envoy_test
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/goccy/go-yaml"
@@ -145,7 +146,7 @@ func TestMismatchActions(t *testing.T) {
 				}},
 			}},
 			contains: []string{
-				"name: X-Token",
+				"key: terrarium.header_value.x-token",
 				"exact: abc",
 			},
 			excludes: []string{
@@ -166,7 +167,7 @@ func TestMismatchActions(t *testing.T) {
 				}},
 			}},
 			contains: []string{
-				"name: X-Required",
+				"key: terrarium.header_value.x-required",
 				"request_headers_to_add:",
 				"key: X-Custom",
 				"append_action: APPEND_IF_EXISTS_OR_ADD",
@@ -224,18 +225,31 @@ type hcmRouting struct {
 // Envoy must write a HEADER_MISMATCH line only for the requests that
 // a route with a LOG action takes. The connection manager therefore
 // holds one logger whose filter matches the metadata of those routes.
+//
+// Envoy answers some requests before the HTTP filters run, such as a
+// request for an upgrade that the connection manager does not allow.
+// Envoy selects the route of such a request without the header values
+// that an HTTP filter stores. The route can therefore be a LOG route
+// for a request that holds every value. When a headerMatches entry of
+// the connection manager has a value, the filter of the logger also
+// requires the object that marks the stored values.
 func TestMismatchAccessLog(t *testing.T) {
 	t.Parallel()
 
+	const routeHasMetadata = "'terrarium.header_mismatch' in xds.route_metadata.filter_metadata"
+
 	grpcLogger := hcmAccessLog{Name: "envoy.access_loggers.http_grpc"}
-	mismatchLogger := hcmAccessLog{
+	presenceLogger := hcmAccessLog{
 		Name:       "envoy.access_loggers.stderr",
 		Filter:     "envoy.access_loggers.extension_filters.cel",
-		Expression: "'terrarium.header_mismatch' in xds.route_metadata.filter_metadata",
+		Expression: routeHasMetadata,
 		Format: "[%START_TIME%] HEADER_MISMATCH" +
 			" headers=%METADATA(ROUTE:terrarium.header_mismatch:log_headers)%" +
 			" %REQ(:METHOD)% %REQ(:AUTHORITY)%%REQ(:PATH)% %RESPONSE_CODE%\n",
 	}
+
+	mismatchLogger := presenceLogger
+	mismatchLogger.Expression = routeHasMetadata + " && 'terrarium.header_values_stored' in filter_state"
 
 	tests := map[string]struct {
 		matches []config.HeaderMatch
@@ -300,6 +314,28 @@ func TestMismatchAccessLog(t *testing.T) {
 			want: hcmRouting{
 				accessLog:  []hcmAccessLog{grpcLogger, mismatchLogger},
 				logHeaders: []string{"", "", "X-%Log", "X-%Log"},
+			},
+		},
+		// No HTTP filter stores a header value for these entries, so
+		// the route that Envoy selects first is the route of the
+		// request.
+		"LOG without a value": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Log", Mismatch: config.MismatchLOG},
+			},
+			want: hcmRouting{
+				accessLog:  []hcmAccessLog{grpcLogger, presenceLogger},
+				logHeaders: []string{"", "", "X-Log", "X-Log"},
+			},
+		},
+		"LOG without a value with a required value": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Log", Mismatch: config.MismatchLOG},
+				{Name: "X-Required", Value: "yes"},
+			},
+			want: hcmRouting{
+				accessLog:  []hcmAccessLog{grpcLogger, mismatchLogger},
+				logHeaders: []string{"", "", "X-Log", "X-Log"},
 			},
 		},
 		"ADD without LOG": {
@@ -441,9 +477,11 @@ func routingOf(t *testing.T, listener envoy.Listener) hcmRouting {
 // mismatchRoute describes one forwarding route of an HTTP rule whose
 // headerMatches carry a mismatch action.
 type mismatchRoute struct {
-	// match lists the header matchers of the route. An exact matcher
-	// is "name=value", and a matcher on the presence of the header is
-	// "name present".
+	// match lists the matchers of the route. A matcher on the presence
+	// of a header is "name present". A matcher on the joined values of
+	// a header is "name=value". Its name is the lowercase name in the
+	// filter state key of the matcher. The matchers on the presence of
+	// a header come first.
 	match []string
 	// add lists the request_headers_to_add entries of the route as
 	// "name=value append_action". An entry that keeps an empty value
@@ -463,6 +501,11 @@ type mismatchRoute struct {
 // A headerMatches entry without a value matches on the presence of
 // the header. Envoy rejects an exact matcher on the empty string, so
 // no route of such an entry holds one.
+//
+// A headerMatches entry with a value matches on the filter state
+// object that holds the joined values of the header. A header matcher
+// with a string matcher passes when one field of a repeated header
+// holds the value, so no route holds one.
 func TestMismatchRouteOrder(t *testing.T) {
 	t.Parallel()
 
@@ -481,7 +524,7 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-One", Value: "one", Mismatch: config.MismatchADD},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-One=one"}},
+				{match: []string{"x-one=one"}},
 				{add: []string{"X-One=one" + appendAction}},
 			},
 		},
@@ -491,9 +534,9 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Two", Value: "two", Mismatch: config.MismatchADD},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-One=one", "X-Two=two"}},
-				{match: []string{"X-One=one"}, add: []string{"X-Two=two" + appendAction}},
-				{match: []string{"X-Two=two"}, add: []string{"X-One=one" + appendAction}},
+				{match: []string{"x-one=one", "x-two=two"}},
+				{match: []string{"x-one=one"}, add: []string{"X-Two=two" + appendAction}},
+				{match: []string{"x-two=two"}, add: []string{"X-One=one" + appendAction}},
 				{add: []string{"X-One=one" + appendAction, "X-Two=two" + appendAction}},
 			},
 		},
@@ -504,29 +547,29 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Three", Value: "three", Mismatch: config.MismatchADD},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-One=one", "X-Two=two", "X-Three=three"}},
+				{match: []string{"x-one=one", "x-two=two", "x-three=three"}},
 				{
-					match: []string{"X-One=one", "X-Two=two"},
+					match: []string{"x-one=one", "x-two=two"},
 					add:   []string{"X-Three=three" + appendAction},
 				},
 				{
-					match: []string{"X-One=one", "X-Three=three"},
+					match: []string{"x-one=one", "x-three=three"},
 					add:   []string{"X-Two=two" + appendAction},
 				},
 				{
-					match: []string{"X-Two=two", "X-Three=three"},
+					match: []string{"x-two=two", "x-three=three"},
 					add:   []string{"X-One=one" + appendAction},
 				},
 				{
-					match: []string{"X-One=one"},
+					match: []string{"x-one=one"},
 					add:   []string{"X-Two=two" + appendAction, "X-Three=three" + appendAction},
 				},
 				{
-					match: []string{"X-Two=two"},
+					match: []string{"x-two=two"},
 					add:   []string{"X-One=one" + appendAction, "X-Three=three" + appendAction},
 				},
 				{
-					match: []string{"X-Three=three"},
+					match: []string{"x-three=three"},
 					add:   []string{"X-One=one" + appendAction, "X-Two=two" + appendAction},
 				},
 				{
@@ -544,8 +587,8 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-One=one", "X-Rep=rep"}},
-				{match: []string{"X-One=one"}, add: []string{"X-Rep=rep" + overwriteAction}},
+				{match: []string{"x-one=one", "x-rep=rep"}},
+				{match: []string{"x-one=one"}, add: []string{"X-Rep=rep" + overwriteAction}},
 				{add: []string{"X-One=one" + appendAction, "X-Rep=rep" + overwriteAction}},
 			},
 		},
@@ -556,11 +599,11 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Del", Value: "del", Mismatch: config.MismatchDELETE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-Required=yes", "X-One=one", "X-Del=del"}},
-				{match: []string{"X-Required=yes", "X-One=one"}, remove: []string{"X-Del"}},
-				{match: []string{"X-Required=yes", "X-Del=del"}, add: []string{"X-One=one" + appendAction}},
+				{match: []string{"x-required=yes", "x-one=one", "x-del=del"}},
+				{match: []string{"x-required=yes", "x-one=one"}, remove: []string{"X-Del"}},
+				{match: []string{"x-required=yes", "x-del=del"}, add: []string{"X-One=one" + appendAction}},
 				{
-					match:  []string{"X-Required=yes"},
+					match:  []string{"x-required=yes"},
 					add:    []string{"X-One=one" + appendAction},
 					remove: []string{"X-Del"},
 				},
@@ -571,7 +614,7 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Del", Value: "del", Mismatch: config.MismatchDELETE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-Del=del"}},
+				{match: []string{"x-del=del"}},
 				{remove: []string{"X-Del"}},
 			},
 		},
@@ -583,8 +626,8 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-Del=del", "X-Rep=rep"}},
-				{match: []string{"X-Del=del"}, add: []string{"X-Rep=rep" + overwriteAction}},
+				{match: []string{"x-del=del", "x-rep=rep"}},
+				{match: []string{"x-del=del"}, add: []string{"X-Rep=rep" + overwriteAction}},
 				{add: []string{"X-Rep=rep" + overwriteAction}, remove: []string{"X-Del"}},
 			},
 		},
@@ -594,9 +637,9 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Log", Value: "expected", Mismatch: config.MismatchLOG},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-Del=del", "X-Log=expected"}},
-				{match: []string{"X-Del=del"}},
-				{match: []string{"X-Log=expected"}, remove: []string{"X-Del"}},
+				{match: []string{"x-del=del", "x-log=expected"}},
+				{match: []string{"x-del=del"}},
+				{match: []string{"x-log=expected"}, remove: []string{"X-Del"}},
 				{remove: []string{"X-Del"}},
 			},
 		},
@@ -606,9 +649,9 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Two", Value: "two", Mismatch: config.MismatchDELETE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-One=one", "X-Two=two"}},
-				{match: []string{"X-One=one"}, remove: []string{"X-Two"}},
-				{match: []string{"X-Two=two"}, remove: []string{"X-One"}},
+				{match: []string{"x-one=one", "x-two=two"}},
+				{match: []string{"x-one=one"}, remove: []string{"X-Two"}},
+				{match: []string{"x-two=two"}, remove: []string{"X-One"}},
 				{remove: []string{"X-One", "X-Two"}},
 			},
 		},
@@ -618,8 +661,8 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-Log=expected", "X-Rep=rep"}},
-				{match: []string{"X-Log=expected"}, add: []string{"X-Rep=rep" + overwriteAction}},
+				{match: []string{"x-log=expected", "x-rep=rep"}},
+				{match: []string{"x-log=expected"}, add: []string{"X-Rep=rep" + overwriteAction}},
 				{add: []string{"X-Rep=rep" + overwriteAction}},
 			},
 		},
@@ -629,9 +672,9 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Add", Value: "add", Mismatch: config.MismatchADD},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-Log=expected", "X-Add=add"}},
-				{match: []string{"X-Log=expected"}, add: []string{"X-Add=add" + appendAction}},
-				{match: []string{"X-Add=add"}},
+				{match: []string{"x-log=expected", "x-add=add"}},
+				{match: []string{"x-log=expected"}, add: []string{"X-Add=add" + appendAction}},
+				{match: []string{"x-add=add"}},
 				{add: []string{"X-Add=add" + appendAction}},
 			},
 		},
@@ -640,7 +683,7 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-Rep=rep"}},
+				{match: []string{"x-rep=rep"}},
 				{add: []string{"X-Rep=rep" + overwriteAction}},
 			},
 		},
@@ -687,8 +730,8 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Rep", Mismatch: config.MismatchREPLACE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-One=one", "X-Rep present"}},
-				{match: []string{"X-One=one"}, add: []string{"X-Rep=" + absentAction}},
+				{match: []string{"X-Rep present", "x-one=one"}},
+				{match: []string{"x-one=one"}, add: []string{"X-Rep=" + absentAction}},
 				{add: []string{"X-One=one" + appendAction, "X-Rep=" + absentAction}},
 			},
 		},
@@ -708,7 +751,7 @@ func TestMismatchRouteOrder(t *testing.T) {
 				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
 			},
 			want: []mismatchRoute{
-				{match: []string{"X-Rep=rep"}},
+				{match: []string{"x-rep=rep"}},
 				{add: []string{"X-Rep=rep" + overwriteAction}},
 			},
 		},
@@ -752,12 +795,16 @@ func mismatchRoutes(t *testing.T, listener envoy.Listener) []mismatchRoute {
 								Match struct {
 									Grpc    *struct{} `yaml:"grpc"`
 									Headers []struct {
-										StringMatch *struct {
+										StringMatch  *struct{} `yaml:"string_match"`
+										Name         string    `yaml:"name"`
+										PresentMatch bool      `yaml:"present_match"`
+									} `yaml:"headers"`
+									FilterState []struct {
+										Key         string `yaml:"key"`
+										StringMatch struct {
 											Exact string `yaml:"exact"`
 										} `yaml:"string_match"`
-										Name         string `yaml:"name"`
-										PresentMatch bool   `yaml:"present_match"`
-									} `yaml:"headers"`
+									} `yaml:"filter_state"`
 								} `yaml:"match"`
 								RequestHeadersToAdd []struct {
 									Header struct {
@@ -797,20 +844,21 @@ func mismatchRoutes(t *testing.T, listener envoy.Listener) []mismatchRoute {
 		var mr mismatchRoute
 
 		for _, h := range r.Match.Headers {
-			// Envoy requires exactly one specifier in a matcher, and
-			// a string matcher must hold a pattern.
-			if h.PresentMatch {
-				require.Nil(t, h.StringMatch, "matcher on %s", h.Name)
+			// Envoy requires exactly one specifier in a matcher.
+			require.True(t, h.PresentMatch, "matcher on %s", h.Name)
+			require.Nil(t, h.StringMatch, "matcher on %s", h.Name)
 
-				mr.match = append(mr.match, h.Name+" present")
+			mr.match = append(mr.match, h.Name+" present")
+		}
 
-				continue
-			}
+		for _, fs := range r.Match.FilterState {
+			name, found := strings.CutPrefix(fs.Key, headerValueKeyPrefix)
+			require.True(t, found, "filter state key %s", fs.Key)
 
-			require.NotNil(t, h.StringMatch, "matcher on %s", h.Name)
-			require.NotEmpty(t, h.StringMatch.Exact, "matcher on %s", h.Name)
+			// A string matcher must hold a pattern.
+			require.NotEmpty(t, fs.StringMatch.Exact, "matcher on %s", fs.Key)
 
-			mr.match = append(mr.match, h.Name+"="+h.StringMatch.Exact)
+			mr.match = append(mr.match, name+"="+fs.StringMatch.Exact)
 		}
 
 		for _, h := range r.RequestHeadersToAdd {

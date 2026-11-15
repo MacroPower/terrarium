@@ -306,9 +306,13 @@ type http2Options struct{}
 // substitutionFormatString models Envoy's SubstitutionFormatString
 // with text_format_source and json_format fields for command-operator
 // log formatting.
+//
+// With OmitEmptyValues, Envoy formats an operator without a result as
+// the empty string. Without it, Envoy formats that operator as "-".
 type substitutionFormatString struct {
 	TextFormatSource *dataSource       `yaml:"text_format_source,omitempty"`
 	JsonFormat       map[string]string `yaml:"json_format,omitempty"`
+	OmitEmptyValues  bool              `yaml:"omit_empty_values,omitempty"`
 }
 
 // httpConnManagerConfig models the fields of Envoy's
@@ -406,6 +410,15 @@ type routeMatch struct {
 	Prefix         string                 `yaml:"prefix,omitempty"`
 	Path           string                 `yaml:"path,omitempty"`
 	Headers        []headerMatcher        `yaml:"headers,omitempty"`
+	FilterState    []filterStateMatcher   `yaml:"filter_state,omitempty"`
+}
+
+// filterStateMatcher models Envoy's FilterStateMatcher message. The
+// matcher passes when the filter state of the request holds an object
+// under Key and the text of that object passes StringMatch.
+type filterStateMatcher struct {
+	Key         string      `yaml:"key"`
+	StringMatch stringMatch `yaml:"string_match"`
 }
 
 // connectMatcher is an empty message that, when present on a
@@ -426,6 +439,11 @@ type grpcRouteMatchOptions struct{}
 // header, also when InvertMatch is set. With TreatMissingHeaderAsEmpty,
 // the matcher handles such a request like a request with an empty
 // header value.
+//
+// In Envoy 1.39 and later, a matcher with StringMatch compares each
+// field of a header that the request repeats on its own. The matcher
+// passes when one field passes. Envoy 1.38 and earlier compare the
+// values of all fields, joined with commas.
 type headerMatcher struct {
 	StringMatch               *stringMatch `yaml:"string_match,omitempty"`
 	PresentMatch              *bool        `yaml:"present_match,omitempty"`
@@ -564,18 +582,31 @@ type httpDFPFilterConfig struct {
 // set_filter_state HTTP filter. The filter stores each value of
 // OnRequestHeaders in the filter state of every request, in order,
 // before the HTTP filters after it run.
+//
+// Envoy selects the route of a request before the HTTP filters run.
+// With ClearRouteCache, the filter clears that route after it stored
+// the values, and Envoy selects the route again when the next HTTP
+// filter reads it. A filter whose values a route match reads must set
+// ClearRouteCache.
 type setFilterStateConfig struct {
 	AtType           string             `yaml:"@type"`
 	OnRequestHeaders []filterStateValue `yaml:"on_request_headers"`
+	ClearRouteCache  bool               `yaml:"clear_route_cache,omitempty"`
 }
 
 // filterStateValue models Envoy's FilterStateValue message. Envoy
-// stores the text of FormatString under ObjectKey. ObjectKey must name
-// a filter state key that Envoy has an object factory for, such as
-// "envoy.upstream.dynamic_port".
+// stores the text of FormatString under ObjectKey. FactoryKey names
+// the object factory that creates the object from the text. Without
+// FactoryKey, ObjectKey must name a filter state key that Envoy has an
+// object factory for, such as "envoy.upstream.dynamic_port".
+//
+// With SkipIfEmpty, Envoy stores no object when the text of
+// FormatString is empty.
 type filterStateValue struct {
 	FormatString substitutionFormatString `yaml:"format_string"`
 	ObjectKey    string                   `yaml:"object_key"`
+	FactoryKey   string                   `yaml:"factory_key,omitempty"`
+	SkipIfEmpty  bool                     `yaml:"skip_if_empty,omitempty"`
 }
 
 type cluster struct {
