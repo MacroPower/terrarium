@@ -1,8 +1,11 @@
 package eventstore_test
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,6 +161,128 @@ func TestOpen_RefusesFutureSchemaVersion(t *testing.T) {
 
 	_, err = eventstore.Open(t.Context(), path)
 	require.ErrorIs(t, err, eventstore.ErrSchemaTooNew)
+}
+
+func TestOpen_ConcurrentOpensShareOneDB(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		// Statements that create the database before the opens. A nil
+		// slice leaves the path without a file.
+		before []string
+	}{
+		"new database": {},
+		"version 1 database": {
+			before: []string{v1SchemaSQL, `PRAGMA user_version = 1`},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			if tc.before != nil {
+				raw, err := sql.Open("sqlite", path)
+				require.NoError(t, err)
+
+				for _, stmt := range tc.before {
+					_, err = raw.ExecContext(t.Context(), stmt)
+					require.NoError(t, err)
+				}
+
+				require.NoError(t, raw.Close())
+			}
+
+			const opens = 8
+
+			var (
+				wg     sync.WaitGroup
+				stores [opens]*eventstore.Store
+				errs   [opens]error
+			)
+
+			start := make(chan struct{})
+
+			for i := range opens {
+				wg.Go(func() {
+					<-start
+
+					stores[i], errs[i] = eventstore.Open(t.Context(), path)
+				})
+			}
+
+			close(start)
+			wg.Wait()
+
+			ids := make(map[string]struct{}, opens)
+
+			for i := range opens {
+				require.NoError(t, errs[i])
+
+				ids[stores[i].InstanceID()] = struct{}{}
+
+				require.NoError(t, stores[i].Close())
+			}
+
+			assert.Len(t, ids, opens, "each open should get its own instance ID")
+
+			db := openReadOnly(t, path)
+
+			var version int
+
+			err := db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
+			require.NoError(t, err)
+			assert.Equal(t, 2, version)
+
+			var count int
+
+			err = db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM instances`).Scan(&count)
+			require.NoError(t, err)
+			assert.Equal(t, opens, count)
+		})
+	}
+}
+
+func TestOpen_WaitsForWriteLockOnNewDB(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+
+	// Hold the write lock on the new database from a second
+	// connection, as another process does in the middle of its own
+	// switch to WAL mode.
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, raw.Close()) })
+
+	conn, err := raw.Conn(t.Context())
+	require.NoError(t, err)
+
+	_, err = conn.ExecContext(t.Context(), `BEGIN IMMEDIATE`)
+	require.NoError(t, err)
+
+	released := make(chan error, 1)
+
+	time.AfterFunc(100*time.Millisecond, func() {
+		_, rollbackErr := conn.ExecContext(context.WithoutCancel(t.Context()), `ROLLBACK`)
+		released <- errors.Join(rollbackErr, conn.Close())
+	})
+
+	store, err := eventstore.Open(t.Context(), path)
+	require.NoError(t, <-released)
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	db := openReadOnly(t, path)
+
+	var mode string
+
+	err = db.QueryRowContext(t.Context(), `PRAGMA journal_mode`).Scan(&mode)
+	require.NoError(t, err)
+	assert.Equal(t, "wal", mode)
 }
 
 func TestEmit_RecordsEvent(t *testing.T) {

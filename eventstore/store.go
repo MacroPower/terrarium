@@ -14,7 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // schemaVersion is the current `PRAGMA user_version` written by [Open].
@@ -25,6 +27,22 @@ const schemaVersion = 2
 // and per-source pruners. Bounded chunks keep WAL fsync cost off the
 // writer's hot path; the next batch tick drains any remaining excess.
 const pruneChunkSize int64 = 1000
+
+// busyTimeout is how long a connection waits for the lock of another
+// connection before SQLite returns SQLITE_BUSY. [writerDSNSuffix] and
+// [readOnlyDSNSuffix] set the same value in milliseconds.
+const busyTimeout = 2 * time.Second
+
+// walRetryInterval is the pause between two attempts of
+// [enableWAL] to switch the journal mode.
+const walRetryInterval = 10 * time.Millisecond
+
+// writerDSNSuffix is the query string appended to the SQLite path by
+// [Open]. `_txlock=immediate` makes each transaction take the write
+// lock when it begins. The transaction then waits for another writer
+// under the busy timeout, and it never reads a state that the other
+// writer is about to change.
+const writerDSNSuffix = "?_pragma=busy_timeout(2000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 
 // readOnlyDSNSuffix is the query string appended to the SQLite path by
 // [OpenReadOnly].
@@ -168,6 +186,10 @@ type Store struct {
 // [ErrSchemaTooNew]. The returned [*Store] starts a background writer
 // goroutine that runs until [Store.Close].
 //
+// Several processes can open one path at the same time, including a
+// path that does not exist yet. Each Open waits for the locks of the
+// other processes, and one of them creates the schema.
+//
 // On open the store inserts an `instances` row tagged with a fresh
 // 16-hex-character instance ID. The matching `ended_at` UPDATE runs
 // during a clean [Store.Close]; crashes leave `ended_at` NULL.
@@ -182,9 +204,7 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("creating db directory: %w", err)
 	}
 
-	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(2000)"
-
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", path+writerDSNSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
@@ -193,6 +213,13 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	// to one open connection so the writer goroutine has exclusive
 	// ownership and we do not race on busy-timeout retries.
 	db.SetMaxOpenConns(1)
+
+	err = enableWAL(ctx, db)
+	if err != nil {
+		closeDBIgnoringErr(db)
+
+		return nil, err
+	}
 
 	s := &Store{
 		db:          db,
@@ -269,32 +296,99 @@ INSERT INTO events (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
+// enableWAL switches the database behind db to the write-ahead log
+// (WAL) journal mode. SQLite stores the mode in the database file, so
+// the switch changes the file only on a database that is not in WAL
+// mode yet.
+//
+// SQLite does not wait under the busy timeout when the switch finds
+// the lock of another connection that is making the same switch. It
+// returns SQLITE_BUSY at once instead. For that reason, enableWAL
+// repeats the switch every [walRetryInterval] until it succeeds,
+// until [busyTimeout] has passed, or until ctx ends.
+func enableWAL(ctx context.Context, db *sql.DB) error {
+	deadline := time.Now().Add(busyTimeout)
+
+	for {
+		_, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL`)
+		if err == nil {
+			return nil
+		}
+
+		if !isBusy(err) || !time.Now().Before(deadline) {
+			return fmt.Errorf("enabling WAL: %w", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("enabling WAL: %w", ctx.Err())
+		case <-time.After(walRetryInterval):
+		}
+	}
+}
+
+// isBusy reports whether err is the SQLITE_BUSY result of SQLite or
+// one of its extended codes.
+func isBusy(err error) bool {
+	var serr *sqlite.Error
+
+	// The low byte of an extended result code is the primary code.
+	return errors.As(err, &serr) && serr.Code()&0xff == sqlite3.SQLITE_BUSY
+}
+
 // applySchema reads the user_version pragma and applies any pending
 // migrations. A version 0 (fresh) database lands on [schemaVersion] in
 // one step via [schemaSQL]; version 1 databases migrate forward to
 // version 2 by creating the `instance_metrics` table. Future versions
 // refuse to open with [ErrSchemaTooNew].
 //
-// Each migration step is a DDL exec followed by a `PRAGMA
-// user_version` write. The two statements are not bundled in a
-// transaction; a crash between them leaves the database with the new
-// schema and the old version, which the next open will retry.
+// The read of the version, the DDL, and the `PRAGMA user_version`
+// write run in one transaction that holds the write lock from its
+// start. When several processes open one database at the same time,
+// one of them migrates it and the others then read the new version.
+// A crash in the middle of a migration leaves the database unchanged.
 func (s *Store) applySchema(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning schema tx: %w", err)
+	}
+
+	err = migrate(ctx, tx)
+	if err != nil {
+		rollbackErr := tx.Rollback()
+		if rollbackErr != nil {
+			return fmt.Errorf("%w (rollback: %w)", err, rollbackErr)
+		}
+
+		return err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("committing schema tx: %w", err)
+	}
+
+	return nil
+}
+
+// migrate brings the database of tx to [schemaVersion]. See
+// [Store.applySchema] for the steps.
+func migrate(ctx context.Context, tx *sql.Tx) error {
 	var version int
 
-	err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version)
+	err := tx.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version)
 	if err != nil {
 		return fmt.Errorf("reading user_version: %w", err)
 	}
 
 	switch {
 	case version == 0:
-		_, err = s.db.ExecContext(ctx, schemaSQL)
+		_, err = tx.ExecContext(ctx, schemaSQL)
 		if err != nil {
 			return fmt.Errorf("applying schema: %w", err)
 		}
 
-		_, err = s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
+		_, err = tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
 		if err != nil {
 			return fmt.Errorf("setting user_version: %w", err)
 		}
@@ -302,12 +396,12 @@ func (s *Store) applySchema(ctx context.Context) error {
 		return nil
 
 	case version == 1:
-		_, err = s.db.ExecContext(ctx, instanceMetricsTableSQL)
+		_, err = tx.ExecContext(ctx, instanceMetricsTableSQL)
 		if err != nil {
 			return fmt.Errorf("migrating to schema 2: %w", err)
 		}
 
-		_, err = s.db.ExecContext(ctx, `PRAGMA user_version = 2`)
+		_, err = tx.ExecContext(ctx, `PRAGMA user_version = 2`)
 		if err != nil {
 			return fmt.Errorf("setting user_version: %w", err)
 		}
