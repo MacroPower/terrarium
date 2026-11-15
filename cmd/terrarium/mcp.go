@@ -26,8 +26,9 @@ func mcpCmd(usr *config.User) *cobra.Command {
 		Long: "Serve read-only stats tools to an MCP client over stdio.\n\n" +
 			"A Model Context Protocol (MCP) client, such as a coding agent, " +
 			"starts this command and calls its tools to read the egress " +
-			"events and the health counters that terrarium records in the " +
-			"stats database. No tool writes to the database.\n\n" +
+			"events, the policy snapshots, and the health counters that " +
+			"terrarium records in the stats database. No tool writes to " +
+			"the database.\n\n" +
 			"The command reads the database that `terrarium stats` reads. " +
 			"Terrarium writes that database only when the config sets " +
 			"`stats.enabled: true`, so pass the --config value of the " +

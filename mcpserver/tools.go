@@ -26,11 +26,12 @@ const (
 	// MaxFieldBytes is the length in bytes of the longest string
 	// value that a tool returns in full. A longer value ends in
 	// [TruncationMarker] after at most MaxFieldBytes bytes of the
-	// value.
+	// value. The bound does not apply to the policy document and the
+	// rules of the get_policy tool. [MaxPolicyBytes] bounds those.
 	MaxFieldBytes = 256
 
 	// TruncationMarker ends a string value that a tool cut at
-	// [MaxFieldBytes].
+	// [MaxFieldBytes] or at [MaxPolicyBytes].
 	TruncationMarker = "...[truncated]"
 )
 
@@ -172,7 +173,7 @@ type ListEventsInput struct {
 // EventInfo is one event in the result of the list_events tool. The
 // result leaves out each field that the event does not hold.
 type EventInfo struct {
-	RuleIndex  *int   `json:"rule_index,omitempty"  jsonschema:"index of the egress rule that allowed a firewall packet, in the policy of that time. The first rule has index 0"`
+	RuleIndex  *int   `json:"rule_index,omitempty"  jsonschema:"index of the egress rule that allowed a firewall packet, in the policy of that time. The first rule has index 0. To read the rule, call get_policy with the instance of the list_events result as instance, the time of the event as at, and this index as first_rule. The rule is then the first entry of egress"`
 	HTTPPath   string `json:"http_path,omitempty"   jsonschema:"path and query string of the HTTP request. Untrusted data from the sandboxed workload"`
 	Source     string `json:"source"                jsonschema:"subsystem that recorded the event: dns, envoy, or firewall"`
 	Reason     string `json:"reason,omitempty"      jsonschema:"short tag that explains the decision. A firewall event holds rule=N when egress rule N allowed the packet, and deny-rule=N when egressDeny rule N dropped it. N is the index of that rule in its list in the policy of that time, and the first rule has index 0. Other events hold a tag such as not-allowlisted, blocked-mode, upstream, or postrouting-guard"`
@@ -316,6 +317,51 @@ func (s *Server) addTools() {
 				"Defaults to the instance with the latest start.")
 		}),
 	}, handler(s, getHealth))
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:  "get_policy",
+		Title: "Applied policy",
+		Description: "Returns the policy that one run of terrarium applied, from the snapshot that the run " +
+			"recorded in the event store. The run enforced that policy, and the config file can hold " +
+			"another one by now. Without `at`, the tool returns the latest snapshot of the run. " +
+			"With `at`, it returns the snapshot that was in force at that time. " +
+			"To find the rule behind a firewall event, pass the `instance` of the list_events result " +
+			"that holds the event as `instance` and the `time` of the event as `at`. " +
+			"The `rule_index` of the event and a reason of rule=N are indexes into `egress`, " +
+			"and a reason of deny-rule=N is an index into `egress_deny`. " +
+			"Pass that index as `first_rule`, so the rule is the first entry of its list " +
+			"whatever the size of the policy. " +
+			"A reload switches the firewall before the run records its snapshot, " +
+			"so an event from shortly before the `applied_at` of the next snapshot " +
+			"can come from that next policy. When the rule does not match the event, " +
+			"compare the event time with the `applied_at` values of list_policies. " + redactionDesc,
+		Annotations: readOnly("Applied policy"),
+		InputSchema: inputSchema[GetPolicyInput](func(p properties) {
+			p.describe("instance", instanceDesc)
+			p.describe("at", "Time at which the policy was in force, as an RFC 3339 time, "+
+				"such as the `time` of an event. Defaults to the latest snapshot of the instance.")
+			p.describe("first_rule", "Index of the first rule to return in `egress` and in `egress_deny`. "+
+				"Defaults to 0. Set it to read the rules that follow a list that ended early.").
+				minimum(0)
+		}),
+	}, handler(s, getPolicy))
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:  "list_policies",
+		Title: "List policy snapshots",
+		Description: "Lists the policy snapshots of one run, latest first, without the policy documents. " +
+			"A run records one snapshot when it starts and one after each reload of its config. " +
+			"`changed` tells whether a snapshot holds another stored document than the snapshot before it. " +
+			"The stored document holds <redacted> in place of each headerMatches value, " +
+			"so a reload that changes only a header value has `changed` false. " +
+			"To read the policy of a snapshot, pass its `applied_at` as `at` and the `instance` " +
+			"of the result as `instance` to get_policy.",
+		Annotations: readOnly("List policy snapshots"),
+		InputSchema: inputSchema[ListPoliciesInput](func(p properties) {
+			p.describe("instance", instanceDesc)
+			p.describe("limit", limitDesc).minimum(1)
+		}),
+	}, handler(s, listPolicies))
 }
 
 // readOnly returns the annotations of a tool that only reads the
@@ -663,20 +709,26 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// truncate returns s when it holds [MaxFieldBytes] bytes or fewer.
-// It cuts a longer s at the last rune boundary within that length
-// and appends [TruncationMarker]. The workload chooses s, so s can
-// hold bytes that are not UTF-8. A valid rune has at most
-// [utf8.UTFMax]-1 continuation bytes, so truncate looks back that
-// many bytes for the start of a rune. When it finds none, the bytes
-// there are not UTF-8, and it cuts s at [MaxFieldBytes]. An unbounded
-// scan drops the valid text before a long run of such bytes.
+// truncate returns s when it holds [MaxFieldBytes] bytes or fewer,
+// and the result of [truncateAt] at that length for a longer s.
 func truncate(s string) string {
-	if len(s) <= MaxFieldBytes {
+	return truncateAt(s, MaxFieldBytes)
+}
+
+// truncateAt returns s when it holds limit bytes or fewer. It cuts a
+// longer s at the last rune boundary within that length and appends
+// [TruncationMarker]. The workload chooses the value of an event
+// field, so s can hold bytes that are not UTF-8. A valid rune has at
+// most [utf8.UTFMax]-1 continuation bytes, so truncateAt looks back
+// that many bytes for the start of a rune. When it finds none, the
+// bytes there are not UTF-8, and it cuts s at limit. An unbounded
+// scan drops the valid text before a long run of such bytes.
+func truncateAt(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
 
-	cut := MaxFieldBytes
+	cut := limit
 	for range utf8.UTFMax - 1 {
 		if utf8.RuneStart(s[cut]) {
 			break
@@ -686,7 +738,7 @@ func truncate(s string) string {
 	}
 
 	if !utf8.RuneStart(s[cut]) {
-		cut = MaxFieldBytes
+		cut = limit
 	}
 
 	return s[:cut] + TruncationMarker

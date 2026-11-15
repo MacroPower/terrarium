@@ -149,6 +149,7 @@ func TestMCPServesStatsDB(t *testing.T) {
 
 			assert.ElementsMatch(t, []string{
 				"list_instances", "summarize_events", "top_events", "list_events", "get_health",
+				"get_policy", "list_policies",
 			}, names)
 
 			res, err := session.CallTool(t.Context(), &mcp.CallToolParams{

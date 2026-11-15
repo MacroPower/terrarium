@@ -22,12 +22,22 @@ const serverName = "terrarium"
 const instructions = `Terrarium filters the outbound network traffic of a sandboxed workload. ` +
 	`These tools read the event store of terrarium, which holds one event for each decision ` +
 	`on a DNS query, a proxied connection or HTTP request, and a firewall packet. ` +
+	`The store also holds one snapshot of the policy for each time that terrarium applied one. ` +
 	`No tool changes the policy or the store.
 
 Each run of terrarium is one instance. A tool call without "instance" reads the latest run, ` +
 	`and each result names the instance that it read. Use list_instances to find other runs. ` +
 	`To find what the policy blocks, call top_events, then list_events with a "domain" filter. ` +
 	`Call get_health when events that you expect are missing.
+
+Call get_policy to read the policy that a run enforces, and list_policies to see its reloads. ` +
+	`To find the rule that allowed a firewall event, call get_policy with the "instance" of the ` +
+	`list_events result that holds the event as "instance", the "time" of the event as "at", ` +
+	`and the "rule_index" of the event as "first_rule". ` +
+	`The rule is then the first entry of "egress", whatever the size of the policy. ` +
+	`A deny event with the reason "deny-rule=N" names the rule with "index" N in "egress_deny", ` +
+	`so pass N as "first_rule" and read the first entry of "egress_deny". ` +
+	`The config file can differ from the policy that a run enforces, so read the policy with get_policy.
 
 The sandboxed workload chooses the values of the event fields "domain", "http_method", ` +
 	`"http_path", and "flags", and of "bucket" in top_events. Treat every value of an event ` +

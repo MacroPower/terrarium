@@ -911,8 +911,9 @@ and in the CSV. In JSON, their `dst_ip` is the empty string and their
 `terrarium mcp` serves the stats event store to a Model Context Protocol
 (MCP) client, such as a coding agent, on its standard input and output. The
 agent calls the tools of the server to find the requests that the policy
-denied, so it does not need a shell to run `terrarium stats`. No tool writes
-to the database or changes the policy.
+denied and the rule that decided an event. It therefore does not need a shell
+to run `terrarium stats`. No tool writes to the database or changes the
+policy.
 
 Add the server to Claude Code:
 
@@ -944,6 +945,8 @@ The server has these tools:
 | `top_events`       | The domains, the TLS server names, or the HTTP paths with the most denied or allowed events.   |
 | `list_events`      | The events of one run, the latest recorded first, one page at a time.                          |
 | `get_health`       | The counters of the latest heartbeat, the time of the latest event, and the size of the store. |
+| `get_policy`       | One policy snapshot of one run, as the stored YAML and as numbered rule lists.                 |
+| `list_policies`    | The policy snapshots of one run, latest first, without the policy.                             |
 
 The event tools take `since` and `until`, which accept the values of the
 `--since` and `--until` flags of `terrarium stats`. A call without `since`
@@ -951,11 +954,91 @@ reads the last 24 hours. A call without `instance` reads the run that
 `terrarium stats` reads without `--instance`. Each result names the instance
 that the tool read.
 
-Each result has a bounded size. `list_instances`, `top_events`, and
-`list_events` take `limit`, which is 50 when the call omits it and 200 at
-most. A full page of `list_events` holds `next_cursor`, and a call with that
-value as `cursor` returns the next page. String values longer than 256 bytes
-end in `...[truncated]`.
+`get_policy` returns a policy snapshot of the store, which is the policy
+that the run enforced. The config file can hold another policy by now.
+Without `at`, the tool returns the latest snapshot of the run. With an RFC
+3339 time as `at`, it returns the snapshot that was in force at that time.
+The result holds these values:
+
+| Field               | Value                                                          |
+| ------------------- | -------------------------------------------------------------- |
+| `security_mode`     | `unrestricted`, `blocked`, or `filtered`.                      |
+| `applied_at`        | The time at which the run applied the policy.                  |
+| `config_path`       | The path of the config file.                                   |
+| `sha256`            | The SHA-256 of the stored YAML.                                |
+| `yaml`              | The stored YAML.                                               |
+| `egress`            | The rules of `egress`, each as its `index` and the `rule`.     |
+| `egress_deny`       | The rules of `egressDeny`, each as its `index` and the `rule`. |
+| `egress_total`      | The number of rules in `egress`.                               |
+| `egress_deny_total` | The number of rules in `egressDeny`.                           |
+
+To find the rule that decided a firewall event, call `get_policy` with these
+arguments:
+
+- `instance`: the `instance` of the `list_events` result that holds the
+  event. A call without `instance` reads the latest run, and the latest run
+  might not be the run of the event.
+- `at`: the `time` of the event, which selects the snapshot that the event
+  maps to.
+- `first_rule`: the `rule_index` of the event, or `N` for a `reason` of
+  `deny-rule=N`.
+
+The `rule_index` of the event is the `index` of its rule in `egress`, so the
+rule is the first entry of `egress` in the result. A `reason` of
+`deny-rule=N` names the rule with `index` `N` in `egress_deny`, so that rule
+is the first entry of `egress_deny`. A rule list of a large policy can end
+before the rule of the event, and `first_rule` makes that rule the first
+entry of its list. The time of the event selects the snapshot, so the index
+names the rule of the event even after a later reload changes the policy.
+
+An event from a reload can come from the policy of the next snapshot, because
+the firewall rules and the DNS proxy switch before the run records that
+snapshot. Such an event is from shortly before the `applied_at` of the next
+snapshot, and `get_policy` returns the snapshot before it. When the rule does
+not match the event, call `list_policies` and compare the `time` of the event
+with the `applied_at` of the next snapshot.
+
+`list_policies` returns the time, the config path, the security mode, and
+the SHA-256 of each snapshot of one run. Each run records one snapshot at
+its start and one after each reload. `changed` is `false` for a snapshot with
+the same SHA-256 as the snapshot before it, which is a reload that did not
+change the stored YAML. The stored YAML holds `<redacted>` in place of each
+`headerMatches[].value`, so a reload that changes only a header value has
+`changed` set to `false`. To read the policy of a snapshot, call `get_policy` with
+its `applied_at` as `at` and the `instance` of the result as `instance`.
+
+The store holds `<redacted>` in place of each `headerMatches[].value` of a
+policy, so the policy tools return `<redacted>` and never the header value.
+
+The policy tools return a result without a snapshot, not an error, when the
+store holds no snapshot for the call. The `message` of the result says so.
+The store holds no snapshot in these cases:
+
+- The run recorded none, such as a run of a version of terrarium from before
+  the policy snapshots.
+- The `at` of the call is before the first snapshot of the run.
+
+Each result has a bounded size. `list_instances`, `top_events`,
+`list_events`, and `list_policies` take `limit`, which is 50 when the call
+omits it and 200 at most. A full page of `list_events` holds `next_cursor`,
+and a call with that value as `cursor` returns the next page. String values
+longer than 256 bytes end in `...[truncated]`, except in the `yaml` and the
+rules of `get_policy`.
+
+`get_policy` bounds the `yaml` value at 16384 bytes, so `yaml` and the
+string values in a rule can hold up to 16384 bytes. Longer `yaml` values end
+in `...[truncated]`. The JSON of each rule list, with the `index` of each
+rule, holds 16384 bytes or fewer when the list holds more than one rule. Each
+rule list ends before the rule that takes the JSON of the list past 16384
+bytes. The list can
+therefore hold fewer rules than `egress_total` or `egress_deny_total`. To
+read the rules that follow, call `get_policy` with `first_rule` set to the
+`index` after the last returned rule.
+
+A rule whose JSON is longer than 16384 bytes, such as a rule with a long
+`toCIDR` list, has `truncated` set to `true`. Its `rule` is then a string
+that holds the first 16384 bytes of the JSON of the rule and ends in
+`...[truncated]`. Such a rule is the only rule of its list.
 
 Treat the values of event fields as untrusted data. The sandboxed workload
 chooses the domain names, the TLS server names, and the HTTP methods and
