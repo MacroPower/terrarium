@@ -874,9 +874,59 @@ func addCIDRNATRedirect(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs,
 ) {
-	buildCIDRTCPChains(conn, table, parentChain, cidrs,
-		"cidr_nat", matchFilteredTraffic(uids),
-		redirectToPort(port16(config.CIDRCatchAllPort)), nil)
+	groups := groupCIDRsByRule(cidrs)
+	prefix := matchFilteredTraffic(uids)
+	redirect := redirectToPort(port16(config.CIDRCatchAllPort))
+
+	for i, group := range groups {
+		if !slices.ContainsFunc(group, cidrNeedsTCPRedirect) {
+			continue
+		}
+
+		chainName := fmt.Sprintf("cidr_nat_%d", i)
+		chain := conn.AddChain(&nftables.Chain{
+			Name:  chainName,
+			Table: table,
+		})
+
+		// Except RETURNs: excepted subnets skip this rule's
+		// redirect.
+		for _, rule := range group {
+			if !cidrNeedsTCPRedirect(rule) {
+				continue
+			}
+
+			for _, exc := range rule.Except {
+				_, excNet, err := net.ParseCIDR(exc)
+				if err != nil {
+					continue
+				}
+
+				emitCIDRTCPRules(conn, table, chain, rule, prefix, excNet, verdictExprs(expr.VerdictReturn))
+			}
+		}
+
+		// CIDR REDIRECT: send matching TCP to the CIDR catch-all
+		// listener.
+		for _, rule := range group {
+			if !cidrNeedsTCPRedirect(rule) {
+				continue
+			}
+
+			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
+			if err != nil {
+				continue
+			}
+
+			emitCIDRTCPRules(conn, table, chain, rule, prefix, cidrNet, redirect)
+		}
+
+		// Jump from parent chain.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: parentChain,
+			Exprs: flatExprs(verdictExprs(expr.VerdictJump, chainName)),
+		})
+	}
 }
 
 // cidrNeedsTCPRedirect reports whether a resolved CIDR rule has TCP
@@ -903,11 +953,10 @@ func cidrNeedsTCPRedirect(rule config.ResolvedCIDR) bool {
 
 // emitCIDRTCPRules emits nftables rules for a single CIDR rule's TCP
 // ports, matching the given cidrNet and applying the terminal
-// expression (verdict, redirect, or TPROXY). Portless rules emit a
-// single all-TCP rule; port-scoped rules emit one rule per eligible
-// TCP port. The prefix expressions are prepended to each rule (e.g.
-// UID matching for NAT paths, or nil for TPROXY paths where the
-// parent chain jump already scopes the traffic).
+// expression (a verdict or a redirect). A rule without ports emits
+// one rule for all TCP. A rule with ports emits one rule for each
+// eligible TCP port. Each emitted rule starts with the prefix
+// expressions, such as the UID match of the NAT chains.
 func emitCIDRTCPRules(
 	conn Conn, table *nftables.Table, chain *nftables.Chain,
 	rule config.ResolvedCIDR, prefix []expr.Any, cidrNet *net.IPNet,
@@ -1005,10 +1054,14 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 // so that UDP passes the INPUT hook and not the FORWARD hook. The
 // INPUT chain ([addInputChain]) policy-evaluates it before Envoy
 // receives it.
+//
+// Forwarded UDP to the CIDR of an allow rule also goes to Envoy. The
+// policy rules of the INPUT chain match it against the CIDR and the
+// ports of that rule.
 func addManglePreRoutingChain(
 	conn Conn, table *nftables.Table,
 	udpPort uint16,
-	cidr4, cidr6, denyCIDR4, denyCIDR6 []config.ResolvedCIDR,
+	denyCIDR4, denyCIDR6 []config.ResolvedCIDR,
 	uids UIDs,
 ) {
 	chain := conn.AddChain(&nftables.Chain{
@@ -1095,34 +1148,29 @@ func addManglePreRoutingChain(
 		// destination address;
 		// TPROXY does not modify the IP header, so bridge-forwarded
 		// packets would be L2-forwarded to the original destination.
-		// IPv4 DNS (UDP + TCP) also uses DNAT. Only IPv6 DNS needs
-		// TPROXY here because there is no route_localnet for IPv6.
+		// IPv4 DNS (UDP + TCP) also uses DNAT. IPv6 UDP DNS uses
+		// TPROXY here because IPv6 has no route_localnet. Forwarded
+		// IPv6 TCP DNS carries no mark, so the kernel forwards it
+		// and the FORWARD chain evaluates it.
 
-		// IPv6 DNS TPROXY (UDP + TCP port 53) -> DNS proxy.
-		// Must appear before the generic UDP TPROXY rules.
-		for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: chain,
-				Exprs: flatExprs(
-					matchMark(tproxyMark),
-					matchNFProto(unix.NFPROTO_IPV6),
-					matchL4Proto(proto),
-					matchDstPort(53),
-					tproxyToPort(unix.NFPROTO_IPV6, 53),
-				),
-			})
-		}
+		// IPv6 UDP DNS TPROXY to the DNS proxy. This rule must
+		// appear before the generic UDP TPROXY rules.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchMark(tproxyMark),
+				matchNFProto(unix.NFPROTO_IPV6),
+				matchL4Proto(unix.IPPROTO_UDP),
+				matchDstPort(53),
+				tproxyToPort(unix.NFPROTO_IPV6, 53),
+			),
+		})
 
 		// Deny CIDR: ACCEPT to skip TPROXY. The packet keeps its
 		// mark, so it reaches the INPUT chain, and the deny rules
 		// of the policy chain DROP it there.
 		addForwardedDenyCIDRTPROXYSkip(conn, table, chain, denyCIDR4, unix.NFPROTO_IPV4)
 		addForwardedDenyCIDRTPROXYSkip(conn, table, chain, denyCIDR6, unix.NFPROTO_IPV6)
-
-		// Allow CIDR: clear mark so forwarded CIDR UDP bypasses
-		// TPROXY and the FORWARD chain enforces the allowlist.
-		addForwardedAllowCIDRSkipTPROXY(conn, table, chain, cidr4, unix.NFPROTO_IPV4)
-		addForwardedAllowCIDRSkipTPROXY(conn, table, chain, cidr6, unix.NFPROTO_IPV6)
 	}
 
 	// IPv4: match fwmark + UDP -> TPROXY to port.
@@ -1742,110 +1790,6 @@ func addForwardedDenyCIDRTPROXYSkip(
 			Table: table, Chain: parentChain,
 			Exprs: flatExprs(
 				guard,
-				verdictExprs(expr.VerdictJump, chainName),
-			),
-		})
-	}
-}
-
-// addForwardedAllowCIDRSkipTPROXY creates per-rule CIDR chains that
-// clear the TPROXY fwmark and accept, letting matching TCP traffic
-// bypass Envoy and be forwarded directly by the kernel. The FORWARD
-// chain's policy evaluation ([addForwardChain]) still enforces the
-// CIDR allowlist.
-//
-// CIDR traffic cannot use TPROXY or NAT REDIRECT in the PREROUTING
-// path because br_netfilter's ip_sabotage_in prevents inet hooks
-// from running on the ip_rcv pass for bridge-delivered packets. The
-// TPROXY mark (table 100, local default) would route the packet to
-// INPUT instead of FORWARD, and the CIDR catch-all listener never
-// receives the connection. Clearing the mark restores normal
-// forwarding.
-func addForwardedAllowCIDRSkipTPROXY(
-	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	cidrs []config.ResolvedCIDR, nfProto byte,
-) {
-	familySuffix := "4"
-	if nfProto == unix.NFPROTO_IPV6 {
-		familySuffix = "6"
-	}
-
-	// Clear mark + accept: the packet exits mangle_prerouting with
-	// mark 0. Policy routing (table 100) does not apply, so the
-	// kernel forwards the packet normally via the FORWARD chain.
-	clearAndAccept := flatExprs(
-		markPacket(0),
-		verdictExprs(expr.VerdictAccept),
-	)
-
-	buildCIDRTCPChains(conn, table, parentChain, cidrs,
-		"cidr_tproxy"+familySuffix, nil,
-		clearAndAccept,
-		tproxyNFProtoGuard(nfProto))
-}
-
-// buildCIDRTCPChains is the shared implementation for
-// [addCIDRNATRedirect] and [addForwardedAllowCIDRSkipTPROXY]. It creates
-// per-rule CIDR chains with
-// except RETURNs and terminal expressions (redirect, DNAT, or
-// TPROXY). The rulePrefix expressions are prepended to each rule
-// inside the chain. The jumpGuard expressions are prepended to the
-// jump rule on the parent chain (nil for an unconditional jump).
-func buildCIDRTCPChains(
-	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	cidrs []config.ResolvedCIDR,
-	chainPrefix string, rulePrefix []expr.Any,
-	terminal, jumpGuard []expr.Any,
-) {
-	groups := groupCIDRsByRule(cidrs)
-
-	for i, group := range groups {
-		if !slices.ContainsFunc(group, cidrNeedsTCPRedirect) {
-			continue
-		}
-
-		chainName := fmt.Sprintf("%s_%d", chainPrefix, i)
-		chain := conn.AddChain(&nftables.Chain{
-			Name:  chainName,
-			Table: table,
-		})
-
-		// Except RETURNs: excepted subnets skip this rule's
-		// terminal action.
-		for _, rule := range group {
-			if !cidrNeedsTCPRedirect(rule) {
-				continue
-			}
-
-			for _, exc := range rule.Except {
-				_, excNet, err := net.ParseCIDR(exc)
-				if err != nil {
-					continue
-				}
-
-				emitCIDRTCPRules(conn, table, chain, rule, rulePrefix, excNet, verdictExprs(expr.VerdictReturn))
-			}
-		}
-
-		// CIDR terminal: apply the action to matching TCP.
-		for _, rule := range group {
-			if !cidrNeedsTCPRedirect(rule) {
-				continue
-			}
-
-			_, cidrNet, err := net.ParseCIDR(rule.CIDR)
-			if err != nil {
-				continue
-			}
-
-			emitCIDRTCPRules(conn, table, chain, rule, rulePrefix, cidrNet, terminal)
-		}
-
-		// Jump from parent chain.
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: parentChain,
-			Exprs: flatExprs(
-				jumpGuard,
 				verdictExprs(expr.VerdictJump, chainName),
 			),
 		})

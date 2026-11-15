@@ -3342,9 +3342,9 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 		}
 	}
 
-	// 2 DNS (UDP+TCP) plus the generic IPv6 UDP TPROXY.
-	assert.GreaterOrEqual(t, ipv6TProxyCount, 3,
-		"should have IPv6 TPROXY dispatch rules for DNS and UDP catch-all")
+	// The UDP DNS TPROXY plus the generic IPv6 UDP TPROXY.
+	assert.Equal(t, 2, ipv6TProxyCount,
+		"should have IPv6 TPROXY dispatch rules for UDP DNS and UDP catch-all")
 }
 
 func TestApplyRules_VMMode_IPv6TPROXY_NotInContainerMode(t *testing.T) {
@@ -3438,49 +3438,83 @@ func TestApplyRules_VMMode_IPv6TPROXY_DenyCIDR(t *testing.T) {
 		"except RETURN should come before CIDR ACCEPT")
 }
 
-func TestApplyRules_VMMode_IPv6TPROXY_AllowCIDR(t *testing.T) {
+// TestApplyRules_VMMode_AllowCIDRKeepsTPROXY checks that no rule of
+// the mangle PREROUTING chain takes forwarded UDP to an allowed CIDR
+// off the TPROXY path. That UDP keeps its mark, so the INPUT chain
+// evaluates it and Envoy receives it.
+func TestApplyRules_VMMode_AllowCIDRKeepsTPROXY(t *testing.T) {
 	t.Parallel()
 
-	rec := &ruleRecorder{}
-	cfg := &config.Config{
-		Egress: egressRules(
-			config.EgressRule{
-				ToCIDR:    []string{"2001:db8::/32"},
+	tcs := map[string]struct {
+		rule config.EgressRule
+	}{
+		"ipv4 cidr": {
+			rule: config.EgressRule{ToCIDR: []string{"0.0.0.0/0"}},
+		},
+		"ipv4 cidr with tcp port": {
+			rule: config.EgressRule{
+				ToCIDR:  []string{"10.99.0.0/24"},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080", Protocol: "TCP"}}}},
+			},
+		},
+		"ipv4 cidr with udp port": {
+			rule: config.EgressRule{
+				ToCIDR:  []string{"10.99.0.0/24"},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "5000", Protocol: "UDP"}}}},
+			},
+		},
+		"ipv6 cidr with except": {
+			rule: config.EgressRule{
 				ToCIDRSet: []config.CIDRRule{{CIDR: "2001:db8::/32", Except: []string{"2001:db8:1::/48"}}},
 			},
-		),
+		},
 	}
 
-	err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
-	require.NoError(t, err)
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	// Should have a cidr_tproxy6 chain with per-rule structure.
-	// CIDR chains clear the TPROXY mark and accept, letting the
-	// packet be forwarded directly (the FORWARD chain enforces
-	// the CIDR allowlist).
-	names := rec.chainNames()
-	assert.Contains(t, names, "cidr_tproxy6_0",
-		"should create per-rule allow CIDR chain")
+			rec := &ruleRecorder{}
+			cfg := &config.Config{Egress: egressRules(tc.rule)}
 
-	cidrRules := rec.rulesForChain("cidr_tproxy6_0")
-	require.NotEmpty(t, cidrRules)
+			err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+			require.NoError(t, err)
 
-	// Chain should have except RETURN before mark-clear + accept.
-	var hasReturn, hasAccept bool
+			rules := rec.rulesForChain("mangle_prerouting")
+			require.NotEmpty(t, rules)
 
-	for _, r := range cidrRules {
-		v, _ := ruleVerdict(r)
-		if v == expr.VerdictReturn {
-			hasReturn = true
-		}
+			// The policy has no deny rule, so the chain does not
+			// need a jump. Each jump is a branch that can end the
+			// chain before the TPROXY rules.
+			udpTProxy := map[byte]int{}
 
-		if v == expr.VerdictAccept {
-			hasAccept = true
-		}
+			for _, r := range rules {
+				v, target := ruleVerdict(r)
+				assert.NotEqual(t, expr.VerdictJump, v,
+					"mangle_prerouting should not jump to %s", target)
+
+				if !ruleHasTProxy(r) || !ruleMatchesL4Proto(r, unix.IPPROTO_UDP) || ruleHasDstPort(r, 53) {
+					continue
+				}
+
+				for _, nfProto := range []byte{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
+					if ruleMatchesNFProto(r, nfProto) {
+						udpTProxy[nfProto]++
+					}
+				}
+			}
+
+			assert.Equal(t, map[byte]int{unix.NFPROTO_IPV4: 1, unix.NFPROTO_IPV6: 1}, udpTProxy,
+				"each address family should have one UDP TPROXY rule for Envoy")
+
+			// The policy creates no chain that exempts an allowed
+			// CIDR from TPROXY.
+			for _, chain := range rec.chainNames() {
+				assert.NotContains(t, chain, "cidr_tproxy",
+					"allow CIDRs should not create a TPROXY skip chain")
+			}
+		})
 	}
-
-	assert.True(t, hasReturn, "allow CIDR chain should have except RETURN")
-	assert.True(t, hasAccept, "allow CIDR chain should have mark-clear + accept")
 }
 
 func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
@@ -3528,8 +3562,8 @@ func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
 		"unrestricted VM mode should not mark forwarded TCP (uses DNAT)")
 	assert.Equal(t, 1, ipv6UDPMarkCount,
 		"unrestricted VM mode should mark IPv6 forwarded UDP")
-	assert.GreaterOrEqual(t, ipv6TCPTProxy, 1,
-		"unrestricted VM mode should have IPv6 DNS TCP TPROXY")
+	assert.Equal(t, 0, ipv6TCPTProxy,
+		"forwarded TCP carries no mark, so it should have no TPROXY rule")
 	assert.GreaterOrEqual(t, ipv6DNSTProxy, 1,
 		"unrestricted VM mode should have IPv6 DNS TPROXY dispatch")
 }

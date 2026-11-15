@@ -269,7 +269,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	// Mangle chains for UDP TPROXY (forwarded TCP uses DNAT in NAT PREROUTING).
 	addMangleOutputChain(conn, table, uids)
 	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort),
-		nil, nil, nil, nil, uids)
+		nil, nil, uids)
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
@@ -580,7 +580,7 @@ func addFilterRules(
 	// Mangle chains for UDP TPROXY (forwarded TCP uses DNAT in NAT PREROUTING).
 	addMangleOutputChain(conn, table, uids)
 	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort),
-		cidr4, cidr6, deny4, deny6, uids)
+		deny4, deny6, uids)
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
