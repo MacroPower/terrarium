@@ -38,11 +38,18 @@ type StaticResources struct {
 
 // Listener models an Envoy listener with filter chains and optional
 // listener-level filters.
+//
+// EnableReusePort selects whether Envoy sets SO_REUSEPORT on the
+// sockets of the listener. A nil value leaves the choice to Envoy,
+// which sets the option on Linux. With the option, a second process
+// that also sets it can bind the same address, and the kernel shares
+// the incoming connections between the processes.
 type Listener struct {
 	DefaultFilterChain  *filterChain          `yaml:"default_filter_chain,omitempty"`
 	UDPListenerConfig   *udpListenerConfig    `yaml:"udp_listener_config,omitempty"`
 	InternalListener    *internalListenerOpts `yaml:"internal_listener,omitempty"`
 	Address             *address              `yaml:"address,omitempty"`
+	EnableReusePort     *bool                 `yaml:"enable_reuse_port,omitempty"`
 	Name                string                `yaml:"name"`
 	ListenerFilters     []NamedTyped          `yaml:"listener_filters,omitempty"`
 	FilterChains        []filterChain         `yaml:"filter_chains,omitempty"`
@@ -116,9 +123,16 @@ type tlsCertificate struct {
 	PrivateKey       dataSource `yaml:"private_key"`
 }
 
+// dataSource models Envoy's DataSource message. A bootstrap sets one
+// of the fields.
+//
+// EnvironmentVariable names a variable in the environment of the Envoy
+// process. Envoy reads the variable when it loads the bootstrap, and
+// it rejects the bootstrap when the variable is not set.
 type dataSource struct {
-	Filename     string `yaml:"filename,omitempty"`
-	InlineString string `yaml:"inline_string,omitempty"`
+	Filename            string `yaml:"filename,omitempty"`
+	InlineString        string `yaml:"inline_string,omitempty"`
+	EnvironmentVariable string `yaml:"environment_variable,omitempty"`
 }
 
 type upstreamTlsContext struct {
@@ -197,8 +211,21 @@ type tcpProxyConfig struct {
 
 // AccessLog models an Envoy access log configuration entry.
 type AccessLog struct {
-	TypedConfig any    `yaml:"typed_config"`
-	Name        string `yaml:"name"`
+	TypedConfig any              `yaml:"typed_config"`
+	Filter      *accessLogFilter `yaml:"filter,omitempty"`
+	Name        string           `yaml:"name"`
+}
+
+// accessLogFilter models Envoy's AccessLogFilter message. An
+// [AccessLog] writes only the requests that the filter matches.
+type accessLogFilter struct {
+	HeaderFilter *accessLogHeaderFilter `yaml:"header_filter,omitempty"`
+}
+
+// accessLogHeaderFilter models Envoy's HeaderFilter message, which
+// matches a request by one of its headers.
+type accessLogHeaderFilter struct {
+	Header headerMatcher `yaml:"header"`
 }
 
 // stderrAccessLogConfig models the StderrAccessLog typed config with
@@ -340,6 +367,7 @@ type routeMatch struct {
 	Grpc           *grpcRouteMatchOptions `yaml:"grpc,omitempty"`
 	ConnectMatcher *connectMatcher        `yaml:"connect_matcher,omitempty"`
 	Prefix         string                 `yaml:"prefix,omitempty"`
+	Path           string                 `yaml:"path,omitempty"`
 	Headers        []headerMatcher        `yaml:"headers,omitempty"`
 }
 
@@ -355,10 +383,18 @@ type connectMatcher struct{}
 // application/grpc). Mirrors Envoy's route.RouteMatch.GrpcRouteMatchOptions.
 type grpcRouteMatchOptions struct{}
 
+// headerMatcher models Envoy's HeaderMatcher message.
+//
+// A matcher with StringMatch never matches a request that lacks the
+// header, also when InvertMatch is set. With TreatMissingHeaderAsEmpty,
+// the matcher handles such a request like a request with an empty
+// header value.
 type headerMatcher struct {
-	StringMatch  *stringMatch `yaml:"string_match,omitempty"`
-	PresentMatch *bool        `yaml:"present_match,omitempty"`
-	Name         string       `yaml:"name"`
+	StringMatch               *stringMatch `yaml:"string_match,omitempty"`
+	PresentMatch              *bool        `yaml:"present_match,omitempty"`
+	Name                      string       `yaml:"name"`
+	InvertMatch               bool         `yaml:"invert_match,omitempty"`
+	TreatMissingHeaderAsEmpty bool         `yaml:"treat_missing_header_as_empty,omitempty"`
 }
 
 type stringMatch struct {

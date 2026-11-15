@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -233,7 +236,7 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 
 			out, err := GenerateProxyEnvoyFromConfig(
 				t.Context(), cfg, tt.certsDir, tt.caBundlePath,
-				"127.0.0.1", 8080, resolvers,
+				"127.0.0.1", 8080, resolvers, "",
 			)
 
 			if tt.err != nil {
@@ -291,7 +294,7 @@ func TestGenerateProxyEnvoyFromConfigStatsSocketDefault(t *testing.T) {
 			cfg := parseProxyConfig(t, "stats:\n  enabled: true\negress: []\n")
 
 			out, err := GenerateProxyEnvoyFromConfig(
-				t.Context(), cfg, "", "", "127.0.0.1", 8080, nil)
+				t.Context(), cfg, "", "", "127.0.0.1", 8080, nil, "")
 			require.NoError(t, err)
 
 			assert.Contains(t, out, "terrarium_accesslog")
@@ -318,14 +321,65 @@ func TestGenerateProxyEnvoyFromConfigDeterministic(t *testing.T) {
 	cfg := parseProxyConfig(t, yamlCfg)
 
 	first, err := GenerateProxyEnvoyFromConfig(
-		t.Context(), cfg, "", "", "127.0.0.1", 8080, nil)
+		t.Context(), cfg, "", "", "127.0.0.1", 8080, nil, "")
 	require.NoError(t, err)
 
 	for range 10 {
 		out, err := GenerateProxyEnvoyFromConfig(
-			t.Context(), cfg, "", "", "127.0.0.1", 8080, nil)
+			t.Context(), cfg, "", "", "127.0.0.1", 8080, nil, "")
 		require.NoError(t, err)
 		assert.Equal(t, first, out)
+	}
+}
+
+// TestGenerateProxyEnvoyFromConfigProbe checks that the bootstrap
+// answers the probe request for the probe token in every mode, and
+// that the access loggers skip the probe request.
+func TestGenerateProxyEnvoyFromConfigProbe(t *testing.T) {
+	t.Parallel()
+
+	const token = "0123456789abcdef0123456789abcdef"
+
+	tests := map[string]struct {
+		yaml string
+	}{
+		"blocked": {yaml: "egress: []\n"},
+		"open":    {yaml: ""},
+		"filtered": {
+			yaml: "egress:\n" +
+				"  - toFQDNs:\n" +
+				"      - matchName: example.com\n" +
+				"    toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := parseProxyConfig(t, "stats:\n  enabled: true\n"+tt.yaml)
+
+			out, err := GenerateProxyEnvoyFromConfig(
+				t.Context(), cfg, "", "/etc/ssl/bundle.pem", "127.0.0.1", 8080, nil, token)
+			require.NoError(t, err)
+
+			assert.Contains(t, out, "- "+envoy.ProxyProbeHost)
+			assert.Contains(t, out, "path: /"+token)
+			assert.Contains(t, out, "environment_variable: "+envoy.ProxyProbeTokenEnv)
+			assert.Contains(t, out, "exact: "+envoy.ProxyProbeHost)
+			assert.Contains(t, out, "invert_match: true")
+			assert.Contains(t, out, "treat_missing_header_as_empty: true")
+
+			out, err = GenerateProxyEnvoyFromConfig(
+				t.Context(), cfg, "", "/etc/ssl/bundle.pem", "127.0.0.1", 8080, nil, "")
+			require.NoError(t, err)
+
+			assert.NotContains(t, out, envoy.ProxyProbeHost)
+			assert.NotContains(t, out, envoy.ProxyProbeTokenEnv)
+			assert.NotContains(t, out, "invert_match")
+		})
 	}
 }
 
@@ -525,13 +579,13 @@ func TestGenerateProxyReusesCA(t *testing.T) {
 		caBundleOut: filepath.Join(dir, "out", "bundle.pem"),
 	}
 
-	_, _, err := GenerateProxy(t.Context(), usr, opts)
+	_, _, err := GenerateProxy(t.Context(), usr, opts, "")
 	require.NoError(t, err)
 
 	first, err := os.ReadFile(opts.caOut)
 	require.NoError(t, err)
 
-	_, _, err = GenerateProxy(t.Context(), usr, opts)
+	_, _, err = GenerateProxy(t.Context(), usr, opts, "")
 	require.NoError(t, err)
 
 	second, err := os.ReadFile(opts.caOut)
@@ -544,10 +598,11 @@ func TestGenerateProxyReusesCA(t *testing.T) {
 }
 
 // stubEnvoy puts a stub envoy first on PATH. The stub writes its
-// arguments to the args file, one per line, then writes its process
-// ID to the started file and sleeps. It never listens, so the proxy
-// stays in startup until the test opens the listener or cancels the
-// context.
+// arguments to the args file, one per line, and its probe token to the
+// file that [stubProbeToken] reads. It then writes its process ID to
+// the started file and sleeps. It never listens, so the proxy stays in
+// startup until the test answers the probe request or cancels the
+// context. See [serveProxyProbe] for the helper that answers it.
 func stubEnvoy(t *testing.T) (string, string) {
 	t.Helper()
 
@@ -557,6 +612,7 @@ func stubEnvoy(t *testing.T) (string, string) {
 
 	stub := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$@\" > '" + args + "'\n" +
+		"printf '%s' \"$" + envoy.ProxyProbeTokenEnv + "\" > '" + started + ".token'\n" +
 		// The rename makes the file appear with the process ID in it.
 		"echo $$ > '" + started + ".tmp'\n" +
 		"mv '" + started + ".tmp' '" + started + "'\n" +
@@ -627,6 +683,85 @@ func listenProxyPort(t *testing.T, opts proxyOptions) {
 	})
 }
 
+// probeTokenPattern matches the probe token in a proxy bootstrap.
+var probeTokenPattern = regexp.MustCompile(`path: /([0-9a-f]{32})\n`)
+
+// stubProbeToken returns the probe token that the proxy passed to the
+// stub envoy in its environment. The started file belongs to that
+// stub, see [stubEnvoy].
+func stubProbeToken(t *testing.T, started string) string {
+	t.Helper()
+
+	token, err := os.ReadFile(started + ".token")
+	require.NoError(t, err)
+
+	return string(token)
+}
+
+// bootstrapProbeToken returns the probe token in the bootstrap that
+// the proxy wrote for usr.
+func bootstrapProbeToken(t *testing.T, usr *config.User) string {
+	t.Helper()
+
+	bootstrap, err := os.ReadFile(proxyBootstrapPath(usr))
+	require.NoError(t, err)
+
+	m := probeTokenPattern.FindSubmatch(bootstrap)
+	require.NotNil(t, m, "bootstrap holds no probe token")
+
+	return string(m[1])
+}
+
+// serveProxyPort serves handler on the proxy listen address, which the
+// stub envoy never opens, and stops when the test ends.
+func serveProxyPort(t *testing.T, opts proxyOptions, handler http.HandlerFunc) {
+	t.Helper()
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(t.Context(), "tcp", net.JoinHostPort(opts.bindAddress, strconv.Itoa(opts.httpPort)))
+	require.NoError(t, err)
+
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+
+	go func() {
+		serveErr := srv.Serve(ln)
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			t.Logf("proxy port serve: %v", serveErr)
+		}
+	}()
+
+	t.Cleanup(func() {
+		assert.NoError(t, srv.Close())
+	})
+}
+
+// serveProxyProbe answers the probe request on the proxy listen
+// address as the Envoy of usr does. The stub envoy that wrote the
+// started file stands for that Envoy. The answer has status 200 only
+// for the path that the bootstrap of usr names, and its body is the
+// probe token from the environment of the stub.
+func serveProxyProbe(t *testing.T, started string, usr *config.User, opts proxyOptions) {
+	t.Helper()
+
+	path := "/" + bootstrapProbeToken(t, usr)
+	body := stubProbeToken(t, started)
+
+	serveProxyPort(t, opts, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Host != envoy.ProxyProbeHost:
+			w.WriteHeader(http.StatusForbidden)
+
+		case r.URL.Path != path:
+			w.WriteHeader(http.StatusNotFound)
+
+		default:
+			_, err := w.Write([]byte(body))
+			assert.NoError(t, err)
+		}
+	})
+}
+
 // requireLoopback skips the test when the host cannot listen on the
 // loopback address ip, for example ::1 on a host without IPv6.
 func requireLoopback(t *testing.T, ip string) {
@@ -653,6 +788,26 @@ func loopbackError(t *testing.T, ip string) error {
 	require.NoError(t, ln.Close())
 
 	return nil
+}
+
+// loopbackInterface returns the name of a loopback interface that is
+// up, for use as the zone of an IPv6 address. It skips the test when
+// the host has no such interface.
+func loopbackInterface(t *testing.T) string {
+	t.Helper()
+
+	ifaces, err := net.Interfaces()
+	require.NoError(t, err)
+
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 && iface.Flags&net.FlagUp != 0 {
+			return iface.Name
+		}
+	}
+
+	t.Skip("no loopback interface is up")
+
+	return ""
 }
 
 // requireReadyFile waits until the proxy creates the ready file.
@@ -736,20 +891,29 @@ func TestProxyCancelDuringStartup(t *testing.T) {
 }
 
 // TestProxyReadyFile checks that [Proxy] creates the ready file only
-// after the listener accepts connections, and removes it on shutdown.
-// The stub envoy never listens, so the test opens the listener itself.
+// after the listener answers the probe request, and removes it on
+// shutdown. The stub envoy never listens, so the test answers the
+// probe itself.
 //
 //nolint:paralleltest,tparallel // sets PATH for the whole process.
 func TestProxyReadyFile(t *testing.T) {
 	tests := map[string]struct {
 		bindAddress string
+		// zone appends the name of the loopback interface to the
+		// bind address as its zone.
+		zone bool
 	}{
-		"IPv4 bind address": {bindAddress: loopbackIPv4},
-		"IPv6 bind address": {bindAddress: loopbackIPv6},
+		"IPv4 bind address":             {bindAddress: loopbackIPv4},
+		"IPv6 bind address":             {bindAddress: loopbackIPv6},
+		"IPv6 bind address with a zone": {bindAddress: loopbackIPv6, zone: true},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
+			if tt.zone {
+				tt.bindAddress += "%" + loopbackInterface(t)
+			}
+
 			requireLoopback(t, tt.bindAddress)
 
 			started, _ := stubEnvoy(t)
@@ -778,7 +942,7 @@ func TestProxyReadyFile(t *testing.T) {
 			requireStubStarted(t, started)
 			assert.NoFileExists(t, usr.ReadyFile, "the ready file must not exist before the listener is up")
 
-			listenProxyPort(t, opts)
+			serveProxyProbe(t, started, usr, opts)
 			requireReadyFile(t, usr.ReadyFile)
 
 			cancel()
@@ -863,6 +1027,138 @@ func TestProxyListenAddressInUse(t *testing.T) {
 	assert.Equal(t, os.ModeSocket, fi.Mode().Type())
 }
 
+// TestProxyListenAddressTakenAfterStart checks that [Proxy] returns
+// [ErrListenAddressUnavailable] when another process answers the probe
+// request on the listen address. That process took the address after
+// the listen address check, so the Envoy of the proxy runs. The proxy
+// must stop it and must not signal readiness.
+//
+// The other process can be a proxy with the same policy, which shares
+// the stats paths. The proxy that does not serve the address must
+// leave the access log socket of that proxy in place, and it must not
+// open the event store.
+//
+//nolint:paralleltest,tparallel // sets PATH for the whole process.
+func TestProxyListenAddressTakenAfterStart(t *testing.T) {
+	tests := map[string]struct {
+		handler http.HandlerFunc
+	}{
+		// Both proxies wrote their bootstraps to one path, and the
+		// Envoy of the other proxy loaded the bootstrap of this proxy.
+		// It knows the path of the probe request, and it answers with
+		// the token from its own environment.
+		"envoy of another proxy with the bootstrap of this proxy": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, err := w.Write([]byte("ffffffffffffffffffffffffffffffff"))
+				assert.NoError(t, err)
+			},
+		},
+		// An Envoy whose bootstrap holds another token has no route
+		// for the path of the probe request.
+		"envoy with the bootstrap of another proxy": {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			started, _ := stubEnvoy(t)
+
+			dir := t.TempDir()
+			statsDB := filepath.Join(dir, "stats.db")
+			socket := filepath.Join(shortTempDir(t), "accesslog.sock")
+
+			usr := stubProxyUser(t, dir, "stats:\n"+
+				"  enabled: true\n"+
+				"  path: "+statsDB+"\n"+
+				"  socket: "+socket+"\n"+
+				"egress: []\n")
+			usr.ReadyFile = filepath.Join(dir, "ready")
+
+			lc := net.ListenConfig{}
+
+			// The listener stands for the access log socket of the
+			// proxy that serves the address.
+			accessLog, err := lc.Listen(t.Context(), "unix", socket)
+			require.NoError(t, err)
+
+			t.Cleanup(func() {
+				assert.NoError(t, accessLog.Close())
+			})
+
+			opts := proxyOptions{
+				bindAddress: loopbackIPv4,
+				httpPort:    freePort(t),
+			}
+
+			errCh := make(chan error, 1)
+
+			go func() {
+				errCh <- Proxy(t.Context(), usr, opts)
+			}()
+
+			requireStubStarted(t, started)
+			serveProxyPort(t, opts, tt.handler)
+
+			select {
+			case err = <-errCh:
+				require.ErrorIs(t, err, ErrListenAddressUnavailable)
+				require.NotErrorIs(t, err, ErrEnvoyNotRunning)
+				require.ErrorContains(t, err, net.JoinHostPort(opts.bindAddress, strconv.Itoa(opts.httpPort)))
+
+			case <-time.After(15 * time.Second):
+				t.Fatal("proxy did not return")
+			}
+
+			requireStubStopped(t, started)
+			assert.NoFileExists(t, usr.ReadyFile, "a proxy that does not serve its address must not signal readiness")
+			assert.NoFileExists(t, statsDB, "a proxy that does not serve its address must not open the event store")
+
+			fi, err := os.Stat(socket)
+			require.NoError(t, err,
+				"a proxy that does not serve its address must keep the access log socket of the other proxy")
+			assert.Equal(t, os.ModeSocket, fi.Mode().Type())
+		})
+	}
+}
+
+// TestProxyProbeToken checks that [Proxy] gives its Envoy one probe
+// token in two places. The bootstrap names the token in the path of
+// the probe route, and the environment of Envoy holds the token for
+// the body of the probe answer.
+//
+//nolint:paralleltest // sets PATH for the whole process.
+func TestProxyProbeToken(t *testing.T) {
+	started, _ := stubEnvoy(t)
+
+	usr := stubProxyUser(t, t.TempDir(), "egress: []\n")
+
+	opts := proxyOptions{
+		bindAddress: loopbackIPv4,
+		httpPort:    freePort(t),
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- Proxy(ctx, usr, opts)
+	}()
+
+	requireStubStarted(t, started)
+
+	token := stubProbeToken(t, started)
+	assert.Len(t, token, 32)
+	assert.Equal(t, bootstrapProbeToken(t, usr), token)
+
+	cancel()
+	requireProxyShutDown(t, errCh)
+}
+
 // TestProxyReadyFileError checks that [Proxy] stops Envoy and returns
 // the error when it cannot create the ready file. The listener is up
 // by then, so Envoy runs.
@@ -889,7 +1185,7 @@ func TestProxyReadyFileError(t *testing.T) {
 	}()
 
 	requireStubStarted(t, started)
-	listenProxyPort(t, opts)
+	serveProxyProbe(t, started, usr, opts)
 
 	select {
 	case err := <-errCh:
@@ -975,7 +1271,7 @@ func TestProxyReadyFileReplacedByDir(t *testing.T) {
 	}()
 
 	requireStubStarted(t, started)
-	listenProxyPort(t, opts)
+	serveProxyProbe(t, started, usr, opts)
 	requireReadyFile(t, usr.ReadyFile)
 
 	require.NoError(t, os.Remove(usr.ReadyFile))

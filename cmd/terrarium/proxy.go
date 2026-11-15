@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -206,8 +208,10 @@ func removeReadyFile(path string) error {
 // The proxy reuses the CA in usr.CADir across runs, so clients that
 // trust it keep working after a restart. See [exportCA] for the files
 // it exports.
+//
+// See [GenerateProxyEnvoyFromConfig] for the probeToken argument.
 func GenerateProxy(
-	ctx context.Context, usr *config.User, opts proxyOptions,
+	ctx context.Context, usr *config.User, opts proxyOptions, probeToken string,
 ) (*config.Config, string, error) {
 	data, err := os.ReadFile(usr.ConfigPath)
 	if err != nil {
@@ -255,7 +259,7 @@ func GenerateProxy(
 	}
 
 	envoyConf, err := GenerateProxyEnvoyFromConfig(ctx, cfg, certsDir, systemBundle,
-		opts.bindAddress, opts.httpPort, resolvers)
+		opts.bindAddress, opts.httpPort, resolvers, probeToken)
 	if err != nil {
 		return nil, "", fmt.Errorf("generating envoy config: %w", err)
 	}
@@ -413,6 +417,12 @@ func writeFileAtomic(path string, data []byte) error {
 //
 // When stats is enabled, the access loggers send to stats.socket,
 // which defaults to [config.ProxyStatsSocketDefault].
+//
+// When probeToken is not empty, the front listener answers the probe
+// request of [waitForProxyListener] for that token. Envoy then loads
+// the bootstrap only when the environment variable
+// [envoy.ProxyProbeTokenEnv] is set. The access loggers skip the probe
+// request.
 func GenerateProxyEnvoyFromConfig(
 	ctx context.Context,
 	cfg *config.Config,
@@ -420,6 +430,7 @@ func GenerateProxyEnvoyFromConfig(
 	bindAddress string,
 	httpPort int,
 	resolvers []netip.AddrPort,
+	probeToken string,
 ) (string, error) {
 	// Resolve open (toPorts-only) rules once; both the policy check and
 	// the filtered-mode assembly consume them.
@@ -437,6 +448,7 @@ func GenerateProxyEnvoyFromConfig(
 		Port:        httpPort,
 		AccessLog:   als.httpListenerLog("proxy"),
 		Resolvers:   resolvers,
+		ProbeToken:  probeToken,
 	}
 
 	var (
@@ -670,6 +682,20 @@ func openTCPPorts(openPortRules []config.ResolvedOpenPort) map[int]bool {
 	return out
 }
 
+// newProbeToken returns a random token that identifies the bootstrap
+// and the Envoy of one proxy run. See [waitForProxyListener] for its
+// use.
+func newProbeToken() (string, error) {
+	b := make([]byte, 16)
+
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", fmt.Errorf("generating probe token: %w", err)
+	}
+
+	return hex.EncodeToString(b), nil
+}
+
 // Proxy generates the proxy-mode bootstrap, starts Envoy on the
 // host, and supervises it until a signal arrives or Envoy exits. No
 // root, network namespaces, or nftables involved: the only privilege
@@ -679,29 +705,50 @@ func openTCPPorts(openPortRules []config.ResolvedOpenPort) map[int]bool {
 // or to usr.EnvoyLogPath when the policy does not set one. When both
 // are empty, Envoy logs to the stderr of the proxy.
 //
-// When usr.ReadyFile is set, Proxy creates that file after the listener
-// accepts connections and removes it before it returns. Proxy also
-// removes a ready file that an earlier run left behind, so the file
-// exists only while the proxy is ready. Proxy returns
+// When usr.ReadyFile is set, Proxy creates that file after its own
+// Envoy answers on the listen address and removes it before it returns.
+// Proxy also removes a ready file that an earlier run left behind, so
+// the file exists only while the proxy is ready. Proxy returns
 // [ErrReadyFileIsDir] before it starts Envoy when usr.ReadyFile is a
 // directory.
 //
 // Proxy returns [ErrListenAddressUnavailable] before it starts Envoy
 // when it cannot bind the listen address, for example because another
 // process holds the port or because opts.bindAddress is not an IP
-// address. The proxy therefore reports that it is ready only for a
-// listener that came up after that check. Proxy makes the check before
-// it opens the event store and the access log socket. A refused start
-// therefore leaves the access log socket of a running proxy in place.
-// A refused start still removes usr.ReadyFile, also when a running
-// proxy that shares the path created it. Proxy cannot tell that file
-// from a stale one.
+// address. A refused start still removes usr.ReadyFile, also when a
+// running proxy that shares the path created it. Proxy cannot tell that
+// file from a stale one.
+//
+// At most one process serves the listen address, because the front
+// listener does not set SO_REUSEPORT. Another process can still take
+// the address after the check, for example a second proxy that starts
+// at the same moment. Proxy therefore reports that it is ready only
+// after its own Envoy answers a probe request on the listen address.
+// See [waitForProxyListener] for the probe. When another process
+// answers the probe, Proxy stops its Envoy and returns
+// [ErrListenAddressUnavailable].
+//
+// Two proxies that start at the same moment and write their bootstraps
+// to one path can both return an error. The Envoy of one proxy can load
+// the bootstrap of the other proxy and then take the address, and no
+// proxy accepts the probe answer of that Envoy.
+//
+// Proxy opens the event store and the access log socket after its own
+// Envoy answers the probe, and before it reports that it is ready. A
+// proxy that does not serve its address therefore leaves the access log
+// socket of a running proxy in place. Opening the socket removes a
+// socket of another proxy at the same path.
+//
+// Envoy might lose the events of the requests that it serves before
+// Proxy opens the socket. It buffers the events until the next flush of
+// the access log, and it drops them when the socket does not exist at
+// that flush.
 //
 // A signal or a cancellation of ctx stops Envoy and makes Proxy return
 // nil. Proxy also returns nil when either arrives before Envoy starts
-// or before the listener accepts connections. Proxy returns
-// [ErrEnvoyNotRunning] when Envoy exits by itself or the listener does
-// not come up within the startup timeout.
+// or before Envoy answers the probe. Proxy returns [ErrEnvoyNotRunning]
+// when Envoy exits by itself or does not answer the probe within the
+// startup timeout.
 func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -713,7 +760,12 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 		}
 	}
 
-	cfg, bootstrapPath, err := GenerateProxy(ctx, usr, opts)
+	probeToken, err := newProbeToken()
+	if err != nil {
+		return err
+	}
+
+	cfg, bootstrapPath, err := GenerateProxy(ctx, usr, opts, probeToken)
 	if err != nil {
 		return err
 	}
@@ -725,29 +777,11 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 
 	addr := net.JoinHostPort(opts.bindAddress, strconv.Itoa(opts.httpPort))
 
-	// A listener of another process on addr answers the readiness
-	// wait, so refuse to start while one exists. The check runs before
-	// the proxy opens the event store and the access log socket,
-	// because a second proxy on addr shares those paths with the first
-	// proxy. Opening the access log socket removes the socket of the
-	// first proxy.
+	// Refuse to start while another process listens on addr, before
+	// the proxy starts an Envoy that cannot bind addr.
 	err = checkListenAddress(ctx, addr)
 	if err != nil {
 		return err
-	}
-
-	store := openProxyEventStore(ctx, cfg)
-
-	defer func() {
-		closeErr := store.Close() //nolint:contextcheck // shutdown flush must not inherit a canceled ctx.
-		if closeErr != nil {
-			slog.DebugContext(ctx, "closing event store", slog.Any("err", closeErr))
-		}
-	}()
-
-	accessLogSrv := openProxyAccessLog(ctx, cfg, store)
-	if accessLogSrv != nil {
-		defer accessLogSrv.Shutdown(context.WithoutCancel(ctx))
 	}
 
 	envoySettings := cfg.EnvoyDefaults()
@@ -783,6 +817,11 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// The probe answer of Envoy holds the value of this variable, so
+	// the answer names the Envoy of this proxy, whichever bootstrap
+	// that Envoy loaded.
+	cmd.Env = append(os.Environ(), envoy.ProxyProbeTokenEnv+"="+probeToken)
+
 	// On ctx cancellation (signal), drain gracefully: SIGTERM first,
 	// SIGKILL after the drain timeout.
 	cmd.Cancel = func() error {
@@ -804,10 +843,30 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 		return fmt.Errorf("starting envoy: %w", err)
 	}
 
-	err = waitForListener(ctx, addr, envoySettings.StartupTimeout.Duration)
+	// A connection to addr can reach a process that took addr after
+	// the check, so wait for the probe answer of this Envoy.
+	err = waitForProxyListener(ctx, addr, probeToken, envoySettings.StartupTimeout.Duration)
 
 	switch {
 	case err == nil:
+		// Only the proxy whose Envoy serves addr opens the event
+		// store and the access log socket. A second proxy on addr can
+		// share those paths with the first proxy, and opening the
+		// access log socket removes the socket of the first proxy.
+		store := openProxyEventStore(ctx, cfg)
+
+		defer func() {
+			closeErr := store.Close() //nolint:contextcheck // shutdown flush must not inherit a canceled ctx.
+			if closeErr != nil {
+				slog.DebugContext(ctx, "closing event store", slog.Any("err", closeErr))
+			}
+		}()
+
+		accessLogSrv := openProxyAccessLog(ctx, cfg, store)
+		if accessLogSrv != nil {
+			defer accessLogSrv.Shutdown(context.WithoutCancel(ctx))
+		}
+
 		if usr.ReadyFile != "" {
 			err = createReadyFile(usr.ReadyFile)
 			if err != nil {
@@ -833,6 +892,14 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 		// The shutdown arrived before the listener came up. An early
 		// shutdown is not a startup failure, so Proxy reaps Envoy the
 		// same way as after the shutdown of a ready proxy.
+
+	case errors.Is(err, ErrListenAddressUnavailable):
+		// Another process serves addr. Envoy keeps running without
+		// its listener when it bound addr before that process
+		// listened there.
+		stopEnvoy(ctx, cmd, envoySettings.DrainTimeout.Duration)
+
+		return err
 
 	default:
 		stopEnvoy(ctx, cmd, envoySettings.DrainTimeout.Duration)

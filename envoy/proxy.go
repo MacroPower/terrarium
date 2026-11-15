@@ -33,6 +33,23 @@ func internalTLSName(port int) string {
 	return fmt.Sprintf("tls_internal_%d", port)
 }
 
+const (
+	// ProxyProbeHost is the host name of the probe request that the
+	// proxy-mode front listener answers. See the ProbeToken field of
+	// [ProxyListenerParams].
+	//
+	// The name ends in the reserved top-level domain "invalid", so it
+	// never names a real upstream.
+	ProxyProbeHost = "probe.terrarium.invalid"
+
+	// ProxyProbeTokenEnv is the environment variable whose value Envoy
+	// sends as the body of its probe answer. See the ProbeToken field
+	// of [ProxyListenerParams].
+	//
+	//nolint:gosec // G101: the name of a variable, not a credential.
+	ProxyProbeTokenEnv = "TERRARIUM_PROBE_TOKEN"
+)
+
 // ProxyMode selects the front listener's policy posture, mirroring
 // the three config security modes.
 type ProxyMode int
@@ -63,6 +80,26 @@ type ProxyListenerParams struct {
 	// BindAddress is the IP address the listener binds.
 	BindAddress string
 
+	// ProbeToken identifies the bootstrap that holds the listener.
+	// When it is set, the listener answers a plain HTTP request for
+	// [ProxyProbeHost] and the path "/" plus the token with status
+	// 200, in every mode. The body of that answer is the value that
+	// the environment variable [ProxyProbeTokenEnv] holds when Envoy
+	// loads the bootstrap, so the body identifies the Envoy process.
+	// Envoy rejects the bootstrap when the variable is not set. The
+	// listener answers every other request for [ProxyProbeHost] with
+	// status 404. The access loggers skip the requests for
+	// [ProxyProbeHost].
+	//
+	// A caller that starts Envoy with the token in the variable and
+	// then requests the path at the listen address learns who serves
+	// the address. Only the Envoy that the caller started with this
+	// bootstrap answers with status 200 and the token. An Envoy that
+	// another caller started with this bootstrap answers with another
+	// body. An Envoy that loaded another bootstrap answers with
+	// status 404.
+	ProbeToken string
+
 	// HTTPDomains are the rule domains whose CONNECT-to-port-80
 	// requests are decapsulated into the internal HTTP listener.
 	HTTPDomains []string
@@ -90,8 +127,26 @@ type ProxyListenerParams struct {
 // because Envoy matches CONNECT targets against the full
 // authority. The HCM intentionally does not strip authority ports:
 // the port picks the internal listener.
+//
+// The listener turns SO_REUSEPORT off, so only one Envoy listens on
+// p.BindAddress and p.Port. By default, Envoy sets the option on
+// Linux. With the option, the kernel shares the incoming connections
+// between two Envoys on one listen address, and each Envoy applies its
+// own policy.
+//
+// A second Envoy that binds the address while the first Envoy listens
+// there exits with a bind error. A second Envoy that binds the address
+// before the first Envoy listens there keeps running without the
+// listener. The ProbeToken field of p lets a caller find that Envoy.
 func BuildProxyListener(p ProxyListenerParams) Listener {
 	var vhosts []virtualHost
+
+	accessLog := p.AccessLog
+
+	if p.ProbeToken != "" {
+		vhosts = append(vhosts, buildProbeProxyVhost(p.ProbeToken))
+		accessLog = skipProbeAccessLog(accessLog)
+	}
 
 	switch p.Mode {
 	case ProxyModeOpen:
@@ -131,6 +186,7 @@ func BuildProxyListener(p ProxyListenerParams) Listener {
 			Address:   p.BindAddress,
 			PortValue: p.Port,
 		}},
+		EnableReusePort: boolPtr(false),
 		FilterChains: []filterChain{{
 			Filters: []filter{{
 				Name: hcmFilterName,
@@ -145,7 +201,7 @@ func BuildProxyListener(p ProxyListenerParams) Listener {
 					RouteConfig: routeConfig{
 						VirtualHosts: vhosts,
 					},
-					AccessLog: p.AccessLog,
+					AccessLog: accessLog,
 					UpgradeConfigs: []upgradeConfig{
 						{UpgradeType: upgradeTypeConnect},
 						{UpgradeType: upgradeTypeWebsocket},
@@ -155,6 +211,57 @@ func BuildProxyListener(p ProxyListenerParams) Listener {
 			}},
 		}},
 	}
+}
+
+// buildProbeProxyVhost returns the vhost that answers the probe
+// request. See the ProbeToken field of [ProxyListenerParams] for the
+// request and the answer.
+//
+// An exact domain takes precedence over the wildcard domains of the
+// policy vhosts, so the answer does not depend on the policy. The
+// vhost has no route for another path, so Envoy answers such a request
+// with status 404.
+func buildProbeProxyVhost(token string) virtualHost {
+	return virtualHost{
+		Name:    "probe",
+		Domains: []string{ProxyProbeHost},
+		Routes: []route{{
+			Match: routeMatch{Path: "/" + token},
+			DirectResponse: &directResponseAction{
+				Status: 200,
+				Body:   &dataSource{EnvironmentVariable: ProxyProbeTokenEnv},
+			},
+		}},
+	}
+}
+
+// skipProbeAccessLog returns a copy of logs in which every access
+// logger skips the requests for [ProxyProbeHost]. The probe is not
+// traffic of a client, so it stays out of the recorded events.
+//
+// The access loggers still write a request that has no authority, such
+// as an HTTP/1.0 request without a Host header or a request that Envoy
+// cannot parse. The matcher handles the missing header like an empty
+// one, which is not the probe host.
+func skipProbeAccessLog(logs []AccessLog) []AccessLog {
+	out := make([]AccessLog, 0, len(logs))
+
+	for _, l := range logs {
+		l.Filter = &accessLogFilter{
+			HeaderFilter: &accessLogHeaderFilter{
+				Header: headerMatcher{
+					Name:                      authorityHeader,
+					StringMatch:               &stringMatch{Exact: ProxyProbeHost},
+					InvertMatch:               true,
+					TreatMissingHeaderAsEmpty: true,
+				},
+			},
+		}
+
+		out = append(out, l)
+	}
+
+	return out
 }
 
 // connectTerminationRoute returns a route that terminates CONNECT

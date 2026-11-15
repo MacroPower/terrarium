@@ -223,7 +223,7 @@ the files that the proxy writes while it runs:
 
 | Flag             | Effect in proxy mode                                                                                                                       |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--ready-file`   | The proxy creates this file after the listener accepts connections and removes it on exit.                                                 |
+| `--ready-file`   | The proxy creates this file after its own Envoy answers on the listen address and removes it on exit.                                      |
 | `--envoy-log`    | Envoy writes its process log to this file. The `logging.envoy.path` policy setting overrides the flag.                                     |
 | `--envoy-config` | The proxy writes the Envoy bootstrap to `envoy-proxy.yaml` in the directory of this path, so it never replaces a container-mode bootstrap. |
 
@@ -233,10 +233,30 @@ startup, so the file exists only while the proxy is ready. When
 `--ready-file` names a directory, the proxy exits with an error and
 leaves the directory in place.
 
-When another process already listens on the proxy's address, the proxy
-exits with an error that names the address. It does not start Envoy, and
-it does not create the ready file. A second proxy on the same port is
-such a process.
+At most one proxy serves an address. A proxy that does not serve its
+address exits with an error that names the address, and it does not
+create the ready file. The following table lists the cases.
+
+| Case                                                                                         | Result                                  |
+| -------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Another process already listens on the address, for example a second proxy on the same port. | The proxy exits before it starts Envoy. |
+| Two proxies start on the address at the same moment.                                         | At most one proxy keeps running.        |
+| Two proxies start at the same moment and share an `--envoy-config` directory.                | Both proxies can exit.                  |
+
+Give each proxy that can start at the same moment as another proxy its
+own `--envoy-config` directory. Proxies that use the default path share
+one bootstrap file, so the Envoy of one proxy can load the bootstrap of
+another proxy. That Envoy runs the policy of the other proxy, so the
+proxy that started it does not report that it is ready. When that Envoy
+takes the address, both proxies exit.
+
+To learn which process serves its address, the proxy sends a request for
+the host `probe.terrarium.invalid` to that address at startup. Envoy
+answers the request itself and does not record it as an event.
+
+With `stats.enabled: true`, the proxy records Envoy events from the
+moment it creates the ready file. Envoy can answer a request earlier,
+and the proxy might not record that request.
 
 A proxy that cannot bind its address still removes the file that
 `--ready-file` names. It cannot tell a stale file from the file of a

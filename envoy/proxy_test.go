@@ -123,6 +123,94 @@ func TestBuildProxyListener_Blocked(t *testing.T) {
 	assert.NotContains(t, y, "connect_config:")
 }
 
+// TestBuildProxyListener_NoReusePort checks that the front listener
+// turns SO_REUSEPORT off in every mode. Envoy sets the option when the
+// listener omits the field, and two Envoys then share one port.
+func TestBuildProxyListener_NoReusePort(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		mode envoy.ProxyMode
+	}{
+		"filtered": {mode: envoy.ProxyModeFiltered},
+		"open":     {mode: envoy.ProxyModeOpen},
+		"blocked":  {mode: envoy.ProxyModeBlocked},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			l := envoy.BuildProxyListener(envoy.ProxyListenerParams{
+				BindAddress: "127.0.0.1",
+				Port:        8080,
+				Mode:        tt.mode,
+			})
+
+			require.NotNil(t, l.EnableReusePort)
+			assert.False(t, *l.EnableReusePort)
+			assert.Contains(t, marshalYAML(t, l), "enable_reuse_port: false")
+		})
+	}
+}
+
+// TestBuildProxyListener_Probe checks that the front listener answers
+// the probe request for the probe token in every mode, and that its
+// access loggers skip the probe request.
+func TestBuildProxyListener_Probe(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		mode envoy.ProxyMode
+	}{
+		"filtered": {mode: envoy.ProxyModeFiltered},
+		"open":     {mode: envoy.ProxyModeOpen},
+		"blocked":  {mode: envoy.ProxyModeBlocked},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			params := envoy.ProxyListenerParams{
+				BindAddress: "127.0.0.1",
+				Port:        8080,
+				Mode:        tt.mode,
+				AccessLog:   envoy.BuildHTTPGrpcAccessLog("proxy", 0, 0),
+			}
+
+			// Without a token, the listener has no probe vhost and
+			// its access loggers have no filter.
+			y := marshalYAML(t, envoy.BuildProxyListener(params))
+			assert.NotContains(t, y, envoy.ProxyProbeHost)
+			assert.NotContains(t, y, "filter:")
+
+			params.ProbeToken = "probe-token"
+
+			y = marshalYAML(t, envoy.BuildProxyListener(params))
+			assert.Contains(t, y, "name: probe")
+			assert.Contains(t, y, "- "+envoy.ProxyProbeHost)
+
+			// The route identifies the bootstrap, and the body
+			// identifies the Envoy process.
+			assert.Contains(t, y, "path: /probe-token")
+			assert.Contains(t, y, "environment_variable: "+envoy.ProxyProbeTokenEnv)
+			assert.NotContains(t, y, "inline_string: probe-token")
+
+			// The access loggers skip the probe request. They keep
+			// the requests that have no authority.
+			assert.Contains(t, y, "header_filter:")
+			assert.Contains(t, y, "exact: "+envoy.ProxyProbeHost)
+			assert.Contains(t, y, "invert_match: true")
+			assert.Contains(t, y, "treat_missing_header_as_empty: true")
+
+			// The filter must not reach the access loggers of the
+			// caller, which other listeners can share.
+			assert.NotContains(t, marshalYAML(t, params.AccessLog), "filter:")
+		})
+	}
+}
+
 func TestBuildProxyListener_BareWildcard(t *testing.T) {
 	t.Parallel()
 
