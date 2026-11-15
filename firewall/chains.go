@@ -20,6 +20,8 @@ const (
 	chainOutput    = "output"
 	chainForward   = "forward"
 	chainNATOutput = "nat_output"
+
+	chainDenyPortNAT = "deny_port_nat"
 )
 
 // matchFilteredTraffic returns UID-match expressions that scope a
@@ -514,18 +516,19 @@ func addFQDNPortRules(
 	}
 }
 
-// addNATRules creates the NAT output chain with deny CIDR ACCEPT,
-// allow CIDR REDIRECT, per-port REDIRECT, TCPForward REDIRECT, and
-// catch-all TCP REDIRECT rules. The deny CIDR chains prevent denied
-// traffic from being redirected to Envoy (ACCEPT in NAT skips
-// modification; the filter chain's deny rules DROP the traffic). The
-// allow CIDR chains redirect matching TCP to the CIDR catch-all
-// listener for forwarding via original_dst. The catch-all sends
-// remaining non-policy-port traffic to Envoy's blackhole listener.
+// addNATRules creates the NAT output chain. In order, it holds the
+// deny CIDR ACCEPT, deny port ACCEPT, allow CIDR REDIRECT, per-port
+// REDIRECT, TCPForward REDIRECT, and catch-all TCP REDIRECT rules.
+// The deny CIDR chains and the deny port chain keep denied traffic
+// away from Envoy. An ACCEPT in NAT leaves the packet unchanged, and
+// the deny rules of the filter chain DROP it. The allow CIDR chains
+// redirect matching TCP to the CIDR catch-all listener for forwarding
+// via original_dst. The catch-all sends remaining non-policy-port
+// traffic to Envoy's blackhole listener.
 func addNATRules(
 	conn Conn, table *nftables.Table, cfg *config.Config,
 	resolvedPorts []int, cidr4, cidr6, denyCIDRs []config.ResolvedCIDR,
-	uids UIDs,
+	denyPorts []config.ResolvedDenyPort, uids UIDs,
 ) {
 	natChain := conn.AddChain(&nftables.Chain{
 		Name:     chainNATOutput,
@@ -558,10 +561,14 @@ func addNATRules(
 	// 1. Deny CIDR NAT ACCEPT (prevent redirect for denied CIDRs).
 	addDenyCIDRNATAccept(conn, table, natChain, denyCIDRs, uids)
 
-	// 2. Allow CIDR NAT REDIRECT (redirect TCP to CIDR catch-all).
+	// 2. Deny port NAT ACCEPT (prevent redirect for the TCP ports
+	// of port-only deny rules).
+	addDenyPortNATAccept(conn, table, natChain, denyPorts, uids)
+
+	// 3. Allow CIDR NAT REDIRECT (redirect TCP to CIDR catch-all).
 	addCIDRNATRedirect(conn, table, natChain, allCIDRs, uids)
 
-	// 3. Per-port FQDN REDIRECT rules.
+	// 4. Per-port FQDN REDIRECT rules.
 	for _, p := range resolvedPorts {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
@@ -574,7 +581,7 @@ func addNATRules(
 		})
 	}
 
-	// 4. TCPForward REDIRECT rules.
+	// 5. TCPForward REDIRECT rules.
 	for _, fwd := range cfg.TCPForwards {
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: natChain,
@@ -587,7 +594,7 @@ func addNATRules(
 		})
 	}
 
-	// 5. Catch-all TCP REDIRECT -> catch-all TCP listener.
+	// 6. Catch-all TCP REDIRECT -> catch-all TCP listener.
 	// Traffic is logged and then rejected by Envoy (not forwarded).
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: natChain,
@@ -695,6 +702,92 @@ func addDenyCIDRNATAccept(
 	addDenyCIDRChainsWithVerdict(
 		conn, table, parentChain, cidrs, uids, logEmitter{}, "deny_cidr_nat", expr.VerdictAccept,
 	)
+}
+
+// addDenyPortNATAccept creates the deny_port_nat chain for the TCP
+// ports of port-only deny rules and adds a jump to it from the NAT
+// output chain. This mirrors [addDenyPortRules] (filter) but in the
+// NAT context. NAT fires before filter, and the filter chains never
+// see the original destination port of a packet that NAT sent to an
+// Envoy listener. An ACCEPT in the jumped-to chain ends the NAT output
+// chain before its REDIRECT rules. The packet keeps its destination,
+// and the deny port rules of the filter chain DROP it.
+//
+// The chain returns TCP to 127.0.0.0/8 and ::1 to the NAT output
+// chain before its ACCEPT rules. The filter output chain accepts those
+// destinations before it evaluates the deny rules. TCP to loopback
+// reaches the REDIRECT rules, so a deny rule never opens a direct
+// path to an Envoy listener or to another local service.
+//
+// The function adds no chain when no port-only deny rule matches TCP.
+// The NAT rules log nothing. The filter chain logs the packet when it
+// drops the packet.
+func addDenyPortNATAccept(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	ports []config.ResolvedDenyPort, uids UIDs,
+) {
+	matches := denyPortNATMatches(ports)
+	if len(matches) == 0 {
+		return
+	}
+
+	chain := conn.AddChain(&nftables.Chain{
+		Name:  chainDenyPortNAT,
+		Table: table,
+	})
+
+	for _, loopback := range []string{"127.0.0.0/8", "::1/128"} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchDstCIDR(mustParseCIDR(loopback)),
+				verdictExprs(expr.VerdictReturn),
+			),
+		})
+	}
+
+	for _, match := range matches {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchFilteredTraffic(uids),
+				match,
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
+
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: parentChain,
+		Exprs: verdictExprs(expr.VerdictJump, chainDenyPortNAT),
+	})
+}
+
+// denyPortNATMatches returns the match expressions of one NAT ACCEPT
+// rule for each TCP port of the given port-only deny rules. The zero
+// [config.ResolvedPortProto] matches every TCP port. UDP ports add no
+// match, because the NAT chains send only TCP to Envoy.
+func denyPortNATMatches(ports []config.ResolvedDenyPort) [][]expr.Any {
+	var matches [][]expr.Any
+
+	for _, dp := range ports {
+		pp := dp.ResolvedPortProto
+
+		var port []expr.Any
+
+		switch {
+		case pp.Port == 0 && pp.Protocol == "":
+			// Wildcard: every TCP port.
+		case pp.Protocol == config.ProtoTCP:
+			port = matchDstPortOrRange(port16(pp.Port), port16(pp.EndPort))
+		default:
+			continue
+		}
+
+		matches = append(matches, flatExprs(matchL4Proto(unix.IPPROTO_TCP), port))
+	}
+
+	return matches
 }
 
 // addCIDRNATRedirect creates per-rule CIDR chains in the NAT context
@@ -1324,7 +1417,15 @@ func dnsGuardExprs() []expr.Any {
 // Per-port matching avoids intercepting SSH (port 22). Non-lo scoping
 // prevents these rules from matching locally-generated TPROXY traffic
 // re-entering PREROUTING on loopback.
-func addNATPreRouting(conn Conn, table *nftables.Table, resolvedPorts []int, tcpForwards []config.TCPForward) {
+//
+// Before the per-port DNAT rules, the chain accepts forwarded TCP to
+// the ports of port-only deny rules ([denyPortNATMatches]). That
+// TCP keeps its destination, so the FORWARD chain evaluates it and
+// the deny port rules DROP it.
+func addNATPreRouting(
+	conn Conn, table *nftables.Table,
+	resolvedPorts []int, tcpForwards []config.TCPForward, denyPorts []config.ResolvedDenyPort,
+) {
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "nat_prerouting",
 		Table:    table,
@@ -1344,6 +1445,20 @@ func addNATPreRouting(conn Conn, table *nftables.Table, resolvedPorts []int, tcp
 				matchL4Proto(proto),
 				matchDstPort(53),
 				dnatToLocal(53),
+			),
+		})
+	}
+
+	// Deny port ACCEPT: forwarded TCP to the ports of port-only deny
+	// rules skips the DNAT rules below.
+	for _, match := range denyPortNATMatches(denyPorts) {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNotIIFName("lo"),
+				matchNFProto(unix.NFPROTO_IPV4),
+				match,
+				verdictExprs(expr.VerdictAccept),
 			),
 		})
 	}

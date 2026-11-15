@@ -567,11 +567,11 @@ func addFilterRules(
 	})
 
 	// NAT chain.
-	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, allDenyCIDRs, uids)
+	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, allDenyCIDRs, denyPortOnly, uids)
 
 	// VM mode: NAT PREROUTING and FORWARD for forwarded container traffic.
 	if uids.VMMode {
-		addNATPreRouting(conn, table, resolvedPorts, cfg.TCPForwards)
+		addNATPreRouting(conn, table, resolvedPorts, cfg.TCPForwards, denyPortOnly)
 		addForwardChain(conn, table, terrariumChain)
 	}
 

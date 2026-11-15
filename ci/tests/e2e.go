@@ -97,6 +97,7 @@ var e2eTestFuncs = []struct {
 	{"udp-filtered", (*Tests).TestEgressUdpFiltered},
 	{"udp-logging", (*Tests).TestEgressUdpLogging},
 	{"egress-deny", (*Tests).TestEgressDenyAllViaEgressDeny},
+	{"egress-deny-port", (*Tests).TestEgressDenyPortOnly},
 	{"entity-world-ipv4", (*Tests).TestEgressEntityWorldIpv4},
 	{"icmp-fqdn", (*Tests).TestEgressIcmpFqdn},
 	{"header-match-mismatch", (*Tests).TestEgressHeaderMatchMismatch},
@@ -1262,6 +1263,36 @@ egressDeny:
 		withAssertions(
 			httpAllowed("http://target-allow:80/", "egress-deny: HTTP port 80 allowed"),
 			networkDenied("https://target-deny:443/", "egress-deny: HTTPS port 443 denied by egressDeny"),
+		),
+	).run(ctx)
+}
+
+// TestEgressDenyPortOnly verifies that an egressDeny rule with ports and no
+// destination blocks a TCP port that an FQDN rule allows. The NAT chain
+// accepts TCP to port 443 before the per-port REDIRECT rules, so Envoy never
+// receives it. The deny rules of the filter chain DROP it.
+//
+//	dagger call -m ci/tests test-egress-deny-port-only
+func (m *Tests) TestEgressDenyPortOnly(ctx context.Context) error {
+	return newTestCase("egress-deny-port", `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+          - port: "443"
+            protocol: TCP
+egressDeny:
+  - toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		targetService("target-allow", defaultNginxConf),
+		withAssertions(
+			httpAllowed("http://target-allow:80/", "egress-deny-port: HTTP port 80 allowed"),
+			networkDenied("https://target-allow:443/", "egress-deny-port: HTTPS port 443 denied by egressDeny"),
 		),
 	).run(ctx)
 }

@@ -624,7 +624,7 @@ graph TD
     user["User process\n(UID 1000)"]
     tcp{"TCP"}
     udp{"UDP"}
-    nat["nftables\nNAT OUTPUT\n(deny CIDR ACCEPT,\nallow CIDR REDIRECT,\nFQDN REDIRECT)"]
+    nat["nftables\nNAT OUTPUT\n(deny CIDR ACCEPT,\ndeny port ACCEPT,\nallow CIDR REDIRECT,\nFQDN REDIRECT)"]
     filter["nftables\nOUTPUT filter\n(per-rule allow/deny)"]
     drop["DROP"]
     mangle_out["nftables\nmangle OUTPUT\n(fwmark 0x1)"]
@@ -642,7 +642,7 @@ graph TD
     tcp --> nat
     udp -- "port 53" --> dns
     udp -- "other ports" --> filter
-    nat -- "deny CIDR\n(ACCEPT, no redirect)" --> filter
+    nat -- "deny CIDR, deny port\n(ACCEPT, no redirect)" --> filter
     nat -- "CIDR TCP" --> envoy_cidr --> upstream
     nat -- "FQDN TCP" --> envoy_fqdn --> upstream
     nat -- "non-policy TCP" --> envoy_fqdn
@@ -654,17 +654,39 @@ graph TD
 
 #### TCP (NAT REDIRECT)
 
-nftables NAT output rules REDIRECT all terrarium-UID TCP to Envoy. The NAT
-chain evaluates rules in order: deny CIDR chains ACCEPT (skip redirect so the
-filter chain drops the traffic), allow CIDR chains REDIRECT to the CIDR
-catch-all listener (port 15003), then per-port FQDN REDIRECT rules. Specialized
-listeners handle ports 443 (TLS passthrough, port 15443) and 80 (HTTP forward,
-port 15080). Per-rule port restrictions get dedicated listeners at ProxyPortBase
-(15000) + port. Non-policy traffic hits a catch-all TCP proxy on port 15001
-that rejects via a blackhole cluster. CIDR-allowed TCP is forwarded by the CIDR
-catch-all listener via the `original_dst` cluster; it also runs a TLS inspector
-for SNI visibility in access logs. Envoy uses the `original_dst` listener
-filter to recover the real destination from conntrack (SO_ORIGINAL_DST).
+nftables NAT output rules REDIRECT terrarium-UID TCP to Envoy, except the TCP
+that an `egressDeny` rule denies. The NAT chain evaluates its rules in this
+order:
+
+1. Deny CIDR chains ACCEPT the TCP to each CIDR of an `egressDeny` rule.
+2. Deny port rules ACCEPT the TCP to each port of an `egressDeny` rule that has
+   ports and no destination. TCP to `127.0.0.0/8` and `::1` skips these rules
+   and goes on to the REDIRECT rules.
+3. Allow CIDR chains REDIRECT to the CIDR catch-all listener (port 15003).
+4. Per-port FQDN rules REDIRECT to the listener of the port.
+5. TCP forward rules REDIRECT to the listener of the port.
+6. A catch-all rule REDIRECTs the remaining TCP to port 15001.
+
+The ACCEPT verdict ends the NAT chain before a REDIRECT rule matches. The
+packet keeps its original destination, so the deny rules of the filter chain
+match the packet and drop it. The REDIRECT verdict rewrites the destination to
+an Envoy listener on loopback, and the filter chain accepts loopback traffic
+before it evaluates the deny rules.
+
+The deny port rules return TCP to a loopback address to the NAT chain before
+they accept any TCP. Accepted TCP keeps its destination, and the filter chain
+accepts loopback traffic before it evaluates the deny rules. So an ACCEPT for
+loopback TCP opens a direct path to the Envoy listeners and to every other
+local service.
+
+Specialized listeners handle ports 443 (TLS passthrough, port 15443) and 80
+(HTTP forward, port 15080). Per-rule port restrictions get dedicated listeners
+at ProxyPortBase (15000) + port. Non-policy traffic hits a catch-all TCP proxy
+on port 15001 that rejects via a blackhole cluster. CIDR-allowed TCP is
+forwarded by the CIDR catch-all listener via the `original_dst` cluster; it
+also runs a TLS inspector for SNI visibility in access logs. Envoy uses the
+`original_dst` listener filter to recover the real destination from conntrack
+(SO_ORIGINAL_DST).
 
 #### UDP (TPROXY)
 
@@ -903,9 +925,12 @@ and is L2-forwarded to the original destination, bypassing Envoy entirely.
 TPROXY does not modify the IP header, so it cannot trigger this re-route.
 
 Per-port DNAT rules redirect configured TCP ports to Envoy's proxy listeners
-(ProxyPortBase + port). The non-loopback interface check prevents these rules
-from matching locally-generated TPROXY traffic re-entering PREROUTING on
-loopback. Per-port matching avoids intercepting SSH (port 22).
+(ProxyPortBase + port). Before those rules, the chain accepts forwarded TCP to
+each port of an `egressDeny` rule that has ports and no destination. That TCP
+keeps its destination, so the `forward` chain evaluates it and the deny rules
+drop it. The non-loopback interface check prevents the DNAT rules from
+matching locally-generated TPROXY traffic re-entering PREROUTING on loopback.
+Per-port matching avoids intercepting SSH (port 22).
 
 DNS (UDP and TCP port 53) also uses DNAT in NAT PREROUTING. The DNS DNAT
 rules intentionally omit the non-local destination check so queries to

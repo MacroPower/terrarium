@@ -886,6 +886,31 @@ egressDeny:
 		},
 	},
 	{
+		name: "vm-egress-deny-port",
+		config: `egress:
+  - toFQDNs:
+      - matchName: "target-allow"
+    toPorts:
+      - ports:
+          - port: "80"
+            protocol: TCP
+          - port: "443"
+            protocol: TCP
+egressDeny:
+  - toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`,
+		services: []serviceSpec{
+			nginxService("target-allow", defaultNginxConf),
+		},
+		assertions: []assertion{
+			httpAllowed("http://target-allow:80/", "egress-deny-port: HTTP port 80 allowed"),
+			networkDenied("https://target-allow:443/", "egress-deny-port: HTTPS port 443 denied by egressDeny"),
+		},
+	},
+	{
 		name: "vm-entity-world-ipv4",
 		config: `egress:
   - toEntities:

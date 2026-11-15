@@ -3,6 +3,9 @@
 package firewall_test
 
 import (
+	"net"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1131,6 +1134,287 @@ func TestApplyRules_DenyICMP(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, icmpDrops)
+}
+
+// natSendsTCPToEnvoy reports whether a rule of a NAT base chain sends
+// TCP to an Envoy listener. Such a rule is a REDIRECT or a DNAT that
+// does not match port 53, or a jump to a per-rule CIDR chain.
+func natSendsTCPToEnvoy(r *nftables.Rule) bool {
+	if verdict, chain := ruleVerdict(r); verdict == expr.VerdictJump {
+		return strings.HasPrefix(chain, "cidr_nat_")
+	}
+
+	return (ruleHasRedir(r) || ruleHasNAT(r)) && !ruleHasDstPort(r, 53)
+}
+
+// ruleDstPorts returns the destination port match of a rule. The
+// result is "443" for one port, "400-500" for a port range, and the
+// empty string for a rule that matches every port.
+func ruleDstPorts(r *nftables.Rule) string {
+	var ports []string
+
+	for i, e := range r.Exprs {
+		p, ok := e.(*expr.Payload)
+		if !ok || p.Base != expr.PayloadBaseTransportHeader || p.Offset != 2 {
+			continue
+		}
+
+		for _, next := range r.Exprs[i+1:] {
+			c, ok := next.(*expr.Cmp)
+			if !ok {
+				break
+			}
+
+			ports = append(ports, strconv.Itoa(int(binaryutil.BigEndian.Uint16(c.Data))))
+		}
+	}
+
+	return strings.Join(ports, "-")
+}
+
+// tcpAccepts returns the indexes of the rules that ACCEPT TCP.
+func tcpAccepts(rules []*nftables.Rule) []int {
+	var idx []int
+
+	for i, r := range rules {
+		if verdict, _ := ruleVerdict(r); verdict == expr.VerdictAccept && ruleMatchesL4Proto(r, unix.IPPROTO_TCP) {
+			idx = append(idx, i)
+		}
+	}
+
+	return idx
+}
+
+// ruleMatchesDstCIDR reports whether a rule matches the destination
+// address against the given CIDR.
+func ruleMatchesDstCIDR(r *nftables.Rule, cidr string) bool {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return false
+	}
+
+	ip, offset := ipNet.IP.To4(), uint32(16)
+	if ip == nil {
+		ip, offset = ipNet.IP.To16(), 24
+	}
+
+	for i, e := range r.Exprs {
+		p, ok := e.(*expr.Payload)
+		if !ok || p.Base != expr.PayloadBaseNetworkHeader || p.Offset != offset || i+2 >= len(r.Exprs) {
+			continue
+		}
+
+		b, ok := r.Exprs[i+1].(*expr.Bitwise)
+		if !ok || !assert.ObjectsAreEqual([]byte(ipNet.Mask), b.Mask) {
+			continue
+		}
+
+		if c, ok := r.Exprs[i+2].(*expr.Cmp); ok && c.Op == expr.CmpOpEq && ip.Equal(net.IP(c.Data)) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func TestApplyRules_DenyPortOnly_SkipsNAT(t *testing.T) {
+	t.Parallel()
+
+	fqdn443 := config.EgressRule{
+		ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+		ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}},
+	}
+
+	tests := map[string]struct {
+		egress      []config.EgressRule
+		tcpForwards []config.TCPForward
+		deny        []config.Port
+		// want holds the port match of each ACCEPT rule for TCP that
+		// the NAT chains must hold, in rule order. The empty string
+		// is the match of a rule that accepts every port.
+		want []string
+	}{
+		"port of an FQDN rule": {
+			egress: []config.EgressRule{fqdn443},
+			deny:   []config.Port{{Port: "443", Protocol: "TCP"}},
+			want:   []string{"443"},
+		},
+		"port of a CIDR rule": {
+			egress: []config.EgressRule{{ToCIDR: []string{"0.0.0.0/0"}}},
+			deny:   []config.Port{{Port: "443", Protocol: "TCP"}},
+			want:   []string{"443"},
+		},
+		"port of a TCP forward": {
+			egress:      []config.EgressRule{fqdn443},
+			tcpForwards: []config.TCPForward{{Port: 22, Host: "github.com"}},
+			deny:        []config.Port{{Port: "22", Protocol: "TCP"}},
+			want:        []string{"22"},
+		},
+		"port that no rule allows": {
+			egress: []config.EgressRule{fqdn443},
+			deny:   []config.Port{{Port: "8443", Protocol: "TCP"}},
+			want:   []string{"8443"},
+		},
+		"port range": {
+			egress: []config.EgressRule{fqdn443},
+			deny:   []config.Port{{Port: "400", EndPort: 500, Protocol: "TCP"}},
+			want:   []string{"400-500"},
+		},
+		"two ports": {
+			egress: []config.EgressRule{fqdn443},
+			deny: []config.Port{
+				{Port: "443", Protocol: "TCP"},
+				{Port: "80", Protocol: "TCP"},
+			},
+			want: []string{"80", "443"},
+		},
+		"ANY protocol": {
+			egress: []config.EgressRule{fqdn443},
+			deny:   []config.Port{{Port: "443"}},
+			want:   []string{"443"},
+		},
+		"UDP port": {
+			egress: []config.EgressRule{fqdn443},
+			deny:   []config.Port{{Port: "443", Protocol: "UDP"}},
+		},
+		"every port": {
+			egress: []config.EgressRule{fqdn443},
+			deny:   []config.Port{{Port: "0"}},
+			want:   []string{""},
+		},
+	}
+
+	modes := map[string]struct {
+		uids   firewall.UIDs
+		chains []string
+	}{
+		"container": {uids: testUIDs, chains: []string{"nat_output"}},
+		"VM":        {uids: testVMUIDs, chains: []string{"nat_output", "nat_prerouting"}},
+	}
+
+	for name, tc := range tests {
+		for modeName, mode := range modes {
+			t.Run(name+"/"+modeName, func(t *testing.T) {
+				t.Parallel()
+
+				rec := &ruleRecorder{}
+				cfg := &config.Config{
+					Egress:      &tc.egress,
+					EgressDeny:  &[]config.EgressDenyRule{{ToPorts: []config.PortRule{{Ports: tc.deny}}}},
+					TCPForwards: tc.tcpForwards,
+				}
+
+				err := firewall.ApplyRules(t.Context(), rec, cfg, mode.uids)
+				require.NoError(t, err)
+
+				for _, chain := range mode.chains {
+					rules := rec.rulesForChain(chain)
+
+					// The first rule that sends TCP to Envoy. Every
+					// ACCEPT of a denied port must precede it. The
+					// catch-all REDIRECT of nat_output is such a rule
+					// in every policy.
+					firstToEnvoy := slices.IndexFunc(rules, natSendsTCPToEnvoy)
+					if chain == "nat_output" {
+						require.NotEqual(t, -1, firstToEnvoy, "%s must send TCP to Envoy", chain)
+					}
+
+					if firstToEnvoy == -1 {
+						firstToEnvoy = len(rules)
+					}
+
+					// nat_prerouting holds its ACCEPT rules. nat_output
+					// jumps to deny_port_nat, which holds them after the
+					// RETURN rules for loopback destinations.
+					acceptChain := chain
+					acceptRules := rules
+					lastLoopback := -1
+
+					if chain == "nat_output" {
+						assert.Empty(t, tcpAccepts(rules), "%s must hold no ACCEPT for TCP", chain)
+
+						jump := slices.IndexFunc(rules, func(r *nftables.Rule) bool {
+							verdict, target := ruleVerdict(r)
+
+							return verdict == expr.VerdictJump && target == "deny_port_nat"
+						})
+
+						if tc.want == nil {
+							assert.Equal(t, -1, jump, "%s must not jump to deny_port_nat", chain)
+							assert.NotContains(t, rec.chainNames(), "deny_port_nat")
+
+							continue
+						}
+
+						require.NotEqual(t, -1, jump, "%s must jump to deny_port_nat", chain)
+						assert.Less(t, jump, firstToEnvoy,
+							"%s: the jump to deny_port_nat must precede the rules that send TCP to Envoy", chain)
+
+						acceptChain = "deny_port_nat"
+						acceptRules = rec.rulesForChain(acceptChain)
+						firstToEnvoy = len(acceptRules)
+
+						for _, loopback := range []string{"127.0.0.0/8", "::1/128"} {
+							i := slices.IndexFunc(acceptRules, func(r *nftables.Rule) bool {
+								verdict, _ := ruleVerdict(r)
+
+								return verdict == expr.VerdictReturn && ruleMatchesDstCIDR(r, loopback)
+							})
+							require.NotEqual(t, -1, i, "%s must return TCP to %s", acceptChain, loopback)
+
+							lastLoopback = max(lastLoopback, i)
+						}
+					}
+
+					var got []string
+
+					for _, i := range tcpAccepts(acceptRules) {
+						r := acceptRules[i]
+
+						assert.Less(t, i, firstToEnvoy,
+							"%s: ACCEPT %d must precede the rules that send TCP to Envoy", acceptChain, i)
+						assert.Greater(t, i, lastLoopback,
+							"%s: ACCEPT %d must follow the RETURN rules for loopback", acceptChain, i)
+						assert.False(t, ruleHasLog(r), "%s: ACCEPT %d must not log", acceptChain, i)
+
+						switch {
+						case chain == "nat_prerouting":
+							assert.True(t, ruleHasMetaKey(r, expr.MetaKeyIIFNAME),
+								"%s: ACCEPT %d must match the input interface", acceptChain, i)
+							assert.True(t, ruleMatchesNFProto(r, unix.NFPROTO_IPV4),
+								"%s: ACCEPT %d must match IPv4", acceptChain, i)
+
+						case mode.uids.VMMode:
+							assert.False(t, ruleHasMetaKey(r, expr.MetaKeySKUID),
+								"%s: ACCEPT %d must match every UID", acceptChain, i)
+
+						default:
+							assert.True(t, ruleMatchesUID(r, mode.uids.Terrarium),
+								"%s: ACCEPT %d must match the Terrarium UID", acceptChain, i)
+						}
+
+						got = append(got, ruleDstPorts(r))
+					}
+
+					assert.Equal(t, tc.want, got, "ACCEPT rules for TCP of %s", chain)
+				}
+
+				// The filter chain still drops the denied ports.
+				var drops int
+
+				for _, r := range rec.rulesForChain("terrarium_output") {
+					if verdict, _ := ruleVerdict(r); verdict == expr.VerdictDrop {
+						drops++
+					}
+				}
+
+				// One DROP for each denied port and protocol, and the
+				// terminal DROP.
+				wantDrops := len(cfg.ResolveDenyPortOnlyRules(t.Context())) + 1
+				assert.Equal(t, wantDrops, drops, "DROP rules of terrarium_output")
+			})
+		}
+	}
 }
 
 // assertOnlyICMPAccepts fails the test when an ACCEPT of the named
