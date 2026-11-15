@@ -10,6 +10,8 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"go.jacobcolvin.com/terrarium/envoybin"
 )
 
 // The tests of the envoy workflow are in this package for two reasons. The
@@ -29,6 +31,7 @@ const (
 	jobResult  = "result"
 
 	stepDiff   = "Find changes to the pin"
+	stepVerify = "Verify the pinned Envoy build"
 	stepResult = "Check the results of the other jobs"
 )
 
@@ -41,11 +44,23 @@ type workflow struct {
 
 // workflowJob is one job of a [workflow].
 type workflowJob struct {
-	Outputs map[string]string `yaml:"outputs"`
-	Name    string            `yaml:"name"`
-	If      string            `yaml:"if"`
-	Needs   []string          `yaml:"needs"`
-	Steps   []workflowStep    `yaml:"steps"`
+	Outputs  map[string]string `yaml:"outputs"`
+	Name     string            `yaml:"name"`
+	If       string            `yaml:"if"`
+	Needs    []string          `yaml:"needs"`
+	Steps    []workflowStep    `yaml:"steps"`
+	Strategy workflowStrategy  `yaml:"strategy"`
+}
+
+// workflowStrategy is the strategy of a [workflowJob].
+type workflowStrategy struct {
+	Matrix workflowMatrix `yaml:"matrix"`
+}
+
+// workflowMatrix is the matrix of a [workflowStrategy]. GitHub runs the
+// job one time for each entry of Include, with the values of that entry.
+type workflowMatrix struct {
+	Include []map[string]string `yaml:"include"`
 }
 
 // workflowStep is one step of a [workflowJob].
@@ -218,6 +233,36 @@ func TestWorkflowReportsOneResult(t *testing.T) {
 		"PIN_CHANGED":    "${{ needs.changes.outputs.pin }}",
 		"VERIFY_RESULT":  "${{ needs.verify.result }}",
 	}, result.step(t, stepResult).Env)
+}
+
+// TestWorkflowCoversManifestPlatforms checks that the envoy workflow has
+// one verify job for each platform of [envoybin.DefaultManifest]. A
+// platform without a job gets no provenance check.
+func TestWorkflowCoversManifestPlatforms(t *testing.T) {
+	t.Parallel()
+
+	verify := readEnvoyWorkflow(t).Jobs[jobVerify]
+
+	// The verify command fails when the runner is not the platform of
+	// its matrix entry.
+	step := verify.step(t, stepVerify)
+
+	assert.Equal(t, `go run ./cmd/envoymanifest verify "$PLATFORM"`, step.Run)
+	assert.Equal(t, "${{ matrix.platform }}", step.Env["PLATFORM"])
+
+	var jobs []string
+
+	for _, entry := range verify.Strategy.Matrix.Include {
+		jobs = append(jobs, entry["platform"])
+	}
+
+	var want []string
+
+	for p := range envoybin.DefaultManifest().Builds {
+		want = append(want, p.String())
+	}
+
+	assert.ElementsMatch(t, want, jobs)
 }
 
 // TestWorkflowFindsPinChanges runs the diff step of the envoy workflow in

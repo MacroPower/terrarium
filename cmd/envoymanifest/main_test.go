@@ -98,6 +98,19 @@ func TestRunUpdateSource(t *testing.T) {
 	}
 }
 
+// TestNames pins the names of the commands and the default path of the
+// source file. The envoy workflow, the Renovate configuration, and the
+// tests of the envoybin package hold these values as literals. A change
+// to one of the values fails this test, so the change must also update
+// those files and this test.
+func TestNames(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "update", cmdUpdate)
+	assert.Equal(t, "verify", cmdVerify)
+	assert.Equal(t, "envoybin/manifest.go", manifestSource)
+}
+
 func TestGithubToken(t *testing.T) {
 	t.Parallel()
 

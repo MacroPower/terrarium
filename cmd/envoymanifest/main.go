@@ -17,7 +17,12 @@ import (
 // [envoybin.DefaultManifest], relative to the root of the repository.
 const manifestSource = "envoybin/manifest.go"
 
-// The names of the commands.
+// The names of the commands. The envoy workflow and the Renovate
+// configuration under .github run the commands by these names, and the
+// Renovate configuration also names [manifestSource]. The tests of the
+// envoybin package check those files against their own copies of the
+// names and of the path. TestNames fails after a change to one of these
+// values, so change the copies together with these values.
 const (
 	cmdUpdate = "update"
 	cmdVerify = "verify"
