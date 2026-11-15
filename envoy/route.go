@@ -2,6 +2,8 @@ package envoy
 
 import (
 	"fmt"
+	"math/bits"
+	"slices"
 	"strings"
 
 	"go.jacobcolvin.com/terrarium/config"
@@ -93,42 +95,7 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 			}
 
 			if len(actionMatches) > 0 {
-				// Route 1: all action headers match -> forward
-				// normally (no transforms needed).
-				fullMatch := match
-				fullMatch.Headers = append(
-					append([]headerMatcher{}, match.Headers...),
-					mismatchHeaderMatchers(actionMatches)...,
-				)
-
-				matchRoute := route{
-					Match: fullMatch,
-					Route: &routeAction{
-						Cluster:         cluster,
-						AutoHostRewrite: true,
-						Timeout:         routeTimeout1h,
-					},
-				}
-				routes = append(routes, grpcRouteVariant(matchRoute), matchRoute)
-
-				// Route 2: base match only (some action header
-				// doesn't match) -> forward with transforms.
-				mismatchRoute := route{
-					Match:                  match,
-					RequestHeadersToAdd:    mismatchHeadersToAdd(actionMatches),
-					RequestHeadersToRemove: mismatchHeadersToRemove(actionMatches),
-					Route: &routeAction{
-						Cluster:         cluster,
-						AutoHostRewrite: true,
-						Timeout:         routeTimeout1h,
-					},
-				}
-
-				if logConfig := mismatchLogConfig(actionMatches); logConfig != nil {
-					mismatchRoute.TypedPerFilterConfig = logConfig
-				}
-
-				routes = append(routes, grpcRouteVariant(mismatchRoute), mismatchRoute)
+				routes = append(routes, headerMismatchRoutes(match, actionMatches, cluster)...)
 			} else {
 				httpRoute := route{
 					Match: match,
@@ -270,10 +237,108 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 	}}
 }
 
-// mismatchHeaderMatchers builds Envoy header matchers for the "full
-// match" route where all mismatch-action headers match their expected
-// values. This route fires first; when all headers match, no
-// transforms are needed.
+// headerMismatchRoutes builds the routes of an HTTP rule whose
+// headerMatches carry a mismatch action. The base match holds every
+// other condition of the rule, and each route forwards to cluster.
+//
+// Envoy takes the first route that matches a request, and it applies
+// the header changes of that route to the request. The first route
+// matches when every header of matches holds its value, and it changes
+// nothing. Every later route applies each REPLACE, DELETE, and LOG
+// action of matches.
+//
+// An ADD action appends a value, so a route must not apply it to a
+// header that already holds the value. The later routes therefore
+// cover each combination of the ADD headers that hold their value.
+// Such a route matches on those headers and appends the value of each
+// other ADD header. The routes that match on more ADD headers come
+// first. A request that a route takes therefore mismatches on each
+// ADD header that the route does not match on.
+//
+// The number of these routes doubles with each ADD header.
+// [config.Config.Validate] limits the ADD headers of one HTTP rule
+// for that reason.
+func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluster string) []route {
+	forward := func(matched, apply []config.HeaderMatch) []route {
+		m := match
+		m.Headers = append(append([]headerMatcher{}, match.Headers...), mismatchHeaderMatchers(matched)...)
+
+		r := route{
+			Match:                  m,
+			RequestHeadersToAdd:    mismatchHeadersToAdd(apply),
+			RequestHeadersToRemove: mismatchHeadersToRemove(apply),
+			Route: &routeAction{
+				Cluster:         cluster,
+				AutoHostRewrite: true,
+				Timeout:         routeTimeout1h,
+			},
+		}
+
+		if logConfig := mismatchLogConfig(apply); logConfig != nil {
+			r.TypedPerFilterConfig = logConfig
+		}
+
+		return []route{grpcRouteVariant(r), r}
+	}
+
+	routes := forward(matches, nil)
+
+	adds := 0
+
+	for _, hm := range matches {
+		if hm.Mismatch == config.MismatchADD {
+			adds++
+		}
+	}
+
+	// Each bit of a combination stands for one ADD header, in the
+	// order of matches. A set bit means that the header holds its
+	// value.
+	combinations := make([]uint, 1<<adds)
+	for i := range combinations {
+		combinations[i] = uint(i)
+	}
+
+	slices.SortStableFunc(combinations, func(a, b uint) int {
+		return bits.OnesCount(b) - bits.OnesCount(a)
+	})
+
+	for _, combination := range combinations {
+		var matched, apply []config.HeaderMatch
+
+		bit := 0
+
+		for _, hm := range matches {
+			if hm.Mismatch != config.MismatchADD {
+				apply = append(apply, hm)
+
+				continue
+			}
+
+			if combination&(1<<bit) != 0 {
+				matched = append(matched, hm)
+			} else {
+				apply = append(apply, hm)
+			}
+
+			bit++
+		}
+
+		// Without an action to apply, every header of matches holds
+		// its value, and the first route takes those requests.
+		if len(apply) == 0 {
+			continue
+		}
+
+		routes = append(routes, forward(matched, apply)...)
+	}
+
+	return routes
+}
+
+// mismatchHeaderMatchers builds one Envoy header matcher for each
+// entry of matches. The matcher passes when the header holds the
+// value of the entry.
 func mismatchHeaderMatchers(matches []config.HeaderMatch) []headerMatcher {
 	var result []headerMatcher
 
@@ -288,7 +353,10 @@ func mismatchHeaderMatchers(matches []config.HeaderMatch) []headerMatcher {
 }
 
 // mismatchHeadersToAdd builds request_headers_to_add entries for
-// headerMatches with ADD or REPLACE mismatch actions.
+// headerMatches with ADD or REPLACE mismatch actions. An ADD entry
+// adds its value as one more value of the header and keeps the values
+// that the request already holds, as Cilium does. A REPLACE entry
+// removes those values.
 func mismatchHeadersToAdd(matches []config.HeaderMatch) []headerValueOption {
 	var result []headerValueOption
 
@@ -297,7 +365,7 @@ func mismatchHeadersToAdd(matches []config.HeaderMatch) []headerValueOption {
 		case config.MismatchADD:
 			result = append(result, headerValueOption{
 				Header:       headerValue{Key: hm.Name, Value: hm.Value},
-				AppendAction: "ADD_IF_ABSENT",
+				AppendAction: "APPEND_IF_EXISTS_OR_ADD",
 			})
 
 		case config.MismatchREPLACE:

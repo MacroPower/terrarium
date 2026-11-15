@@ -487,7 +487,8 @@ type HTTPRule struct {
 // is empty, the request header must have the specified value or the
 // request is denied. When Mismatch is set, a mismatch triggers the
 // specified action instead of denial: LOG logs via Envoy access log,
-// ADD adds the header, DELETE removes it, and REPLACE overwrites it.
+// ADD adds Value as one more value of the header, DELETE removes the
+// header, and REPLACE overwrites it.
 type HeaderMatch struct {
 	// Secret is a Cilium field for referencing Kubernetes Secrets
 	// to populate the header value. Terrarium does not run inside
@@ -514,7 +515,9 @@ type MismatchAction string
 const (
 	// MismatchLOG logs when the header value does not match.
 	MismatchLOG MismatchAction = "LOG"
-	// MismatchADD adds a header when the value does not match.
+	// MismatchADD adds the value to the header when the value does not
+	// match. The header keeps each value that the request already
+	// holds, as in Cilium.
 	MismatchADD MismatchAction = "ADD"
 	// MismatchDELETE deletes the header when it does not match.
 	MismatchDELETE MismatchAction = "DELETE"

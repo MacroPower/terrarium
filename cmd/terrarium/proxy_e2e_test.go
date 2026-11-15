@@ -447,6 +447,193 @@ func TestProxyE2EMITM(t *testing.T) {
 	})
 }
 
+// startHeaderEchoServer serves plain HTTP on addr. The body of each
+// response holds one line for each name in names, as "name=values".
+// The values are the values of that request header, joined with
+// commas in the order that the server received them.
+func startHeaderEchoServer(t *testing.T, addr string, names ...string) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		var body strings.Builder
+
+		for _, name := range names {
+			fmt.Fprintf(&body, "%s=%s\n", name, strings.Join(r.Header.Values(name), ","))
+		}
+
+		_, err := io.WriteString(w, body.String())
+		if err != nil {
+			t.Logf("upstream write: %v", err)
+		}
+	})
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(t.Context(), "tcp", addr)
+	require.NoError(t, err)
+
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	go func() {
+		serveErr := srv.Serve(ln)
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			t.Logf("upstream serve: %v", serveErr)
+		}
+	}()
+
+	t.Cleanup(func() {
+		assert.NoError(t, srv.Close())
+	})
+}
+
+// TestProxyE2EHeaderMismatchAdd checks the request headers that reach
+// the upstream through rules whose headerMatches use the ADD mismatch
+// action. The proxy must append the value of the policy to each header
+// that does not hold it. It must leave every other header as the
+// client sent it.
+//
+//nolint:paralleltest // e2e tests bind fixed ports and run envoy subprocesses.
+func TestProxyE2EHeaderMismatchAdd(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	// The proxy forwards plain HTTP to port 80 only. Binding port 80
+	// needs CAP_NET_BIND_SERVICE or a permissive
+	// ip_unprivileged_port_start.
+	lc := net.ListenConfig{}
+
+	probe, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:80")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.1:80: %v", err)
+	}
+
+	require.NoError(t, probe.Close())
+
+	startHeaderEchoServer(t, "127.0.0.1:80", "X-One", "X-Two", "X-Rep")
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	policy := "egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: test.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /add\n" +
+		"              headerMatches:\n" +
+		"                - name: X-One\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: one\n" +
+		"            - path: /two\n" +
+		"              headerMatches:\n" +
+		"                - name: X-One\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: one\n" +
+		"                - name: X-Two\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: two\n" +
+		"            - path: /mixed\n" +
+		"              headerMatches:\n" +
+		"                - name: X-One\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: one\n" +
+		"                - name: X-Rep\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: rep\n"
+
+	proxyURL, _ := startProxy(t, policy, dnsAddr)
+	client := proxyClient(t, proxyURL, x509.NewCertPool())
+
+	tests := map[string]struct {
+		path    string
+		headers map[string]string
+		want    string
+	}{
+		"missing header gets the value": {
+			path: "/add",
+			want: "X-One=one\nX-Two=\nX-Rep=\n",
+		},
+		"matching header stays single": {
+			path:    "/add",
+			headers: map[string]string{"X-One": "one"},
+			want:    "X-One=one\nX-Two=\nX-Rep=\n",
+		},
+		"header with another value keeps it and gets the value": {
+			path:    "/add",
+			headers: map[string]string{"X-One": "user"},
+			want:    "X-One=user,one\nX-Two=\nX-Rep=\n",
+		},
+		"two headers both missing": {
+			path: "/two",
+			want: "X-One=one\nX-Two=two\nX-Rep=\n",
+		},
+		"two headers both matching": {
+			path:    "/two",
+			headers: map[string]string{"X-One": "one", "X-Two": "two"},
+			want:    "X-One=one\nX-Two=two\nX-Rep=\n",
+		},
+		"matching header stays single when another header is missing": {
+			path:    "/two",
+			headers: map[string]string{"X-One": "one"},
+			want:    "X-One=one\nX-Two=two\nX-Rep=\n",
+		},
+		"matching header stays single when another header has another value": {
+			path:    "/two",
+			headers: map[string]string{"X-One": "user", "X-Two": "two"},
+			want:    "X-One=user,one\nX-Two=two\nX-Rep=\n",
+		},
+		"two headers with other values": {
+			path:    "/two",
+			headers: map[string]string{"X-One": "user", "X-Two": "user"},
+			want:    "X-One=user,one\nX-Two=user,two\nX-Rep=\n",
+		},
+		"matching header stays single when a REPLACE header mismatches": {
+			path:    "/mixed",
+			headers: map[string]string{"X-One": "one", "X-Rep": "user"},
+			want:    "X-One=one\nX-Two=\nX-Rep=rep\n",
+		},
+		"ADD and REPLACE headers both mismatch": {
+			path:    "/mixed",
+			headers: map[string]string{"X-One": "user"},
+			want:    "X-One=user,one\nX-Two=\nX-Rep=rep\n",
+		},
+		"ADD header mismatches and REPLACE header matches": {
+			path:    "/mixed",
+			headers: map[string]string{"X-Rep": "rep"},
+			want:    "X-One=one\nX-Two=\nX-Rep=rep\n",
+		},
+	}
+
+	//nolint:paralleltest // The subtests share the proxy of the parent test.
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(
+				t.Context(), http.MethodGet, "http://test.example"+tt.path, http.NoBody)
+			require.NoError(t, err)
+
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+
+			defer func() {
+				assert.NoError(t, resp.Body.Close())
+			}()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+			assert.Equal(t, tt.want, string(body))
+		})
+	}
+}
+
 //nolint:paralleltest // e2e tests run envoy subprocesses.
 func TestProxyE2EBlocked(t *testing.T) {
 	requireEnvoy(t)

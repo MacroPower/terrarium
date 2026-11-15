@@ -1199,6 +1199,50 @@ func TestValidate(t *testing.T) {
 			},
 			err: config.ErrHeaderMatchMismatchInvalid,
 		},
+		"headerMatches mismatch ADD at the limit accepted": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: addHeaderMatches(8)},
+							{HeaderMatches: addHeaderMatches(8)},
+						}},
+					}},
+				}),
+			},
+		},
+		"headerMatches mismatch ADD past the limit rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: addHeaderMatches(9)},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrHeaderMatchAddTooMany,
+		},
+		"headerMatches other mismatch actions do not count toward the ADD limit": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: append(addHeaderMatches(8),
+								config.HeaderMatch{Name: "X-Version", Value: "v2", Mismatch: config.MismatchREPLACE},
+								config.HeaderMatch{Name: "X-Token", Value: "secret"},
+							)},
+						}},
+					}},
+				}),
+			},
+		},
 		"headerMatches mismatch ADD without value accepted": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{

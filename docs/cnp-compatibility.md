@@ -58,6 +58,8 @@ egress:
                 - name: "X-Api-Key"
                   value: "expected-value"
                 - name: "X-Trace"
+                  # ADD keeps the values that the client sent and adds the value.
+                  # At most 8 headerMatches of one HTTP rule can use ADD.
                   mismatch: ADD
                   value: "injected"
                 - name: "X-Strip"
@@ -242,6 +244,18 @@ generation requires a wildcard-free suffix for the SAN (RFC 6125 only supports
 HTTP path and method regex patterns are capped at 1000 characters. Cilium has
 no explicit length limit. These regexes compile into RE2 matchers in Envoy's
 route config; bounding prevents denial-of-service from pathological regexes.
+
+A `headerMatches` entry with `mismatch: ADD` works as in Cilium. When the
+request header is missing or holds another value, Terrarium adds the value of
+the entry as one more value of the header. The header keeps each value that
+the client sent, so the upstream receives both.
+
+Each HTTP rule can hold at most 8 `headerMatches` entries with
+`mismatch: ADD`. Cilium has no limit. Envoy applies the header changes of a
+route to every request that the route takes. Terrarium therefore generates one
+route for each combination of ADD headers that already hold their value. The
+number of routes doubles with each entry, and the limit bounds the route
+table.
 
 ### Proxy port and range limits
 

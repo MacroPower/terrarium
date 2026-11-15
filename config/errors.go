@@ -60,6 +60,14 @@ var (
 		"headerMatch mismatch must be one of LOG, ADD, DELETE, REPLACE",
 	)
 
+	// ErrHeaderMatchAddTooMany is returned when one [HTTPRule] holds
+	// more than 8 [HeaderMatch] entries with the [MismatchADD] action.
+	// The number of Envoy routes for the rule doubles with each of
+	// these entries.
+	ErrHeaderMatchAddTooMany = errors.New(
+		"too many headerMatches with mismatch ADD in one http rule: the maximum is 8 (terrarium constraint: each one doubles the Envoy routes of the rule)",
+	)
+
 	// ErrHeaderMatchSecret is returned when a [HeaderMatch] sets
 	// a Secret field. Cilium uses this to reference Kubernetes
 	// Secrets for populating header values. Terrarium does not run
