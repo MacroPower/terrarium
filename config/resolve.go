@@ -1309,7 +1309,10 @@ func resolvePortsFromDenyRule(ctx context.Context, rule EgressDenyRule) []Resolv
 // ResolveICMPRules flattens all ICMPRule entries across egress allow
 // rules into per-field [ResolvedICMP] entries with their rule index.
 // Type codes are already resolved to numeric strings during
-// normalization. Returns nil when no egress rules have ICMP entries.
+// normalization. A field of a rule with toCIDR or toCIDRSet produces
+// no entry when none of those CIDRs has the address family of the
+// field. Such a field matches no destination of its rule. Returns nil
+// when no field produces an entry.
 func (c *Config) ResolveICMPRules() []ResolvedICMP {
 	return resolveICMPs(c.EgressRules())
 }
@@ -1317,7 +1320,8 @@ func (c *Config) ResolveICMPRules() []ResolvedICMP {
 // ResolveDenyICMPRules flattens all ICMPRule entries across egress
 // deny rules into per-field [ResolvedICMP] entries. Same shape as
 // [Config.ResolveICMPRules] but for deny rules. CIDRs from sibling
-// L3 selectors are attached for destination scoping.
+// L3 selectors are attached for destination scoping, and a field
+// whose address family matches none of those CIDRs produces no entry.
 func (c *Config) ResolveDenyICMPRules() []ResolvedICMP {
 	deny := c.EgressDenyRules()
 	rules := make([]EgressRule, len(deny))
@@ -1337,6 +1341,9 @@ func (c *Config) ResolveDenyICMPRules() []ResolvedICMP {
 // CIDRs from sibling toCIDR/toCIDRSet selectors on each rule are
 // attached to the resolved entries, filtered by address family, so
 // the firewall can scope ICMP rules to the correct L3 destinations.
+// A field of a rule with CIDRs is skipped when none of the CIDRs has
+// its address family. An entry without CIDRs applies to every
+// destination, so an entry for that field would widen the rule.
 // When a rule has toFQDNs, UseFQDNSet and FQDNRuleIndex are set on
 // each emitted entry so the firewall can use FQDN ipset lookups.
 func resolveICMPs(rules []EgressRule) []ResolvedICMP {
@@ -1379,6 +1386,14 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 						if cidrIsIPv6(c.CIDR) == isV6 {
 							cidrs = append(cidrs, c)
 						}
+					}
+
+					// The rule's CIDRs all have the other address
+					// family, so the field matches no destination
+					// of the rule. An FQDN set still scopes the
+					// entry of a rule that also has toFQDNs.
+					if len(cidrs) == 0 && !hasFQDNs {
+						continue
 					}
 				}
 

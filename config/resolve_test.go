@@ -2314,6 +2314,63 @@ func TestResolveICMPRules(t *testing.T) {
 				},
 			},
 		},
+		"ICMP field of a family without a CIDR resolves to no entry": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"2001:db8::/32"},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+						},
+					}},
+				}),
+			},
+			want: nil,
+		},
+		"ICMP field of a family without a CIDR set resolves to no entry": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv6", Type: "128"},
+						},
+					}},
+				}),
+			},
+			want: nil,
+		},
+		"ICMP keeps the fields whose family has a CIDR": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToCIDR: []string{"2001:db8::/32"},
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "8"},
+								{Family: "IPv6", Type: "128"},
+							},
+						}},
+					},
+					config.EgressRule{
+						ICMPs: []config.ICMPRule{{
+							Fields: []config.ICMPField{
+								{Family: "IPv4", Type: "0"},
+							},
+						}},
+					},
+				),
+			},
+			want: []config.ResolvedICMP{
+				{
+					Family:    "IPv6",
+					Type:      128,
+					RuleIndex: 0,
+					CIDRs:     []config.CIDRRule{{CIDR: "2001:db8::/32"}},
+				},
+				{Family: "IPv4", Type: 0, RuleIndex: 1},
+			},
+		},
 		"ICMP with toCIDRSet preserves except": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
@@ -2396,6 +2453,27 @@ func TestResolveDenyICMPRules(t *testing.T) {
 					Type:      8,
 					RuleIndex: 0,
 					CIDRs:     []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+				},
+			},
+		},
+		"deny ICMP field of a family without a CIDR resolves to no entry": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(config.EgressDenyRule{
+					ToCIDR: []string{"2001:db8::/32"},
+					ICMPs: []config.ICMPRule{{
+						Fields: []config.ICMPField{
+							{Family: "IPv4", Type: "8"},
+							{Family: "IPv6", Type: "128"},
+						},
+					}},
+				}),
+			},
+			want: []config.ResolvedICMP{
+				{
+					Family:    "IPv6",
+					Type:      128,
+					RuleIndex: 0,
+					CIDRs:     []config.CIDRRule{{CIDR: "2001:db8::/32"}},
 				},
 			},
 		},

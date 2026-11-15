@@ -338,7 +338,8 @@ type ICMPField struct {
 // destinations (AND'd with L3 selectors from the parent rule,
 // matching Cilium's BPF datapath behavior). When CIDRs is nil,
 // the rule applies to all destinations (standalone ICMP rule
-// without L3 selectors).
+// without L3 selectors). A parent rule whose CIDRs all have the
+// other address family produces no entry for the ICMP type.
 type ResolvedICMP struct {
 	Family string // "IPv4" or "IPv6"
 	// CIDRs restricts the ICMP rule to specific destination

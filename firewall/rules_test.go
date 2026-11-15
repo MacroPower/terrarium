@@ -1221,6 +1221,116 @@ func TestApplyRules_ICMPWithCIDR(t *testing.T) {
 	}
 }
 
+// TestApplyRules_ICMPFamilyWithoutCIDR checks that an ICMP field
+// creates no firewall rule when none of the rule's CIDRs has the
+// address family of the field. Such a field matches no destination
+// of its rule.
+func TestApplyRules_ICMPFamilyWithoutCIDR(t *testing.T) {
+	t.Parallel()
+
+	icmps := func(fields ...config.ICMPField) []config.ICMPRule {
+		return []config.ICMPRule{{Fields: fields}}
+	}
+
+	echo4 := config.ICMPField{Family: "IPv4", Type: "8"}
+	echo6 := config.ICMPField{Family: "IPv6", Type: "128"}
+
+	tests := map[string]struct {
+		cfg *config.Config
+		// want lists the chains that hold the ICMP verdicts of
+		// the rule, one chain for each field that has a CIDR of
+		// its family.
+		want    []string
+		verdict expr.VerdictKind
+	}{
+		"allow IPv4 field to IPv6 CIDR": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToCIDR: []string{"2001:db8::/32"},
+				ICMPs:  icmps(echo4),
+			})},
+			verdict: expr.VerdictAccept,
+			want:    nil,
+		},
+		"allow IPv6 field to IPv4 CIDR set": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToCIDRSet: []config.CIDRRule{{CIDR: "203.0.113.0/24"}},
+				ICMPs:     icmps(echo6),
+			})},
+			verdict: expr.VerdictAccept,
+			want:    nil,
+		},
+		"allow both fields to IPv6 CIDR": {
+			cfg: &config.Config{Egress: egressRules(config.EgressRule{
+				ToCIDR: []string{"2001:db8::/32"},
+				ICMPs:  icmps(echo4, echo6),
+			})},
+			verdict: expr.VerdictAccept,
+			want:    []string{"icmp_0"},
+		},
+		"deny IPv4 field to IPv6 CIDR": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+				}),
+				EgressDeny: &[]config.EgressDenyRule{{
+					ToCIDR: []string{"2001:db8::/32"},
+					ICMPs:  icmps(echo4),
+				}},
+			},
+			verdict: expr.VerdictDrop,
+			want:    nil,
+		},
+		"deny both fields to IPv6 CIDR": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+				}),
+				EgressDeny: &[]config.EgressDenyRule{{
+					ToCIDR: []string{"2001:db8::/32"},
+					ICMPs:  icmps(echo4, echo6),
+				}},
+			},
+			verdict: expr.VerdictDrop,
+			want:    []string{"deny_icmp_0"},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			require.NoError(t, tc.cfg.Validate(t.Context()))
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tc.cfg, testUIDs)
+			require.NoError(t, err)
+
+			// No rule of the parent chain holds the verdict for an
+			// ICMP type without a destination match.
+			for i, r := range rec.rulesForChain("terrarium_output") {
+				if v, _ := ruleVerdict(r); v != tc.verdict {
+					continue
+				}
+
+				assert.False(t,
+					ruleMatchesL4Proto(r, unix.IPPROTO_ICMP) || ruleMatchesL4Proto(r, unix.IPPROTO_ICMPV6),
+					"rule %d of terrarium_output holds an ICMP verdict for every destination", i)
+			}
+
+			var got []string
+
+			for _, name := range rec.chainNames() {
+				if strings.HasPrefix(name, "icmp_") || strings.HasPrefix(name, "deny_icmp_") {
+					got = append(got, name)
+				}
+			}
+
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestApplyRules_ICMPWithoutCIDR(t *testing.T) {
 	t.Parallel()
 
