@@ -3,7 +3,6 @@
 package main
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -50,10 +49,10 @@ func TestStartHeartbeat_RecordsTick(t *testing.T) {
 	stop := startHeartbeatEvery(t.Context(), inf, 20*time.Millisecond)
 	t.Cleanup(stop)
 
-	db := openReadOnlyDB(t, path)
+	r := openReader(t, path)
 
 	require.Eventually(t, func() bool {
-		hb, ok, err := eventstore.LatestHeartbeat(t.Context(), db, store.InstanceID())
+		hb, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
 		if err != nil || !ok {
 			return false
 		}
@@ -81,10 +80,10 @@ func TestStartHeartbeat_TolerantOfNilSubsystems(t *testing.T) {
 	stop := startHeartbeatEvery(t.Context(), inf, 20*time.Millisecond)
 	t.Cleanup(stop)
 
-	db := openReadOnlyDB(t, path)
+	r := openReader(t, path)
 
 	require.Eventually(t, func() bool {
-		_, ok, err := eventstore.LatestHeartbeat(t.Context(), db, store.InstanceID())
+		_, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
 		return err == nil && ok
 	}, 2*time.Second, 20*time.Millisecond)
 }
@@ -121,13 +120,13 @@ func TestStartHeartbeat_CancelStops(t *testing.T) {
 	}
 }
 
-func openReadOnlyDB(t *testing.T, path string) *sql.DB {
+func openReader(t *testing.T, path string) *eventstore.Reader {
 	t.Helper()
 
-	db, err := eventstore.OpenReadOnly(t.Context(), path)
+	r, err := eventstore.OpenReader(t.Context(), path)
 	require.NoError(t, err)
 
-	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+	t.Cleanup(func() { assert.NoError(t, r.Close()) })
 
-	return db
+	return r
 }

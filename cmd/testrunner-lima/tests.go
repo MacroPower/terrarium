@@ -2335,7 +2335,7 @@ func verifyVMStatusStatsSection(ctx context.Context, t *testing.T, d *driver) {
 
 // verifyVMHeartbeatOnShutdown stops the daemon, copies stats.db to
 // the host, and reads the most recent instance_metrics row through
-// [eventstore.LatestHeartbeat]. Asserts the writer drained the final
+// [eventstore.Reader.LatestHeartbeat]. Asserts the writer drained the final
 // snapshot before Close returned (eventstore_last_write_unix > 0,
 // recorded_at > 0).
 //
@@ -2364,21 +2364,21 @@ func verifyVMHeartbeatOnShutdown(ctx context.Context, t *testing.T, d *driver) {
 		}
 	}()
 
-	db, err := eventstore.OpenReadOnly(ctx, hbHostPath)
+	reader, err := eventstore.OpenReader(ctx, hbHostPath)
 	require.NoError(t, err, "opening stats db read-only")
 
 	defer func() {
-		closeErr := db.Close()
+		closeErr := reader.Close()
 		if closeErr != nil {
 			t.Logf("closing db: %v", closeErr)
 		}
 	}()
 
-	instanceID, _, err := eventstore.LatestInstanceID(ctx, db)
+	instanceID, _, err := reader.LatestInstanceID(ctx)
 	require.NoError(t, err, "resolving instance id")
 	require.NotEmpty(t, instanceID, "no instance row written; daemon never reached steady state")
 
-	hb, ok, err := eventstore.LatestHeartbeat(ctx, db, instanceID)
+	hb, ok, err := reader.LatestHeartbeat(ctx, instanceID)
 	require.NoError(t, err, "reading latest heartbeat")
 	require.True(t, ok, "no heartbeat row for instance %s after shutdown", instanceID)
 

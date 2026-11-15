@@ -223,7 +223,7 @@ type EnvoySection struct {
 // Ingestion-health counters live on the running daemon's
 // [eventstore.Store] / [nflog.Reader] / [dnscache.Cache]; the CLI
 // reads them through the heartbeat row written into
-// `instance_metrics` (see [eventstore.LatestHeartbeat]).
+// `instance_metrics` (see [eventstore.Reader.LatestHeartbeat]).
 type StatsSection struct {
 	// LastEvent is the timestamp of the most recent event. Zero
 	// when no events have been written. Sourced from

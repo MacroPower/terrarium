@@ -576,10 +576,10 @@ func TestRecordHeartbeat_RoundTrip(t *testing.T) {
 
 	require.NoError(t, store.RecordHeartbeat(t.Context(), first))
 
-	db := openReadOnly(t, path)
+	r := openReader(t, path)
 
 	require.Eventually(t, func() bool {
-		hb, ok, err := eventstore.LatestHeartbeat(t.Context(), db, store.InstanceID())
+		hb, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
 		if err != nil || !ok {
 			return false
 		}
@@ -604,7 +604,7 @@ func TestRecordHeartbeat_RoundTrip(t *testing.T) {
 	require.NoError(t, store.RecordHeartbeat(t.Context(), second))
 
 	require.Eventually(t, func() bool {
-		hb, ok, err := eventstore.LatestHeartbeat(t.Context(), db, store.InstanceID())
+		hb, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
 		if err != nil || !ok {
 			return false
 		}
@@ -614,7 +614,7 @@ func TestRecordHeartbeat_RoundTrip(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond)
 
 	// Unknown instance returns ok=false without error.
-	_, ok, err := eventstore.LatestHeartbeat(t.Context(), db, "deadbeefdeadbeef")
+	_, ok, err := r.LatestHeartbeat(t.Context(), "deadbeefdeadbeef")
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
@@ -633,16 +633,13 @@ func TestLatestInstanceID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stats.db")
 
-	// Empty DB returns ok=false.
 	store, err := eventstore.Open(t.Context(), path)
 	require.NoError(t, err)
 
 	id := store.InstanceID()
 	require.NoError(t, store.Close())
 
-	db := openReadOnly(t, path)
-
-	got, ok, err := eventstore.LatestInstanceID(t.Context(), db)
+	got, ok, err := openReader(t, path).LatestInstanceID(t.Context())
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, id, got)

@@ -49,10 +49,10 @@ const writerDSNSuffix = "?_pragma=busy_timeout(2000)&_pragma=synchronous(NORMAL)
 const readOnlyDSNSuffix = "?mode=ro&_pragma=busy_timeout(2000)"
 
 // OpenReadOnly opens the SQLite event store at path for reads only.
-// No writer goroutine, no schema apply, no instance row. The `stats`
-// CLI and `status` renderer use it to read a database written by a
-// separate [*Store] in the daemon. The caller owns closing the
-// returned [*sql.DB].
+// No writer goroutine, no schema apply, no instance row. It gives raw
+// SQL access to a database written by a separate [*Store] in the
+// daemon. Use [OpenReader] for the typed queries. The caller owns
+// closing the returned [*sql.DB].
 func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path+readOnlyDSNSuffix)
 	if err != nil {
@@ -77,8 +77,9 @@ func closeDBIgnoringErr(db *sql.DB) {
 }
 
 // ErrSchemaTooNew is returned when the database file's `user_version`
-// pragma exceeds the version this binary knows how to read. The store
-// refuses to open rather than risk corrupting future schema.
+// pragma exceeds the version this binary knows how to read. [Open]
+// refuses to open rather than risk corrupting future schema, and
+// [OpenReader] refuses to read a schema that it does not know.
 var ErrSchemaTooNew = errors.New("eventstore: db schema is newer than supported")
 
 // instanceMetricsTableSQL creates the `instance_metrics` table. Used
@@ -458,7 +459,7 @@ func (s *Store) LastWriteTime() time.Time {
 
 // Heartbeat is a periodic snapshot of daemon-internal counters that
 // the daemon writes to the `instance_metrics` table. The
-// `terrarium status` CLI reads it through [LatestHeartbeat] to
+// `terrarium status` CLI reads it through [Reader.LatestHeartbeat] to
 // surface ingestion health it cannot observe through the
 // process boundary.
 type Heartbeat struct {
@@ -526,88 +527,6 @@ func (s *Store) RecordHeartbeat(_ context.Context, h Heartbeat) error {
 	}
 
 	return nil
-}
-
-// LatestHeartbeat reads the most recent `instance_metrics` row for
-// instanceID. Returns ok=false on a fresh database or when no
-// heartbeat has been written for the given instance. The db must be
-// a handle opened by [OpenReadOnly] or [Open]. Used by the
-// `terrarium status` CLI which holds a read-only handle.
-func LatestHeartbeat(ctx context.Context, db *sql.DB, instanceID string) (Heartbeat, bool, error) {
-	if instanceID == "" {
-		return Heartbeat{}, false, nil
-	}
-
-	var (
-		recordedAt, nflogLast, esLast       int64
-		kernelDrops, parseErrors, evictions int64
-		dnsCacheSize, dropCount             int64
-	)
-
-	err := db.QueryRowContext(ctx, `
-		SELECT recorded_at,
-		       nflog_kernel_drops,
-		       nflog_parse_errors,
-		       nflog_last_event_unix,
-		       dnscache_size,
-		       dnscache_evictions,
-		       eventstore_drop_count,
-		       eventstore_last_write_unix
-		FROM instance_metrics
-		WHERE instance_id = ?
-	`, instanceID).Scan(
-		&recordedAt, &kernelDrops, &parseErrors, &nflogLast,
-		&dnsCacheSize, &evictions, &dropCount, &esLast,
-	)
-
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return Heartbeat{}, false, nil
-	case err != nil:
-		return Heartbeat{}, false, fmt.Errorf("reading heartbeat: %w", err)
-	}
-
-	h := Heartbeat{
-		RecordedAt:          time.UnixMicro(recordedAt),
-		NFLogKernelDrops:    uint64(kernelDrops), //nolint:gosec // counter persisted as int64; never negative.
-		NFLogParseErrors:    uint64(parseErrors), //nolint:gosec // counter persisted as int64; never negative.
-		DNSCacheSize:        dnsCacheSize,
-		DNSCacheEvictions:   uint64(evictions), //nolint:gosec // counter persisted as int64; never negative.
-		EventStoreDropCount: dropCount,
-	}
-
-	if nflogLast != 0 {
-		h.NFLogLastEvent = time.UnixMicro(nflogLast)
-	}
-
-	if esLast != 0 {
-		h.EventStoreLastWrite = time.UnixMicro(esLast)
-	}
-
-	return h, true, nil
-}
-
-// LatestInstanceID returns the most recent in-progress instance ID,
-// falling back to the most recent overall instance when no run is in
-// progress. Returns ok=false when the `instances` table is empty.
-// The db must be a handle opened by [OpenReadOnly] or [Open].
-func LatestInstanceID(ctx context.Context, db *sql.DB) (string, bool, error) {
-	var id string
-
-	err := db.QueryRowContext(ctx,
-		`SELECT id FROM instances
-		 ORDER BY (ended_at IS NULL) DESC, started_at DESC
-		 LIMIT 1`,
-	).Scan(&id)
-
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return "", false, nil
-	case err != nil:
-		return "", false, fmt.Errorf("querying instances: %w", err)
-	}
-
-	return id, true, nil
 }
 
 // SetRetention atomically replaces the retention policy. The new
@@ -820,7 +739,7 @@ func (s *Store) upsertHeartbeat(h Heartbeat) {
 
 // unixMicroOrZero returns t.UnixMicro() or 0 for the zero time. The
 // caller-side equivalent of `IF unix == 0` decoding in
-// [LatestHeartbeat]; matches the column DEFAULT 0.
+// [Reader.LatestHeartbeat]; matches the column DEFAULT 0.
 func unixMicroOrZero(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
