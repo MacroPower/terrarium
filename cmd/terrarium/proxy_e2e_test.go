@@ -2594,6 +2594,60 @@ func TestProxyE2EStatsDefaultSocket(t *testing.T) {
 	}, 15*time.Second, 250*time.Millisecond)
 }
 
+// TestProxyE2EPolicySnapshot checks that a proxy with stats enabled
+// records the policy that it serves. The store holds one snapshot of
+// the proxy, and the instance row names the listen address and the
+// config file. The policy injects a header value, which the database
+// files must not hold.
+//
+//nolint:paralleltest // e2e tests set env and run envoy subprocesses.
+func TestProxyE2EPolicySnapshot(t *testing.T) {
+	requireEnvoy(t)
+
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "stats.db")
+
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
+
+	policy := "stats:\n" +
+		"  enabled: true\n" +
+		"  path: " + dbPath + "\n" +
+		snapshotSecretEgress
+
+	proxyURL, usr := startProxy(t, policy, "")
+
+	// The proxy records the snapshot before it creates the ready
+	// file, and the writer goroutine of the store adds the row.
+	require.Eventually(t, func() bool { return len(policySnapshots(t, dbPath)) > 0 },
+		15*time.Second, 50*time.Millisecond)
+
+	infos := policySnapshots(t, dbPath)
+	require.Len(t, infos, 1)
+	assert.Equal(t, eventstore.SecurityFiltered, infos[0].Mode)
+	assert.Equal(t, usr.ConfigPath, infos[0].ConfigPath)
+
+	got := latestPolicy(t, dbPath, infos[0].InstanceID)
+
+	parsed, err := config.ParseConfig(t.Context(), []byte(got.YAML))
+	require.NoError(t, err, "stored document:\n%s", got.YAML)
+	assert.Equal(t, parseProxyConfig(t, policy).Redacted(), parsed)
+
+	requireNoSecretInDir(t, dbDir, snapshotSecret)
+
+	r, err := eventstore.OpenReader(t.Context(), dbPath)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, r.Close()) })
+
+	instances, err := r.Instances(t.Context())
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, infos[0].InstanceID, instances[0].ID)
+	assert.Equal(t, eventstore.ModeProxy, instances[0].Mode)
+	assert.Equal(t, "127.0.0.1-"+proxyURL.Port(), instances[0].Name)
+	assert.Equal(t, usr.ConfigPath, instances[0].ConfigPath)
+}
+
 // TestProxyBootstrapStatsSocketTooLong checks that Envoy accepts the
 // proxy bootstrap when stats.socket is longer than the platform limit.
 // Envoy rejects a bootstrap that names such a path, so the bootstrap

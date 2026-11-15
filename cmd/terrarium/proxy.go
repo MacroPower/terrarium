@@ -1003,7 +1003,7 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 		// store and the access log socket. A second proxy on addr can
 		// share those paths with the first proxy, and opening the
 		// access log socket removes the socket of the first proxy.
-		store := openProxyEventStore(ctx, cfg)
+		store := openProxyEventStore(ctx, cfg, usr, opts)
 
 		defer func() {
 			closeErr := store.Close() //nolint:contextcheck // shutdown flush must not inherit a canceled ctx.
@@ -1011,6 +1011,11 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 				slog.DebugContext(ctx, "closing event store", slog.Any("err", closeErr))
 			}
 		}()
+
+		// Envoy serves the policy, so record it as the policy in
+		// force. The snapshot comes before the ready file, so a
+		// process that waits for the file finds the snapshot queued.
+		recordPolicySnapshot(ctx, store, cfg, usr.ConfigPath)
 
 		accessLogSrv := openProxyAccessLog(ctx, cfg, store, opts)
 		if accessLogSrv != nil {
@@ -1082,7 +1087,14 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 // are needed: everything runs as the invoking user. On failure it
 // logs and returns nil so [eventstore.Store] receivers behave as
 // no-ops.
-func openProxyEventStore(ctx context.Context, cfg *config.Config) *eventstore.Store {
+//
+// The instance row of the store tells two proxies apart. It holds the
+// [proxyInstanceName] of opts and the path of the config file of usr.
+// Proxies on different listen addresses can share one database, and
+// each of them adds its own instance row.
+func openProxyEventStore(
+	ctx context.Context, cfg *config.Config, usr *config.User, opts proxyOptions,
+) *eventstore.Store {
 	if !cfg.StatsEnabled() {
 		return nil
 	}
@@ -1092,6 +1104,8 @@ func openProxyEventStore(ctx context.Context, cfg *config.Config) *eventstore.St
 
 	store, err := eventstore.Open(ctx, path,
 		eventstore.WithMode(eventstore.ModeProxy),
+		eventstore.WithInstanceName(proxyInstanceName(opts)),
+		eventstore.WithConfigPath(absConfigPath(usr.ConfigPath)),
 		eventstore.WithRetention(eventstore.Retention{
 			MaxAge:  cfg.StatsRetentionMaxAge(),
 			MaxRows: cfg.StatsRetentionMaxRows(),

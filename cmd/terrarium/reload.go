@@ -282,6 +282,10 @@ type reloadInputs struct {
 // removes the Envoy bootstrap that [prepareReload] generated. See
 // [removeEnvoyBootstrap] for the reason.
 //
+// After both phases succeed, reloadInfrastructure records the new
+// config in the event store of inf with [recordPolicySnapshot]. A
+// reload that stops in either phase records no snapshot.
+//
 // After each return, every part that inf names runs.
 func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.UIDs, inf *infra) error {
 	slog.InfoContext(ctx, "reloading terrarium configuration")
@@ -299,6 +303,7 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 				slog.ErrorContext(ctx, "discarding the configs of the incomplete reload", slog.Any("err", err))
 			}
 		},
+		recordReloadPolicy(ctx, inf, usr),
 	)
 	if err != nil {
 		return err
@@ -307,6 +312,16 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 	slog.InfoContext(ctx, "terrarium configuration reloaded successfully")
 
 	return nil
+}
+
+// recordReloadPolicy returns the callback that [reloadInfrastructure]
+// passes to [runReloadPhases] as applied. The callback records the
+// config of the reload in the event store of inf with
+// [recordPolicySnapshot], under the config path of usr.
+func recordReloadPolicy(ctx context.Context, inf *infra, usr *config.User) func(*reloadInputs) {
+	return func(in *reloadInputs) {
+		recordPolicySnapshot(ctx, inf.eventStore, in.cfg, usr.ConfigPath)
+	}
 }
 
 // runReloadPhases runs the two phases of a reload. It calls prepare
@@ -325,8 +340,16 @@ func reloadInfrastructure(ctx context.Context, usr *config.User, uids firewall.U
 // the next start of the daemon does not reuse it. After an error from
 // prepare, the daemon keeps running, and the next reload generates
 // the configs again.
+//
+// After replace returns nil, and only then, runReloadPhases calls
+// applied with the inputs that replace ran. The daemon then runs the
+// config of those inputs, so applied records that config as the
+// policy in force.
 func runReloadPhases(
-	prepare func() (*reloadInputs, error), replace func(*reloadInputs) error, discard func(),
+	prepare func() (*reloadInputs, error),
+	replace func(*reloadInputs) error,
+	discard func(),
+	applied func(*reloadInputs),
 ) error {
 	in, err := prepare()
 	if err != nil {
@@ -339,6 +362,8 @@ func runReloadPhases(
 
 		return err
 	}
+
+	applied(in)
 
 	return nil
 }

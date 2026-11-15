@@ -398,6 +398,11 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	dnsCacheCleanedUp = true
 	nflogCleanedUp = true
 
+	// Every part runs the config, so record it as the policy in
+	// force. The snapshot comes before the ready file, so a process
+	// that waits for the file finds the snapshot queued.
+	recordPolicySnapshot(ctx, store, cfg, usr.ConfigPath)
+
 	// Signal readiness by creating a file at the requested path.
 	if usr.ReadyFile != "" {
 		f, err := os.Create(usr.ReadyFile)
@@ -550,6 +555,7 @@ func openEventStore(
 	perSource := cfg.StatsRetentionPerSource()
 	opts := []eventstore.Option{
 		eventstore.WithMode(mode),
+		eventstore.WithConfigPath(absConfigPath(usr.ConfigPath)),
 		eventstore.WithRetention(eventstore.Retention{
 			MaxAge:  cfg.StatsRetentionMaxAge(),
 			MaxRows: cfg.StatsRetentionMaxRows(),

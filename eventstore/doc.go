@@ -10,9 +10,18 @@
 // retention pruner inline, so pruning never contends with writes for the
 // SQLite write lock.
 //
-// Open a store with [Open]. Nil-valued [*Store] receivers are safe;
-// [Store.Emit] and [Store.Close] are no-ops on a nil store so callers
-// can take the same code path with stats disabled.
+// Open a store with [Open]. Nil-valued [*Store] receivers are safe.
+// [Store.Emit], [Store.RecordPolicy], and [Store.Close] are no-ops on
+// a nil store, so callers take the same code path with stats
+// disabled.
+//
+// A store also records the policy that its process enforces. The
+// process calls [Store.RecordPolicy] after it applies a policy, at
+// its start and after each reload. Each call adds one snapshot of the
+// policy document, so [Reader.PolicyAt] returns the policy in force
+// at the time of a given event. The unprivileged user of [WithUID]
+// can read the database, so the caller removes each secret from the
+// document before the call.
 //
 // Open a reader with [OpenReader], usually in another process than the
 // one that writes. Each query of the store belongs in a [Reader]

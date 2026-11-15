@@ -357,7 +357,7 @@ func TestProxyAccessLogSocketPerListenAddress(t *testing.T) {
 		"  path: "+filepath.Join(t.TempDir(), "stats.db")+"\n"+
 		"egress: []\n")
 
-	store := openProxyEventStore(t.Context(), cfg)
+	store := openProxyEventStore(t.Context(), cfg, config.NewUser(), proxyOptions{})
 	require.NotNil(t, store)
 
 	t.Cleanup(func() {

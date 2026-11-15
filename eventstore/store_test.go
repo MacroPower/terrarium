@@ -46,7 +46,7 @@ func TestOpen_AppliesSchemaOnFreshDB(t *testing.T) {
 
 	err = db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
 	require.NoError(t, err)
-	assert.Equal(t, 2, version)
+	assert.Equal(t, 3, version)
 
 	rows, err := db.QueryContext(t.Context(), `SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
 	require.NoError(t, err)
@@ -67,11 +67,12 @@ func TestOpen_AppliesSchemaOnFreshDB(t *testing.T) {
 	assert.Contains(t, tables, "events")
 	assert.Contains(t, tables, "instances")
 	assert.Contains(t, tables, "instance_metrics")
+	assert.Contains(t, tables, "policies")
 }
 
-// v1SchemaSQL is the schema as it existed prior to introducing
-// instance_metrics. Pinned in the test so the v1 -> v2 migration is
-// exercised against the exact shape that shipped at user_version=1.
+// v1SchemaSQL is the schema of user_version=1, before the
+// `instance_metrics` table. The test pins it, so that each migration
+// runs against the tables that version 1 created.
 const v1SchemaSQL = `
 CREATE TABLE events (
   id          INTEGER PRIMARY KEY,
@@ -104,45 +105,137 @@ CREATE TABLE instances (
 );
 `
 
-func TestOpen_MigratesV1ToV2(t *testing.T) {
+// v2SchemaSQL is the schema of user_version=2, which added the
+// `instance_metrics` table to [v1SchemaSQL]. The test pins it, so
+// that the migration to version 3 runs against the tables that
+// version 2 created.
+const v2SchemaSQL = v1SchemaSQL + `
+CREATE TABLE instance_metrics (
+  instance_id            TEXT PRIMARY KEY REFERENCES instances(id),
+  recorded_at            INTEGER NOT NULL,
+  nflog_kernel_drops     INTEGER NOT NULL DEFAULT 0,
+  nflog_parse_errors     INTEGER NOT NULL DEFAULT 0,
+  nflog_last_event_unix  INTEGER NOT NULL DEFAULT 0,
+  dnscache_size          INTEGER NOT NULL DEFAULT 0,
+  dnscache_evictions     INTEGER NOT NULL DEFAULT 0,
+  eventstore_drop_count  INTEGER NOT NULL DEFAULT 0,
+  eventstore_last_write_unix INTEGER NOT NULL DEFAULT 0
+);
+`
+
+// TestOpen_MigratesToCurrentSchema opens a database of each earlier
+// schema version. The open must bring the database to the current
+// version and keep the rows that the database held. The store must
+// then record an event, a heartbeat, and a policy snapshot.
+func TestOpen_MigratesToCurrentSchema(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "stats.db")
+	const seedRows = `
+		INSERT INTO instances (id, started_at, ended_at, mode) VALUES ('old', 100, 200, 'daemon');
+		INSERT INTO events (ts, instance_id, source, decision, domain) VALUES (150, 'old', 'dns', 'deny', 'kept.example');
+	`
 
-	// Lay down a v1 database by hand, then open it through the
-	// production code path and verify it lands on v2 with the new
-	// instance_metrics table.
-	raw, err := sql.Open("sqlite", path)
-	require.NoError(t, err)
+	tcs := map[string]struct {
+		before []string
+		// The number of `instance_metrics` rows that the database
+		// holds before the open.
+		wantMetrics int
+	}{
+		"version 1": {
+			before: []string{v1SchemaSQL, `PRAGMA user_version = 1`, seedRows},
+		},
+		"version 2": {
+			before: []string{
+				v2SchemaSQL, `PRAGMA user_version = 2`, seedRows,
+				`INSERT INTO instance_metrics (instance_id, recorded_at, dnscache_size) VALUES ('old', 180, 7)`,
+			},
+			wantMetrics: 1,
+		},
+	}
 
-	_, err = raw.ExecContext(t.Context(), v1SchemaSQL)
-	require.NoError(t, err)
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	_, err = raw.ExecContext(t.Context(), `PRAGMA user_version = 1`)
-	require.NoError(t, err)
-	require.NoError(t, raw.Close())
+			path := filepath.Join(t.TempDir(), "stats.db")
+			rawDB(t, path, tc.before...)
 
-	store, err := eventstore.Open(t.Context(), path,
-		eventstore.WithBatchInterval(20*time.Millisecond))
-	require.NoError(t, err)
+			store, err := eventstore.Open(t.Context(), path,
+				eventstore.WithInstanceName("migrated"),
+				eventstore.WithConfigPath("/etc/terrarium/config.yaml"))
+			require.NoError(t, err)
 
-	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+			store.Emit(eventstore.Event{
+				Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Domain: "new.example",
+			})
+			require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{DNSCacheSize: 3}))
+			store.RecordPolicy(eventstore.PolicySnapshot{
+				ConfigPath: "/etc/terrarium/config.yaml",
+				Mode:       eventstore.SecurityBlocked,
+				YAML:       "egress:\n  - {}\n",
+			})
+			require.NoError(t, store.Close())
 
-	db := openReadOnly(t, path)
+			db := openReadOnly(t, path)
 
-	var version int
+			var version int
 
-	err = db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
-	require.NoError(t, err)
-	assert.Equal(t, 2, version)
+			err = db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
+			require.NoError(t, err)
+			assert.Equal(t, 3, version)
 
-	var name string
+			// The rows of the earlier version.
+			var (
+				mode   string
+				domain string
+				cached int
+			)
 
-	err = db.QueryRowContext(t.Context(), `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'instance_metrics'`).
-		Scan(&name)
-	require.NoError(t, err)
-	assert.Equal(t, "instance_metrics", name)
+			err = db.QueryRowContext(t.Context(),
+				`SELECT mode FROM instances WHERE id = 'old' AND started_at = 100 AND ended_at = 200`).Scan(&mode)
+			require.NoError(t, err)
+			assert.Equal(t, "daemon", mode)
+
+			err = db.QueryRowContext(t.Context(),
+				`SELECT domain FROM events WHERE instance_id = 'old' AND ts = 150`).Scan(&domain)
+			require.NoError(t, err)
+			assert.Equal(t, "kept.example", domain)
+
+			if tc.wantMetrics > 0 {
+				err = db.QueryRowContext(t.Context(),
+					`SELECT dnscache_size FROM instance_metrics WHERE instance_id = 'old'`).Scan(&cached)
+				require.NoError(t, err)
+				assert.Equal(t, 7, cached)
+			}
+
+			// The rows that the store wrote after the migration.
+			r := openReader(t, path)
+
+			instances, err := r.Instances(t.Context())
+			require.NoError(t, err)
+			require.Len(t, instances, 2)
+			assert.Equal(t, store.InstanceID(), instances[0].ID)
+			assert.Equal(t, "migrated", instances[0].Name)
+			assert.Equal(t, "/etc/terrarium/config.yaml", instances[0].ConfigPath)
+			assert.Equal(t, "old", instances[1].ID)
+			assert.Empty(t, instances[1].Name)
+			assert.Empty(t, instances[1].ConfigPath)
+
+			page, err := r.Events(t.Context(), eventstore.EventsQuery{Limit: 10})
+			require.NoError(t, err)
+			assert.Len(t, page.Events, 2)
+
+			hb, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
+			require.NoError(t, err)
+			require.True(t, ok)
+			assert.Equal(t, int64(3), hb.DNSCacheSize)
+
+			policy, ok, err := r.LatestPolicy(t.Context(), store.InstanceID())
+			require.NoError(t, err)
+			require.True(t, ok)
+			assert.Equal(t, eventstore.SecurityBlocked, policy.Mode)
+		})
+	}
 }
 
 func TestOpen_RefusesFutureSchemaVersion(t *testing.T) {
@@ -174,6 +267,9 @@ func TestOpen_ConcurrentOpensShareOneDB(t *testing.T) {
 		"new database": {},
 		"version 1 database": {
 			before: []string{v1SchemaSQL, `PRAGMA user_version = 1`},
+		},
+		"version 2 database": {
+			before: []string{v2SchemaSQL, `PRAGMA user_version = 2`},
 		},
 	}
 
@@ -234,7 +330,7 @@ func TestOpen_ConcurrentOpensShareOneDB(t *testing.T) {
 
 			err := db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
 			require.NoError(t, err)
-			assert.Equal(t, 2, version)
+			assert.Equal(t, 3, version)
 
 			var count int
 

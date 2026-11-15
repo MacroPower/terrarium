@@ -2004,6 +2004,23 @@ egress:
 		},
 		verify: verifyVMHeartbeatOnShutdown,
 	},
+
+	// The vm-policy-snapshots case checks the policy snapshots that
+	// the daemon records in the event store. The daemon records one
+	// at its start and one for each reload that completes. A reload
+	// that the daemon rejects records none.
+	{
+		name:   "vm-policy-snapshots",
+		config: fqdnPort443Config,
+		services: []serviceSpec{
+			nginxService("target-allow", defaultNginxConf),
+		},
+		assertions: []assertion{
+			httpAllowed("https://target-allow:443/",
+				"policy-snapshots: target-allow reachable under config A"),
+		},
+		verify: verifyVMPolicySnapshots,
+	},
 }
 
 // runDaemonReloadCliTeardown drives the daemon-reload-CLI sub-cases
@@ -2404,6 +2421,128 @@ func verifyVMHeartbeatOnShutdown(ctx context.Context, t *testing.T, d *driver) {
 	// No need to restart the daemon here: runVMTest invokes
 	// restartDaemon at the start of each test, and the post-suite
 	// cleanup hook in lima_test.go covers the suite-end case.
+}
+
+// policySnapshotConfigB is the config of the reload that
+// [verifyVMPolicySnapshots] completes. It allows target-b in place
+// of the target-allow of [fqdnPort443Config].
+const policySnapshotConfigB = `egress:
+  - toFQDNs:
+      - matchName: "target-b"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`
+
+// policySnapshotConfigRejected is the config of the reload that
+// [verifyVMPolicySnapshots] expects the daemon to reject. It moves
+// the nflog group of the stats reader, which the daemon reads only at
+// its start. The CLI parses the config, so the daemon gets the
+// reload and rejects it.
+const policySnapshotConfigRejected = `stats:
+  enabled: true
+  path: /var/lib/terrarium/stats.db
+  firewall:
+    nflogGroup: 5001
+egress:
+  - toFQDNs:
+      - matchName: "target-rejected"
+    toPorts:
+      - ports:
+          - port: "443"
+            protocol: TCP
+`
+
+// verifyVMPolicySnapshots runs a reload to [policySnapshotConfigB]
+// that completes and a reload to [policySnapshotConfigRejected] that
+// the daemon rejects. It then stops the daemon, copies stats.db to
+// the host, and reads the snapshots of the daemon through
+// [eventstore.Reader]. The store must hold exactly two snapshots. The
+// earlier one holds the host of [fqdnPort443Config], which the daemon
+// applied at its start, and the latest one holds the host of
+// [policySnapshotConfigB].
+func verifyVMPolicySnapshots(ctx context.Context, t *testing.T, d *driver) {
+	t.Helper()
+
+	err := d.writeConfig(ctx, policySnapshotConfigB)
+	require.NoError(t, err, "writing config B")
+
+	exitCode, stdout, stderr, err := d.reloadDaemonViaCli(ctx)
+	require.NoError(t, err, "running daemon reload (config B)")
+	require.Equal(t, 0, exitCode, "daemon reload (config B) exit code\nstdout:\n%s\nstderr:\n%s",
+		stdout, stderr)
+
+	err = d.writeConfig(ctx, policySnapshotConfigRejected)
+	require.NoError(t, err, "writing the rejected config")
+
+	exitCode, stdout, stderr, err = d.reloadDaemonViaCli(ctx)
+	require.NoError(t, err, "running daemon reload (rejected config)")
+	require.NotEqual(t, 0, exitCode, "daemon reload accepted the rejected config\nstdout:\n%s\nstderr:\n%s",
+		stdout, stderr)
+	require.Contains(t, stdout+stderr, "daemon keeps the previous config",
+		"the daemon did not reject the reload\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+
+	// The writer of the store writes every queued snapshot before the
+	// daemon exits, and SQLite checkpoints the WAL into the main
+	// file at the last close.
+	err = d.stopDaemon(ctx)
+	require.NoError(t, err, "stopping daemon")
+
+	dbPath := copyStatsDBFromVM(ctx, t, d)
+	defer func() {
+		err := os.RemoveAll(filepath.Dir(dbPath))
+		if err != nil {
+			t.Logf("removing temp dir: %v", err)
+		}
+	}()
+
+	reader, err := eventstore.OpenReader(ctx, dbPath)
+	require.NoError(t, err, "opening stats db read-only")
+
+	defer func() {
+		closeErr := reader.Close()
+		if closeErr != nil {
+			t.Logf("closing db: %v", closeErr)
+		}
+	}()
+
+	instanceID, ok, err := reader.LatestInstanceID(ctx)
+	require.NoError(t, err, "resolving instance id")
+	require.True(t, ok, "no instance row written")
+
+	infos, err := reader.Policies(ctx, instanceID)
+	require.NoError(t, err, "listing policy snapshots")
+	require.Len(t, infos, 2, "policy snapshots of instance %s: %+v", instanceID, infos)
+
+	latest, ok, err := reader.LatestPolicy(ctx, instanceID)
+	require.NoError(t, err, "reading the latest policy snapshot")
+	require.True(t, ok, "no latest policy snapshot")
+	require.Equal(t, infos[0], latest.PolicyInfo)
+	require.Equal(t, VMTerrariumConfigPath, latest.ConfigPath)
+	require.Equal(t, eventstore.SecurityFiltered, latest.Mode)
+	requireSnapshotHosts(t, latest, "target-b", "target-allow", "target-rejected")
+
+	first, ok, err := reader.PolicyAt(ctx, instanceID, infos[1].AppliedAt)
+	require.NoError(t, err, "reading the policy snapshot of the start")
+	require.True(t, ok, "no policy snapshot at %s", infos[1].AppliedAt)
+	require.Equal(t, infos[1], first.PolicyInfo)
+	requireSnapshotHosts(t, first, "target-allow", "target-b", "target-rejected")
+}
+
+// requireSnapshotHosts checks that the document of the snapshot p
+// names the host want and none of the hosts in other. The module of
+// this runner does not import the config package, so the check reads
+// the document as text. The tests of the snapshot in cmd/terrarium
+// parse the document with the config package.
+func requireSnapshotHosts(t *testing.T, p eventstore.StoredPolicy, want string, other ...string) {
+	t.Helper()
+
+	require.Contains(t, p.YAML, want, "policy snapshot:\n%s", p.YAML)
+
+	for _, host := range other {
+		require.NotContains(t, p.YAML, host, "policy snapshot:\n%s", p.YAML)
+	}
 }
 
 // copyStatsDBFromVM copies /var/lib/terrarium/stats.db from the VM

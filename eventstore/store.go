@@ -20,8 +20,14 @@ import (
 )
 
 // schemaVersion is the current `PRAGMA user_version` written by [Open].
-// Bumping this requires a migration step in [Store.applySchema].
-const schemaVersion = 2
+// Bumping this requires a migration step in [migrationSQL].
+const schemaVersion = 3
+
+// policyChanSize is the number of policy snapshots that wait for the
+// writer goroutine. A process records one snapshot at its start and
+// one for each reload, so the channel fills only when the writer
+// stalls.
+const policyChanSize = 16
 
 // pruneChunkSize caps the per-call DELETE size for both the global
 // and per-source pruners. Bounded chunks keep WAL fsync cost off the
@@ -84,7 +90,8 @@ var ErrSchemaTooNew = errors.New("eventstore: db schema is newer than supported"
 
 // instanceMetricsTableSQL creates the `instance_metrics` table. Used
 // by the v0 fresh-schema path (concatenated into [schemaSQL]) and the
-// v1 -> v2 migration; one source of truth keeps the two paths in sync.
+// v1 -> v2 migration in [migrationSQL]; one source of truth keeps the
+// two paths in sync.
 const instanceMetricsTableSQL = `
 CREATE TABLE instance_metrics (
   instance_id            TEXT PRIMARY KEY REFERENCES instances(id),
@@ -99,8 +106,50 @@ CREATE TABLE instance_metrics (
 );
 `
 
-// schemaSQL is applied once on a fresh database (user_version=0).
-// Subsequent versions add ALTER statements branched on user_version.
+// policiesTableSQL creates the `policies` table, which holds one row
+// for each policy snapshot, and its index. The fresh schema in
+// [schemaSQL] and the migration from version 2 in [migrationSQL] both
+// use it, so the two paths create the same table.
+const policiesTableSQL = `
+CREATE TABLE policies (
+  id            INTEGER PRIMARY KEY,
+  instance_id   TEXT NOT NULL REFERENCES instances(id),
+  applied_at    INTEGER NOT NULL,
+  config_path   TEXT NOT NULL,
+  sha256        TEXT NOT NULL,
+  security_mode TEXT NOT NULL,
+  yaml          TEXT NOT NULL
+);
+CREATE INDEX policies_instance_applied ON policies(instance_id, applied_at DESC);
+`
+
+// instanceIdentitySQL adds the `name` and `config_path` columns to the
+// `instances` table of a version 2 database.
+const instanceIdentitySQL = `
+ALTER TABLE instances ADD COLUMN name TEXT;
+ALTER TABLE instances ADD COLUMN config_path TEXT;
+`
+
+// migrationSQL returns the statements that bring a database of schema
+// version from to the next version. [migrate] applies the steps in
+// order, so a database of each earlier version reaches
+// [schemaVersion]. The steps add tables and columns and never rewrite
+// a row.
+func migrationSQL(from int) string {
+	switch from {
+	case 1:
+		return instanceMetricsTableSQL
+	case 2:
+		return instanceIdentitySQL + policiesTableSQL
+	default:
+		return ""
+	}
+}
+
+// schemaSQL creates the tables of [schemaVersion] in one step.
+// [migrate] applies it to a fresh database (user_version=0). A
+// database of an earlier version reaches the same tables through
+// [migrationSQL].
 var schemaSQL = `
 CREATE TABLE events (
   id          INTEGER PRIMARY KEY,
@@ -126,17 +175,21 @@ CREATE INDEX events_source_ts   ON events(source, ts DESC);
 CREATE INDEX events_instance_ts ON events(instance_id, ts DESC);
 
 CREATE TABLE instances (
-  id         TEXT PRIMARY KEY,
-  started_at INTEGER NOT NULL,
-  ended_at   INTEGER,
-  mode       TEXT NOT NULL
+  id          TEXT PRIMARY KEY,
+  started_at  INTEGER NOT NULL,
+  ended_at    INTEGER,
+  mode        TEXT NOT NULL,
+  name        TEXT,
+  config_path TEXT
 );
-` + instanceMetricsTableSQL
+` + instanceMetricsTableSQL + policiesTableSQL
 
 // Store owns a SQLite database and a writer goroutine that drains
 // events from a buffered channel into batched inserts. Producers call
-// [Store.Emit]; the data plane is never blocked. A nil receiver is
-// safe; both [Store.Emit] and [Store.Close] are no-ops in that case.
+// [Store.Emit]; the data plane is never blocked. The process that
+// applies a policy calls [Store.RecordPolicy], which does not block
+// either. A nil receiver is safe. [Store.Emit], [Store.RecordPolicy],
+// and [Store.Close] are no-ops in that case.
 //
 // Create instances with [Open].
 type Store struct {
@@ -148,6 +201,7 @@ type Store struct {
 	insertStmt  *sql.Stmt
 	ch          chan Event
 	heartbeatCh chan Heartbeat
+	policyCh    chan PolicySnapshot
 	done        chan struct{}
 	logger      *slog.Logger
 	instanceID  string
@@ -177,7 +231,10 @@ type Store struct {
 	// read lock so concurrent producers do not block each other.
 	// Close takes the write lock and sets closed before closing the
 	// channel. After Close, Emit returns without sending, which
-	// avoids a panic on send-to-closed-channel.
+	// avoids a panic on send-to-closed-channel. [Store.RecordPolicy]
+	// and [Store.RecordHeartbeat] take the read lock for the same
+	// reason, so the writer goroutine reads each value that they
+	// sent before it returns.
 	closeMu sync.RWMutex
 	closed  bool
 }
@@ -192,8 +249,10 @@ type Store struct {
 // other processes, and one of them creates the schema.
 //
 // On open the store inserts an `instances` row tagged with a fresh
-// 16-hex-character instance ID. The matching `ended_at` UPDATE runs
-// during a clean [Store.Close]; crashes leave `ended_at` NULL.
+// 16-hex-character instance ID. The row also holds the mode of
+// [WithMode], the name of [WithInstanceName], and the path of
+// [WithConfigPath]. The matching `ended_at` UPDATE runs during a
+// clean [Store.Close]; crashes leave `ended_at` NULL.
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	o := defaultStoreOptions()
 	for _, opt := range opts {
@@ -226,6 +285,7 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 		db:          db,
 		ch:          make(chan Event, o.chanSize),
 		heartbeatCh: make(chan Heartbeat, 1),
+		policyCh:    make(chan PolicySnapshot, policyChanSize),
 		done:        make(chan struct{}),
 		logger:      o.logger,
 		opts:        o,
@@ -247,8 +307,9 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	}
 
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO instances (id, started_at, mode) VALUES (?, ?, ?)`,
+		`INSERT INTO instances (id, started_at, mode, name, config_path) VALUES (?, ?, ?, ?, ?)`,
 		s.instanceID, time.Now().UnixMicro(), string(o.mode),
+		nullableString(o.instanceName), nullableString(o.configPath),
 	)
 	if err != nil {
 		closeDBIgnoringErr(db)
@@ -339,9 +400,12 @@ func isBusy(err error) bool {
 
 // applySchema reads the user_version pragma and applies any pending
 // migrations. A version 0 (fresh) database lands on [schemaVersion] in
-// one step via [schemaSQL]; version 1 databases migrate forward to
-// version 2 by creating the `instance_metrics` table. Future versions
-// refuse to open with [ErrSchemaTooNew].
+// one step via [schemaSQL]. A database of an earlier version migrates
+// forward through each step of [migrationSQL] and keeps its rows.
+// Version 2 adds the `instance_metrics` table. Version 3 adds the
+// `policies` table and the `name` and `config_path` columns of the
+// `instances` table. Future versions refuse to open with
+// [ErrSchemaTooNew].
 //
 // The read of the version, the DDL, and the `PRAGMA user_version`
 // write run in one transaction that holds the write lock from its
@@ -383,32 +447,6 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 	}
 
 	switch {
-	case version == 0:
-		_, err = tx.ExecContext(ctx, schemaSQL)
-		if err != nil {
-			return fmt.Errorf("applying schema: %w", err)
-		}
-
-		_, err = tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
-		if err != nil {
-			return fmt.Errorf("setting user_version: %w", err)
-		}
-
-		return nil
-
-	case version == 1:
-		_, err = tx.ExecContext(ctx, instanceMetricsTableSQL)
-		if err != nil {
-			return fmt.Errorf("migrating to schema 2: %w", err)
-		}
-
-		_, err = tx.ExecContext(ctx, `PRAGMA user_version = 2`)
-		if err != nil {
-			return fmt.Errorf("setting user_version: %w", err)
-		}
-
-		return nil
-
 	case version == schemaVersion:
 		return nil
 
@@ -416,9 +454,30 @@ func migrate(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("%w: db version %d > supported %d",
 			ErrSchemaTooNew, version, schemaVersion)
 
-	default:
+	case version < 0:
 		return fmt.Errorf("eventstore: unexpected user_version %d", version)
+
+	case version == 0:
+		_, err = tx.ExecContext(ctx, schemaSQL)
+		if err != nil {
+			return fmt.Errorf("applying schema: %w", err)
+		}
+
+	default:
+		for v := version; v < schemaVersion; v++ {
+			_, err = tx.ExecContext(ctx, migrationSQL(v))
+			if err != nil {
+				return fmt.Errorf("migrating to schema %d: %w", v+1, err)
+			}
+		}
 	}
+
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
+	if err != nil {
+		return fmt.Errorf("setting user_version: %w", err)
+	}
+
+	return nil
 }
 
 // InstanceID returns the 16-hex-character ID assigned to this open
@@ -632,7 +691,7 @@ func (s *Store) run() {
 	flushTicker := time.NewTicker(s.opts.batchInterval)
 	defer flushTicker.Stop()
 
-	pruneTicker := time.NewTicker(60 * time.Second)
+	pruneTicker := time.NewTicker(s.opts.pruneInterval)
 	defer pruneTicker.Stop()
 
 	batch := make([]Event, 0, s.opts.batchSize)
@@ -662,6 +721,7 @@ func (s *Store) run() {
 			if !ok {
 				flush()
 				s.drainHeartbeats()
+				s.drainPolicies()
 
 				return
 			}
@@ -676,9 +736,13 @@ func (s *Store) run() {
 
 		case <-pruneTicker.C:
 			s.pruneByAge()
+			s.prunePoliciesByAge()
 
 		case h := <-s.heartbeatCh:
 			s.upsertHeartbeat(h)
+
+		case p := <-s.policyCh:
+			s.insertPolicy(p)
 		}
 	}
 }
@@ -853,9 +917,9 @@ func (s *Store) pruneSourceIfOver(source Source, limit int64, count *atomic.Int6
 	s.deleteOldestBySource(source, min(excess, pruneChunkSize))
 }
 
-// pruneByAge runs on a 60s ticker. It probes for any expired row
-// before issuing the DELETE so the common case of "no rows past
-// MaxAge" skips a write transaction (and its WAL fsync). When a
+// pruneByAge runs on the ticker of [WithPruneInterval]. It probes for
+// any expired row before issuing the DELETE so the common case of "no
+// rows past MaxAge" skips a write transaction (and its WAL fsync). When a
 // match exists, it deletes a single chunk per tick so the writer is
 // never starved. The DELETE returns each pruned row's source so the
 // per-source counters stay aligned with [Store.rowCount].

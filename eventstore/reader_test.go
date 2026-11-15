@@ -170,7 +170,10 @@ func TestOpenReader(t *testing.T) {
 		fails bool
 	}{
 		"current schema": {
-			stmts: []string{v1SchemaSQL, `PRAGMA user_version = 2`},
+			stmts: []string{v2SchemaSQL, `PRAGMA user_version = 3`},
+		},
+		"schema version 2": {
+			stmts: []string{v2SchemaSQL, `PRAGMA user_version = 2`},
 		},
 		"schema version 1": {
 			stmts: []string{v1SchemaSQL, `PRAGMA user_version = 1`},
@@ -955,6 +958,19 @@ func TestReader_SchemaVersion1(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 
+	// Version 1 has no table for policy snapshots.
+	_, ok, err = r.LatestPolicy(t.Context(), id)
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	_, ok, err = r.PolicyAt(t.Context(), id, time.Now())
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	policies, err := r.Policies(t.Context(), id)
+	require.NoError(t, err)
+	assert.Empty(t, policies)
+
 	health, err := r.Health(t.Context(), id)
 	require.NoError(t, err)
 	assert.False(t, health.HasHeartbeat)
@@ -1002,6 +1018,18 @@ func TestReader_NoSchema(t *testing.T) {
 	health, err := r.Health(t.Context(), "deadbeefdeadbeef")
 	require.NoError(t, err)
 	assert.Zero(t, health)
+
+	_, ok, err = r.LatestPolicy(t.Context(), "deadbeefdeadbeef")
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	_, ok, err = r.PolicyAt(t.Context(), "deadbeefdeadbeef", time.Now())
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	policies, err := r.Policies(t.Context(), "")
+	require.NoError(t, err)
+	assert.Empty(t, policies)
 
 	// The reader still checks the arguments on a database without tables.
 	_, err = r.Top(t.Context(), eventstore.TopQuery{By: "port"})

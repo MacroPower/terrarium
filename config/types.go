@@ -684,9 +684,10 @@ type FirewallLogging struct {
 // [eventstore.Event] per terminal branch) and Envoy via a gRPC
 // AccessLog Service over a Unix domain socket at Socket.
 type Stats struct {
-	// Retention bounds the size of the events table. A nil pointer
-	// applies the built-in defaults; an explicit empty value
-	// (`retention: {}`) opts out of bounds entirely.
+	// Retention bounds the size of the events table and of the
+	// policy snapshots. A nil pointer applies the built-in defaults.
+	// An explicit empty value (`retention: {}`) opts out of every
+	// bound.
 	Retention *StatsRetention `yaml:"retention,omitempty"`
 	// Firewall configures the nfnetlink_log ingestion path. A nil
 	// pointer applies the built-in defaults.
@@ -721,19 +722,23 @@ type StatsFirewall struct {
 	NFLogGroup uint16 `yaml:"nflogGroup,omitempty"`
 }
 
-// StatsRetention bounds the events table. A zero MaxAge or MaxRows
-// disables that bound.
+// StatsRetention bounds the events table and the policy snapshots.
+// MaxAge bounds both, and MaxRows and PerSource bound only the events.
+// A zero MaxAge or MaxRows disables that bound.
 type StatsRetention struct {
 	// PerSource caps individual event sources before the global
 	// MaxRows bound. A nil pointer applies the built-in defaults
 	// (firewall=200000, dns=0, envoy=0). An explicit empty value
 	// (`perSource: {}`) opts every source out of per-source pruning.
 	PerSource *PerSourceRetention `yaml:"perSource,omitempty"`
-	// MaxAge prunes events older than time.Now()-MaxAge. Defaults
-	// to 720h (30 days) when the parent [Stats] is enabled and
-	// this field is unset via a nil [*StatsRetention].
+	// MaxAge prunes events older than time.Now()-MaxAge. It also
+	// prunes each policy snapshot that a later snapshot of the same
+	// instance replaced before that time. Defaults to 720h (30 days)
+	// when the parent [Stats] is enabled and this field is unset via
+	// a nil [*StatsRetention].
 	MaxAge Duration `yaml:"maxAge,omitempty"`
-	// MaxRows caps the events row count. Defaults to 1,000,000
+	// MaxRows caps the events row count. It does not count policy
+	// snapshots. Defaults to 1,000,000
 	// when the parent [Stats] is enabled and this field is unset
 	// via a nil [*StatsRetention].
 	MaxRows int64 `yaml:"maxRows,omitempty"`

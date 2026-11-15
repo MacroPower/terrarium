@@ -30,36 +30,47 @@ const (
 //   - [WithBatchInterval]
 //   - [WithLogger]
 //   - [WithMode]
+//   - [WithInstanceName]
+//   - [WithConfigPath]
 //   - [WithUID]
 //   - [WithRetention]
+//   - [WithPruneInterval]
 type Option func(*storeOptions)
 
 // storeOptions holds the resolved values configured by [Option] funcs.
 type storeOptions struct {
 	logger        *slog.Logger
 	mode          Mode
+	instanceName  string
+	configPath    string
 	retention     Retention
 	chanSize      int
 	batchSize     int
 	batchInterval time.Duration
+	pruneInterval time.Duration
 
 	// The UID to chown the database files to after open. A negative
 	// value (the default) disables chowning.
 	uid int
 }
 
-// Retention bounds the size of the events table. A zero MaxAge or
-// MaxRows means that bound is not enforced.
+// Retention bounds the size of the events table and of the policies
+// table. MaxAge bounds both tables, and MaxRows and PerSource bound
+// only the events table. A zero MaxAge or MaxRows means that bound is
+// not enforced.
 type Retention struct {
-	// MaxAge prunes events older than [time.Now]-MaxAge.
+	// MaxAge prunes events older than [time.Now]-MaxAge. It also
+	// prunes each policy snapshot that another snapshot of the same
+	// instance replaced before that time. See [Store.RecordPolicy].
 	MaxAge time.Duration
 
-	// MaxRows caps the row count after each batch insert.
+	// MaxRows caps the number of events after each batch insert. It
+	// does not count policy snapshots.
 	MaxRows int64
 
-	// PerSource caps row counts per [Source] before the global
-	// MaxRows bound. A zero on a field means that source has no
-	// per-source cap.
+	// PerSource caps the number of events of each [Source] before
+	// the global MaxRows bound. A zero on a field means that source
+	// has no per-source cap.
 	PerSource PerSourceCaps
 }
 
@@ -83,6 +94,7 @@ const (
 	defaultChanSize      = 1024
 	defaultBatchSize     = 64
 	defaultBatchInterval = 200 * time.Millisecond
+	defaultPruneInterval = 60 * time.Second
 	defaultMaxAge        = 720 * time.Hour
 	defaultMaxRows       = 1_000_000
 )
@@ -93,6 +105,7 @@ func defaultStoreOptions() storeOptions {
 		chanSize:      defaultChanSize,
 		batchSize:     defaultBatchSize,
 		batchInterval: defaultBatchInterval,
+		pruneInterval: defaultPruneInterval,
 		mode:          ModeInit,
 		uid:           -1,
 		retention: Retention{
@@ -141,13 +154,31 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithMode records the terrarium mode (init or daemon) on the
+// WithMode records the terrarium mode (init, daemon, or proxy) on the
 // instance row. An [Option].
 func WithMode(m Mode) Option {
 	return func(o *storeOptions) {
 		if m != "" {
 			o.mode = m
 		}
+	}
+}
+
+// WithInstanceName records a name on the instance row. Several
+// processes can write one database, and a reader tells their
+// instances apart by the name. `terrarium proxy` records its bind
+// address and port. The default is no name. An [Option].
+func WithInstanceName(name string) Option {
+	return func(o *storeOptions) {
+		o.instanceName = name
+	}
+}
+
+// WithConfigPath records the path of the config file of the process
+// on the instance row. The default is no path. An [Option].
+func WithConfigPath(path string) Option {
+	return func(o *storeOptions) {
+		o.configPath = path
 	}
 }
 
@@ -166,5 +197,15 @@ func WithUID(uid int) Option {
 func WithRetention(r Retention) Option {
 	return func(o *storeOptions) {
 		o.retention = r
+	}
+}
+
+// WithPruneInterval sets the time between two runs of the pruner that
+// enforces [Retention.MaxAge]. The default is 60 seconds. An [Option].
+func WithPruneInterval(d time.Duration) Option {
+	return func(o *storeOptions) {
+		if d > 0 {
+			o.pruneInterval = d
+		}
 	}
 }

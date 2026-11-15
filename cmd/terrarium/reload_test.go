@@ -21,6 +21,7 @@ import (
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 	"go.jacobcolvin.com/terrarium/dnstest"
+	"go.jacobcolvin.com/terrarium/eventstore"
 	"go.jacobcolvin.com/terrarium/firewall"
 )
 
@@ -289,13 +290,19 @@ func TestReloadInfrastructureRejected(t *testing.T) {
 			envoyProc := &envoyProcess{}
 			dnsProxy := &dnsproxy.Proxy{}
 
+			dbPath := filepath.Join(dir, "stats.db")
+
+			store, err := eventstore.Open(t.Context(), dbPath)
+			require.NoError(t, err)
+
 			inf := &infra{
 				envoyProc:    envoyProc,
 				dnsProxy:     dnsProxy,
+				eventStore:   store,
 				drainTimeout: 30 * time.Second,
 			}
 
-			err := reloadInfrastructure(t.Context(), usr, firewall.UIDs{VMMode: true}, inf)
+			err = reloadInfrastructure(t.Context(), usr, firewall.UIDs{VMMode: true}, inf)
 			require.ErrorIs(t, err, ErrReloadRejected)
 
 			assert.Same(t, envoyProc, inf.envoyProc)
@@ -303,6 +310,12 @@ func TestReloadInfrastructureRejected(t *testing.T) {
 			assert.Nil(t, inf.conn)
 			assert.Equal(t, 30*time.Second, inf.drainTimeout)
 			assert.NoFileExists(t, usr.EnvoyConfigPath)
+
+			// The daemon keeps the previous config, so the store gets
+			// no snapshot. Close writes every snapshot that the reload
+			// recorded.
+			require.NoError(t, store.Close())
+			assert.Empty(t, policySnapshots(t, dbPath))
 		})
 	}
 }
@@ -385,6 +398,85 @@ stats:
 	}
 }
 
+// TestReloadPolicySnapshots runs reloads against a store that holds
+// the snapshot of the start of the daemon. The reloads record their
+// config with [recordReloadPolicy], the callback of
+// [reloadInfrastructure]. Only a reload that completes both phases
+// adds a snapshot, and that snapshot holds the config and the config
+// path of the reload.
+func TestReloadPolicySnapshots(t *testing.T) {
+	t.Parallel()
+
+	const (
+		startPolicy  = "egress:\n  - toFQDNs:\n      - matchName: start.example\n"
+		reloadPolicy = "egress:\n  - toFQDNs:\n      - matchName: reload.example\n"
+		lostPolicy   = "egress:\n  - toFQDNs:\n      - matchName: lost.example\n"
+	)
+
+	errPhase := errors.New("phase")
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "stats.db")
+	configPath := filepath.Join(dir, "config.yaml")
+
+	store, err := eventstore.Open(t.Context(), dbPath)
+	require.NoError(t, err)
+
+	recordPolicySnapshot(t.Context(), store, parseProxyConfig(t, startPolicy), configPath)
+
+	inf := &infra{eventStore: store}
+
+	usr := config.NewUser()
+	usr.ConfigPath = configPath
+
+	reload := func(policy string, prepareErr, replaceErr error) error {
+		return runReloadPhases(
+			func() (*reloadInputs, error) {
+				if prepareErr != nil {
+					return nil, prepareErr
+				}
+
+				return &reloadInputs{cfg: parseProxyConfig(t, policy)}, nil
+			},
+			func(*reloadInputs) error { return replaceErr },
+			func() {},
+			recordReloadPolicy(t.Context(), inf, usr),
+		)
+	}
+
+	require.ErrorIs(t, reload(lostPolicy, errPhase, nil), ErrReloadRejected)
+	require.NoError(t, reload(reloadPolicy, nil, nil))
+	require.ErrorIs(t, reload(lostPolicy, nil, errPhase), errPhase)
+	require.ErrorIs(t, reload(lostPolicy, errPhase, nil), ErrReloadRejected)
+
+	require.NoError(t, store.Close())
+
+	r, err := eventstore.OpenReader(t.Context(), dbPath)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, r.Close()) })
+
+	infos, err := r.Policies(t.Context(), store.InstanceID())
+	require.NoError(t, err)
+	require.Len(t, infos, 2)
+
+	latest, ok, err := r.LatestPolicy(t.Context(), store.InstanceID())
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, infos[0], latest.PolicyInfo)
+	assert.Contains(t, latest.YAML, "reload.example")
+	assert.NotContains(t, latest.YAML, "start.example")
+	assert.Equal(t, configPath, latest.ConfigPath)
+
+	// The snapshot of the start still answers for the time before
+	// the reload.
+	first, ok, err := r.PolicyAt(t.Context(), store.InstanceID(), infos[1].AppliedAt)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Contains(t, first.YAML, "start.example")
+	assert.NotEqual(t, first.SHA256, latest.SHA256)
+}
+
 // TestRunReloadPhases checks which errors of a reload wrap
 // [ErrReloadRejected]. The daemon keeps running after an error that
 // wraps it, so an error from the replace phase must never wrap it.
@@ -405,9 +497,11 @@ func TestRunReloadPhases(t *testing.T) {
 		wantRejected bool
 		wantReplace  bool
 		wantDiscard  bool
+		wantApplied  bool
 	}{
 		"both phases succeed": {
 			wantReplace: true,
+			wantApplied: true,
 		},
 		"prepare stops the reload": {
 			prepareErr:   errPrepare,
@@ -430,6 +524,7 @@ func TestRunReloadPhases(t *testing.T) {
 
 			var (
 				got       *reloadInputs
+				applied   *reloadInputs
 				replaced  bool
 				discarded bool
 			)
@@ -453,6 +548,11 @@ func TestRunReloadPhases(t *testing.T) {
 
 					discarded = true
 				},
+				func(in *reloadInputs) {
+					assert.True(t, replaced, "the reload recorded its config before the replace phase")
+
+					applied = in
+				},
 			)
 
 			if tt.err == nil {
@@ -472,6 +572,14 @@ func TestRunReloadPhases(t *testing.T) {
 
 			if tt.wantReplace {
 				assert.Same(t, inputs, got)
+			}
+
+			// A reload that stops in either phase must not report
+			// its config as the policy in force.
+			if tt.wantApplied {
+				assert.Same(t, inputs, applied)
+			} else {
+				assert.Nil(t, applied)
 			}
 		})
 	}

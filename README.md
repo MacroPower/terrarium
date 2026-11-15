@@ -736,6 +736,54 @@ A Unix socket path holds at most 103 bytes on macOS and 107 bytes on Linux.
 For a longer `socket`, terrarium logs a warning that names the limit and
 records no Envoy events. Set `socket` to a shorter path.
 
+The store also records the policy that decides the events. `terrarium init`,
+`terrarium daemon`, and `terrarium proxy` each record one policy snapshot
+after they apply the config at their start. The daemon records another
+snapshot after each reload that completes. A reload that the daemon rejects
+records no snapshot, because the daemon keeps its previous policy.
+
+Each event holds the ID of its instance and a time. An event maps to the
+snapshot of its instance with the latest time at or before the event. That
+snapshot is the policy that decided the event, except in these cases:
+
+- `terrarium init` and `terrarium daemon` record their first snapshot at the
+  end of their setup. An event from the setup maps to no snapshot.
+- A reload replaces the firewall rules and the DNS proxy first. It then stops
+  the old Envoy, which drains its connections, and starts the new Envoy. The
+  daemon records the snapshot of the reload after the new Envoy starts. A
+  firewall or DNS event during the reload can come from the new policy, but
+  it maps to the previous snapshot.
+
+Each snapshot holds these values:
+
+- The time at which the process applied the policy.
+- The absolute path of the config file.
+- The security mode of the policy, which is `unrestricted`, `blocked`, or
+  `filtered`.
+- The policy as YAML, and the SHA-256 of that YAML.
+
+The YAML is the config as terrarium parsed and normalized it, not the bytes
+of the config file. For example, it holds each FQDN in lowercase. Every rule
+of `egress` and of `egressDeny` keeps its index, and terrarium accepts the
+YAML as a config file.
+
+The store also records the path of the config file for each instance. For a
+proxy, it records a name that holds the listen address, such as
+`127.0.0.1-8080`. The name tells apart two proxies that write to one
+database.
+
+Each snapshot holds `<redacted>` in place of every `headerMatches[].value`
+that the policy sets. The header values of a policy can be credentials, and
+the sandboxed user can read the database. Each entry without a `value` stays
+without one, so you can tell a redacted value from a value that the policy
+does not set.
+
+`retention.maxAge` bounds the snapshots too. Terrarium removes a snapshot
+only when the snapshot and a later snapshot of the same instance are both
+older than `maxAge`. The store therefore keeps the latest snapshot of every
+instance, and the policy of each instance at every time within `maxAge`.
+`retention.maxRows` and `retention.perSource` count events, not snapshots.
+
 Read events with the CLI:
 
 ```

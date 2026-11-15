@@ -20,6 +20,10 @@ const (
 	// InstanceMetricsSchemaVersion created the `instance_metrics`
 	// table.
 	instanceMetricsSchemaVersion = 2
+
+	// PoliciesSchemaVersion created the `policies` table and the
+	// `name` and `config_path` columns of the `instances` table.
+	policiesSchemaVersion = 3
 )
 
 // DomainColumn is the SQL expression of the lowercase `domain` column
@@ -519,16 +523,34 @@ type Instance struct {
 
 	// Mode is the terrarium mode that opened the store.
 	Mode Mode
+
+	// Name is the name of [WithInstanceName]. `terrarium proxy`
+	// records its bind address and port, such as 127.0.0.1-8080.
+	// It is empty when the process recorded no name.
+	Name string
+
+	// ConfigPath is the path of [WithConfigPath], which is the
+	// config file of the process. It is empty when the process
+	// recorded no path.
+	ConfigPath string
 }
 
-// Instances returns every instance, with the latest start first.
+// Instances returns every instance, with the latest start first. On a
+// database of a schema version before 3, each [Instance] has an empty
+// Name and an empty ConfigPath.
 func (r *Reader) Instances(ctx context.Context) ([]Instance, error) {
 	if r.version < eventsSchemaVersion {
 		return nil, nil
 	}
 
+	// The schema versions before 3 do not hold the two columns.
+	identity := `'', ''`
+	if r.version >= policiesSchemaVersion {
+		identity = `COALESCE(name,''), COALESCE(config_path,'')`
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, started_at, COALESCE(ended_at,0), mode
+		SELECT id, started_at, COALESCE(ended_at,0), mode, `+identity+`
 		FROM instances
 		ORDER BY started_at DESC, rowid DESC
 	`)
@@ -546,7 +568,7 @@ func (r *Reader) Instances(ctx context.Context) ([]Instance, error) {
 			started, ended int64
 		)
 
-		err = rows.Scan(&in.ID, &started, &ended, &in.Mode)
+		err = rows.Scan(&in.ID, &started, &ended, &in.Mode, &in.Name, &in.ConfigPath)
 		if err != nil {
 			return nil, fmt.Errorf("scanning instance row: %w", err)
 		}
@@ -650,6 +672,171 @@ func (r *Reader) LatestHeartbeat(ctx context.Context, instanceID string) (Heartb
 	}
 
 	return h, true, nil
+}
+
+// PolicyInfo describes one row of the `policies` table without the
+// policy document. The table holds one row for each
+// [Store.RecordPolicy].
+type PolicyInfo struct {
+	// AppliedAt is the time at which the instance finished applying
+	// the policy.
+	AppliedAt time.Time
+
+	// InstanceID is the ID of the instance that applied the policy.
+	InstanceID string
+
+	// ConfigPath is the path of the config file that held the
+	// policy.
+	ConfigPath string
+
+	// SHA256 is the SHA-256 of the stored policy document, in
+	// lowercase hexadecimal digits. Two snapshots with the same
+	// value hold the same document.
+	SHA256 string
+
+	// Mode is the security mode of the policy.
+	Mode SecurityMode
+
+	// ID is the row ID. A later row has a larger ID.
+	ID int64
+}
+
+// StoredPolicy is one row of the `policies` table.
+type StoredPolicy struct {
+	// YAML is the policy document that [Store.RecordPolicy] stored.
+	YAML string
+
+	PolicyInfo
+}
+
+// policyColumns lists the columns that [scanPolicy] reads.
+const policyColumns = `id, instance_id, applied_at, config_path, sha256, security_mode, yaml`
+
+// scanPolicy reads one row of [policyColumns]. It returns ok=false
+// when the query selected no row.
+func scanPolicy(row *sql.Row) (StoredPolicy, bool, error) {
+	var (
+		p         StoredPolicy
+		appliedAt int64
+	)
+
+	err := row.Scan(&p.ID, &p.InstanceID, &appliedAt, &p.ConfigPath, &p.SHA256, &p.Mode, &p.YAML)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return StoredPolicy{}, false, nil
+	case err != nil:
+		return StoredPolicy{}, false, fmt.Errorf("reading policy snapshot: %w", err)
+	}
+
+	p.AppliedAt = time.UnixMicro(appliedAt)
+
+	return p, true, nil
+}
+
+// LatestPolicy returns the latest policy snapshot of the instance
+// with the given ID, which is the policy that a running instance
+// enforces. It returns ok=false when the store holds no snapshot of
+// the instance, and for the empty instance ID.
+func (r *Reader) LatestPolicy(ctx context.Context, instanceID string) (StoredPolicy, bool, error) {
+	if instanceID == "" || r.version < policiesSchemaVersion {
+		return StoredPolicy{}, false, nil
+	}
+
+	return scanPolicy(r.db.QueryRowContext(ctx, `
+		SELECT `+policyColumns+`
+		FROM policies
+		WHERE instance_id = ?
+		ORDER BY applied_at DESC, id DESC
+		LIMIT 1
+	`, instanceID))
+}
+
+// PolicyAt returns the policy snapshot that was in force for the
+// instance with the given ID at time t. That snapshot is the latest
+// one that the instance applied at t or earlier. Pass the time of an
+// event and the instance ID of the event to read the policy that
+// decided the event.
+//
+// PolicyAt returns ok=false when the instance applied its first
+// snapshot after t, and for the empty instance ID. An instance can
+// record an event before the snapshot of its first policy, in the
+// time between the start of the process and the end of its setup.
+// [Reader.Policies] returns that snapshot as the earliest one of the
+// instance.
+//
+// A process records a snapshot after every part of it runs the
+// policy, but the parts switch to a new policy one at a time. During
+// a reload, the firewall rules and the DNS proxy switch before the
+// process records the snapshot. A firewall or DNS event in that time
+// can come from the new policy, but PolicyAt returns the previous
+// snapshot for it.
+func (r *Reader) PolicyAt(ctx context.Context, instanceID string, t time.Time) (StoredPolicy, bool, error) {
+	if instanceID == "" || r.version < policiesSchemaVersion {
+		return StoredPolicy{}, false, nil
+	}
+
+	return scanPolicy(r.db.QueryRowContext(ctx, `
+		SELECT `+policyColumns+`
+		FROM policies
+		WHERE instance_id = ? AND applied_at <= ?
+		ORDER BY applied_at DESC, id DESC
+		LIMIT 1
+	`, instanceID, t.UnixMicro()))
+}
+
+// Policies returns the policy snapshots of the instance with the
+// given ID without their documents, with the latest snapshot first.
+// The empty instance ID selects the snapshots of every instance. Read
+// the document of a snapshot with [Reader.LatestPolicy] or with
+// [Reader.PolicyAt].
+func (r *Reader) Policies(ctx context.Context, instanceID string) ([]PolicyInfo, error) {
+	if r.version < policiesSchemaVersion {
+		return nil, nil
+	}
+
+	c := &conditions{}
+	if instanceID != "" {
+		c.add("instance_id = ?", instanceID)
+	}
+
+	//nolint:gosec // G202: the clause holds only constant terms, and values use ? placeholders.
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, instance_id, applied_at, config_path, sha256, security_mode
+		FROM policies
+		`+c.where()+`
+		ORDER BY applied_at DESC, id DESC
+	`, c.args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying policy snapshots: %w", err)
+	}
+
+	defer rows.Close() //nolint:errcheck // read-only.
+
+	var out []PolicyInfo
+
+	for rows.Next() {
+		var (
+			p         PolicyInfo
+			appliedAt int64
+		)
+
+		err = rows.Scan(&p.ID, &p.InstanceID, &appliedAt, &p.ConfigPath, &p.SHA256, &p.Mode)
+		if err != nil {
+			return nil, fmt.Errorf("scanning policy snapshot row: %w", err)
+		}
+
+		p.AppliedAt = time.UnixMicro(appliedAt)
+
+		out = append(out, p)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return nil, fmt.Errorf("iterating policy snapshots: %w", err)
+	}
+
+	return out, nil
 }
 
 // Health is a summary of how well the store ingests events.
