@@ -60,12 +60,13 @@ var (
 		"headerMatch mismatch must be one of LOG, ADD, DELETE, REPLACE",
 	)
 
-	// ErrHeaderMatchAddLogTooMany is returned when one [HTTPRule]
-	// holds more than 8 [HeaderMatch] entries with the [MismatchADD] or
-	// [MismatchLOG] action. The number of Envoy routes for the rule
-	// doubles with each of these entries.
-	ErrHeaderMatchAddLogTooMany = errors.New(
-		"too many headerMatches with mismatch ADD or LOG in one http rule: the maximum is 8 (terrarium constraint: each one doubles the Envoy routes of the rule)",
+	// ErrHeaderMatchMismatchTooMany is returned when one [HTTPRule]
+	// holds more than 8 [HeaderMatch] entries with the [MismatchADD],
+	// [MismatchDELETE], or [MismatchLOG] action. A [MismatchDELETE]
+	// entry without a value does not count. The number of Envoy routes
+	// for the rule doubles with each entry that counts.
+	ErrHeaderMatchMismatchTooMany = errors.New(
+		"too many headerMatches with mismatch ADD, DELETE, or LOG in one http rule: the maximum is 8 (terrarium constraint: each one doubles the Envoy routes of the rule)",
 	)
 
 	// ErrHeaderMatchSecret is returned when a [HeaderMatch] sets

@@ -248,24 +248,26 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // Envoy takes the first route that matches a request, and it applies
 // the header changes of that route to the request. The first route
 // matches when every header of matches holds its value, and it changes
-// nothing. Every later route applies each REPLACE and DELETE action of
-// matches. The header of an entry without a value counts as a header
-// that holds its value when the request has the header, see
+// nothing. Every later route applies each REPLACE action of matches,
+// because a REPLACE action leaves a header that holds its value as it
+// is. The header of an entry without a value counts as a header that
+// holds its value when the request has the header, see
 // [headerMatchMatcher].
 //
-// An ADD action appends a value, so a route must not apply it to a
-// header that already holds the value. A LOG action logs the request,
-// so a route must not apply it to a header that holds the value
-// either. The later routes therefore cover each combination of the ADD
+// An ADD action appends a value, a DELETE action removes the header
+// whatever its value, and a LOG action logs the request. A route must
+// therefore not apply one of these actions to a header that holds its
+// value. The later routes cover each combination of the ADD, DELETE,
 // and LOG headers that hold their value. Such a route matches on those
-// headers, and it applies the action of each other ADD and LOG header.
-// The routes that match on more of these headers come first. A request
-// that a route takes therefore mismatches on each ADD and LOG header
-// that the route does not match on. A route applies its LOG actions
-// through its metadata, see [mismatchLogMetadata].
+// headers, and it applies the action of each other ADD, DELETE, and
+// LOG header. The routes that match on more of these headers come
+// first. A request that a route takes therefore mismatches on each
+// ADD, DELETE, and LOG header that the route does not match on. A
+// route applies its LOG actions through its metadata, see
+// [mismatchLogMetadata].
 //
-// The number of these routes doubles with each ADD and LOG header.
-// [config.Config.Validate] limits the ADD and LOG headers of one HTTP
+// The number of these routes doubles with each ADD, DELETE, and LOG
+// header. [config.Config.Validate] limits these headers of one HTTP
 // rule for that reason.
 func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluster string) []route {
 	forward := func(matched, apply []config.HeaderMatch) []route {
@@ -291,7 +293,12 @@ func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluste
 
 	// Combined reports whether hm takes one bit of each combination.
 	combined := func(hm config.HeaderMatch) bool {
-		return hm.Mismatch == config.MismatchADD || hm.Mismatch == config.MismatchLOG
+		switch hm.Mismatch {
+		case config.MismatchADD, config.MismatchDELETE, config.MismatchLOG:
+			return true
+		default:
+			return false
+		}
 	}
 
 	count := 0
@@ -302,9 +309,9 @@ func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluste
 		}
 	}
 
-	// Each bit of a combination stands for one ADD or LOG header, in
-	// the order of matches. A set bit means that the header holds its
-	// value.
+	// Each bit of a combination stands for one ADD, DELETE, or LOG
+	// header, in the order of matches. A set bit means that the header
+	// holds its value.
 	combinations := make([]uint, 1<<count)
 	for i := range combinations {
 		combinations[i] = uint(i)

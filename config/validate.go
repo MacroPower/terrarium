@@ -27,10 +27,11 @@ const maxFQDNEndPortRange = 100
 // fail in RE2.
 const maxRegexLen = 1000
 
-// maxMismatchAddLogHeaders is the maximum number of headerMatches with
-// the ADD or LOG mismatch action in a single [HTTPRule]. The number of
-// Envoy routes for the rule doubles with each of these headerMatches.
-const maxMismatchAddLogHeaders = 8
+// maxMismatchCombinedHeaders is the maximum number of headerMatches in
+// a single [HTTPRule] that the Envoy routes of the rule combine, see
+// [combinesMismatchRoutes]. The number of Envoy routes for the rule
+// doubles with each of these headerMatches.
+const maxMismatchCombinedHeaders = 8
 
 // cidrAllIPv4 and cidrAllIPv6 are the default routes matching every
 // IPv4 / IPv6 address, used to expand the world/all entity selectors.
@@ -751,6 +752,27 @@ func validateEndPort(p Port, portNum, ruleIdx int) error {
 	return nil
 }
 
+// combinesMismatchRoutes reports whether hm doubles the Envoy routes of
+// its [HTTPRule]. An entry with the [MismatchADD] or [MismatchLOG]
+// action does, and so does an entry with the [MismatchDELETE] action
+// and a value. Envoy must apply each of these actions only to a
+// request whose header mismatches. The rule therefore gets one route
+// for each combination of these headers that hold their value.
+//
+// A [MismatchDELETE] entry without a value changes no request. A
+// [MismatchREPLACE] entry leaves a header that holds its value as it
+// is. These entries therefore add no route combination.
+func combinesMismatchRoutes(hm HeaderMatch) bool {
+	switch hm.Mismatch {
+	case MismatchADD, MismatchLOG:
+		return true
+	case MismatchDELETE:
+		return hm.Value != ""
+	default:
+		return false
+	}
+}
+
 // validateHTTPRules checks that HTTP rule path and method patterns are
 // valid regular expressions.
 func validateHTTPRules(pr PortRule, ruleIdx int) error {
@@ -759,15 +781,15 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 	}
 
 	for _, h := range pr.Rules.HTTP {
-		addLogs := 0
+		combined := 0
 
 		for i, hm := range h.HeaderMatches {
 			if hm.Name == "" {
 				return fmt.Errorf("%w: rule %d headerMatches[%d]", ErrHeaderMatchNameEmpty, ruleIdx, i)
 			}
 
-			if hm.Mismatch == MismatchADD || hm.Mismatch == MismatchLOG {
-				addLogs++
+			if combinesMismatchRoutes(hm) {
+				combined++
 			}
 
 			if hm.Mismatch != "" {
@@ -789,10 +811,10 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 			}
 		}
 
-		if addLogs > maxMismatchAddLogHeaders {
+		if combined > maxMismatchCombinedHeaders {
 			return fmt.Errorf(
 				"%w: rule %d has %d",
-				ErrHeaderMatchAddLogTooMany, ruleIdx, addLogs,
+				ErrHeaderMatchMismatchTooMany, ruleIdx, combined,
 			)
 		}
 

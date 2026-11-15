@@ -457,7 +457,8 @@ type mismatchRoute struct {
 // carry a mismatch action. Envoy takes the first route that matches,
 // so the order of the routes decides which header changes a request
 // gets. A route must append the value of an ADD header only when no
-// earlier route takes the requests that already hold the value.
+// earlier route takes the requests that already hold the value. A
+// route must remove a DELETE header under the same condition.
 //
 // A headerMatches entry without a value matches on the presence of
 // the header. Envoy rejects an exact matcher on the empty string, so
@@ -557,11 +558,58 @@ func TestMismatchRouteOrder(t *testing.T) {
 			want: []mismatchRoute{
 				{match: []string{"X-Required=yes", "X-One=one", "X-Del=del"}},
 				{match: []string{"X-Required=yes", "X-One=one"}, remove: []string{"X-Del"}},
+				{match: []string{"X-Required=yes", "X-Del=del"}, add: []string{"X-One=one" + appendAction}},
 				{
 					match:  []string{"X-Required=yes"},
 					add:    []string{"X-One=one" + appendAction},
 					remove: []string{"X-Del"},
 				},
+			},
+		},
+		"one DELETE": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Del", Value: "del", Mismatch: config.MismatchDELETE},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Del=del"}},
+				{remove: []string{"X-Del"}},
+			},
+		},
+		// The route that replaces X-Rep also takes requests whose X-Del
+		// holds the value, so it must match on X-Del and keep it.
+		"DELETE with REPLACE": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Del", Value: "del", Mismatch: config.MismatchDELETE},
+				{Name: "X-Rep", Value: "rep", Mismatch: config.MismatchREPLACE},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Del=del", "X-Rep=rep"}},
+				{match: []string{"X-Del=del"}, add: []string{"X-Rep=rep" + overwriteAction}},
+				{add: []string{"X-Rep=rep" + overwriteAction}, remove: []string{"X-Del"}},
+			},
+		},
+		"DELETE with LOG": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Del", Value: "del", Mismatch: config.MismatchDELETE},
+				{Name: "X-Log", Value: "expected", Mismatch: config.MismatchLOG},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-Del=del", "X-Log=expected"}},
+				{match: []string{"X-Del=del"}},
+				{match: []string{"X-Log=expected"}, remove: []string{"X-Del"}},
+				{remove: []string{"X-Del"}},
+			},
+		},
+		"two DELETE": {
+			matches: []config.HeaderMatch{
+				{Name: "X-One", Value: "one", Mismatch: config.MismatchDELETE},
+				{Name: "X-Two", Value: "two", Mismatch: config.MismatchDELETE},
+			},
+			want: []mismatchRoute{
+				{match: []string{"X-One=one", "X-Two=two"}},
+				{match: []string{"X-One=one"}, remove: []string{"X-Two"}},
+				{match: []string{"X-Two=two"}, remove: []string{"X-One"}},
+				{remove: []string{"X-One", "X-Two"}},
 			},
 		},
 		"LOG with REPLACE": {

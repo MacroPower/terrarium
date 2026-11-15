@@ -59,7 +59,8 @@ egress:
                   value: "expected-value"
                 - name: "X-Trace"
                   # ADD keeps the values that the client sent and adds the value.
-                  # At most 8 headerMatches of one HTTP rule can use ADD.
+                  # At most 8 headerMatches of one HTTP rule can use ADD, LOG,
+                  # or DELETE with a value, counted together.
                   mismatch: ADD
                   value: "injected"
                 - name: "X-Strip"
@@ -260,12 +261,15 @@ Terrarium denies that request, and `LOG` logs it. `ADD` and `REPLACE` add the
 header with an empty value. `DELETE` has no header to remove, so an entry with
 `mismatch: DELETE` and no `value` changes no request.
 
-Each HTTP rule can hold at most 8 `headerMatches` entries with
-`mismatch: ADD` or `mismatch: LOG`, counted together. Cilium has no limit.
-Envoy applies the header changes and the logging of a route to every request
-that the route takes. Terrarium therefore generates one route for each
-combination of ADD and LOG headers that already hold their value. The number
-of routes doubles with each entry, and the limit bounds the route table.
+Each HTTP rule can hold at most 8 `headerMatches` entries that use `ADD`,
+`LOG`, or `DELETE` with a `value` as the `mismatch` action, counted together.
+Cilium has no limit. Envoy applies the header changes and the logging of a
+route to every request that the route takes. Terrarium therefore generates one
+route for each combination of these headers that already hold their value, so
+each action applies only to a header that mismatches. The number of routes
+doubles with each entry, and the limit bounds the route table. An entry with
+`mismatch: REPLACE` does not count, and an entry with `mismatch: DELETE` and no
+`value` does not count either.
 
 ### Proxy port and range limits
 

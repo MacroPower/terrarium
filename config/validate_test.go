@@ -1225,7 +1225,7 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrHeaderMatchAddLogTooMany,
+			err: config.ErrHeaderMatchMismatchTooMany,
 		},
 		"headerMatches mismatch ADD and LOG past the limit rejected": {
 			cfg: &config.Config{
@@ -1241,9 +1241,25 @@ func TestValidate(t *testing.T) {
 					}},
 				}),
 			},
-			err: config.ErrHeaderMatchAddLogTooMany,
+			err: config.ErrHeaderMatchMismatchTooMany,
 		},
-		"headerMatches other mismatch actions do not count toward the ADD and LOG limit": {
+		"headerMatches mismatch ADD and DELETE past the limit rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							{HeaderMatches: append(addHeaderMatches(8),
+								config.HeaderMatch{Name: "X-Del", Value: "expected", Mismatch: config.MismatchDELETE},
+							)},
+						}},
+					}},
+				}),
+			},
+			err: config.ErrHeaderMatchMismatchTooMany,
+		},
+		"headerMatches other entries do not count toward the mismatch limit": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -1253,6 +1269,7 @@ func TestValidate(t *testing.T) {
 							{HeaderMatches: append(addHeaderMatches(8),
 								config.HeaderMatch{Name: "X-Version", Value: "v2", Mismatch: config.MismatchREPLACE},
 								config.HeaderMatch{Name: "X-Token", Value: "secret"},
+								config.HeaderMatch{Name: "X-Del", Mismatch: config.MismatchDELETE},
 							)},
 						}},
 					}},

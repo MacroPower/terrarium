@@ -741,6 +741,191 @@ func TestProxyE2EHeaderMismatchAdd(t *testing.T) {
 	}
 }
 
+// TestProxyE2EHeaderMismatchDelete checks the request headers that
+// reach the upstream through rules whose headerMatches use the DELETE
+// mismatch action with a value. The proxy must remove each DELETE
+// header that holds another value. It must keep a DELETE header that
+// holds the value of the policy, also when another header of the rule
+// mismatches.
+//
+//nolint:paralleltest // e2e tests bind fixed ports and run envoy subprocesses.
+func TestProxyE2EHeaderMismatchDelete(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	// The proxy forwards plain HTTP to port 80 only. Binding port 80
+	// needs CAP_NET_BIND_SERVICE or a permissive
+	// ip_unprivileged_port_start.
+	lc := net.ListenConfig{}
+
+	probe, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:80")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.1:80: %v", err)
+	}
+
+	require.NoError(t, probe.Close())
+
+	startHeaderListServer(t, "127.0.0.1:80", "X-Del", "X-Two", "X-Other")
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	policy := "egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: test.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /delete\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Del\n" +
+		"                  mismatch: DELETE\n" +
+		"                  value: del\n" +
+		"            - path: /two\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Del\n" +
+		"                  mismatch: DELETE\n" +
+		"                  value: del\n" +
+		"                - name: X-Two\n" +
+		"                  mismatch: DELETE\n" +
+		"                  value: two\n" +
+		"            - path: /add\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Other\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: other\n" +
+		"                - name: X-Del\n" +
+		"                  mismatch: DELETE\n" +
+		"                  value: del\n" +
+		"            - path: /replace\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Del\n" +
+		"                  mismatch: DELETE\n" +
+		"                  value: del\n" +
+		"                - name: X-Other\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: other\n" +
+		"            - path: /log\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Del\n" +
+		"                  mismatch: DELETE\n" +
+		"                  value: del\n" +
+		"                - name: X-Other\n" +
+		"                  mismatch: LOG\n" +
+		"                  value: other\n"
+
+	proxyURL, _ := startProxy(t, policy, dnsAddr)
+	client := proxyClient(t, proxyURL, x509.NewCertPool())
+
+	tests := map[string]struct {
+		path    string
+		headers map[string]string
+		want    string
+	}{
+		"missing header stays missing": {
+			path: "/delete",
+			want: "X-Del=[]\nX-Two=[]\nX-Other=[]\n",
+		},
+		"matching header stays": {
+			path:    "/delete",
+			headers: map[string]string{"X-Del": "del"},
+			want:    "X-Del=[\"del\"]\nX-Two=[]\nX-Other=[]\n",
+		},
+		"header with another value goes": {
+			path:    "/delete",
+			headers: map[string]string{"X-Del": "user"},
+			want:    "X-Del=[]\nX-Two=[]\nX-Other=[]\n",
+		},
+		"two headers both matching": {
+			path:    "/two",
+			headers: map[string]string{"X-Del": "del", "X-Two": "two"},
+			want:    "X-Del=[\"del\"]\nX-Two=[\"two\"]\nX-Other=[]\n",
+		},
+		"matching header stays when another DELETE header has another value": {
+			path:    "/two",
+			headers: map[string]string{"X-Del": "del", "X-Two": "user"},
+			want:    "X-Del=[\"del\"]\nX-Two=[]\nX-Other=[]\n",
+		},
+		"two headers with other values": {
+			path:    "/two",
+			headers: map[string]string{"X-Del": "user", "X-Two": "user"},
+			want:    "X-Del=[]\nX-Two=[]\nX-Other=[]\n",
+		},
+		"matching header stays when an ADD header is missing": {
+			path:    "/add",
+			headers: map[string]string{"X-Del": "del"},
+			want:    "X-Del=[\"del\"]\nX-Two=[]\nX-Other=[\"other\"]\n",
+		},
+		"matching header stays when an ADD header has another value": {
+			path:    "/add",
+			headers: map[string]string{"X-Del": "del", "X-Other": "user"},
+			want:    "X-Del=[\"del\"]\nX-Two=[]\nX-Other=[\"user\" \"other\"]\n",
+		},
+		"header with another value goes when an ADD header matches": {
+			path:    "/add",
+			headers: map[string]string{"X-Del": "user", "X-Other": "other"},
+			want:    "X-Del=[]\nX-Two=[]\nX-Other=[\"other\"]\n",
+		},
+		"DELETE and ADD headers both mismatch": {
+			path:    "/add",
+			headers: map[string]string{"X-Del": "user", "X-Other": "user"},
+			want:    "X-Del=[]\nX-Two=[]\nX-Other=[\"user\" \"other\"]\n",
+		},
+		"matching header stays when a REPLACE header is missing": {
+			path:    "/replace",
+			headers: map[string]string{"X-Del": "del"},
+			want:    "X-Del=[\"del\"]\nX-Two=[]\nX-Other=[\"other\"]\n",
+		},
+		"matching header stays when a REPLACE header has another value": {
+			path:    "/replace",
+			headers: map[string]string{"X-Del": "del", "X-Other": "user"},
+			want:    "X-Del=[\"del\"]\nX-Two=[]\nX-Other=[\"other\"]\n",
+		},
+		"header with another value goes when a REPLACE header matches": {
+			path:    "/replace",
+			headers: map[string]string{"X-Del": "user", "X-Other": "other"},
+			want:    "X-Del=[]\nX-Two=[]\nX-Other=[\"other\"]\n",
+		},
+		"matching header stays when a LOG header is missing": {
+			path:    "/log",
+			headers: map[string]string{"X-Del": "del"},
+			want:    "X-Del=[\"del\"]\nX-Two=[]\nX-Other=[]\n",
+		},
+		"header with another value goes when a LOG header mismatches": {
+			path:    "/log",
+			headers: map[string]string{"X-Del": "user", "X-Other": "user"},
+			want:    "X-Del=[]\nX-Two=[]\nX-Other=[\"user\"]\n",
+		},
+	}
+
+	//nolint:paralleltest // The subtests share the proxy of the parent test.
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(
+				t.Context(), http.MethodGet, "http://test.example"+tt.path, http.NoBody)
+			require.NoError(t, err)
+
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+
+			defer func() {
+				assert.NoError(t, resp.Body.Close())
+			}()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+			assert.Equal(t, tt.want, string(body))
+		})
+	}
+}
+
 // envoyStderrWrapper writes a script that runs the Envoy of the host
 // and appends the stderr of Envoy to a file. It returns the path of
 // the script and the path of the file. The proxy gives its own stderr
