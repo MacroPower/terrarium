@@ -257,6 +257,43 @@ request header is missing or holds another value, Terrarium adds the value of
 the entry as one more value of the header. The header keeps each value that
 the client sent, so the upstream receives both.
 
+A `headerMatches` entry with `mismatch: LOG` allows the request, as in Cilium,
+but the log entry appears in another place. Cilium records the header in the
+access log of its proxy. In Terrarium, Envoy writes one `HEADER_MISMATCH` line
+to its stderr for each request in which a `LOG` header is missing or holds
+another value. The following table names the stream that receives the lines in
+each mode.
+
+| Mode                              | Stream                                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Container mode (`terrarium init`) | The stderr of `terrarium init`, which is the stderr of the container when `terrarium init` is its entrypoint. |
+| Daemon mode (`terrarium daemon`)  | The stderr of `terrarium daemon`.                                                                             |
+| Proxy mode (`terrarium proxy`)    | The stderr of `terrarium proxy`.                                                                              |
+
+The Envoy log file that `--envoy-log` or `logging.envoy.path` names holds the
+process log of Envoy and none of these lines. Each line has the following
+format:
+
+```text
+[<start time>] HEADER_MISMATCH headers=<names> <method> <authority><path> <status>
+```
+
+| Field          | Content                                                                                      |
+| -------------- | -------------------------------------------------------------------------------------------- |
+| `<start time>` | The time when Envoy received the request, in UTC.                                            |
+| `<names>`      | The names of the `LOG` headers that mismatch, as the policy spells them, joined with commas. |
+| `<method>`     | The method of the request.                                                                   |
+| `<authority>`  | The authority that the upstream receives.                                                    |
+| `<path>`       | The path of the request, which includes the query string.                                    |
+| `<status>`     | The status code of the response, or `0` when the client received no response.                |
+
+For example, a `GET` request to `http://httpbin.org/headers` that lacks the
+`X-Log` header of the policy produces the following line:
+
+```text
+[2026-11-15T19:52:40.246Z] HEADER_MISMATCH headers=X-Log GET httpbin.org/headers 200
+```
+
 A `headerMatches` entry without a `value` works as in Cilium. The entry matches
 every request that holds the header, with any value, so its `mismatch` action
 applies only to a request that lacks the header. Without a `mismatch` action,

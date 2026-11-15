@@ -372,6 +372,12 @@ of the Envoy log file before it starts Envoy, so you can find the
 log when Envoy exits early. To send the Envoy log to the proxy's stderr,
 pass `--envoy-log ""`.
 
+The `HEADER_MISMATCH` lines of a `headerMatches` entry with
+`mismatch: LOG` are not part of the Envoy log. Envoy writes them to the
+proxy's stderr.
+[L7 HTTP rule constraints](docs/cnp-compatibility.md#l7-http-rule-constraints)
+gives the format of a line.
+
 Proxy mode filters TCP egress only. UDP egress (DNS, QUIC) is not
 proxied and stays blocked by the sandbox. Allow-rule kinds a forward
 proxy cannot enforce -- bare `toCIDR`/`toCIDRSet` ranges, `icmps`, open
