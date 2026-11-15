@@ -16,9 +16,9 @@ import (
 // returns one must make sure that the user can see the cause. Init
 // returns the exit code of the user command, which reports its own
 // failure. A user command that a signal ends cannot report the
-// signal, so Init logs it and returns the code -1. Terrarium then
-// exits with status 255. The status command returns 3 after it
-// renders a report that shows a daemon that is not running.
+// signal, so Init logs it and returns the code 128 plus the signal
+// number. That code is 143 for SIGTERM. The status command returns 3
+// after it renders a report that shows a daemon that is not running.
 type ExitError struct{ Code int }
 
 // Error returns a human-readable representation of the exit status.

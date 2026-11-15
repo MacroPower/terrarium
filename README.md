@@ -1013,6 +1013,11 @@ explicitly turned off via sysctl on all interfaces as defense-in-depth. The
 10. Forward signals to user command, reap zombies
 11. On exit: drain Envoy, stop DNS proxy, remove policy routes, flush nftables
 
+Init exits with the exit code of the user command. When a signal ends
+the user command, init logs the signal and exits with 128 plus the
+signal number, as a shell does. For example, init exits with 143 after
+SIGTERM ends the user command.
+
 Init and the daemon learn from Envoy itself that it accepts connections.
 They add a listener on a Unix domain socket to the Envoy that they
 start. That Envoy answers a request there after its other listeners

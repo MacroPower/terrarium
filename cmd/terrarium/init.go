@@ -588,8 +588,9 @@ func openEventStore(
 // process. It returns nil when the child exits with status 0, and
 // an [*ExitError] carrying the child's exit code when the child
 // exits with another status. When a signal ends the child, it logs
-// the signal and returns an [*ExitError] with the code -1. Use
-// [Daemon] for VM-wide filtering without a supervised child process.
+// the signal and returns an [*ExitError] with the code 128 plus the
+// signal number. Use [Daemon] for VM-wide filtering without a
+// supervised child process.
 func Init(ctx context.Context, usr *config.User, args []string) error {
 	if len(args) == 0 {
 		return ErrNoCommand
@@ -692,13 +693,20 @@ func Init(ctx context.Context, usr *config.User, args []string) error {
 	return userCommandResult(ctx, waitErr)
 }
 
+// signalExitBase is the number that [userCommandResult] adds to the
+// number of a signal to form the exit code for a user command that
+// the signal ended. A shell reports the same code for a command that
+// a signal ended, such as 143 for SIGTERM. Supervisors and scripts
+// read a code in that range as a signal.
+const signalExitBase = 128
+
 // userCommandResult converts the error from the wait on the user
 // command into the result of [Init]. It returns nil when the command
 // exited with status 0. For a command that exited with another
 // status, it returns an [*ExitError] with the exit code of the
 // command. For a command that a signal ended, it logs a warning that
-// names the signal and returns an [*ExitError] with the code -1. It
-// wraps every other error.
+// names the signal and returns an [*ExitError] with the code
+// [signalExitBase] plus the signal number. It wraps every other error.
 func userCommandResult(ctx context.Context, waitErr error) error {
 	if waitErr == nil {
 		return nil
@@ -717,6 +725,8 @@ func userCommandResult(ctx context.Context, waitErr error) error {
 		slog.WarnContext(ctx, "user command ended on a signal",
 			slog.String("signal", sig.String()),
 		)
+
+		return &ExitError{Code: signalExitBase + int(sig)}
 	}
 
 	return &ExitError{Code: exitErr.ExitCode()}

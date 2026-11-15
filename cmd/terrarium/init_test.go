@@ -108,13 +108,19 @@ func TestUserCommandResult(t *testing.T) {
 			script: "exit 42",
 			want:   42,
 		},
+		// A shell exits with this status after SIGKILL ends one of
+		// its own commands, so the code matches the SIGKILL case.
+		"exits with status 137": {
+			script: "exit 137",
+			want:   137,
+		},
 		"ends on SIGKILL": {
 			script: "kill -KILL $$",
-			want:   -1,
+			want:   137,
 		},
 		"ends on SIGTERM": {
 			script: "kill -TERM $$",
-			want:   -1,
+			want:   143,
 		},
 	}
 
