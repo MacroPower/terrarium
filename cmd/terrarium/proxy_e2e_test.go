@@ -556,6 +556,80 @@ func TestProxyE2EMITM(t *testing.T) {
 	})
 }
 
+// TestProxyE2EMITMPort checks that the proxy sends a decrypted request
+// to the port of the CONNECT request, for an HTTP rule on TLS ports
+// other than 443.
+//
+//nolint:paralleltest // e2e tests bind fixed ports, set env, and run envoy subprocesses.
+func TestProxyE2EMITMPort(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	caPath, tlsCfg := e2eCerts(t, "test.example")
+
+	startTLSServer(t, "127.0.0.1:18445", tlsCfg, "upstream 18445")
+	startTLSServer(t, "127.0.0.1:18446", tlsCfg, "upstream 18446")
+
+	// The proxy validates its re-encrypted upstream connection against
+	// the system bundle, so point the bundle at the test CA.
+	t.Setenv("SSL_CERT_FILE", caPath)
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	policy := "egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: test.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"18445\"\n" +
+		"            protocol: TCP\n" +
+		"          - port: \"18446\"\n" +
+		"            protocol: TCP\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /allowed.*\n"
+
+	proxyURL, usr := startProxy(t, policy, dnsAddr)
+	client := proxyClient(t, proxyURL, loadPool(t, filepath.Join(usr.CADir, "ca.pem")))
+
+	// Both ports serve one host, so each request reaches its upstream
+	// only when the proxy keeps the port of the request.
+	allowedTests := map[string]struct {
+		url  string
+		want string
+	}{
+		"allowed path on the first port": {
+			url:  "https://test.example:18445/allowed",
+			want: "upstream 18445",
+		},
+		"allowed path on the second port": {
+			url:  "https://test.example:18446/allowed",
+			want: "upstream 18446",
+		},
+	}
+
+	for name, tc := range allowedTests {
+		t.Run(name, func(t *testing.T) {
+			resp, err := client.Get(tc.url) //nolint:noctx // test client has a timeout.
+			require.NoError(t, err)
+
+			defer func() {
+				assert.NoError(t, resp.Body.Close())
+			}()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+			assert.Equal(t, tc.want, string(body))
+		})
+	}
+
+	t.Run("denied path", func(t *testing.T) {
+		assert.Equal(t, http.StatusForbidden,
+			getStatus(t, client, "https://test.example:18445/forbidden"))
+	})
+}
+
 // startHeaderEchoServer serves plain HTTP on addr. The body of each
 // response holds one line for each name in names, as "name=values".
 // The values are the values of that request header, joined with

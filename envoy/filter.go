@@ -3,6 +3,7 @@ package envoy
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 
 	"go.jacobcolvin.com/terrarium/config"
 )
@@ -187,6 +188,16 @@ func buildPassthroughFilterChain(
 // text, such as an upstream that checks a request signature that
 // covers the header.
 //
+// The chain sends each request that a route forwards to upstreamPort
+// of the host that the Host header names. An HTTP filter stores
+// upstreamPort under the key "envoy.upstream.dynamic_port" in the
+// filter state of each request, and the dynamic forward proxy connects
+// to that port. Without the key, the dynamic forward proxy takes the
+// port from the Host header. The connection manager removes that
+// port. The dynamic forward proxy then connects to port 443, which is
+// the default port of the TLS cluster of the routes. The port in the
+// Host header of the client never selects the port of the upstream.
+//
 // The connection manager serves HTTP/1.0 requests, and the virtual
 // host applies the same HTTP rules to the requests of every HTTP
 // version. An HTTP/1.0 request without a Host header names no host to
@@ -197,6 +208,7 @@ func buildPassthroughFilterChain(
 // of [withMismatchAccessLog].
 func buildMITMFilterChain(
 	rule config.ResolvedRule,
+	upstreamPort int,
 	accessLog []AccessLog,
 	certsDir string,
 	httpRBACFilter *filter,
@@ -208,17 +220,30 @@ func buildMITMFilterChain(
 
 	vhosts, _, _ := buildHTTPVirtualHosts([]config.ResolvedRule{rule}, mitmForwardProxyCluster)
 
-	httpFilters := make([]filter, 0, 3)
+	httpFilters := make([]filter, 0, 4)
 	if httpRBACFilter != nil {
 		httpFilters = append(httpFilters, *httpRBACFilter)
 	}
 
 	httpFilters = append(httpFilters,
 		filter{
+			Name: httpSetFilterStateFilterName,
+			TypedConfig: setFilterStateConfig{
+				AtType: httpSetFilterStateTypeURL,
+				OnRequestHeaders: []filterStateValue{{
+					ObjectKey: dynamicPortFilterStateKey,
+					FormatString: substitutionFormatString{
+						TextFormatSource: &dataSource{InlineString: strconv.Itoa(upstreamPort)},
+					},
+				}},
+			},
+		},
+		filter{
 			Name: httpDFPFilterName,
 			TypedConfig: httpDFPFilterConfig{
-				AtType:         httpDFPFilterTypeURL,
-				DNSCacheConfig: dnsCache,
+				AtType:                          httpDFPFilterTypeURL,
+				DNSCacheConfig:                  dnsCache,
+				AllowDynamicHostFromFilterState: true,
 			},
 		},
 		filter{

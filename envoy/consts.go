@@ -32,6 +32,18 @@ const (
 	// configuration.
 	httpDFPFilterTypeURL = "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig"
 
+	// The Envoy HTTP filter that stores values in the filter state of
+	// a request.
+	httpSetFilterStateFilterName = "envoy.filters.http.set_filter_state"
+
+	// The Any type URL for the configuration of the HTTP filter that
+	// stores values in the filter state.
+	httpSetFilterStateTypeURL = "type.googleapis.com/envoy.extensions.filters.http.set_filter_state.v3.Config"
+
+	// The filter state key of the port that the dynamic forward proxy
+	// connects to, in place of the default port of its cluster.
+	dynamicPortFilterStateKey = "envoy.upstream.dynamic_port"
+
 	// The Any type URL for the HTTP router filter configuration.
 	httpRouterTypeURL = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
 

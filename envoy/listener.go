@@ -66,6 +66,10 @@ func listenAdditionalAddrs(transparent bool, port int) []additionalAddr {
 // transparent is true, the listener binds to [::] (dual-stack) with
 // IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
 //
+// Every chain connects to upstreamPort of its upstream host. A
+// passthrough chain takes the host from the SNI, and a MITM chain
+// takes the host from the Host header of each decrypted request.
+//
 // The tcpAL is the access log slice for the TCP-level chains
 // (passthrough and wildcard passthrough); httpAL is the access log
 // slice for the
@@ -102,7 +106,8 @@ func BuildTLSListener(
 // passthrough chains for SNI-only domains, wildcard chains with RBAC
 // depth enforcement, MITM chains for L7-restricted rules, an optional
 // open catch-all, and the default reject chain for connections
-// without SNI.
+// without SNI. The passthrough chains and the MITM chains connect to
+// upstreamPort of their upstream host.
 func buildTLSFilterChains(
 	upstreamPort int,
 	statPrefix string,
@@ -179,7 +184,7 @@ func buildTLSFilterChains(
 			httpRBAC = &f
 		}
 
-		chains = append(chains, buildMITMFilterChain(r, httpAL, certsDir, httpRBAC, dnsCache))
+		chains = append(chains, buildMITMFilterChain(r, upstreamPort, httpAL, certsDir, httpRBAC, dnsCache))
 	}
 
 	// Open ports get a catch-all passthrough chain (no SNI restriction).

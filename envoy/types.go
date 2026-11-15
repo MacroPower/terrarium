@@ -526,9 +526,44 @@ type directResponseAction struct {
 	Status int         `yaml:"status"`
 }
 
+// httpDFPFilterConfig models the fields of the configuration of
+// Envoy's dynamic forward proxy HTTP filter that the listeners set.
+//
+// The filter resolves the host of each request. It takes the port from
+// the Host header and, when the header has no port, uses the default
+// port of the cluster of the route. That default is 443 for a cluster
+// with a TLS transport socket and 80 for every other cluster.
+//
+// With AllowDynamicHostFromFilterState, the filter reads the filter
+// state of the request first. The value of the key
+// "envoy.upstream.dynamic_host" replaces the host, and the value of the
+// key "envoy.upstream.dynamic_port" replaces the port. The dynamic
+// forward proxy cluster reads the port key with every configuration of
+// the filter. A listener that stores the port key therefore sets this
+// field. The filter then resolves the host for the port that the
+// cluster connects to.
 type httpDFPFilterConfig struct {
-	AtType         string         `yaml:"@type"`
-	DNSCacheConfig dnsCacheConfig `yaml:"dns_cache_config"`
+	AtType                          string         `yaml:"@type"`
+	DNSCacheConfig                  dnsCacheConfig `yaml:"dns_cache_config"`
+	AllowDynamicHostFromFilterState bool           `yaml:"allow_dynamic_host_from_filter_state,omitempty"`
+}
+
+// setFilterStateConfig models the configuration of Envoy's
+// set_filter_state HTTP filter. The filter stores each value of
+// OnRequestHeaders in the filter state of every request, in order,
+// before the HTTP filters after it run.
+type setFilterStateConfig struct {
+	AtType           string             `yaml:"@type"`
+	OnRequestHeaders []filterStateValue `yaml:"on_request_headers"`
+}
+
+// filterStateValue models Envoy's FilterStateValue message. Envoy
+// stores the text of FormatString under ObjectKey. ObjectKey must name
+// a filter state key that Envoy has an object factory for, such as
+// "envoy.upstream.dynamic_port".
+type filterStateValue struct {
+	FormatString substitutionFormatString `yaml:"format_string"`
+	ObjectKey    string                   `yaml:"object_key"`
 }
 
 type cluster struct {

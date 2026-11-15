@@ -463,6 +463,10 @@ func connectAuthorities(domains []string, port int) []string {
 // passthrough, wildcard RBAC, and MITM filter chains as the
 // container-mode [BuildTLSListener]; upstream resolution uses the
 // SNI, so the CONNECT authority cannot redirect allowed traffic.
+//
+// Every chain connects to port of its upstream host, which is the port
+// of the CONNECT authority that the front listener matched. A MITM
+// chain takes the host from the Host header of each decrypted request.
 func BuildInternalTLSListener(
 	port int,
 	rules []config.ResolvedRule,
