@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -135,10 +136,19 @@ func TestExplainExecError(t *testing.T) {
 				fdDir = procFDDir
 			}
 
-			cmd := exec.CommandContext(t.Context(), path)
-			execDescriptor(cmd, f, fdDir)
+			// A child that a parallel test forks during the write of
+			// the file holds the file open for writing, so the start
+			// goes through the retry of a busy binary.
+			proc, startErr := startEnvoyWhenFree(t.Context(), func() *exec.Cmd {
+				cmd := exec.CommandContext(t.Context(), path)
+				execDescriptor(cmd, f, fdDir)
 
-			startErr := cmd.Start()
+				return cmd
+			})
+			if proc != nil {
+				require.NoError(t, proc.wait())
+			}
+
 			require.ErrorIs(t, startErr, tt.startErr)
 
 			got := explainExecError(f, startErr, fdDir)
@@ -181,6 +191,44 @@ func TestProxyManagedEnvoyLoaderNotFound(t *testing.T) {
 	assert.NoFileExists(t, usr.ReadyFile)
 }
 
+// TestProxyManagedEnvoyBusy checks the error of a [Proxy] whose managed
+// build a process holds open for writing. The proxy starts the build
+// again after each pause of [startEnvoyWhenFree], so the error arrives
+// after the last pause.
+func TestProxyManagedEnvoyBusy(t *testing.T) {
+	t.Parallel()
+
+	inst, path, _ := managedEnvoyInstaller(t, []byte("#!/bin/sh\nexit 0\n"))
+
+	_, err := inst.Install(t.Context())
+	require.NoError(t, err)
+
+	w, err := os.OpenFile(path, os.O_WRONLY, 0) //nolint:gosec // test fixture path.
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		assert.NoError(t, w.Close())
+	})
+
+	dir := t.TempDir()
+	usr := stubProxyUser(t, dir, "egress: []\n")
+	usr.ReadyFile = filepath.Join(dir, "ready")
+
+	opts := proxyOptions{bindAddress: loopbackIPv4, httpPort: freePort(t)}
+
+	// Each pause is twice as long as the pause before it, so the sum
+	// of the pauses is the first pause times 2^retries - 1.
+	pauses := busyStartPause<<busyStartRetries - busyStartPause
+
+	start := time.Now()
+
+	err = Proxy(t.Context(), usr, inst, opts)
+	require.ErrorIs(t, err, syscall.ETXTBSY)
+	require.ErrorContains(t, err, "starting envoy "+path+": ")
+	assert.GreaterOrEqual(t, time.Since(start), pauses)
+
+	assert.NoFileExists(t, usr.ReadyFile)
+}
+
 // TestEnvoyBinaryCommandRunsCheckedFile checks that the command of a
 // managed binary runs the file that [resolveEnvoy] hashed. Another file
 // takes the install path between the hash check and the start of the
@@ -208,8 +256,18 @@ func TestEnvoyBinaryCommandRunsCheckedFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(other, script("replaced"), 0o755))
 	require.NoError(t, os.Rename(other, path))
 
-	cmd := bin.command(t.Context())
-	require.NoError(t, cmd.Run())
+	// A child that a parallel test forks during the install holds the
+	// checked file open for writing, so the start goes through the
+	// retry of a busy binary.
+	var cmd *exec.Cmd
+
+	proc, err := startEnvoyWhenFree(t.Context(), func() *exec.Cmd {
+		cmd = bin.command(t.Context())
+
+		return cmd
+	})
+	require.NoError(t, err)
+	require.NoError(t, proc.wait())
 
 	data, err := os.ReadFile(out) //nolint:gosec // test fixture path.
 	require.NoError(t, err)

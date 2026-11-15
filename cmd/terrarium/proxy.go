@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -832,6 +833,12 @@ func newProbeToken() (string, error) {
 // exits with the status of a dynamic loader that cannot run it. See
 // [envoyBinary.exitError].
 //
+// The kernel does not execute a binary that a process holds open for
+// writing. An install that ended a moment ago can leave the managed
+// build in that state for a short time. Proxy therefore starts such a
+// binary again after a pause. See [startEnvoyWhenFree] for the pauses
+// and for the error of a binary that stays in that state.
+//
 // Envoy writes its process log to the logging.envoy.path of the policy,
 // or to usr.EnvoyLogPath when the policy does not set one. When both
 // are empty, Envoy logs to the stderr of the proxy. See
@@ -958,27 +965,34 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 			slog.String("envoy_log", envoyLogPath))
 	}
 
-	cmd := envoyBin.command(ctx,
-		proxyEnvoyArgs(runtime.GOOS, bootstrapPath, cfg.EnvoyLogLevel(), envoyLogPath)...)
+	envoyArgs := proxyEnvoyArgs(runtime.GOOS, bootstrapPath, cfg.EnvoyLogLevel(), envoyLogPath)
 
-	// Envoy writes here what it does not send to its log file, such as
-	// a command line that it rejects.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	newCmd := func() *exec.Cmd {
+		cmd := envoyBin.command(ctx, envoyArgs...)
 
-	// The probe answer of Envoy holds the value of this variable, so
-	// the answer names the Envoy of this proxy, whichever bootstrap
-	// that Envoy loaded.
-	cmd.Env = append(os.Environ(), envoy.ProxyProbeTokenEnv+"="+probeToken)
+		// Envoy writes here what it does not send to its log file,
+		// such as a command line that it rejects.
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 
-	// On ctx cancellation (signal), drain gracefully: SIGTERM first,
-	// SIGKILL after the drain timeout.
-	cmd.Cancel = func() error {
-		return cmd.Process.Signal(syscall.SIGTERM)
+		// The probe answer of Envoy holds the value of this variable,
+		// so the answer names the Envoy of this proxy, whichever
+		// bootstrap that Envoy loaded.
+		cmd.Env = append(os.Environ(), envoy.ProxyProbeTokenEnv+"="+probeToken)
+
+		// On ctx cancellation (signal), drain gracefully: SIGTERM
+		// first, SIGKILL after the drain timeout.
+		cmd.Cancel = func() error {
+			return cmd.Process.Signal(syscall.SIGTERM)
+		}
+		cmd.WaitDelay = envoySettings.DrainTimeout.Duration
+
+		return cmd
 	}
-	cmd.WaitDelay = envoySettings.DrainTimeout.Duration
 
-	proc, err := startEnvoyProcess(ctx, cmd)
+	// An install of the managed build that ended a moment ago can
+	// leave the binary busy.
+	proc, err := startEnvoyWhenFree(ctx, newCmd)
 	if err != nil {
 		if ctx.Err() != nil {
 			// The shutdown arrived before Envoy started. Start does
@@ -1059,7 +1073,7 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 	case errors.Is(err, ErrEnvoyExited):
 		// The process state exists, because the wait for the process
 		// has returned.
-		return envoyBin.exitError(err, cmd.ProcessState)
+		return envoyBin.exitError(err, proc.cmd.ProcessState)
 
 	default:
 		stopEnvoy(ctx, proc, envoySettings.DrainTimeout.Duration)

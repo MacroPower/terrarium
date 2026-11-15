@@ -53,6 +53,15 @@ const (
 	// that [waitForProxyListener] allows for one probe request.
 	probeTimeout = time.Second
 
+	// The number of times that [startEnvoyWhenFree] starts a busy
+	// binary again.
+	busyStartRetries = 7
+
+	// The pause of [startEnvoyWhenFree] before it starts a busy binary
+	// again for the first time. Each later pause is twice as long as
+	// the pause before it.
+	busyStartPause = 10 * time.Millisecond
+
 	// The name of the ready socket inside its directory.
 	readySocketName = "ready.sock"
 
@@ -224,6 +233,50 @@ func startEnvoyProcess(ctx context.Context, cmd *exec.Cmd) (*envoyProcess, error
 	}()
 
 	return proc, nil
+}
+
+// startEnvoyWhenFree starts the command that newCmd returns, as
+// [startEnvoyProcess] does. When the binary of the command is busy, it
+// pauses and then starts a new command from newCmd. A command that did
+// not start cannot start again, so newCmd must return a new command on
+// every call.
+//
+// A binary is busy when a process holds it open for writing. The
+// kernel does not execute such a binary, and the start returns
+// [syscall.ETXTBSY]. A child process inherits the open descriptors of
+// its parent and closes them only when it executes its own program. A
+// child that starts during the install of a binary can therefore hold
+// the binary open for writing for a moment after the install has
+// closed it.
+//
+// The pauses double from 10 milliseconds, and they add up to less than
+// 2 seconds. When the binary is still busy after the last pause,
+// startEnvoyWhenFree returns the [syscall.ETXTBSY] error of the last
+// start. It returns every other error of a start without a second
+// start. When ctx ends during a pause, it returns the error of ctx.
+func startEnvoyWhenFree(ctx context.Context, newCmd func() *exec.Cmd) (*envoyProcess, error) {
+	pause := busyStartPause
+
+	for range busyStartRetries {
+		proc, err := startEnvoyProcess(ctx, newCmd())
+		if !errors.Is(err, syscall.ETXTBSY) {
+			return proc, err
+		}
+
+		slog.DebugContext(ctx, "envoy binary is busy, starting it again after a pause",
+			slog.Duration("pause", pause),
+			slog.Any("err", err))
+
+		select {
+		case <-time.After(pause):
+		case <-ctx.Done():
+			return nil, ctx.Err() //nolint:wrapcheck // the callers name the command.
+		}
+
+		pause *= 2
+	}
+
+	return startEnvoyProcess(ctx, newCmd())
 }
 
 // wait blocks until the process has exited, and returns the result of

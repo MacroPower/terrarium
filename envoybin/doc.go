@@ -24,6 +24,13 @@
 // file at the install path after the check then has no effect on the
 // binary that runs.
 //
+// The start of a binary that [Installer.Install] wrote a moment ago can
+// fail with the error ETXTBSY. The kernel does not execute a file that a
+// process holds open for writing. A child process that the caller starts
+// during the install inherits the descriptor that writes the binary. The
+// child closes the descriptor only when it executes its own program.
+// Start the binary again after a pause when the start returns that error.
+//
 // A missing binary returns [ErrNotInstalled], which a caller can answer
 // with [Installer.Install]. A binary with the wrong hash returns
 // [ErrHashMismatch]. No method replaces such a binary, because the
