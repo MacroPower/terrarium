@@ -405,6 +405,9 @@ func TestWaitForEnvoy(t *testing.T) {
 		// response.
 		silent   bool
 		canceled bool
+		// exited closes the channel that reports the exit of Envoy
+		// before the wait starts.
+		exited bool
 	}{
 		"envoy answers": {
 			status:  http.StatusOK,
@@ -430,6 +433,26 @@ func TestWaitForEnvoy(t *testing.T) {
 			err:      context.Canceled,
 			notErr:   ErrListenerNotReady,
 		},
+		"envoy exits": {
+			exited:  true,
+			timeout: 15 * time.Second,
+			err:     ErrEnvoyExited,
+			notErr:  ErrListenerNotReady,
+		},
+		"envoy answers and exits": {
+			status:  http.StatusOK,
+			exited:  true,
+			timeout: 15 * time.Second,
+		},
+		// A cancellation ends the process of the caller, so the exit
+		// does not hide the cancellation.
+		"caller cancels and envoy exits": {
+			canceled: true,
+			exited:   true,
+			timeout:  15 * time.Second,
+			err:      context.Canceled,
+			notErr:   ErrEnvoyExited,
+		},
 	}
 
 	for name, tt := range tests {
@@ -437,6 +460,11 @@ func TestWaitForEnvoy(t *testing.T) {
 			t.Parallel()
 
 			socket := readySocket(t)
+
+			exited := make(chan struct{})
+			if tt.exited {
+				close(exited)
+			}
 
 			switch {
 			case tt.status != 0:
@@ -460,7 +488,15 @@ func TestWaitForEnvoy(t *testing.T) {
 				cancel()
 			}
 
-			err := waitForEnvoy(ctx, socket, tt.timeout)
+			start := time.Now()
+
+			err := waitForEnvoy(ctx, socket, exited, tt.timeout)
+
+			if tt.exited {
+				assert.Less(t, time.Since(start), tt.timeout/2,
+					"the wait must not last for the timeout")
+			}
+
 			if tt.err == nil {
 				require.NoError(t, err)
 
@@ -486,7 +522,7 @@ func TestWaitForEnvoyLate(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- waitForEnvoy(t.Context(), socket, 15*time.Second)
+		errCh <- waitForEnvoy(t.Context(), socket, nil, 15*time.Second)
 	}()
 
 	select {
@@ -499,6 +535,38 @@ func TestWaitForEnvoyLate(t *testing.T) {
 	serveReadySocket(t, socket, http.StatusOK)
 
 	require.NoError(t, <-errCh)
+}
+
+// TestWaitForEnvoyExitsLate checks that the wait ends when Envoy exits
+// after the wait has started.
+func TestWaitForEnvoyExitsLate(t *testing.T) {
+	t.Parallel()
+
+	socket := readySocket(t)
+
+	exited := make(chan struct{})
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- waitForEnvoy(t.Context(), socket, exited, 15*time.Second)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("wait ended while envoy ran: %v", err)
+
+	case <-time.After(3 * listenerPollInterval):
+	}
+
+	close(exited)
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, ErrEnvoyExited)
+
+	case <-time.After(10 * time.Second):
+		t.Fatal("wait did not end after envoy exited")
+	}
 }
 
 // TestStartEnvoyAndWaitNotReady checks that a process that never
@@ -515,12 +583,93 @@ func TestStartEnvoyAndWaitNotReady(t *testing.T) {
 	// The process stays alive, so a signal 0 to it succeeds.
 	cmd := exec.CommandContext(t.Context(), "sleep", "60")
 
-	err := startEnvoyAndWait(t.Context(), cmd, readySocket(t), settings)
+	proc, err := startEnvoyAndWait(t.Context(), cmd, readySocket(t), settings)
 	require.ErrorIs(t, err, ErrEnvoyNotRunning)
 	require.ErrorIs(t, err, ErrListenerNotReady)
+	require.NotErrorIs(t, err, ErrEnvoyExited)
+	assert.Nil(t, proc)
 
 	require.NotNil(t, cmd.ProcessState, "the process must have been stopped and waited on")
 	assert.False(t, cmd.ProcessState.Success())
+}
+
+// TestStartEnvoyAndWaitExits checks that the wait ends when the process
+// exits before it answers on the ready socket. The wait does not last
+// for the startup timeout, and the error gives the exit status.
+func TestStartEnvoyAndWaitExits(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		script string
+		want   string
+	}{
+		"exit status": {
+			script: "exit 3",
+			want:   "exit status 3",
+		},
+		"exit without an error": {
+			script: "exit 0",
+			want:   "exit status 0",
+		},
+		"signal": {
+			script: "kill -KILL $$",
+			want:   "signal: killed",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			settings := config.EnvoySettings{
+				StartupTimeout: config.Duration{Duration: 30 * time.Second},
+				DrainTimeout:   config.Duration{Duration: 15 * time.Second},
+			}
+
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", tt.script)
+
+			start := time.Now()
+
+			proc, err := startEnvoyAndWait(t.Context(), cmd, readySocket(t), settings)
+
+			elapsed := time.Since(start)
+
+			require.ErrorIs(t, err, ErrEnvoyNotRunning)
+			require.ErrorIs(t, err, ErrEnvoyExited)
+			require.NotErrorIs(t, err, ErrListenerNotReady)
+			require.ErrorContains(t, err, tt.want)
+			assert.Nil(t, proc)
+
+			assert.Less(t, elapsed, settings.StartupTimeout.Duration/2,
+				"the wait must not last for the startup timeout")
+
+			require.NotNil(t, cmd.ProcessState, "the process must have been waited on")
+		})
+	}
+}
+
+// TestStartEnvoyAndWaitReady checks that the caller keeps a process
+// that answers on the ready socket, and that the process still runs.
+func TestStartEnvoyAndWaitReady(t *testing.T) {
+	t.Parallel()
+
+	settings := config.EnvoySettings{
+		StartupTimeout: config.Duration{Duration: 15 * time.Second},
+		DrainTimeout:   config.Duration{Duration: 15 * time.Second},
+	}
+
+	socket := readySocket(t)
+	serveReadySocket(t, socket, http.StatusOK)
+
+	cmd := exec.CommandContext(t.Context(), "sleep", "60")
+
+	proc, err := startEnvoyAndWait(t.Context(), cmd, socket, settings)
+	require.NoError(t, err)
+	require.NotNil(t, proc)
+	assert.False(t, envoyExited(proc), "the process must still run")
+
+	stopEnvoy(t.Context(), proc, 15*time.Second)
+	assert.True(t, envoyExited(proc))
 }
 
 // TestStartEnvoyAndWaitStartFails checks the error for a command that
@@ -530,16 +679,29 @@ func TestStartEnvoyAndWaitStartFails(t *testing.T) {
 
 	cmd := exec.CommandContext(t.Context(), filepath.Join(t.TempDir(), "missing"))
 
-	err := startEnvoyAndWait(t.Context(), cmd, readySocket(t), config.EnvoySettings{})
+	proc, err := startEnvoyAndWait(t.Context(), cmd, readySocket(t), config.EnvoySettings{})
 	require.ErrorContains(t, err, "starting envoy")
 	require.NotErrorIs(t, err, ErrEnvoyNotRunning)
+	assert.Nil(t, proc)
+}
+
+// envoyExited reports whether the process of proc has exited and the
+// wait for it has returned.
+func envoyExited(proc *envoyProcess) bool {
+	select {
+	case <-proc.exited:
+		return true
+
+	default:
+		return false
+	}
 }
 
 // startEnvoyStub starts a process that stands in for Envoy and stays
 // alive for 60 seconds. With ignoreTerm, the process ignores SIGTERM,
 // as an Envoy that outlives its drain does. The process has set its
 // signal handling when startEnvoyStub returns.
-func startEnvoyStub(t *testing.T, ignoreTerm bool) *exec.Cmd {
+func startEnvoyStub(t *testing.T, ignoreTerm bool) *envoyProcess {
 	t.Helper()
 
 	// An ignored signal stays ignored in the program that exec starts.
@@ -553,13 +715,14 @@ func startEnvoyStub(t *testing.T, ignoreTerm bool) *exec.Cmd {
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 
-	require.NoError(t, cmd.Start())
+	proc, err := startEnvoyProcess(t.Context(), cmd)
+	require.NoError(t, err)
 
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	require.NoError(t, err)
 	require.Equal(t, "ready\n", line)
 
-	return cmd
+	return proc
 }
 
 // TestStopEnvoy checks that the process has exited when stopEnvoy
@@ -588,17 +751,17 @@ func TestStopEnvoy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			cmd := startEnvoyStub(t, tc.ignoreTerm)
+			proc := startEnvoyStub(t, tc.ignoreTerm)
 
 			start := time.Now()
 
-			stopEnvoy(t.Context(), cmd, tc.drainTimeout)
+			stopEnvoy(t.Context(), proc, tc.drainTimeout)
 
 			elapsed := time.Since(start)
 
-			require.NotNil(t, cmd.ProcessState, "the process must have exited and been waited on")
+			require.True(t, envoyExited(proc), "the process must have exited and been waited on")
 
-			status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+			status, ok := proc.cmd.ProcessState.Sys().(syscall.WaitStatus)
 			require.True(t, ok)
 			require.True(t, status.Signaled(), "a signal must have ended the process")
 			assert.Equal(t, tc.want, status.Signal())
@@ -614,31 +777,25 @@ func TestStopEnvoy(t *testing.T) {
 }
 
 // TestStopEnvoyNotRunning checks that stopEnvoy returns without a wait
-// for a command that has no running process.
+// when no process runs.
 func TestStopEnvoyNotRunning(t *testing.T) {
 	t.Parallel()
 
 	tcs := map[string]struct {
-		cmd func(t *testing.T) *exec.Cmd
+		proc func(t *testing.T) *envoyProcess
 	}{
-		"nil command": {
-			cmd: func(*testing.T) *exec.Cmd { return nil },
+		"nil process": {
+			proc: func(*testing.T) *envoyProcess { return nil },
 		},
-		"never started": {
-			cmd: func(t *testing.T) *exec.Cmd {
+		"already exited": {
+			proc: func(t *testing.T) *envoyProcess {
 				t.Helper()
 
-				return exec.CommandContext(t.Context(), "sleep", "60")
-			},
-		},
-		"already waited on": {
-			cmd: func(t *testing.T) *exec.Cmd {
-				t.Helper()
+				proc, err := startEnvoyProcess(t.Context(), exec.CommandContext(t.Context(), "true"))
+				require.NoError(t, err)
+				require.NoError(t, proc.wait())
 
-				cmd := exec.CommandContext(t.Context(), "true")
-				require.NoError(t, cmd.Run())
-
-				return cmd
+				return proc
 			},
 		},
 	}
@@ -647,13 +804,33 @@ func TestStopEnvoyNotRunning(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
+			proc := tc.proc(t)
+
 			start := time.Now()
 
-			stopEnvoy(t.Context(), tc.cmd(t), 30*time.Second)
+			stopEnvoy(t.Context(), proc, 30*time.Second)
 
 			assert.Less(t, time.Since(start), 30*time.Second)
 		})
 	}
+}
+
+// TestEnvoyProcessWait checks that wait returns the result of the
+// process, and that a second wait returns the same result.
+func TestEnvoyProcessWait(t *testing.T) {
+	t.Parallel()
+
+	proc, err := startEnvoyProcess(t.Context(), exec.CommandContext(t.Context(), "sh", "-c", "exit 7"))
+	require.NoError(t, err)
+
+	for range 2 {
+		var exitErr *exec.ExitError
+
+		require.ErrorAs(t, proc.wait(), &exitErr)
+		assert.Equal(t, 7, exitErr.ExitCode())
+	}
+
+	assert.True(t, envoyExited(proc))
 }
 
 func TestWaitForProxyListener(t *testing.T) {

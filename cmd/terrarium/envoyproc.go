@@ -29,6 +29,10 @@ var (
 	// or does not become ready before the startup timeout expires.
 	ErrEnvoyNotRunning = errors.New("envoy process not running")
 
+	// ErrEnvoyExited means that the Envoy process exited before it
+	// answered on its ready socket.
+	ErrEnvoyExited = errors.New("envoy exited before it answered on its ready socket")
+
 	// ErrListenerNotReady means that a listener did not answer the
 	// probe request or the ready request before the startup timeout
 	// expired.
@@ -181,29 +185,85 @@ func readyOverlayYAML(socket string) (string, error) {
 	return buf.String(), nil
 }
 
+// envoyProcess is an Envoy process that runs or has exited. One
+// goroutine waits for the process from its start, so a caller can
+// learn that the process exited without a wait of its own.
+//
+// Start instances with [startEnvoyProcess], and stop them with
+// [stopEnvoy].
+type envoyProcess struct {
+	cmd *exec.Cmd
+
+	// The channel closes after the process has exited. From then on,
+	// cmd holds the process state and waitErr holds the result of the
+	// wait.
+	exited chan struct{}
+
+	// The result of [exec.Cmd.Wait]. Read it only after exited closes.
+	waitErr error
+}
+
+// startEnvoyProcess starts cmd and returns its [*envoyProcess]. The
+// caller must not call [exec.Cmd.Wait] on cmd, because the returned
+// process holds the one wait that cmd allows.
+func startEnvoyProcess(ctx context.Context, cmd *exec.Cmd) (*envoyProcess, error) {
+	err := cmd.Start()
+	if err != nil {
+		return nil, err //nolint:wrapcheck // the callers name the command.
+	}
+
+	proc := &envoyProcess{cmd: cmd, exited: make(chan struct{})}
+
+	go func() {
+		proc.waitErr = cmd.Wait()
+		if proc.waitErr != nil {
+			slog.DebugContext(ctx, "envoy exited", slog.Any("err", proc.waitErr))
+		}
+
+		close(proc.exited)
+	}()
+
+	return proc, nil
+}
+
+// wait blocks until the process has exited, and returns the result of
+// [exec.Cmd.Wait].
+func (p *envoyProcess) wait() error {
+	<-p.exited
+
+	return p.waitErr
+}
+
 // startEnvoyAndWait starts cmd, which runs Envoy with the ready overlay
 // for socket, and waits until that Envoy answers on socket. See
 // [waitForEnvoy] for the wait.
 //
 // When Envoy does not answer, startEnvoyAndWait stops the process and
 // returns [ErrEnvoyNotRunning]. The caller therefore never keeps an
-// Envoy that did not become ready.
+// Envoy that did not become ready. When Envoy exits before it answers,
+// the wait ends at that point, before the startup timeout expires. The
+// error then also wraps [ErrEnvoyExited] and gives the exit status of
+// Envoy.
 func startEnvoyAndWait(
 	ctx context.Context, cmd *exec.Cmd, socket string, settings config.EnvoySettings,
-) error {
-	err := cmd.Start()
+) (*envoyProcess, error) {
+	proc, err := startEnvoyProcess(ctx, cmd)
 	if err != nil {
-		return fmt.Errorf("starting envoy: %w", err)
+		return nil, fmt.Errorf("starting envoy: %w", err)
 	}
 
-	err = waitForEnvoy(ctx, socket, settings.StartupTimeout.Duration)
-	if err != nil {
-		stopEnvoy(ctx, cmd, settings.DrainTimeout.Duration)
-
-		return fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
+	err = waitForEnvoy(ctx, socket, proc.exited, settings.StartupTimeout.Duration)
+	if err == nil {
+		return proc, nil
 	}
 
-	return nil
+	stopEnvoy(ctx, proc, settings.DrainTimeout.Duration)
+
+	if errors.Is(err, ErrEnvoyExited) {
+		return nil, fmt.Errorf("%w: %w: %s", ErrEnvoyNotRunning, err, cmd.ProcessState)
+	}
+
+	return nil, fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
 }
 
 // waitForEnvoy polls the ready socket at socket until the ready
@@ -220,11 +280,18 @@ func startEnvoyAndWait(
 // when it exits because another process holds one of its listener
 // ports.
 //
+// The channel exited closes when the process of that Envoy has exited.
+// A process that has exited never answers, so waitForEnvoy returns
+// [ErrEnvoyExited] at that point and does not wait for the timeout. A
+// nil channel never ends the wait.
+//
 // It returns [ErrListenerNotReady] when the timeout expires first.
 // When the caller cancels ctx first, it returns the context's error
 // without waiting for the next poll. The caller can then tell a
 // shutdown from an Envoy that never became ready.
-func waitForEnvoy(ctx context.Context, socket string, timeout time.Duration) error {
+func waitForEnvoy(
+	ctx context.Context, socket string, exited <-chan struct{}, timeout time.Duration,
+) error {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -249,17 +316,28 @@ func waitForEnvoy(ctx context.Context, socket string, timeout time.Duration) err
 			return nil
 		}
 
-		// Without an answer, Envoy has not bound the socket or has not
-		// started its workers.
+		// Without an answer, Envoy has not bound the socket, has not
+		// started its workers, or has exited.
 		select {
-		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return fmt.Errorf("waiting for envoy on %s: %w", socket, ctx.Err())
-			}
-
-			return fmt.Errorf("%w: %s after %v", ErrListenerNotReady, socket, timeout)
-
 		case <-time.After(listenerPollInterval):
+			continue
+
+		case <-exited:
+		case <-waitCtx.Done():
+		}
+
+		// A cancellation of ctx can also end the process, so the
+		// cancellation comes before the exit.
+		if ctx.Err() != nil {
+			return fmt.Errorf("waiting for envoy on %s: %w", socket, ctx.Err())
+		}
+
+		select {
+		case <-exited:
+			return ErrEnvoyExited
+
+		default:
+			return fmt.Errorf("%w: %s after %v", ErrListenerNotReady, socket, timeout)
 		}
 	}
 }
@@ -396,7 +474,7 @@ func probeProxyListener(ctx context.Context, client *http.Client, addr, token st
 	return resp.StatusCode == http.StatusOK && string(body) == token, nil
 }
 
-// stopEnvoy stops the Envoy process of cmd and waits for it, so the
+// stopEnvoy stops the Envoy process proc and waits for it, so the
 // process has exited when stopEnvoy returns.
 //
 // It sends SIGTERM and waits up to drainTimeout for Envoy to exit.
@@ -405,34 +483,30 @@ func probeProxyListener(ctx context.Context, client *http.Client, addr, token st
 // Envoy after stopEnvoy therefore never starts it while the old Envoy
 // still runs.
 //
-// It returns immediately when cmd is nil or never started. It also
-// returns immediately when the process does not accept the SIGTERM,
-// which is the case after a caller waited on the process.
-func stopEnvoy(ctx context.Context, cmd *exec.Cmd, drainTimeout time.Duration) {
-	if cmd == nil || cmd.Process == nil {
+// It returns immediately when proc is nil or when the process has
+// already exited.
+func stopEnvoy(ctx context.Context, proc *envoyProcess, drainTimeout time.Duration) {
+	if proc == nil {
 		return
 	}
 
-	err := cmd.Process.Signal(syscall.SIGTERM)
+	err := proc.cmd.Process.Signal(syscall.SIGTERM)
+	if errors.Is(err, os.ErrProcessDone) {
+		// The wait for the process has reaped it, so the wait ends
+		// without a delay.
+		<-proc.exited
+
+		return
+	}
+
 	if err != nil {
 		slog.DebugContext(ctx, "stopping envoy", slog.Any("err", err))
 
 		return
 	}
 
-	envoyDone := make(chan struct{})
-
-	go func() {
-		waitErr := cmd.Wait()
-		if waitErr != nil {
-			slog.DebugContext(ctx, "envoy exited", slog.Any("err", waitErr))
-		}
-
-		close(envoyDone)
-	}()
-
 	select {
-	case <-envoyDone:
+	case <-proc.exited:
 		return
 
 	case <-time.After(drainTimeout):
@@ -443,7 +517,7 @@ func stopEnvoy(ctx context.Context, cmd *exec.Cmd, drainTimeout time.Duration) {
 
 	// Kill reports [os.ErrProcessDone] when Envoy exited between the
 	// timeout and the kill.
-	err = cmd.Process.Kill()
+	err = proc.cmd.Process.Kill()
 	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		// Without the kill, Envoy can run forever, and so can the wait.
 		slog.ErrorContext(ctx, "killing envoy", slog.Any("err", err))
@@ -451,5 +525,5 @@ func stopEnvoy(ctx context.Context, cmd *exec.Cmd, drainTimeout time.Duration) {
 		return
 	}
 
-	<-envoyDone
+	<-proc.exited
 }

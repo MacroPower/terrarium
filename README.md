@@ -1041,10 +1041,15 @@ ends. Init and the daemon create `/run/terrarium` when it does not
 exist. When the root file system is read-only, you must mount a writable
 file system at `/run/terrarium`.
 
-Envoy exits when another process holds one of its listener ports, so it
-never answers. The wait for the answer ends after `envoy.startupTimeout`,
-which defaults to 10 seconds. Init and the daemon then stop Envoy and
-exit with an error, and init does not create the ready file.
+The wait for the answer ends when Envoy exits. Envoy exits when another
+process holds one of its listener ports, and when it rejects its
+bootstrap. Init and the daemon then exit with an error that gives the
+exit status of Envoy, and they do not wait for `envoy.startupTimeout`.
+
+When Envoy keeps running and does not answer, the wait ends after
+`envoy.startupTimeout`, which defaults to 10 seconds. Init and the
+daemon then stop Envoy and exit with an error. After either error, init
+does not create the ready file.
 
 A daemon reload that does not complete ends in one of two ways:
 
@@ -1073,8 +1078,8 @@ daemon runs before it sends the signal. When one of the checks does not
 pass, the command returns an error and does not send the signal. After
 the signal, the command waits 5 seconds and returns an error only when
 the daemon exits in that time. With the default `envoy.startupTimeout`
-of 10 seconds, a daemon whose new Envoy does not answer exits after the
-command has returned without an error.
+of 10 seconds, a daemon whose new Envoy keeps running and does not
+answer exits after the command has returned without an error.
 
 One case stays open. A process that starts to listen on a listener port
 after Envoy binds the port, and before Envoy starts its workers, takes

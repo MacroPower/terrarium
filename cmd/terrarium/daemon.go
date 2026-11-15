@@ -192,7 +192,7 @@ func daemonShutdown(ctx context.Context, inf *infra) {
 		return
 	}
 
-	stopEnvoy(ctx, inf.envoyCmd, inf.drainTimeout)
+	stopEnvoy(ctx, inf.envoyProc, inf.drainTimeout)
 	shutdownAccessLog(ctx, inf.accessLog)
 	stopDNSProxy(ctx, inf.dnsProxy)
 

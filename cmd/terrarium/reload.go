@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -418,10 +417,10 @@ func replaceInfrastructure(
 
 	// Stop the old Envoy, and start a new one when the new config
 	// needs Envoy.
-	var start func() (*exec.Cmd, error)
+	var start func() (*envoyProcess, error)
 
 	if needsEnvoy {
-		start = func() (*exec.Cmd, error) {
+		start = func() (*envoyProcess, error) {
 			return startEnvoy(ctx, usr, envoySettings, cfg)
 		}
 	}
@@ -471,23 +470,23 @@ func replaceDNSProxy(ctx context.Context, inf *infra, start func() (*dnsproxy.Pr
 // start returns an error, replaceEnvoy returns that error and no
 // Envoy runs, so inf names none.
 func replaceEnvoy(
-	ctx context.Context, inf *infra, drainTimeout time.Duration, start func() (*exec.Cmd, error),
+	ctx context.Context, inf *infra, drainTimeout time.Duration, start func() (*envoyProcess, error),
 ) error {
-	stopEnvoy(ctx, inf.envoyCmd, inf.drainTimeout)
+	stopEnvoy(ctx, inf.envoyProc, inf.drainTimeout)
 
-	inf.envoyCmd = nil
+	inf.envoyProc = nil
 	inf.drainTimeout = drainTimeout
 
 	if start == nil {
 		return nil
 	}
 
-	cmd, err := start()
+	proc, err := start()
 	if err != nil {
 		return err
 	}
 
-	inf.envoyCmd = cmd
+	inf.envoyProc = proc
 
 	return nil
 }

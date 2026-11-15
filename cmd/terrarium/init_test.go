@@ -313,7 +313,9 @@ func TestShutdownOrder(t *testing.T) {
 
 	// Start a long-running subprocess to simulate Envoy.
 	envoyCmd := exec.CommandContext(t.Context(), "sleep", "60")
-	require.NoError(t, envoyCmd.Start())
+
+	envoyProc, err := startEnvoyProcess(t.Context(), envoyCmd)
+	require.NoError(t, err)
 
 	// Verify DNS proxy is serving before shutdown.
 	client := &dns.Client{Net: "udp"}
@@ -329,7 +331,7 @@ func TestShutdownOrder(t *testing.T) {
 	// the Envoy process has already exited (was waited on) and
 	// the DNS proxy port is released.
 	shutdown(t.Context(), &infra{
-		envoyCmd:     envoyCmd,
+		envoyProc:    envoyProc,
 		dnsProxy:     proxy,
 		drainTimeout: config.DefaultEnvoyDrainTimeout,
 	})

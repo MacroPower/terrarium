@@ -78,7 +78,7 @@ func ParseUpstreamDNS(resolvConf string) string {
 // infra holds the running infrastructure components started by
 // [setupInfrastructure]. The caller owns cleanup via [shutdown].
 type infra struct {
-	envoyCmd      *exec.Cmd
+	envoyProc     *envoyProcess
 	dnsProxy      *dnsproxy.Proxy
 	eventStore    *eventstore.Store
 	accessLog     *accesslog.Server
@@ -380,10 +380,10 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	}()
 
 	// Start Envoy only when listeners are needed.
-	var envoyCmd *exec.Cmd
+	var envoyProc *envoyProcess
 
 	if needsEnvoy {
-		envoyCmd, err = startEnvoy(ctx, usr, envoySettings, cfg)
+		envoyProc, err = startEnvoy(ctx, usr, envoySettings, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -412,7 +412,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	}
 
 	inf := &infra{
-		envoyCmd:     envoyCmd,
+		envoyProc:    envoyProc,
 		dnsProxy:     dnsProxy,
 		eventStore:   store,
 		accessLog:    accessLogSrv,
@@ -756,7 +756,7 @@ func shutdown(ctx context.Context, inf *infra) {
 		return
 	}
 
-	stopEnvoy(ctx, inf.envoyCmd, inf.drainTimeout)
+	stopEnvoy(ctx, inf.envoyProc, inf.drainTimeout)
 	shutdownAccessLog(ctx, inf.accessLog)
 	stopDNSProxy(ctx, inf.dnsProxy)
 
@@ -881,13 +881,16 @@ func verifyIPv6State(ctx context.Context, sys *sysctl.Sysctl) bool {
 // [waitForEnvoy] for the wait.
 //
 // It returns [ErrEnvoyNotRunning] when Envoy does not answer before the
-// startup timeout expires, for example because Envoy exits when another
-// process holds one of its listener ports. In that case it stops the
-// Envoy process before it returns.
+// startup timeout expires. In that case it stops the Envoy process
+// before it returns. It also returns [ErrEnvoyNotRunning] when Envoy
+// exits before it answers, for example because another process holds
+// one of its listener ports. It then returns without a wait for the
+// startup timeout, and the error wraps [ErrEnvoyExited] and gives the
+// exit status.
 func startEnvoy(
 	ctx context.Context, usr *config.User,
 	settings config.EnvoySettings, cfg *config.Config,
-) (*exec.Cmd, error) {
+) (*envoyProcess, error) {
 	envoyUID, err := parseUID(usr.EnvoyUID)
 	if err != nil {
 		return nil, err
@@ -941,12 +944,7 @@ func startEnvoy(
 		"--concurrency", "2")
 	cmd.Stderr = os.Stderr
 
-	err = startEnvoyAndWait(ctx, cmd, readySocket, settings)
-	if err != nil {
-		return nil, err
-	}
-
-	return cmd, nil
+	return startEnvoyAndWait(ctx, cmd, readySocket, settings)
 }
 
 // prepareEnvoyLogFile creates the log file's parent directory, ensures

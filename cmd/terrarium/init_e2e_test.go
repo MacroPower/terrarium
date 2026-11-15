@@ -101,7 +101,7 @@ func TestInitE2EEnvoyReady(t *testing.T) {
 	})
 
 	// start runs Envoy as init does, without the privilege drop.
-	start := func(startupTimeout time.Duration) (*exec.Cmd, error) {
+	start := func(startupTimeout time.Duration) (*exec.Cmd, *envoyProcess, error) {
 		socket, err := newReadySocket(ctx, shortTempDir(t), os.Getgid())
 		require.NoError(t, err)
 
@@ -122,7 +122,9 @@ func TestInitE2EEnvoyReady(t *testing.T) {
 			DrainTimeout:   config.Duration{Duration: 15 * time.Second},
 		}
 
-		return cmd, startEnvoyAndWait(ctx, cmd, socket, settings)
+		proc, err := startEnvoyAndWait(ctx, cmd, socket, settings)
+
+		return cmd, proc, err
 	}
 
 	dial := func(port int) error {
@@ -136,7 +138,7 @@ func TestInitE2EEnvoyReady(t *testing.T) {
 		return conn.Close()
 	}
 
-	cmd, err := start(30 * time.Second)
+	cmd, proc, err := start(30 * time.Second)
 	require.NoError(t, err)
 
 	// One attempt for each port, without a retry. The listeners of the
@@ -145,7 +147,7 @@ func TestInitE2EEnvoyReady(t *testing.T) {
 		require.NoError(t, dial(port), "listener port %d", port)
 	}
 
-	stopEnvoy(ctx, cmd, 15*time.Second)
+	stopEnvoy(ctx, proc, 15*time.Second)
 	require.NotNil(t, cmd.ProcessState, "envoy must have exited")
 
 	// Another process takes a listener port before Envoy starts. Go
@@ -159,10 +161,23 @@ func TestInitE2EEnvoyReady(t *testing.T) {
 		assert.NoError(t, ln.Close())
 	})
 
-	cmd, err = start(3 * time.Second)
+	// Envoy exits when it cannot bind the port, so the wait ends long
+	// before the startup timeout.
+	const startupTimeout = 60 * time.Second
+
+	begin := time.Now()
+
+	cmd, proc, err = start(startupTimeout)
+
+	elapsed := time.Since(begin)
+
 	require.ErrorIs(t, err, ErrEnvoyNotRunning)
-	require.ErrorIs(t, err, ErrListenerNotReady)
+	require.ErrorIs(t, err, ErrEnvoyExited)
+	require.ErrorContains(t, err, "exit status")
+	assert.Nil(t, proc)
+	assert.Less(t, elapsed, startupTimeout/2, "the wait must not last for the startup timeout")
 	require.NotNil(t, cmd.ProcessState, "envoy must have been waited on")
+	assert.False(t, cmd.ProcessState.Success())
 
 	// A connection to the port succeeds, so the port does not show
 	// whose listener accepts the connection.

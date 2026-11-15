@@ -921,7 +921,7 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 	}
 	cmd.WaitDelay = envoySettings.DrainTimeout.Duration
 
-	err = cmd.Start()
+	proc, err := startEnvoyProcess(ctx, cmd)
 	if err != nil {
 		if ctx.Err() != nil {
 			// The shutdown arrived before Envoy started. Start does
@@ -962,7 +962,7 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 		if usr.ReadyFile != "" {
 			err = createReadyFile(usr.ReadyFile)
 			if err != nil {
-				stopEnvoy(ctx, cmd, envoySettings.DrainTimeout.Duration)
+				stopEnvoy(ctx, proc, envoySettings.DrainTimeout.Duration)
 
 				return err
 			}
@@ -989,17 +989,17 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 		// Another process serves addr. Envoy keeps running without
 		// its listener when it bound addr before that process
 		// listened there.
-		stopEnvoy(ctx, cmd, envoySettings.DrainTimeout.Duration)
+		stopEnvoy(ctx, proc, envoySettings.DrainTimeout.Duration)
 
 		return err
 
 	default:
-		stopEnvoy(ctx, cmd, envoySettings.DrainTimeout.Duration)
+		stopEnvoy(ctx, proc, envoySettings.DrainTimeout.Duration)
 
 		return fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
 	}
 
-	err = cmd.Wait()
+	err = proc.wait()
 	if ctx.Err() != nil {
 		// Signal-initiated shutdown: Envoy was SIGTERM'd by Cancel.
 		slog.InfoContext(ctx, "proxy: shut down")

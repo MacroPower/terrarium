@@ -5,7 +5,6 @@ package main
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -212,11 +211,11 @@ func TestReloadInfrastructureRejected(t *testing.T) {
 
 			// The reload must stop before it reaches these parts. They
 			// do not run, so a reload that stops them fails the test.
-			envoyCmd := &exec.Cmd{}
+			envoyProc := &envoyProcess{}
 			dnsProxy := &dnsproxy.Proxy{}
 
 			inf := &infra{
-				envoyCmd:     envoyCmd,
+				envoyProc:    envoyProc,
 				dnsProxy:     dnsProxy,
 				drainTimeout: 30 * time.Second,
 			}
@@ -224,7 +223,7 @@ func TestReloadInfrastructureRejected(t *testing.T) {
 			err := reloadInfrastructure(t.Context(), usr, firewall.UIDs{VMMode: true}, inf)
 			require.ErrorIs(t, err, ErrReloadRejected)
 
-			assert.Same(t, envoyCmd, inf.envoyCmd)
+			assert.Same(t, envoyProc, inf.envoyProc)
 			assert.Same(t, dnsProxy, inf.dnsProxy)
 			assert.Nil(t, inf.conn)
 			assert.Equal(t, 30*time.Second, inf.drainTimeout)
@@ -275,11 +274,11 @@ stats:
 
 	// The reload must stop before it reaches these parts. They do not
 	// run, so a reload that stops them fails the test.
-	envoyCmd := &exec.Cmd{}
+	envoyProc := &envoyProcess{}
 	dnsProxy := &dnsproxy.Proxy{}
 
 	inf := &infra{
-		envoyCmd:     envoyCmd,
+		envoyProc:    envoyProc,
 		dnsProxy:     dnsProxy,
 		drainTimeout: 30 * time.Second,
 		boundStats:   boundStats{enabled: true, nflogGroup: 5000},
@@ -289,7 +288,7 @@ stats:
 	require.ErrorIs(t, err, ErrReloadRejected)
 	require.ErrorIs(t, err, ErrReloadNFLogGroupChanged)
 
-	assert.Same(t, envoyCmd, inf.envoyCmd)
+	assert.Same(t, envoyProc, inf.envoyProc)
 	assert.Same(t, dnsProxy, inf.dnsProxy)
 	assert.Nil(t, inf.conn)
 	assert.Equal(t, 30*time.Second, inf.drainTimeout)
@@ -601,22 +600,22 @@ func TestReplaceEnvoy(t *testing.T) {
 
 			inf := &infra{drainTimeout: 30 * time.Second}
 
-			var before *exec.Cmd
+			var before *envoyProcess
 
 			if tt.hasBefore {
 				before = startEnvoyStub(t, false)
-				inf.envoyCmd = before
+				inf.envoyProc = before
 			}
 
 			var (
-				after *exec.Cmd
-				start func() (*exec.Cmd, error)
+				after *envoyProcess
+				start func() (*envoyProcess, error)
 			)
 
 			if tt.needsEnvoy {
-				start = func() (*exec.Cmd, error) {
+				start = func() (*envoyProcess, error) {
 					if before != nil {
-						assert.NotNil(t, before.ProcessState,
+						assert.True(t, envoyExited(before),
 							"the previous envoy must have exited before the replacement starts")
 					}
 
@@ -643,16 +642,16 @@ func TestReplaceEnvoy(t *testing.T) {
 			}
 
 			if before != nil {
-				require.NotNil(t, before.ProcessState, "the previous envoy must have exited")
+				require.True(t, envoyExited(before), "the previous envoy must have exited")
 			}
 
-			// A nil command shows that no Envoy runs, so a shutdown
+			// A nil process shows that no Envoy runs, so a shutdown
 			// does not signal a process that has exited.
-			assert.Same(t, after, inf.envoyCmd)
+			assert.Same(t, after, inf.envoyProc)
 			assert.Equal(t, 20*time.Second, inf.drainTimeout)
 
 			if after != nil {
-				assert.Nil(t, after.ProcessState, "the replacement must still run")
+				assert.False(t, envoyExited(after), "the replacement must still run")
 			}
 		})
 	}
