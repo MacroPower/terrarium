@@ -187,6 +187,70 @@ func TestBuildProxyListener_AcceptsHTTP10(t *testing.T) {
 	}
 }
 
+// TestListeners_StripTrailingHostDot checks that every HTTP connection
+// manager that matches the host of a request against the policy
+// removes the trailing dot of the host first. Without the option, a
+// request for "example.com." does not match the rule for
+// "example.com".
+func TestListeners_StripTrailingHostDot(t *testing.T) {
+	t.Parallel()
+
+	plain := []config.ResolvedRule{{Domain: "plain.example.com"}}
+	restricted := []config.ResolvedRule{{
+		Domain:    "restricted.example.com",
+		HTTPRules: []config.ResolvedHTTPRule{{Path: "/v1/.*"}},
+	}}
+
+	front := func(mode envoy.ProxyMode) envoy.Listener {
+		return envoy.BuildProxyListener(envoy.ProxyListenerParams{
+			BindAddress: "127.0.0.1",
+			Port:        8080,
+			Mode:        mode,
+			ConnectTLS:  map[int][]string{443: {"plain.example.com"}},
+			HTTPDomains: []string{"plain.example.com"},
+		})
+	}
+
+	tests := map[string]struct {
+		listener envoy.Listener
+	}{
+		"proxy front listener, filtered": {
+			listener: front(envoy.ProxyModeFiltered),
+		},
+		"proxy front listener, open": {
+			listener: front(envoy.ProxyModeOpen),
+		},
+		"proxy front listener, blocked": {
+			listener: front(envoy.ProxyModeBlocked),
+		},
+		"proxy internal HTTP listener": {
+			listener: envoy.BuildInternalHTTPListener(plain, false, nil, nil),
+		},
+		"proxy internal TLS listener with a MITM chain": {
+			listener: envoy.BuildInternalTLSListener(443, restricted, false, nil, nil, "/certs", nil),
+		},
+		"container HTTP listener": {
+			listener: envoy.BuildHTTPForwardListener(plain, false, nil, false),
+		},
+		"container TLS listener with a MITM chain": {
+			listener: envoy.BuildTLSListener(
+				"tls_443", 15443, 443, "tls_443", restricted, false, nil, nil, "/certs", false,
+			),
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			y := marshalYAML(t, tt.listener)
+
+			assert.Equal(t, 1, countOccurrences(y, "envoy.filters.network.http_connection_manager\n"))
+			assert.Equal(t, 1, countOccurrences(y, "strip_trailing_host_dot: true"))
+		})
+	}
+}
+
 // TestBuildProxyListener_Probe checks that the front listener answers
 // the probe request for the probe token in every mode, and that its
 // access loggers skip the probe request.

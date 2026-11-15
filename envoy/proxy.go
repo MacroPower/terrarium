@@ -128,6 +128,12 @@ type ProxyListenerParams struct {
 // authority. The HCM intentionally does not strip authority ports:
 // the port picks the internal listener.
 //
+// The listener removes the trailing dot of the host from the authority
+// of each request before it routes the request. The authority
+// "example.com.:443" then matches the vhost of "example.com:443". DNS
+// names are always fully qualified, so both forms name one host. The
+// access loggers record the authority without the dot.
+//
 // The listener serves HTTP/1.0 requests, because some clients send
 // their CONNECT request in HTTP/1.0, such as `openssl s_client -proxy`.
 // The routes apply the same policy to the requests of every HTTP
@@ -205,7 +211,8 @@ func BuildProxyListener(p ProxyListenerParams) Listener {
 					HTTPProtocolOptions: &http1ProtocolOptions{
 						AcceptHTTP10: true,
 					},
-					MergeSlashes: true,
+					MergeSlashes:         true,
+					StripTrailingHostDot: true,
 					RouteConfig: routeConfig{
 						VirtualHosts: vhosts,
 					},

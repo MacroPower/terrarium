@@ -173,6 +173,15 @@ func buildPassthroughFilterChain(
 	return fc
 }
 
+// buildMITMFilterChain builds the filter chain that terminates TLS for
+// the domain of rule and matches each decrypted request against the
+// HTTP rules of rule.
+//
+// The connection manager removes the port and the trailing dot of the
+// host from the Host header of each request before it matches the
+// header against the virtual host of the domain. A request for
+// "example.com." then matches the rule for "example.com", and the
+// upstream receives the host without the dot.
 func buildMITMFilterChain(
 	rule config.ResolvedRule,
 	accessLog []AccessLog,
@@ -236,6 +245,7 @@ func buildMITMFilterChain(
 				SkipXffAppend:                boolPtr(true),
 				MergeSlashes:                 true,
 				StripAnyHostPort:             true,
+				StripTrailingHostDot:         true,
 				PathWithEscapedSlashesAction: "UNESCAPE_AND_REDIRECT",
 				RouteConfig: routeConfig{
 					VirtualHosts: vhosts,

@@ -301,6 +301,16 @@ type substitutionFormatString struct {
 	JsonFormat       map[string]string `yaml:"json_format,omitempty"`
 }
 
+// httpConnManagerConfig models the fields of Envoy's
+// HttpConnectionManager that the listeners set.
+//
+// With StripTrailingHostDot, Envoy removes the trailing dot of the
+// host from the authority of each request before it routes the request
+// and before the HTTP filters run. The port stays, so "example.com.:443"
+// becomes "example.com:443". The routes, the HTTP filters, the access
+// loggers, and the upstream then see the host without the dot. DNS
+// names are always fully qualified, so "example.com." and "example.com"
+// are one name, and both match the rule for "example.com".
 type httpConnManagerConfig struct {
 	NormalizePath                *bool                 `yaml:"normalize_path,omitempty"`
 	UseRemoteAddress             *bool                 `yaml:"use_remote_address,omitempty"`
@@ -316,6 +326,7 @@ type httpConnManagerConfig struct {
 	UpgradeConfigs               []upgradeConfig       `yaml:"upgrade_configs,omitempty"`
 	MergeSlashes                 bool                  `yaml:"merge_slashes,omitempty"`
 	StripAnyHostPort             bool                  `yaml:"strip_any_host_port,omitempty"`
+	StripTrailingHostDot         bool                  `yaml:"strip_trailing_host_dot,omitempty"`
 }
 
 // http1ProtocolOptions models the fields of Envoy's

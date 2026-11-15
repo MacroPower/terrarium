@@ -235,6 +235,12 @@ func BuildHTTPForwardListener(
 // hosts outside the allowlist receive an explicit 403 instead of
 // Envoy's default 404; proxy mode uses this so denied plain-HTTP
 // requests are distinguishable from missing routes.
+//
+// The connection manager removes the port and the trailing dot of the
+// host from the Host header of each request before it matches the
+// header against the virtual hosts. A request for "example.com." then
+// matches the rule for "example.com", and the upstream receives the
+// host without the dot.
 func buildHTTPForwardHCM(
 	statPrefix string,
 	rules []config.ResolvedRule,
@@ -318,6 +324,7 @@ func buildHTTPForwardHCM(
 			SkipXffAppend:                boolPtr(true),
 			MergeSlashes:                 true,
 			StripAnyHostPort:             true,
+			StripTrailingHostDot:         true,
 			PathWithEscapedSlashesAction: "UNESCAPE_AND_REDIRECT",
 			RouteConfig: routeConfig{
 				VirtualHosts: vhosts,

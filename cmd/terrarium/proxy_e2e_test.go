@@ -305,6 +305,23 @@ func TestProxyE2EPassthrough(t *testing.T) {
 			getStatus(t, client, "https://sub.wild.example:18443/"))
 	})
 
+	// The Go client keeps the trailing dot in the CONNECT authority
+	// and removes it from the SNI.
+	t.Run("allowed exact FQDN with a trailing dot", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK,
+			getStatus(t, client, "https://test.example.:18443/"))
+	})
+
+	t.Run("allowed wildcard FQDN with a trailing dot", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK,
+			getStatus(t, client, "https://sub.wild.example.:18443/"))
+	})
+
+	t.Run("denied domain with a trailing dot gets 403 at CONNECT", func(t *testing.T) {
+		_, err := client.Get("https://denied.example.:18443/") //nolint:noctx,bodyclose // error expected.
+		require.ErrorContains(t, err, "Forbidden")
+	})
+
 	t.Run("wildcard depth enforced", func(t *testing.T) {
 		// a.b.wild.example exceeds the single-label * depth; the
 		// internal RBAC chain closes the tunnel mid-TLS rather than
@@ -432,6 +449,18 @@ func TestProxyE2EMITM(t *testing.T) {
 			getStatus(t, client, "https://test.example/forbidden"))
 	})
 
+	// The Go client keeps the trailing dot in the CONNECT authority
+	// and in the Host header, and removes it from the SNI.
+	t.Run("allowed path with a trailing dot on the host", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK,
+			getStatus(t, client, "https://test.example./allowed"))
+	})
+
+	t.Run("denied path with a trailing dot on the host", func(t *testing.T) {
+		assert.Equal(t, http.StatusForbidden,
+			getStatus(t, client, "https://test.example./forbidden"))
+	})
+
 	// A client that trusts only the exported bundle verifies both the
 	// MITM leaf and the upstream certificate of a tunneled host.
 	bundleClient := proxyClient(t, proxyURL, loadPool(t, bundlePath))
@@ -450,7 +479,9 @@ func TestProxyE2EMITM(t *testing.T) {
 // startHeaderEchoServer serves plain HTTP on addr. The body of each
 // response holds one line for each name in names, as "name=values".
 // The values are the values of that request header, joined with
-// commas in the order that the server received them.
+// commas in the order that the server received them. The Go server
+// moves the Host header out of the header map, so the value for the
+// name "Host" is the host of the request.
 func startHeaderEchoServer(t *testing.T, addr string, names ...string) {
 	t.Helper()
 
@@ -459,7 +490,12 @@ func startHeaderEchoServer(t *testing.T, addr string, names ...string) {
 		var body strings.Builder
 
 		for _, name := range names {
-			fmt.Fprintf(&body, "%s=%s\n", name, strings.Join(r.Header.Values(name), ","))
+			values := r.Header.Values(name)
+			if http.CanonicalHeaderKey(name) == "Host" {
+				values = []string{r.Host}
+			}
+
+			fmt.Fprintf(&body, "%s=%s\n", name, strings.Join(values, ","))
 		}
 
 		_, err := io.WriteString(w, body.String())
@@ -632,6 +668,122 @@ func TestProxyE2EHeaderMismatchAdd(t *testing.T) {
 			assert.Equal(t, tt.want, string(body))
 		})
 	}
+}
+
+// TestProxyE2EPlainHTTP checks the plain HTTP requests that the proxy
+// forwards to port 80 of an allowed FQDN. A trailing dot on the host
+// names the same FQDN, so it matches the same rule.
+//
+//nolint:paralleltest // e2e tests bind fixed ports and run envoy subprocesses.
+func TestProxyE2EPlainHTTP(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	// The proxy connects to the HTTP default port of the upstream.
+	// Binding port 80 needs CAP_NET_BIND_SERVICE or a permissive
+	// ip_unprivileged_port_start (macOS allows it unprivileged).
+	lc := net.ListenConfig{}
+
+	probe, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:80")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.1:80: %v", err)
+	}
+
+	require.NoError(t, probe.Close())
+
+	// The upstream answers with the Host header that it received.
+	startHeaderEchoServer(t, "127.0.0.1:80", "Host")
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	policy := "egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: test.example\n" +
+		"      - matchPattern: '*.wild.example'\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n"
+
+	proxyURL, _ := startProxy(t, policy, dnsAddr)
+	client := proxyClient(t, proxyURL, x509.NewCertPool())
+
+	// The proxy sends the upstream the host without the dot, and it
+	// adds the port of the upstream.
+	tests := map[string]struct {
+		url      string
+		wantHost string
+		want     int
+	}{
+		"allowed exact FQDN": {
+			url:      "http://test.example/",
+			want:     http.StatusOK,
+			wantHost: "test.example:80",
+		},
+		"allowed exact FQDN with a trailing dot": {
+			url:      "http://test.example./",
+			want:     http.StatusOK,
+			wantHost: "test.example:80",
+		},
+		"allowed exact FQDN with a trailing dot and a port": {
+			url:      "http://test.example.:80/",
+			want:     http.StatusOK,
+			wantHost: "test.example:80",
+		},
+		"allowed wildcard FQDN with a trailing dot": {
+			url:      "http://sub.wild.example./",
+			want:     http.StatusOK,
+			wantHost: "sub.wild.example:80",
+		},
+		"wildcard depth enforced with a trailing dot": {
+			url:  "http://a.b.wild.example./",
+			want: http.StatusForbidden,
+		},
+		"denied domain with a trailing dot": {
+			url:  "http://denied.example./",
+			want: http.StatusForbidden,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			resp, err := client.Get(tc.url) //nolint:noctx // test client has a timeout.
+			require.NoError(t, err)
+
+			defer func() {
+				assert.NoError(t, resp.Body.Close())
+			}()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, resp.StatusCode)
+
+			if tc.want == http.StatusOK {
+				assert.Equal(t, "Host="+tc.wantHost+"\n", string(body))
+			}
+		})
+	}
+
+	// The proxy checks the Host header of a request inside a tunnel to
+	// port 80 on its own, after it checked the CONNECT authority.
+	t.Run("CONNECT to port 80 with a trailing dot", func(t *testing.T) {
+		tunnel := connectHTTP10(t, proxyURL, "test.example.:80")
+
+		_, err := io.WriteString(tunnel,
+			"GET / HTTP/1.1\r\nHost: test.example.\r\nConnection: close\r\n\r\n")
+		require.NoError(t, err)
+
+		resp, err := http.ReadResponse(bufio.NewReader(tunnel), nil)
+		require.NoError(t, err)
+
+		defer func() {
+			assert.NoError(t, resp.Body.Close())
+		}()
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "Host=test.example:80\n", string(body))
+	})
 }
 
 //nolint:paralleltest // e2e tests run envoy subprocesses.

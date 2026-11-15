@@ -222,6 +222,11 @@ terrarium and skips Claude's built-in HTTP proxy and hostname allowlist.
 Terrarium's policy is then the only source of truth for that traffic, so
 unknown hosts get a 403 from terrarium, never a confirmation prompt.
 
+A host name with a trailing dot matches the rule for the name without the
+dot, so a request for `example.com.` matches the rule for `example.com`.
+On plain HTTP requests and on the requests that the proxy decrypts, the
+server receives the `Host` header without the dot.
+
 Terrarium serves HTTP only, so Claude Code keeps running its built-in
 SOCKS proxy, and sandboxed commands can connect to either proxy. The
 SOCKS proxy filters by `allowedDomains` and `WebFetch(domain:...)` allow
