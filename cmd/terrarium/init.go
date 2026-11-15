@@ -40,6 +40,16 @@ var (
 	ErrIPv6Unsecured = errors.New("IPv6 rules not loaded and IPv6 still enabled")
 )
 
+const (
+	// The copy of the terrarium CA certificate in the directory of the
+	// system trust store.
+	caTrustStorePath = "/usr/local/share/ca-certificates/terrarium-ca.crt"
+
+	// The copy of the terrarium CA certificate that containerd and
+	// containers trust in VM mode.
+	caContainerTrustPath = "/etc/terrarium/ca.pem"
+)
+
 // ParseUpstreamDNS extracts the first usable nameserver IP from
 // resolv.conf content. It skips 127.0.0.1 and ::1 because those are
 // the DNS proxy's own listen addresses -- using them as upstream would
@@ -157,7 +167,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		// registry access requires hosts.toml to reference this path;
 		// application containers need it volume-mounted or built in.
 		if uids.VMMode {
-			err = copyFile(caCertPath, "/etc/terrarium/ca.pem")
+			err = copyFile(caCertPath, caContainerTrustPath)
 			if err != nil {
 				return nil, fmt.Errorf("copying CA for container trust: %w", err)
 			}
@@ -811,11 +821,9 @@ func stopDNSProxy(ctx context.Context, proxy *dnsproxy.Proxy) {
 }
 
 // installCA copies terrarium CA certificate into the system trust
-// store and appends it to the system CA bundle.
+// store at [caTrustStorePath] and appends it to the system CA bundle.
 func installCA(ctx context.Context, caCertPath string) error {
-	trustDest := "/usr/local/share/ca-certificates/terrarium-ca.crt"
-
-	err := copyFile(caCertPath, trustDest)
+	err := copyFile(caCertPath, caTrustStorePath)
 	if err != nil {
 		return fmt.Errorf("installing CA cert: %w", err)
 	}

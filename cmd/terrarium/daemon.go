@@ -4,6 +4,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -24,7 +27,24 @@ import (
 //
 // SIGHUP triggers a live configuration reload via
 // [reloadInfrastructure] without restarting the process. SIGTERM and
-// SIGINT initiate graceful shutdown.
+// SIGINT initiate graceful shutdown. See [serveSignals] for the
+// handling of a reload that does not complete.
+//
+// Daemon returns an error when a reload stops after it started to
+// replace the installed CA certificate, the running rules, the DNS
+// proxy, or Envoy. The daemon then shuts down as it does for a
+// termination signal, so a supervisor such as systemd can restart it.
+//
+// The restarted daemon generates its configs from the config file
+// again, so a corrected config file takes effect.
+// [setupInfrastructure] generates the configs only when the Envoy
+// bootstrap does not exist. Daemon therefore removes the generated
+// bootstrap in each of these cases:
+//
+//   - A reload makes Daemon return an error. See
+//     [reloadInfrastructure].
+//   - The setup generates the bootstrap and then returns an error.
+//     See [discardBootstrapOnError].
 //
 // On shutdown, nftables rules and policy routes are intentionally
 // left in place so the VM remains fail-closed. The rules are
@@ -42,7 +62,9 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 		ExcludeUIDs: toUint32s(usr.ExcludeDNSUIDs),
 	}
 
-	inf, err := setupInfrastructure(ctx, usr, uids)
+	inf, err := discardBootstrapOnError(ctx, usr.EnvoyConfigPath, func() (*infra, error) {
+		return setupInfrastructure(ctx, usr, uids)
+	})
 	if err != nil {
 		return err
 	}
@@ -69,21 +91,9 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-	for sig := range sigCh {
-		if sig != syscall.SIGHUP {
-			slog.InfoContext(ctx, "received signal, shutting down",
-				slog.Any("signal", sig),
-			)
-
-			break
-		}
-
-		slog.InfoContext(ctx, "received SIGHUP, reloading configuration")
-
-		sdNotify(ctx, "RELOADING=1")
-		reloadInfrastructure(ctx, usr, uids, inf)
-		sdNotify(ctx, "READY=1")
-	}
+	err = serveSignals(ctx, sigCh, sdNotify, func(ctx context.Context) error {
+		return reloadInfrastructure(ctx, usr, uids, inf)
+	})
 
 	sdNotify(ctx, "STOPPING=1")
 	watchdogCancel()
@@ -93,6 +103,80 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 	// stats DB still closes — the persistent on-disk state is the
 	// fail-closed mechanism, not stats ingestion.
 	daemonShutdown(ctx, inf)
+
+	return err
+}
+
+// discardBootstrapOnError calls setup and returns its result. When
+// the Envoy bootstrap at path did not exist before the call and setup
+// returns an error, discardBootstrapOnError removes the bootstrap
+// that setup generated. The next start of the daemon then generates
+// the configs from the config file again.
+//
+// A bootstrap that existed before the call stays in place, because
+// setup did not generate it.
+func discardBootstrapOnError(ctx context.Context, path string, setup func() (*infra, error)) (*infra, error) {
+	_, statErr := os.Stat(path)
+
+	inf, err := setup()
+	if err != nil && errors.Is(statErr, fs.ErrNotExist) {
+		removeErr := removeEnvoyBootstrap(path)
+		if removeErr != nil {
+			slog.ErrorContext(ctx, "discarding the configs of the setup", slog.Any("err", removeErr))
+		}
+	}
+
+	return inf, err
+}
+
+// serveSignals handles the signals of the daemon from sigCh until the
+// daemon must shut down. It returns nil for a termination signal,
+// which is every signal except SIGHUP, and when sigCh closes.
+//
+// For each SIGHUP, serveSignals sends RELOADING=1 through notify and
+// calls reload. The result of reload decides what follows:
+//
+//   - With no error, the daemon runs the new config. serveSignals
+//     sends READY=1 and waits for the next signal.
+//   - With an error that wraps [ErrReloadRejected], the daemon runs
+//     the previous config unchanged. serveSignals logs the error,
+//     sends READY=1, and waits for the next signal.
+//   - With every other error, the reload stopped between the previous
+//     config and the new config. serveSignals does not send READY=1,
+//     and it returns the error so the caller shuts the daemon down.
+func serveSignals(
+	ctx context.Context,
+	sigCh <-chan os.Signal,
+	notify func(ctx context.Context, state string),
+	reload func(ctx context.Context) error,
+) error {
+	for sig := range sigCh {
+		if sig != syscall.SIGHUP {
+			slog.InfoContext(ctx, "received signal, shutting down",
+				slog.Any("signal", sig),
+			)
+
+			return nil
+		}
+
+		slog.InfoContext(ctx, "received SIGHUP, reloading configuration")
+
+		notify(ctx, "RELOADING=1")
+
+		err := reload(ctx)
+
+		switch {
+		case err == nil:
+
+		case errors.Is(err, ErrReloadRejected):
+			slog.ErrorContext(ctx, "keeping the running configuration", slog.Any("err", err))
+
+		default:
+			return fmt.Errorf("reloading configuration: %w", err)
+		}
+
+		notify(ctx, "READY=1")
+	}
 
 	return nil
 }

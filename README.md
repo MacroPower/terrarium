@@ -960,9 +960,37 @@ file system at `/run/terrarium`.
 Envoy exits when another process holds one of its listener ports, so it
 never answers. The wait for the answer ends after `envoy.startupTimeout`,
 which defaults to 10 seconds. Init and the daemon then stop Envoy and
-exit with an error, and init does not create the ready file. A daemon
-reload that gets no answer logs the error and leaves the daemon without
-Envoy. To start Envoy again, free the port and restart the daemon.
+exit with an error, and init does not create the ready file.
+
+A daemon reload that does not complete ends in one of two ways:
+
+- The daemon cannot read or validate the new config. It logs the error
+  and reports to systemd that it is ready. It keeps the installed CA
+  certificate, the rules, the DNS proxy, and the Envoy of the previous
+  config.
+- The daemon started to replace the installed CA certificate, the rules,
+  the DNS proxy, or Envoy, and one step does not succeed. For example,
+  the new Envoy does not answer. The daemon does not report that it is
+  ready. It stops the DNS proxy and Envoy, removes the Envoy bootstrap
+  that it generated, and exits with an error, so systemd can restart it.
+
+The nftables rules stay in place after that exit. The guard table drops
+egress when the rules are missing, so the VM remains fail-closed.
+
+The restarted daemon generates its configs from the config file again.
+The daemon generates them only when the Envoy bootstrap does not exist,
+and the exit removed the bootstrap. The daemon also removes the
+bootstrap when it generates the configs at startup and then cannot
+apply them. A corrected config file therefore takes effect on the next
+restart.
+
+`terrarium daemon reload` checks that the config parses and that the
+daemon runs before it sends the signal. When one of the checks does not
+pass, the command returns an error and does not send the signal. After
+the signal, the command waits 5 seconds and returns an error only when
+the daemon exits in that time. With the default `envoy.startupTimeout`
+of 10 seconds, a daemon whose new Envoy does not answer exits after the
+command has returned without an error.
 
 One case stays open. A process that starts to listen on a listener port
 after Envoy binds the port, and before Envoy starts its workers, takes
