@@ -2078,9 +2078,16 @@ func TestResolveDenyPortOnlyRules(t *testing.T) {
 		return &rules
 	}
 
+	denyPort := func(port int, protocol string, denyIndex int) config.ResolvedDenyPort {
+		return config.ResolvedDenyPort{
+			ResolvedPortProto: config.ResolvedPortProto{Port: port, Protocol: protocol},
+			DenyIndex:         denyIndex,
+		}
+	}
+
 	tests := map[string]struct {
 		cfg  *config.Config
-		want []config.ResolvedPortProto
+		want []config.ResolvedDenyPort
 	}{
 		"nil egressDeny": {
 			cfg: &config.Config{},
@@ -2091,8 +2098,8 @@ func TestResolveDenyPortOnlyRules(t *testing.T) {
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "6379", Protocol: "TCP"}}}},
 				}),
 			},
-			want: []config.ResolvedPortProto{
-				{Port: 6379, Protocol: "TCP"},
+			want: []config.ResolvedDenyPort{
+				denyPort(6379, "TCP", 0),
 			},
 		},
 		"CIDR+port deny rule not included": {
@@ -2109,9 +2116,9 @@ func TestResolveDenyPortOnlyRules(t *testing.T) {
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "53"}}}},
 				}),
 			},
-			want: []config.ResolvedPortProto{
-				{Port: 53, Protocol: "TCP"},
-				{Port: 53, Protocol: "UDP"},
+			want: []config.ResolvedDenyPort{
+				denyPort(53, "TCP", 0),
+				denyPort(53, "UDP", 0),
 			},
 		},
 		"empty ports list means wildcard": {
@@ -2120,8 +2127,36 @@ func TestResolveDenyPortOnlyRules(t *testing.T) {
 					ToPorts: []config.PortRule{{}},
 				}),
 			},
-			want: []config.ResolvedPortProto{
+			want: []config.ResolvedDenyPort{
 				{},
+			},
+		},
+		"each port holds the index of the first rule that denies it": {
+			cfg: &config.Config{
+				EgressDeny: denyRules(
+					// 0: a CIDR rule, which resolves no port-only entry.
+					config.EgressDenyRule{ToCIDR: []string{"10.0.0.0/8"}},
+					// 1: an empty rule, which denies nothing.
+					config.EgressDenyRule{},
+					// 2: the first rule that denies UDP 9999.
+					config.EgressDenyRule{
+						ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "9999", Protocol: "UDP"}}}},
+					},
+					// 3: denies UDP 9999 again, and UDP 53 for the first time.
+					config.EgressDenyRule{
+						ToPorts: []config.PortRule{{Ports: []config.Port{
+							{Port: "9999", Protocol: "UDP"},
+							{Port: "53", Protocol: "UDP"},
+						}}},
+					},
+					// 4: denies every port.
+					config.EgressDenyRule{ToPorts: []config.PortRule{{}}},
+				),
+			},
+			want: []config.ResolvedDenyPort{
+				{DenyIndex: 4},
+				denyPort(53, "UDP", 3),
+				denyPort(9999, "UDP", 2),
 			},
 		},
 		"empty deny rule is no-op": {

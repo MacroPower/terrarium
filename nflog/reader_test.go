@@ -50,10 +50,15 @@ func TestReasonFor(t *testing.T) {
 			ruleIdx: -1,
 			want:    "",
 		},
-		"deny rule=N -> rule=N": {
+		"deny deny-rule=N -> deny-rule=N": {
 			kind:    logprefix.KindDeny,
 			ruleIdx: 3,
-			want:    eventstore.Reason("rule=3"),
+			want:    eventstore.Reason("deny-rule=3"),
+		},
+		"deny deny-rule=0 -> deny-rule=0": {
+			kind:    logprefix.KindDeny,
+			ruleIdx: 0,
+			want:    eventstore.Reason("deny-rule=0"),
 		},
 		"allow no index -> empty": {
 			kind:    logprefix.KindAllow,
@@ -139,19 +144,32 @@ func TestEventFor(t *testing.T) {
 				HasRuleIndex: true,
 			},
 		},
-		"deny from a later rule": {
+		// The index of a deny prefix points into egressDeny, so the
+		// event names the rule in its reason and holds no index
+		// into egress.
+		"deny from a later egressDeny rule": {
 			prefix:  logprefix.Encode(logprefix.KindDeny, 3),
 			payload: makeIPv4(t, unix.IPPROTO_UDP, tcpUDPHeader(40000, 123)),
 			want: eventstore.Event{
-				Source:       eventstore.SourceFirewall,
-				Decision:     eventstore.DecisionDeny,
-				Domain:       "dns.example",
-				DstIP:        ipv4,
-				Port:         123,
-				Protocol:     eventstore.ProtocolUDP,
-				Reason:       "rule=3",
-				RuleIndex:    3,
-				HasRuleIndex: true,
+				Source:   eventstore.SourceFirewall,
+				Decision: eventstore.DecisionDeny,
+				Domain:   "dns.example",
+				DstIP:    ipv4,
+				Port:     123,
+				Protocol: eventstore.ProtocolUDP,
+				Reason:   "deny-rule=3",
+			},
+		},
+		"deny from the first egressDeny rule": {
+			prefix:  logprefix.Encode(logprefix.KindDeny, 0),
+			payload: makeIPv6(t, unix.IPPROTO_TCP, tcpUDPHeader(40000, 6379)),
+			want: eventstore.Event{
+				Source:   eventstore.SourceFirewall,
+				Decision: eventstore.DecisionDeny,
+				DstIP:    ipv6,
+				Port:     6379,
+				Protocol: eventstore.ProtocolTCP,
+				Reason:   "deny-rule=0",
 			},
 		},
 		"leak": {

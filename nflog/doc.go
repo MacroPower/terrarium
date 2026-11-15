@@ -7,7 +7,8 @@
 // [eventstore.Event] per packet. Each event holds the destination
 // address of its packet, so an event without a cached qname still
 // names its destination. An event holds a rule index when the prefix
-// of its log rule names one.
+// of its log rule names an egress rule. When the prefix names an
+// egressDeny rule, the reason of the event names that rule.
 //
 // The reader is consumptive only. It never mutates kernel rules, and
 // the data plane is unaffected by its liveness or backpressure. When

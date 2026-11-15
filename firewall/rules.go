@@ -43,8 +43,8 @@ func (le logEmitter) expr(prefix string) []expr.Any {
 // when the emitter is enabled. The extra match expressions are
 // prepended for rules that need extra scoping (e.g. the postrouting
 // guard's UID and non-loopback predicates). No-op when the emitter is
-// disabled. A negative ruleIdx encodes a catch-all (no `rule=N`
-// segment in the [logprefix] payload).
+// disabled. A negative ruleIdx encodes a catch-all, which is a
+// [logprefix] payload without a rule segment.
 func (le logEmitter) emit(
 	conn Conn, table *nftables.Table, chain *nftables.Chain,
 	kind logprefix.Kind, ruleIdx int, extra ...[]expr.Any,
@@ -76,22 +76,34 @@ func (le logEmitter) accept(
 	le.verdict(conn, table, chain, expr.VerdictAccept, egressIdx, matches...)
 }
 
+// drop appends to chain a rule that drops the packets that match
+// every group of matches. When the emitter is enabled, a log rule
+// with the same matches precedes the drop, so the first packet of
+// each new flow logs as denied by the egressDeny rule at denyIdx.
+func (le logEmitter) drop(
+	conn Conn, table *nftables.Table, chain *nftables.Chain,
+	denyIdx int, matches ...[]expr.Any,
+) {
+	le.verdict(conn, table, chain, expr.VerdictDrop, denyIdx, matches...)
+}
+
 // verdict appends to chain a rule that applies verdict to the packets
 // that match every group of matches. When the emitter is enabled, a
 // log rule with the same matches precedes it, so the first packet of
-// each new flow logs with the index of the egress rule at egressIdx.
-// An accept logs as [logprefix.KindAllow], and every other verdict
-// logs as [logprefix.KindDeny].
+// each new flow logs with ruleIdx. An accept logs as
+// [logprefix.KindAllow], and its ruleIdx is an index into egress.
+// Every other verdict logs as [logprefix.KindDeny], and its ruleIdx
+// is an index into egressDeny.
 func (le logEmitter) verdict(
 	conn Conn, table *nftables.Table, chain *nftables.Chain,
-	verdict expr.VerdictKind, egressIdx int, matches ...[]expr.Any,
+	verdict expr.VerdictKind, ruleIdx int, matches ...[]expr.Any,
 ) {
 	kind := logprefix.KindDeny
 	if verdict == expr.VerdictAccept {
 		kind = logprefix.KindAllow
 	}
 
-	le.emit(conn, table, chain, kind, egressIdx, matches...)
+	le.emit(conn, table, chain, kind, ruleIdx, matches...)
 
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
@@ -512,9 +524,9 @@ func addFilterRules(
 
 	// Rules for the terrarium_output chain.
 	// Deny chains first: deny takes precedence over allow.
-	addDenyCIDRChains(conn, table, terrariumChain, allDenyCIDRs, uids)
-	addDenyPortRules(conn, table, terrariumChain, denyPortOnly, uids)
-	addDenyICMPRules(conn, table, terrariumChain, denyICMPs, uids)
+	addDenyCIDRChains(conn, table, terrariumChain, allDenyCIDRs, uids, emitter)
+	addDenyPortRules(conn, table, terrariumChain, denyPortOnly, uids, emitter)
+	addDenyICMPRules(conn, table, terrariumChain, denyICMPs, uids, emitter)
 
 	if !unrestricted {
 		addCIDRChains(conn, table, terrariumChain, allCIDRs, uids, emitter)

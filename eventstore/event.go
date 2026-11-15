@@ -134,6 +134,13 @@ type Event struct {
 
 	// Reason is a short tag explaining a deny/error decision.
 	// See [ReasonBlockedMode], [ReasonNotAllowlisted], [ReasonUpstream].
+	//
+	// A firewall event that holds a rule index repeats the index
+	// here as "rule=N". A firewall event for a packet that a rule
+	// of the `egressDeny` list dropped holds "deny-rule=N". N is the
+	// index of that rule in the `egressDeny` list of the policy that
+	// was in force at the time of the event, and the first rule has
+	// index 0.
 	Reason Reason
 
 	// Port is the destination port when known. Zero means unset.
@@ -151,9 +158,11 @@ type Event struct {
 	//
 	// A firewall event holds a rule index when one egress rule
 	// accepted the packet in the firewall. A firewall event for a
-	// packet that no rule allows holds none. A DNS event holds none,
-	// because a name can match several rules, and an Envoy event
-	// holds none.
+	// packet that no rule allows holds none. A firewall event for a
+	// packet that an `egressDeny` rule dropped holds none, because
+	// the index of that rule points into another list. Reason names
+	// that rule. A DNS event holds none, because a name can match
+	// several rules, and an Envoy event holds none.
 	RuleIndex int
 
 	// HTTPStatus is the HTTP response status when applicable.

@@ -345,7 +345,9 @@ type ResolvedICMP struct {
 	// ranges. Nil means all destinations (no L3 scope). Only
 	// CIDRs matching this entry's address family are included.
 	CIDRs []CIDRRule
-	// RuleIndex is the raw egress rule index, used for chain naming.
+	// RuleIndex is the index of the rule that this entry came from,
+	// in the egress list for [Config.ResolveICMPRules] and in the
+	// egressDeny list for [Config.ResolveDenyICMPRules].
 	RuleIndex int
 	// FQDNRuleIndex is the index into the ICMP-FQDN rule index
 	// space, used for set lookups. Only meaningful when UseFQDNSet
@@ -609,6 +611,17 @@ type ResolvedCIDR struct {
 	Ports       []ResolvedPortProto
 	ServerNames []string
 	RuleIndex   int
+}
+
+// ResolvedDenyPort is a port that an egressDeny rule without an L3
+// selector denies to every destination. The zero
+// [ResolvedPortProto] denies every port of every protocol.
+type ResolvedDenyPort struct {
+	ResolvedPortProto
+
+	// DenyIndex is the index in the egressDeny list of the first
+	// rule that denies the port.
+	DenyIndex int
 }
 
 // ResolvedOpenPort is a resolved open port with its normalized protocol.

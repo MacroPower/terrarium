@@ -847,12 +847,21 @@ rule that opens every port accepts all traffic with one firewall rule. The
 firewall checks that rule after the ICMP rules. Each other allow event of the
 policy holds the index of the first rule that opens every port.
 
+With `logging.firewall.enabled`, the firewall also logs the first packet of
+each new flow that an `egressDeny` rule drops. The deny event of such a packet
+names the rule in `reason` as `deny-rule=N`. `N` is the index of the rule in
+the `egressDeny` list of the policy snapshot, and the first rule has index 0.
+The event holds no `rule_index`, because `rule_index` counts the rules of
+`egress`. When several `egressDeny` rules drop a packet, the event names one
+of them, which is not always the first one in `egressDeny`.
+
 Envoy handles most TCP flows, such as the TCP flows of FQDN rules and of CIDR
 rules, so their events are Envoy events. These firewall events hold no
 `rule_index`:
 
 - The allow events of a policy without `egress` rules.
-- The deny events of packets that no rule allows.
+- The deny events of packets that an `egressDeny` rule drops.
+- The deny events of packets that no rule allows. Their `reason` is empty.
 - The leak events of the postrouting guard.
 
 DNS events and Envoy events hold no `rule_index` either.

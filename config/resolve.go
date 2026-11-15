@@ -1412,12 +1412,15 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 // means "deny traffic to any destination on these ports." These are
 // separate from [Config.ResolveDenyCIDRRules], which handles deny
 // rules with CIDR selectors.
-func (c *Config) ResolveDenyPortOnlyRules(ctx context.Context) []ResolvedPortProto {
+//
+// Each pair appears one time, with the index in the egressDeny list
+// of the first rule that denies it.
+func (c *Config) ResolveDenyPortOnlyRules(ctx context.Context) []ResolvedDenyPort {
 	denyRules := c.EgressDenyRules()
 
 	seen := make(map[string]bool)
 
-	var result []ResolvedPortProto
+	var result []ResolvedDenyPort
 
 	for ri := range denyRules {
 		if len(denyRules[ri].ToCIDR) > 0 || len(denyRules[ri].ToCIDRSet) > 0 {
@@ -1443,7 +1446,7 @@ func (c *Config) ResolveDenyPortOnlyRules(ctx context.Context) []ResolvedPortPro
 			if !seen[k] {
 				seen[k] = true
 
-				result = append(result, pp)
+				result = append(result, ResolvedDenyPort{ResolvedPortProto: pp, DenyIndex: ri})
 			}
 		}
 	}

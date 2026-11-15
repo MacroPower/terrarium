@@ -5,12 +5,17 @@
 // nflog reader parses. Keeping both producer and consumer in one
 // package means a wire-format change has to land in one place.
 //
-// The on-wire form is `TERRARIUM_<KIND>:` optionally followed by
-// `rule=<idx>`, with a single trailing space so syslog readers see
-// space-delimited tokens. The kinds are [KindAllow], [KindDeny],
-// and [KindLeak]. [Decode] accepts the exact combinations [Encode]
-// produces and rejects anything else. The index names an entry of the
-// egress list of the policy and starts at 0.
+// The on-wire form is `TERRARIUM_<KIND>:` optionally followed by a
+// segment that names a rule, with a single trailing space so syslog
+// readers see space-delimited tokens. The kinds are [KindAllow],
+// [KindDeny], and [KindLeak]. [Decode] accepts the exact combinations
+// [Encode] produces and rejects anything else.
+//
+// An allow payload names the egress rule that accepted the packet as
+// `rule=<idx>`. A deny payload names the egressDeny rule that dropped
+// the packet as `deny-rule=<idx>`. The two segments differ because
+// the two lists number their rules separately. Each index starts at
+// 0.
 //
 // Output stays well under the 64-byte nftables `log prefix` cap.
 // See [Encode] for the exact bound.

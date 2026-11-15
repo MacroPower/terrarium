@@ -215,21 +215,27 @@ func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftabl
 // from the parent chain. Each chain evaluates one deny rule's CIDRs
 // and excepts independently: RETURN for except hits (don't deny),
 // DROP for CIDR hits (deny packet). Deny chains are evaluated before
-// allow chains so deny takes precedence.
+// allow chains so deny takes precedence. The emitter logs the first
+// packet of each new flow that a DROP matches, with the egressDeny
+// index of the rule.
 func addDenyCIDRChains(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	cidrs []config.ResolvedCIDR, uids UIDs,
+	cidrs []config.ResolvedCIDR, uids UIDs, emitter logEmitter,
 ) {
-	addDenyCIDRChainsWithVerdict(conn, table, parentChain, cidrs, uids, "deny_cidr", expr.VerdictDrop)
+	addDenyCIDRChainsWithVerdict(conn, table, parentChain, cidrs, uids, emitter, "deny_cidr", expr.VerdictDrop)
 }
 
 // addDenyCIDRChainsWithVerdict is the shared implementation for deny
 // CIDR chain construction. The chainPrefix names the chains (e.g.
 // "deny_cidr" or "deny_cidr_nat") and verdict is the action for
 // matching traffic (DROP in filter, ACCEPT in NAT to skip redirect).
+// For a DROP, the emitter logs the first packet of each new flow that
+// the verdict matches, with the egressDeny index of the rule. A
+// caller that passes another verdict must pass a disabled emitter,
+// because the emitter logs an ACCEPT as allowed by an egress rule.
 func addDenyCIDRChainsWithVerdict(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	cidrs []config.ResolvedCIDR, uids UIDs,
+	cidrs []config.ResolvedCIDR, uids UIDs, emitter logEmitter,
 	chainPrefix string, verdict expr.VerdictKind,
 ) {
 	groups := groupCIDRsByRule(cidrs)
@@ -282,25 +288,17 @@ func addDenyCIDRChainsWithVerdict(
 			}
 
 			if len(rule.Ports) == 0 {
-				conn.AddRule(&nftables.Rule{
-					Table: table, Chain: chain,
-					Exprs: flatExprs(
-						matchFilteredTraffic(uids),
-						matchDstCIDR(cidrNet),
-						verdictExprs(verdict),
-					),
-				})
+				emitter.verdict(conn, table, chain, verdict, rule.RuleIndex,
+					matchFilteredTraffic(uids),
+					matchDstCIDR(cidrNet),
+				)
 			} else {
 				for _, pp := range rule.Ports {
-					conn.AddRule(&nftables.Rule{
-						Table: table, Chain: chain,
-						Exprs: flatExprs(
-							matchFilteredTraffic(uids),
-							matchPortProto(pp),
-							matchDstCIDR(cidrNet),
-							verdictExprs(verdict),
-						),
-					})
+					emitter.verdict(conn, table, chain, verdict, rule.RuleIndex,
+						matchFilteredTraffic(uids),
+						matchPortProto(pp),
+						matchDstCIDR(cidrNet),
+					)
 				}
 			}
 		}
@@ -317,30 +315,25 @@ func addDenyCIDRChainsWithVerdict(
 // deny rules (no L3 selector). Under Cilium semantics, a deny rule
 // with only toPorts means "deny traffic to any destination on these
 // ports." A zero-value [config.ResolvedPortProto] (port 0, empty
-// protocol) means wildcard: deny all ports/protocols.
+// protocol) means wildcard: deny all ports/protocols. The emitter
+// logs the first packet of each new flow that a DROP matches, with
+// the DenyIndex of its port.
 func addDenyPortRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	ports []config.ResolvedPortProto, uids UIDs,
+	ports []config.ResolvedDenyPort, uids UIDs, emitter logEmitter,
 ) {
-	for _, pp := range ports {
+	for _, dp := range ports {
+		pp := dp.ResolvedPortProto
 		if pp.Port == 0 && pp.Protocol == "" {
 			// Wildcard: deny all traffic from terrarium UID.
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: parentChain,
-				Exprs: flatExprs(
-					matchFilteredTraffic(uids),
-					verdictExprs(expr.VerdictDrop),
-				),
-			})
+			emitter.drop(conn, table, parentChain, dp.DenyIndex,
+				matchFilteredTraffic(uids),
+			)
 		} else {
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: parentChain,
-				Exprs: flatExprs(
-					matchFilteredTraffic(uids),
-					matchPortProto(pp),
-					verdictExprs(expr.VerdictDrop),
-				),
-			})
+			emitter.drop(conn, table, parentChain, dp.DenyIndex,
+				matchFilteredTraffic(uids),
+				matchPortProto(pp),
+			)
 		}
 	}
 }
@@ -692,11 +685,16 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 // Because NAT fires before filter in the OUTPUT hook (priority -100
 // vs 0), deny CIDRs must be enforced here to prevent denied traffic
 // from being redirected to Envoy and forwarded via original_dst.
+//
+// The NAT chains log nothing. The filter chain logs the packet when
+// it drops the packet.
 func addDenyCIDRNATAccept(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs,
 ) {
-	addDenyCIDRChainsWithVerdict(conn, table, parentChain, cidrs, uids, "deny_cidr_nat", expr.VerdictAccept)
+	addDenyCIDRChainsWithVerdict(
+		conn, table, parentChain, cidrs, uids, logEmitter{}, "deny_cidr_nat", expr.VerdictAccept,
+	)
 }
 
 // addCIDRNATRedirect creates per-rule CIDR chains in the NAT context
@@ -989,15 +987,15 @@ func addManglePreRoutingChain(
 // chain is created with CIDR-scoped DROPs and except RETURNs,
 // mirroring [addDenyCIDRChains]. Standalone entries (nil CIDRs)
 // are emitted flat on the parent chain. Deny ICMP rules are
-// evaluated before allow ICMP rules (deny precedence).
-//
-// The deny rules log nothing. The RuleIndex of a deny entry is an
-// index into egressDeny, but a log prefix names an egress rule.
+// evaluated before allow ICMP rules (deny precedence). The emitter
+// logs the first packet of each new flow that a DROP matches, with
+// the RuleIndex of its entry. That RuleIndex is an index into
+// egressDeny.
 func addDenyICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	icmps []config.ResolvedICMP, uids UIDs,
+	icmps []config.ResolvedICMP, uids UIDs, emitter logEmitter,
 ) {
-	addICMPVerdictRules(conn, table, parentChain, icmps, nil, uids, logEmitter{}, "deny_icmp", expr.VerdictDrop)
+	addICMPVerdictRules(conn, table, parentChain, icmps, nil, uids, emitter, "deny_icmp", expr.VerdictDrop)
 }
 
 // addICMPRules emits ACCEPT rules for allow ICMP entries. When an
@@ -1006,6 +1004,9 @@ func addDenyICMPRules(
 // mirroring [addCIDRChains]. When an entry uses FQDN sets, an
 // ESTABLISHED rule and set lookup rules are emitted. Standalone
 // entries (nil CIDRs, no FQDN) are emitted flat on the parent chain.
+// The emitter logs the first packet of each new flow that an ACCEPT
+// matches, with the RuleIndex of its entry. That RuleIndex is an
+// index into egress.
 func addICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, icmpFQDNSets map[int]setRef, uids UIDs,

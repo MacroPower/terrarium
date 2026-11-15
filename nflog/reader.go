@@ -211,8 +211,11 @@ func (r *Reader) handle(a nflog.Attribute) {
 // The event holds the destination address and the destination port
 // of the packet. It holds the name that resolver returns for that
 // address, and no name when resolver has none. When the prefix names
-// a rule, the event holds the index of that rule, and its reason
-// holds the same index as "rule=N".
+// an egress rule, the event holds the index of that rule, and its
+// reason holds the same index as "rule=N". When the prefix names an
+// egressDeny rule, the reason holds the index of that rule as
+// "deny-rule=N". That event holds no rule index, because
+// [eventstore.Event.RuleIndex] is an index into egress.
 func eventFor(prefix string, payload []byte, resolver Resolver) (eventstore.Event, bool) {
 	kind, ruleIdx, ok := logprefix.Decode(prefix)
 	if !ok {
@@ -235,7 +238,7 @@ func eventFor(prefix string, payload []byte, resolver Resolver) (eventstore.Even
 		Reason:   reasonFor(kind, ruleIdx),
 	}
 
-	if ruleIdx >= 0 {
+	if kind == logprefix.KindAllow && ruleIdx >= 0 {
 		event.RuleIndex = ruleIdx
 		event.HasRuleIndex = true
 	}
@@ -300,8 +303,10 @@ func decisionFor(kind logprefix.Kind) eventstore.Decision {
 
 // reasonFor maps a [logprefix.Kind]+ruleIdx onto an
 // [eventstore.Reason]. KindLeak always emits
-// [eventstore.ReasonPostroutingGuard]; other kinds emit "rule=N" when
-// a rule index was attached and the empty Reason otherwise.
+// [eventstore.ReasonPostroutingGuard]. The other kinds emit the
+// empty Reason for a negative ruleIdx. KindAllow emits "rule=N" for
+// the egress rule at ruleIdx, and KindDeny emits "deny-rule=N" for
+// the egressDeny rule at ruleIdx.
 func reasonFor(kind logprefix.Kind, ruleIdx int) eventstore.Reason {
 	if kind == logprefix.KindLeak {
 		return eventstore.ReasonPostroutingGuard
@@ -309,6 +314,10 @@ func reasonFor(kind logprefix.Kind, ruleIdx int) eventstore.Reason {
 
 	if ruleIdx < 0 {
 		return ""
+	}
+
+	if kind == logprefix.KindDeny {
+		return eventstore.Reason("deny-rule=" + strconv.Itoa(ruleIdx))
 	}
 
 	return eventstore.Reason("rule=" + strconv.Itoa(ruleIdx))

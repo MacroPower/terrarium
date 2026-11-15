@@ -31,9 +31,9 @@ func TestEncode(t *testing.T) {
 			kind: logprefix.KindDeny, idx: -1,
 			want: "TERRARIUM_DENY: ",
 		},
-		"deny with rule index": {
+		"deny with the index of an egressDeny rule": {
 			kind: logprefix.KindDeny, idx: 3,
-			want: "TERRARIUM_DENY:rule=3 ",
+			want: "TERRARIUM_DENY:deny-rule=3 ",
 		},
 		"leak ignores rule index when negative": {
 			kind: logprefix.KindLeak, idx: -1,
@@ -48,8 +48,16 @@ func TestEncode(t *testing.T) {
 			want: "TERRARIUM_ALLOW: ",
 		},
 		"zero rule index is encoded": {
+			kind: logprefix.KindAllow, idx: 0,
+			want: "TERRARIUM_ALLOW:rule=0 ",
+		},
+		"zero egressDeny index is encoded": {
 			kind: logprefix.KindDeny, idx: 0,
-			want: "TERRARIUM_DENY:rule=0 ",
+			want: "TERRARIUM_DENY:deny-rule=0 ",
+		},
+		"negative egressDeny index omits segment": {
+			kind: logprefix.KindDeny, idx: -42,
+			want: "TERRARIUM_DENY: ",
 		},
 	}
 
@@ -97,24 +105,33 @@ func TestDecodeRejectsMalformed(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"unknown tag":              "FOO_BAR: ",
-		"non-decimal rule":         "TERRARIUM_DENY:rule=abc ",
-		"missing trailing space":   "TERRARIUM_DENY:rule=3",
-		"double trailing space":    "TERRARIUM_DENY:rule=3  ",
-		"lowercase tag":            "terrarium_deny:rule=3 ",
-		"leading whitespace":       " TERRARIUM_DENY:rule=3 ",
-		"negative rule literal":    "TERRARIUM_DENY:rule=-1 ",
-		"empty string":             "",
-		"only space":               " ",
-		"missing colon":            "TERRARIUM_DENY ",
-		"missing rule= segment":    "TERRARIUM_DENY:3 ",
-		"empty rule digits":        "TERRARIUM_DENY:rule= ",
-		"trailing junk after idx":  "TERRARIUM_DENY:rule=3x ",
-		"leak with rule segment":   "TERRARIUM_LEAK:rule=3 ",
-		"leak with random suffix":  "TERRARIUM_LEAK:foo ",
-		"hex rule digits":          "TERRARIUM_DENY:rule=0x10 ",
-		"rule with leading plus":   "TERRARIUM_DENY:rule=+3 ",
-		"rule with internal space": "TERRARIUM_DENY:rule= 3 ",
+		"unknown tag":                  "FOO_BAR: ",
+		"non-decimal rule":             "TERRARIUM_ALLOW:rule=abc ",
+		"missing trailing space":       "TERRARIUM_ALLOW:rule=3",
+		"double trailing space":        "TERRARIUM_ALLOW:rule=3  ",
+		"lowercase tag":                "terrarium_allow:rule=3 ",
+		"leading whitespace":           " TERRARIUM_ALLOW:rule=3 ",
+		"negative rule literal":        "TERRARIUM_ALLOW:rule=-1 ",
+		"empty string":                 "",
+		"only space":                   " ",
+		"missing colon":                "TERRARIUM_DENY ",
+		"missing rule= segment":        "TERRARIUM_ALLOW:3 ",
+		"empty rule digits":            "TERRARIUM_ALLOW:rule= ",
+		"trailing junk after idx":      "TERRARIUM_ALLOW:rule=3x ",
+		"leak with rule segment":       "TERRARIUM_LEAK:rule=3 ",
+		"leak with deny-rule segment":  "TERRARIUM_LEAK:deny-rule=3 ",
+		"leak with random suffix":      "TERRARIUM_LEAK:foo ",
+		"hex rule digits":              "TERRARIUM_ALLOW:rule=0x10 ",
+		"rule with leading plus":       "TERRARIUM_ALLOW:rule=+3 ",
+		"rule with internal space":     "TERRARIUM_ALLOW:rule= 3 ",
+		"deny with an egress index":    "TERRARIUM_DENY:rule=3 ",
+		"allow with an egressDeny idx": "TERRARIUM_ALLOW:deny-rule=3 ",
+		"non-decimal deny rule":        "TERRARIUM_DENY:deny-rule=abc ",
+		"negative deny rule literal":   "TERRARIUM_DENY:deny-rule=-1 ",
+		"missing deny-rule= segment":   "TERRARIUM_DENY:3 ",
+		"empty deny rule digits":       "TERRARIUM_DENY:deny-rule= ",
+		"junk after deny rule idx":     "TERRARIUM_DENY:deny-rule=3x ",
+		"deny rule without trailer":    "TERRARIUM_DENY:deny-rule=3",
 	}
 
 	for name, in := range cases {
@@ -140,5 +157,9 @@ func TestEncodeBelow64Bytes(t *testing.T) {
 	assert.Equal(t,
 		"TERRARIUM_ALLOW:rule="+strconv.Itoa(math.MaxInt64)+" ",
 		logprefix.Encode(logprefix.KindAllow, math.MaxInt64),
+	)
+	assert.Equal(t,
+		"TERRARIUM_DENY:deny-rule="+strconv.Itoa(math.MaxInt64)+" ",
+		logprefix.Encode(logprefix.KindDeny, math.MaxInt64),
 	)
 }

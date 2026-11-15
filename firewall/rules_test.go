@@ -2852,12 +2852,66 @@ func allowLogIndices(t *testing.T, rules []*nftables.Rule) []int {
 	return indices
 }
 
+// denyLogIndices returns the index in the prefix of each deny log
+// rule of rules. The index of a catch-all deny log rule is negative.
+// Every other index names a rule of egressDeny. The helper fails the
+// test when the log rule of such an index does not precede a DROP
+// that matches the same packets.
+func denyLogIndices(t *testing.T, rules []*nftables.Rule) []int {
+	t.Helper()
+
+	var indices []int
+
+	for i, r := range rules {
+		log := findLog(r)
+		if log == nil {
+			continue
+		}
+
+		kind, idx, ok := logprefix.Decode(string(log.Data))
+		require.True(t, ok, "log prefix %q must decode", log.Data)
+
+		if kind != logprefix.KindDeny {
+			continue
+		}
+
+		indices = append(indices, idx)
+
+		if idx < 0 {
+			continue
+		}
+
+		require.Less(t, i+1, len(rules), "deny log rule must precede a rule")
+
+		next := rules[i+1]
+		verdict, _ := ruleVerdict(next)
+		require.Equal(t, expr.VerdictDrop, verdict, "deny log rule must precede a DROP")
+
+		// The log rule holds the matches of the DROP, then the
+		// ct state match and the log expression.
+		matches := next.Exprs[:len(next.Exprs)-1]
+		require.Greater(t, len(r.Exprs), len(matches))
+		assert.Equal(t, matches, r.Exprs[:len(matches)],
+			"deny log rule must match the packets of its DROP")
+		assert.True(t, ruleHasCtState(r), "deny log rule must gate on ct state new")
+	}
+
+	return indices
+}
+
 // logIndicesByChain returns the indices in the prefixes of the log
 // rules of rec, by chain name and in rule order: the allow log rules
-// in allow and the deny log rules in deny. It fails the test when an
-// allow log rule does not precede an ACCEPT that matches the same
-// packets, or when an ACCEPT of a per-rule chain (cidr_N or icmp_N)
-// has no allow log rule in front of it.
+// in allow and the deny log rules in deny. It fails the test in each
+// of these cases:
+//
+//   - An allow log rule does not precede an ACCEPT that matches the
+//     same packets.
+//   - A deny log rule with an egressDeny index does not precede a DROP
+//     that matches the same packets.
+//   - An ACCEPT of a per-rule allow chain (cidr_N or icmp_N) or a
+//     DROP of a per-rule deny chain (deny_cidr_N or deny_icmp_N) has
+//     no log rule in front of it.
+//   - A NAT chain of a deny rule (deny_cidr_nat_N) holds a log rule.
 func logIndicesByChain(t *testing.T, rec *ruleRecorder) (map[string][]int, map[string][]int) {
 	t.Helper()
 
@@ -2877,27 +2931,41 @@ func logIndicesByChain(t *testing.T, rec *ruleRecorder) (map[string][]int, map[s
 			allow[c.Name] = append(allow[c.Name], indices...)
 		}
 
-		perRule := strings.HasPrefix(c.Name, "cidr_") || strings.HasPrefix(c.Name, "icmp_")
+		if indices := denyLogIndices(t, rules); len(indices) > 0 {
+			deny[c.Name] = append(deny[c.Name], indices...)
+		}
+
+		// The verdict that every rule of a per-rule chain logs.
+		var logged expr.VerdictKind
+
+		switch {
+		case strings.HasPrefix(c.Name, "deny_cidr_nat_"):
+			for _, r := range rules {
+				assert.False(t, ruleHasLog(r), "NAT chain %s must not log", c.Name)
+			}
+
+			continue
+
+		case strings.HasPrefix(c.Name, "cidr_"), strings.HasPrefix(c.Name, "icmp_"):
+			logged = expr.VerdictAccept
+		case strings.HasPrefix(c.Name, "deny_cidr_"), strings.HasPrefix(c.Name, "deny_icmp_"):
+			logged = expr.VerdictDrop
+		default:
+			continue
+		}
 
 		for i, r := range rules {
-			if log := findLog(r); log != nil {
-				kind, idx, ok := logprefix.Decode(string(log.Data))
-				require.True(t, ok, "log prefix %q must decode", log.Data)
-
-				if kind == logprefix.KindDeny {
-					deny[c.Name] = append(deny[c.Name], idx)
-				}
-
+			if ruleHasLog(r) {
 				continue
 			}
 
-			if verdict, _ := ruleVerdict(r); !perRule || verdict != expr.VerdictAccept {
+			if verdict, _ := ruleVerdict(r); verdict != logged {
 				continue
 			}
 
-			require.Positive(t, i, "ACCEPT of chain %s must follow an allow log rule", c.Name)
+			require.Positive(t, i, "verdict rule %d of chain %s must follow a log rule", i, c.Name)
 			require.NotNil(t, findLog(rules[i-1]),
-				"ACCEPT of chain %s must follow an allow log rule", c.Name)
+				"verdict rule %d of chain %s must follow a log rule", i, c.Name)
 		}
 	}
 
@@ -2917,6 +2985,10 @@ func TestApplyRules_LogRules_PerRuleAllowIndex(t *testing.T) {
 		// want maps each chain with allow log rules to the egress
 		// indices in their prefixes, in rule order.
 		want map[string][]int
+		// wantDeny maps each chain with deny log rules to the
+		// egressDeny indices in their prefixes, in rule order. The
+		// index of the catch-all before a terminal DROP is -1.
+		wantDeny map[string][]int
 	}{
 		"each kind of rule": {
 			egress: []config.EgressRule{
@@ -2952,6 +3024,12 @@ func TestApplyRules_LogRules_PerRuleAllowIndex(t *testing.T) {
 				// Open port, FQDN UDP v4 and v6, catch-all v4 and
 				// v6, and ICMP.
 				"terrarium_output": {5, 2, 3, 3, 4, 4},
+			},
+			wantDeny: map[string][]int{
+				"output":      {-1},
+				"deny_cidr_0": {0},
+				// Deny ICMP, then the catch-all.
+				"terrarium_output": {1, -1},
 			},
 		},
 		"port-scoped CIDR, port range, and scoped ICMP": {
@@ -3011,6 +3089,11 @@ func TestApplyRules_LogRules_PerRuleAllowIndex(t *testing.T) {
 				// ICMP set lookup, TCP range.
 				"terrarium_output": {4, 3},
 			},
+			wantDeny: map[string][]int{
+				"output": {-1},
+				// Deny port, then the catch-all.
+				"terrarium_output": {0, -1},
+			},
 		},
 		"port-only rule that opens every port": {
 			egress: []config.EgressRule{
@@ -3029,6 +3112,10 @@ func TestApplyRules_LogRules_PerRuleAllowIndex(t *testing.T) {
 			want: map[string][]int{
 				// ICMP, then the accept of all filtered traffic.
 				"terrarium_output": {2, 3},
+			},
+			wantDeny: map[string][]int{
+				"output":           {-1},
+				"terrarium_output": {-1},
 			},
 		},
 	}
@@ -3052,15 +3139,149 @@ func TestApplyRules_LogRules_PerRuleAllowIndex(t *testing.T) {
 
 			allow, deny := logIndicesByChain(t, rec)
 			assert.Equal(t, tc.want, allow)
-
-			// The rules of egressDeny log nothing, because their
-			// indices point into egressDeny. The only deny log rules
-			// are the catch-alls before the terminal DROPs.
-			assert.Equal(t, map[string][]int{
-				"output":           {-1},
-				"terrarium_output": {-1},
-			}, deny)
+			assert.Equal(t, tc.wantDeny, deny)
 		})
+	}
+}
+
+func TestApplyRules_LogRules_DenyRuleIndex(t *testing.T) {
+	t.Parallel()
+
+	udp := func(port string) config.PortRule {
+		return config.PortRule{Ports: []config.Port{{Port: port, Protocol: "UDP"}}}
+	}
+
+	echo := []config.ICMPRule{{Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}}}}
+
+	tests := map[string]struct {
+		egressDeny []config.EgressDenyRule
+		// want maps each chain with deny log rules to the
+		// egressDeny indices in their prefixes, in rule order. The
+		// index of the catch-all before a terminal DROP is -1.
+		want map[string][]int
+	}{
+		"each kind of deny rule": {
+			egressDeny: []config.EgressDenyRule{
+				// 0: port-only rule.
+				{ToPorts: []config.PortRule{udp("9999")}},
+				// 1: CIDR rule. Its chain is deny_cidr_0, so the
+				// chain number differs from the index of the rule.
+				{ToCIDR: []string{"10.1.0.0/16"}},
+				// 2: ICMP rule for every destination.
+				{ICMPs: echo},
+				// 3: CIDR rule with two ports and an except range.
+				// The RETURN of the except range logs nothing.
+				{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "172.16.0.0/12", Except: []string{"172.16.1.0/24"}}},
+					ToPorts:   []config.PortRule{udp("53"), udp("123")},
+				},
+				// 4: IPv6 CIDR rule.
+				{ToCIDR: []string{"2001:db8::/32"}},
+			},
+			want: map[string][]int{
+				"output":      {-1},
+				"deny_cidr_0": {1},
+				"deny_cidr_1": {3, 3},
+				"deny_cidr_2": {4},
+				// Deny port, deny ICMP, then the catch-all.
+				"terrarium_output": {0, 2, -1},
+			},
+		},
+		"ICMP rule scoped to a CIDR": {
+			egressDeny: []config.EgressDenyRule{
+				// 0: ICMP rule for every destination.
+				{ICMPs: echo},
+				// 1: ICMP rule scoped to a CIDR with an except
+				// range. The RETURN of the except range logs
+				// nothing.
+				{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "203.0.113.0/24", Except: []string{"203.0.113.128/25"}}},
+					ICMPs:     echo,
+				},
+			},
+			want: map[string][]int{
+				"output":      {-1},
+				"deny_icmp_0": {1},
+				// The CIDR of rule 1 also resolves as a CIDR rule.
+				"deny_cidr_0": {1},
+				// Deny ICMP of rule 0, then the catch-all.
+				"terrarium_output": {0, -1},
+			},
+		},
+		"port-only rules": {
+			egressDeny: []config.EgressDenyRule{
+				// 0: a CIDR rule, so the first port-only rule is not
+				// at index 0.
+				{ToCIDR: []string{"10.1.0.0/16"}},
+				// 1: the first rule that denies UDP 9999.
+				{ToPorts: []config.PortRule{udp("9999")}},
+				// 2: denies UDP 9999 again, and UDP 53 for the
+				// first time.
+				{ToPorts: []config.PortRule{udp("9999"), udp("53")}},
+				// 3: denies every port.
+				{ToPorts: []config.PortRule{{}}},
+			},
+			want: map[string][]int{
+				"output":      {-1},
+				"deny_cidr_0": {0},
+				// Every port, UDP 53, UDP 9999, then the catch-all.
+				"terrarium_output": {3, 2, 1, -1},
+			},
+		},
+	}
+
+	modes := map[string]firewall.UIDs{
+		"container": testUIDs,
+		"vm":        testVMUIDs,
+	}
+
+	for name, tc := range tests {
+		// Validate normalizes the rules in place, so it runs one
+		// time for each case, before the parallel subtests read the
+		// config.
+		cfg := &config.Config{
+			Logging: &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}},
+			Stats:   &config.Stats{Enabled: true},
+			Egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}},
+			}),
+			EgressDeny: &tc.egressDeny,
+		}
+		require.NoError(t, cfg.Validate(t.Context()))
+
+		for mode, uids := range modes {
+			t.Run(name+" in "+mode+" mode", func(t *testing.T) {
+				t.Parallel()
+
+				rec := &ruleRecorder{}
+
+				err := firewall.ApplyRules(t.Context(), rec, cfg, uids)
+				require.NoError(t, err)
+
+				// logIndicesByChain checks that every deny log rule
+				// with an index precedes a DROP of the same packets.
+				// It also checks that every DROP of a per-rule deny
+				// chain has a log rule.
+				allow, deny := logIndicesByChain(t, rec)
+				assert.Empty(t, allow)
+				assert.Equal(t, tc.want, deny)
+
+				// The deny rules of terrarium_output run before
+				// every allow rule, so their DROPs are the DROPs
+				// before the catch-all. Each one has a log rule.
+				rules := rec.rulesForChain("terrarium_output")
+				for i, r := range rules[:len(rules)-1] {
+					if verdict, _ := ruleVerdict(r); verdict != expr.VerdictDrop {
+						continue
+					}
+
+					require.Positive(t, i)
+					assert.True(t, ruleHasLog(rules[i-1]),
+						"DROP %d of terrarium_output must follow a deny log rule", i)
+				}
+			})
+		}
 	}
 }
 
@@ -3074,6 +3295,11 @@ func TestApplyRules_LogRules_PerRuleAllowOff(t *testing.T) {
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "5353", Protocol: "UDP"}}}},
 			},
 		),
+		EgressDeny: &[]config.EgressDenyRule{
+			{ToCIDR: []string{"10.1.0.0/16"}},
+			{ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "9999", Protocol: "UDP"}}}}},
+			{ICMPs: []config.ICMPRule{{Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}}}}},
+		},
 	}
 	require.NoError(t, cfg.Validate(t.Context()))
 
