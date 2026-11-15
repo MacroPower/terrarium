@@ -204,8 +204,12 @@ func TestDaemonReloadEndsDaemon(t *testing.T) {
 
 	pidPath := filepath.Join(dir, "test.pid")
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGHUP)
+	// No signal goes to termCh. The test closes it to end the signal
+	// loop.
+	termCh := make(chan os.Signal)
+
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
 
 	recorder, err := newReloadRecorder(reloadStatusPath(pidPath))
 	require.NoError(t, err)
@@ -218,7 +222,7 @@ func TestDaemonReloadEndsDaemon(t *testing.T) {
 	ctx := context.WithoutCancel(t.Context())
 
 	go func() {
-		served <- serveReloads(ctx, sigCh, func(context.Context, string) {}, recorder,
+		served <- serveReloads(ctx, termCh, hupCh, func(context.Context, string) {}, recorder,
 			func(context.Context) error {
 				// The reload takes several polls of the status, so a
 				// command that does not wait for the outcome returns
@@ -232,11 +236,11 @@ func TestDaemonReloadEndsDaemon(t *testing.T) {
 		)
 	}()
 
-	// The signal loop returns when the channel closes, also when the
+	// The signal loop returns when termCh closes, also when the
 	// command sent no signal.
 	t.Cleanup(func() {
-		signal.Stop(sigCh)
-		close(sigCh)
+		signal.Stop(hupCh)
+		close(termCh)
 		<-served
 	})
 

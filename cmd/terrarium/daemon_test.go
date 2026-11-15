@@ -8,12 +8,46 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// feedSignals returns the two channels of a signal loop and sends
+// signals to them in order. SIGHUP goes to hupCh, and every other
+// signal goes to termCh. The channels have no buffer, so the loop
+// receives each signal only after it handled the signal before it.
+// termCh closes after the last signal.
+func feedSignals(t *testing.T, signals []os.Signal) (<-chan os.Signal, <-chan os.Signal) {
+	t.Helper()
+
+	termCh := make(chan os.Signal)
+	hupCh := make(chan os.Signal)
+	ctx := t.Context()
+
+	go func() {
+		defer close(termCh)
+
+		for _, sig := range signals {
+			ch := termCh
+			if sig == syscall.SIGHUP {
+				ch = hupCh
+			}
+
+			// A loop that returned reads no more signals.
+			select {
+			case ch <- sig:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return termCh, hupCh
+}
 
 // TestServeSignals checks which states the daemon reports for each
 // result of a reload, and when the daemon stops handling signals.
@@ -66,12 +100,7 @@ func TestServeSignals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			sigCh := make(chan os.Signal, len(tt.signals))
-			for _, sig := range tt.signals {
-				sigCh <- sig
-			}
-
-			close(sigCh)
+			termCh, hupCh := feedSignals(t, tt.signals)
 
 			var (
 				states  []string
@@ -91,7 +120,7 @@ func TestServeSignals(t *testing.T) {
 				return err
 			}
 
-			err := serveSignals(t.Context(), sigCh, notify, reload)
+			err := serveSignals(t.Context(), termCh, hupCh, notify, reload)
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 			} else {
@@ -100,6 +129,69 @@ func TestServeSignals(t *testing.T) {
 
 			assert.Equal(t, tt.wantStates, states)
 			assert.Equal(t, tt.wantReloads, reloads)
+		})
+	}
+}
+
+// TestServeSignalsTerminationDuringReload checks that the daemon shuts
+// down for a termination signal that arrives during a reload,
+// whatever number of SIGHUP signals arrive before it. The daemon must
+// not start the reload for those SIGHUP signals.
+func TestServeSignalsTerminationDuringReload(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		// The signals that arrive during the first reload, in order.
+		during []os.Signal
+	}{
+		"SIGTERM": {
+			during: []os.Signal{syscall.SIGTERM},
+		},
+		"SIGTERM after a SIGHUP": {
+			during: []os.Signal{syscall.SIGHUP, syscall.SIGTERM},
+		},
+		"SIGINT after a SIGHUP": {
+			during: []os.Signal{syscall.SIGHUP, syscall.SIGINT},
+		},
+		"SIGTERM after several SIGHUP signals": {
+			during: []os.Signal{syscall.SIGHUP, syscall.SIGHUP, syscall.SIGHUP, syscall.SIGTERM},
+		},
+		"SIGTERM before a SIGHUP": {
+			during: []os.Signal{syscall.SIGTERM, syscall.SIGHUP},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var reloads atomic.Int32
+
+			entered := make(chan struct{}, 1)
+			release := make(chan struct{})
+
+			d := startFakeDaemon(t, func(context.Context) error {
+				if reloads.Add(1) == 1 {
+					entered <- struct{}{}
+
+					<-release
+				}
+
+				return nil
+			})
+
+			require.NoError(t, d.signal(syscall.SIGHUP))
+			receive(t, entered)
+
+			for _, sig := range tt.during {
+				require.NoError(t, d.signal(sig))
+			}
+
+			close(release)
+			receive(t, d.done)
+
+			assert.Equal(t, int32(1), reloads.Load())
+			assert.NoFileExists(t, d.statusPath)
 		})
 	}
 }
@@ -164,12 +256,7 @@ func TestServeReloads(t *testing.T) {
 			recorder, err := newReloadRecorder(path)
 			require.NoError(t, err)
 
-			sigCh := make(chan os.Signal, len(tt.signals))
-			for _, sig := range tt.signals {
-				sigCh <- sig
-			}
-
-			close(sigCh)
+			termCh, hupCh := feedSignals(t, tt.signals)
 
 			var (
 				states    []string
@@ -200,7 +287,7 @@ func TestServeReloads(t *testing.T) {
 				assert.FileExists(t, path)
 			}
 
-			err = serveReloads(t.Context(), sigCh, notify, recorder, reload, shutdown)
+			err = serveReloads(t.Context(), termCh, hupCh, notify, recorder, reload, shutdown)
 			if tt.err != nil {
 				require.ErrorIs(t, err, tt.err)
 			} else {

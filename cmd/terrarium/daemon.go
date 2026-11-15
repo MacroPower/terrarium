@@ -27,8 +27,10 @@ import (
 //
 // SIGHUP triggers a live configuration reload via
 // [reloadInfrastructure] without restarting the process. SIGTERM and
-// SIGINT initiate graceful shutdown. See [serveSignals] for the
-// handling of a reload that does not complete.
+// SIGINT initiate graceful shutdown. A termination signal that
+// arrives during a reload shuts the daemon down when that reload
+// ends, before the reload for a SIGHUP that also arrived. See
+// [serveSignals] for the handling of a reload that does not complete.
 //
 // Daemon returns an error when a reload stops after it started to
 // replace the installed CA certificate, the running rules, the DNS
@@ -103,10 +105,17 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 	slog.InfoContext(ctx, "terrarium daemon ready, filtering all VM traffic")
 
 	// Block until termination signal, handling SIGHUP for reload.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	// [signal.Notify] drops a signal when its channel is full. SIGHUP
+	// has its own channel, so that the SIGHUP signals that arrive
+	// during a reload never fill the channel of the termination
+	// signals.
+	termCh := make(chan os.Signal, 1)
+	signal.Notify(termCh, syscall.SIGTERM, syscall.SIGINT)
 
-	return serveReloads(ctx, sigCh, sdNotify, recorder,
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+
+	return serveReloads(ctx, termCh, hupCh, sdNotify, recorder,
 		func(ctx context.Context) error {
 			return reloadInfrastructure(ctx, usr, uids, inf)
 		},
@@ -130,17 +139,18 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 // When the loop returns, serveReloads sends STOPPING=1 through notify
 // and calls shutdown. It then removes the status file only when the
 // loop returned nil. The loop returns nil for a termination signal
-// and when sigCh closes. After a reload that ends the daemon, the file
-// stays, so [DaemonReload] can report the error of that reload.
+// and when termCh or hupCh closes. After a reload that ends the
+// daemon, the file stays, so [DaemonReload] can report the error of
+// that reload.
 func serveReloads(
 	ctx context.Context,
-	sigCh <-chan os.Signal,
+	termCh, hupCh <-chan os.Signal,
 	notify func(ctx context.Context, state string),
 	recorder *reloadRecorder,
 	reload func(ctx context.Context) error,
 	shutdown func(ctx context.Context),
 ) error {
-	err := serveSignals(ctx, sigCh, notify, func(ctx context.Context) error {
+	err := serveSignals(ctx, termCh, hupCh, notify, func(ctx context.Context) error {
 		return recorder.record(ctx, reload)
 	})
 
@@ -176,9 +186,17 @@ func discardBootstrapOnError(ctx context.Context, path string, setup func() (*in
 	return inf, err
 }
 
-// serveSignals handles the signals of the daemon from sigCh until the
-// daemon must shut down. It returns nil for a termination signal,
-// which is every signal except SIGHUP, and when sigCh closes.
+// serveSignals handles the signals of the daemon until the daemon
+// must shut down. It reads each signal with [nextSignal], from termCh
+// for the termination signals and from hupCh for SIGHUP. It returns
+// nil for a termination signal, which is every signal except SIGHUP,
+// and when termCh or hupCh closes.
+//
+// During a reload, serveSignals reads neither channel, and
+// [signal.Notify] drops a signal when its channel is full. The caller
+// must therefore give termCh a buffer and send it only termination
+// signals. With that buffer, termCh keeps a termination signal that
+// arrives during a reload.
 //
 // For each SIGHUP, serveSignals sends RELOADING=1 through notify and
 // calls reload. The result of reload decides what follows:
@@ -193,11 +211,16 @@ func discardBootstrapOnError(ctx context.Context, path string, setup func() (*in
 //     and it returns the error so the caller shuts the daemon down.
 func serveSignals(
 	ctx context.Context,
-	sigCh <-chan os.Signal,
+	termCh, hupCh <-chan os.Signal,
 	notify func(ctx context.Context, state string),
 	reload func(ctx context.Context) error,
 ) error {
-	for sig := range sigCh {
+	for {
+		sig := nextSignal(termCh, hupCh)
+		if sig == nil {
+			return nil
+		}
+
 		if sig != syscall.SIGHUP {
 			slog.InfoContext(ctx, "received signal, shutting down",
 				slog.Any("signal", sig),
@@ -224,8 +247,29 @@ func serveSignals(
 
 		notify(ctx, "READY=1")
 	}
+}
 
-	return nil
+// nextSignal waits for a signal on termCh or hupCh and returns it. It
+// returns nil when the channel that it reads is closed.
+//
+// When both channels hold a signal, nextSignal returns the signal of
+// termCh. The daemon therefore shuts down for a termination signal
+// before it starts a reload for a SIGHUP that also waits.
+func nextSignal(termCh, hupCh <-chan os.Signal) os.Signal {
+	// A select with two ready channels picks one at random, so read
+	// termCh alone first.
+	select {
+	case sig := <-termCh:
+		return sig
+	default:
+	}
+
+	select {
+	case sig := <-termCh:
+		return sig
+	case sig := <-hupCh:
+		return sig
+	}
 }
 
 // daemonShutdown stops Envoy, the gRPC access-log server, and the

@@ -27,7 +27,11 @@ type fakeDaemon struct {
 	// exit of the daemon.
 	done chan struct{}
 
-	sigCh chan os.Signal
+	// The channels of the signal loop, with the buffers that [Daemon]
+	// gives them. termCh receives every signal except SIGHUP, and
+	// hupCh receives SIGHUP.
+	termCh chan os.Signal
+	hupCh  chan os.Signal
 
 	// Receives one value for each SIGHUP that the signal method gets.
 	hups chan struct{}
@@ -43,7 +47,8 @@ func startFakeDaemon(t *testing.T, reload func(ctx context.Context) error) *fake
 
 	d := &fakeDaemon{
 		done:       make(chan struct{}),
-		sigCh:      make(chan os.Signal, 1),
+		termCh:     make(chan os.Signal, 1),
+		hupCh:      make(chan os.Signal, 1),
 		hups:       make(chan struct{}, 16),
 		statusPath: reloadStatusPath(filepath.Join(t.TempDir(), "daemon.pid")),
 	}
@@ -56,7 +61,7 @@ func startFakeDaemon(t *testing.T, reload func(ctx context.Context) error) *fake
 	go func() {
 		defer close(d.done)
 
-		err := serveReloads(ctx, d.sigCh, func(context.Context, string) {}, recorder, reload,
+		err := serveReloads(ctx, d.termCh, d.hupCh, func(context.Context, string) {}, recorder, reload,
 			func(context.Context) {})
 		if err != nil {
 			t.Logf("daemon exited: %v", err)
@@ -65,7 +70,7 @@ func startFakeDaemon(t *testing.T, reload func(ctx context.Context) error) *fake
 
 	t.Cleanup(func() {
 		select {
-		case d.sigCh <- syscall.SIGTERM:
+		case d.termCh <- syscall.SIGTERM:
 		case <-d.done:
 		}
 
@@ -77,8 +82,8 @@ func startFakeDaemon(t *testing.T, reload func(ctx context.Context) error) *fake
 
 // signal delivers sig to the daemon as [os.Process.Signal] does. It
 // returns [os.ErrProcessDone] after the daemon exited. As
-// [os/signal.Notify] does, it drops a signal when the channel of the
-// daemon is full.
+// [os/signal.Notify] does, it drops a signal when the channel of that
+// signal is full.
 func (d *fakeDaemon) signal(sig os.Signal) error {
 	select {
 	case <-d.done:
@@ -90,8 +95,13 @@ func (d *fakeDaemon) signal(sig os.Signal) error {
 		return nil
 	}
 
+	ch := d.termCh
+	if sig == syscall.SIGHUP {
+		ch = d.hupCh
+	}
+
 	select {
-	case d.sigCh <- sig:
+	case ch <- sig:
 	default:
 	}
 
