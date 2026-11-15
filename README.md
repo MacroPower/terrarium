@@ -85,30 +85,68 @@ for HTTP traffic. Your existing network policies then filter every sandboxed
 HTTP request.
 
 The proxy runs an Envoy build that terrarium pins by version and by
-SHA-256. It installs the build into `$XDG_DATA_HOME/terrarium/envoy` at
-its first start, and it checks the hash of the binary at every start. To
-install the build ahead of time, for example on a machine that starts
-the proxy offline, run `terrarium envoy install`.
+SHA-256, so you do not install Envoy yourself. When the binary is
+missing, the proxy installs the build into
+`$XDG_DATA_HOME/terrarium/envoy`, which defaults to
+`~/.local/share/terrarium/envoy`. The binary is missing at the first
+start of the proxy and at the first start after a terrarium upgrade that
+changes the pinned version. To install the build ahead of time, for
+example on a machine that starts the proxy offline, run the following
+command:
 
-The proxy exits with an error when the binary does not have the pinned
-hash, and it does not download a replacement. Inspect the file that the
-error names, remove it, and run `terrarium envoy install`.
+```sh
+terrarium envoy install
+```
 
-On Linux, the proxy executes the open file that it checked, so the
-host must mount `/proc`. The process name of that Envoy is a number,
-and its command line starts with the path of the binary.
+The command prints the path of the installed binary. The proxy checks
+the hash of that binary at every start. When the binary does not have
+the pinned hash, the proxy exits with an error, and it does not download
+a replacement. A binary that changed after the install therefore stops
+the next start of the proxy, and the changed Envoy does not run. Inspect
+the file that the error names, remove it, and run
+`terrarium envoy install`.
 
-Terrarium pins a build for glibc Linux on `amd64` and `arm64`, and for
-macOS on Apple Silicon. On every other host, such as an Intel Mac or
-musl Linux, the proxy exits with an error unless you name your own
-Envoy binary. Name it with the `--envoy-path` flag or with the
-`envoy.path` key of the policy file. The flag overrides the key. The
-value is a path, or a command name that the proxy looks up on `PATH`.
-For example, `--envoy-path envoy` runs the Envoy that Homebrew or Nix
-installed. The proxy does not check the hash of that binary, and it
-logs a warning at every start.
+Terrarium pins one build for each platform in the following table. The
+[`envoy` workflow](.github/workflows/envoy.yaml) checks each build on
+every pull request that changes the pinned version. For every build, the
+workflow confirms that the download and the binary have the pinned
+hashes. It then runs the binary and confirms that the binary reports the
+commit of the Envoy release tag. The table names the source of each
+build and the check that applies only to that source.
 
-Run it, writing the CA files where the sandbox can read them. The example
+| Platform                              | Source                                                                     | Check of the source                                                                                                      |
+| ------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Linux with glibc, `amd64` and `arm64` | [Envoy GitHub releases](https://github.com/envoyproxy/envoy/releases)      | The `checksums.txt.asc` file of the release lists the pinned hash and carries a signature of the Envoy maintainers' key. |
+| macOS on Apple Silicon                | [Tetrate's archive of Envoy](https://github.com/tetratelabs/archive-envoy) | The index of the archive lists the pinned hash, and the binary has a build attestation from Tetrate's GitHub workflow.   |
+
+The macOS build comes from Tetrate because the Envoy project does not
+publish macOS binaries.
+
+On Linux, the proxy executes the open file that it checked. The process
+name of that Envoy is a number, and its command line starts with the
+path of the binary.
+
+To run another Envoy binary, name it with the `--envoy-path` flag or
+with the `envoy.path` key of the policy file. The flag overrides the
+key. The value is a path, or a command name that the proxy looks up on
+`PATH`. For example, `--envoy-path envoy` runs the Envoy that Homebrew
+or Nix installed. The proxy does not check the hash of that binary, and
+it logs a warning at every start.
+
+You must name your own binary on the following hosts, because the
+managed build does not run on them:
+
+- **An Intel Mac.** Terrarium does not pin a build for it, so the proxy
+  exits with an error that names the flag and the key.
+- **Musl Linux, such as Alpine Linux.** The Linux builds link against
+  glibc, so the proxy exits with the same error.
+- **A Linux host without the standard glibc loader, such as NixOS
+  without nix-ld.** The proxy installs the managed build, but the build
+  does not start.
+- **A Linux host that does not mount `/proc`.** The proxy executes the
+  checked file through `/proc`, so Envoy does not start.
+
+Run the proxy, and write the CA files where the sandbox can read them. The example
 writes them to a `proxy` directory beside the CA directory under
 `$XDG_DATA_HOME/terrarium`, so one `denyRead` entry covers the key alone:
 
@@ -144,7 +182,8 @@ directory:
     },
     "filesystem": {
       "allowRead": ["~/.local/share/terrarium/proxy"],
-      "denyRead": ["~/.local/share/terrarium/ca"]
+      "denyRead": ["~/.local/share/terrarium/ca"],
+      "denyWrite": ["~/.local/share/terrarium/envoy"]
     }
   },
   "env": {
@@ -198,9 +237,25 @@ valid pair, or when the CA expires within a year. To rotate the CA,
 delete the directory and restart the proxy.
 
 Only your user can read the CA key, but sandboxed commands run as your
-user. The `denyRead` entry in the example keeps them from reading the
-key and signing certificates that your clients trust. Adjust it and the
-`allowRead` entry when you set `--ca-dir` or `XDG_DATA_HOME`.
+user. The `filesystem` entries of the example set which files of the
+proxy those commands can read or write. The following table gives the
+effect of each entry.
+
+| Entry       | Effect on sandboxed commands                                                           |
+| ----------- | -------------------------------------------------------------------------------------- |
+| `allowRead` | They can read the CA files that the proxy writes.                                      |
+| `denyRead`  | They cannot read the CA key, so they cannot sign certificates that your clients trust. |
+| `denyWrite` | They cannot write to the directory that holds the managed Envoy.                       |
+
+The hash check stops a proxy whose binary changed before the check. A
+command that can write to the directory of the managed Envoy can also
+change the binary after the check and before Envoy starts. The
+`denyWrite` entry prevents that change. It applies even when the working
+directory or an `allowWrite` entry contains the directory.
+
+Adjust the `allowRead` entry and the `denyRead` entry when you set
+`--ca-dir` or `XDG_DATA_HOME`. Adjust the `denyWrite` entry when you set
+`XDG_DATA_HOME`.
 
 Go-based tools on macOS verify certificates through the system keychain
 and ignore the variables above. To make them trust the CA, add it to your
