@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -307,6 +308,90 @@ func TestServeReloads(t *testing.T) {
 			status, err := readReloadStatus(path)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantStatus, status)
+		})
+	}
+}
+
+// TestWriteDaemonFiles checks that the daemon shuts down when it
+// cannot write the reload status file or the PID file. The daemon
+// started Envoy before the writes, and that Envoy must not keep
+// running after the daemon returns the error.
+func TestWriteDaemonFiles(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		// Prepare returns the path of the PID file inside dir.
+		prepare func(t *testing.T, dir string) string
+
+		// The message of the expected error. Empty means that the
+		// daemon writes both files.
+		err string
+	}{
+		"both files written": {
+			prepare: func(_ *testing.T, dir string) string {
+				return filepath.Join(dir, "daemon.pid")
+			},
+		},
+		"reload status not written": {
+			// The parent of both files is a regular file.
+			prepare: func(t *testing.T, dir string) string {
+				t.Helper()
+
+				parent := filepath.Join(dir, "parent")
+				require.NoError(t, os.WriteFile(parent, nil, 0o644))
+
+				return filepath.Join(parent, "daemon.pid")
+			},
+			err: "writing reload status",
+		},
+		"PID file not written": {
+			// A directory has the path of the PID file. The reload
+			// status file has another path, so the daemon writes it.
+			prepare: func(t *testing.T, dir string) string {
+				t.Helper()
+
+				pidFile := filepath.Join(dir, "daemon.pid")
+				require.NoError(t, os.Mkdir(pidFile, 0o755))
+
+				return pidFile
+			},
+			err: "writing PID file",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			pidFile := tt.prepare(t, t.TempDir())
+
+			var shutdowns int
+
+			recorder, err := writeDaemonFiles(t.Context(), pidFile, func(context.Context) {
+				shutdowns++
+			})
+
+			if tt.err != "" {
+				require.ErrorContains(t, err, tt.err)
+				assert.Nil(t, recorder)
+				assert.Equal(t, 1, shutdowns)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, recorder)
+			assert.Equal(t, 0, shutdowns)
+
+			pid := os.Getpid()
+
+			content, err := os.ReadFile(pidFile)
+			require.NoError(t, err)
+			assert.Equal(t, strconv.Itoa(pid), string(content))
+
+			status, err := readReloadStatus(reloadStatusPath(pidFile))
+			require.NoError(t, err)
+			assert.Equal(t, &reloadStatus{PID: pid}, status)
 		})
 	}
 }

@@ -42,6 +42,10 @@ import (
 // [reloadRecorder] for the content of the file and [serveReloads] for
 // when Daemon removes it.
 //
+// When Daemon cannot write the reload status file or the PID file, it
+// shuts down what the setup started and returns the error. See
+// [writeDaemonFiles].
+//
 // The restarted daemon generates its configs from the config file
 // again, so a corrected config file takes effect.
 // [setupInfrastructure] generates the configs only when the Envoy
@@ -76,18 +80,9 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 		return err
 	}
 
-	// Write the reload status before the PID file, so that
-	// `terrarium daemon reload` finds the status of each daemon that
-	// it finds through the PID file.
-	recorder, err := newReloadRecorder(reloadStatusPath(pidFile))
-	if err != nil {
+	recorder, err := writeDaemonFiles(ctx, pidFile, func(ctx context.Context) {
 		daemonShutdown(ctx, inf)
-
-		return err
-	}
-
-	// Write PID file so `terrarium daemon reload` can discover us.
-	err = writePIDFile(pidFile)
+	})
 	if err != nil {
 		return err
 	}
@@ -130,6 +125,37 @@ func Daemon(ctx context.Context, usr *config.User, pidFile string) error {
 			daemonShutdown(ctx, inf)
 		},
 	)
+}
+
+// writeDaemonFiles writes the reload status file and the PID file of
+// the daemon, so that [DaemonReload] finds the daemon through
+// pidFile. It returns the recorder of the status file.
+//
+// When writeDaemonFiles cannot write one of the files, it calls
+// shutdown and returns the error. The daemon started Envoy, the DNS
+// proxy, the access-log server, and the stats event store before the
+// call, so shutdown must stop them.
+func writeDaemonFiles(
+	ctx context.Context, pidFile string, shutdown func(ctx context.Context),
+) (*reloadRecorder, error) {
+	// Write the reload status before the PID file, so that
+	// `terrarium daemon reload` finds the status of each daemon that
+	// it finds through the PID file.
+	recorder, err := newReloadRecorder(reloadStatusPath(pidFile))
+	if err != nil {
+		shutdown(ctx)
+
+		return nil, err
+	}
+
+	err = writePIDFile(pidFile)
+	if err != nil {
+		shutdown(ctx)
+
+		return nil, err
+	}
+
+	return recorder, nil
 }
 
 // serveReloads runs the signal loop of the daemon with [serveSignals]
