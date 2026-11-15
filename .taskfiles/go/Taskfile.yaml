@@ -3,11 +3,13 @@ version: "3"
 set: [errexit, nounset, pipefail]
 shopt: [globstar]
 
-# Go tasks call the local toolchain (go, golangci-lint) directly; devbox
-# provides both on PATH. The repo is a go.work workspace with no root go.mod,
-# so the default ./... pattern matches nothing at the root and is instead
-# expressed as per-module ./<dir>/... patterns. GO_MODULES is the list of
-# workspace module directories, derived from go.work so it never drifts.
+# Go tasks call the local toolchain (go, golangci-lint) directly, and devbox
+# provides both on PATH. The repo is a go.work workspace, and the root
+# directory holds one of its modules. At the root, the ./... pattern matches
+# only the packages of that root module. GO_PKGS holds one ./<dir>/...
+# pattern for each module of go.work, so it also covers the other workspace
+# modules. GO_MODULES lists the directories of the workspace modules, and
+# each run of task reads the list from go.work.
 vars:
   GO_MODULES:
     sh: |
