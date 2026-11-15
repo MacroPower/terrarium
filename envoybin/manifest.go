@@ -9,7 +9,13 @@ import (
 
 // Version is the Envoy release that [DefaultManifest] pins. The hashes in
 // [DefaultManifest] belong to this release, so change them together with
-// the version.
+// the version. After you change the version, run this command from the
+// root of the repository to write the hashes of the release into this
+// file:
+//
+//	go run ./cmd/envoymanifest update
+//
+// Renovate changes the version and runs the same command.
 const Version = "v1.40.2" // renovate: datasource=github-releases depName=envoyproxy/envoy
 
 // Format identifies how a download packages the envoy binary.
@@ -160,6 +166,12 @@ type Manifest struct {
 // for a [Platform] whose Libc is [LibcMusl]. The macOS build comes from
 // the Tetrate archive of Envoy builds, because the Envoy project does not
 // publish macOS binaries.
+//
+// Keep each hash as a string literal of 64 lowercase hex digits in this
+// function. The update command of cmd/envoymanifest finds each hash by
+// that literal and replaces it, and it rejects a hash of another form.
+// Give a build that you add placeholder hashes of 64 hex digits, with a
+// different value for each file, and then run the update command.
 func DefaultManifest() Manifest {
 	num := strings.TrimPrefix(Version, "v")
 	upstream := "https://github.com/envoyproxy/envoy/releases/download/" + Version + "/envoy-" + num

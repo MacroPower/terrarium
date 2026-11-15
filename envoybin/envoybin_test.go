@@ -436,6 +436,111 @@ func TestInstallErrors(t *testing.T) {
 	}
 }
 
+func TestMeasure(t *testing.T) {
+	t.Parallel()
+
+	archive := tarXz(t,
+		tarEntry{name: "envoy/README.md", data: []byte("not the binary")},
+		tarEntry{name: "envoy/bin/envoy", data: testBinary},
+	)
+	noBinary := tarXz(t, tarEntry{name: "envoy/bin/not-envoy", data: testBinary})
+
+	// Measure ignores the hashes of the build that it receives.
+	stale := sha256Hex([]byte("another version"))
+
+	tests := map[string]struct {
+		err          error
+		msg          string
+		format       envoybin.Format
+		wantDownload string
+		wantBinary   string
+		body         []byte
+		status       int
+	}{
+		"bare binary": {
+			format:       envoybin.FormatBinary,
+			body:         testBinary,
+			wantDownload: sha256Hex(testBinary),
+			wantBinary:   sha256Hex(testBinary),
+		},
+		"tar.xz archive": {
+			format:       envoybin.FormatTarXz,
+			body:         archive,
+			wantDownload: sha256Hex(archive),
+			wantBinary:   sha256Hex(testBinary),
+		},
+		"download is missing": {
+			format: envoybin.FormatBinary,
+			status: http.StatusNotFound,
+			err:    envoybin.ErrDownload,
+			msg:    "status 404",
+		},
+		"archive without the binary": {
+			format: envoybin.FormatTarXz,
+			body:   noBinary,
+			msg:    "no bin/envoy entry",
+		},
+		"unknown format": {
+			format: "zip",
+			body:   testBinary,
+			msg:    `unknown download format "zip"`,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+
+				_, err := w.Write(tc.body)
+				assert.NoError(t, err)
+			}))
+			t.Cleanup(srv.Close)
+
+			build := envoybin.Build{
+				URL:            srv.URL + "/envoy",
+				Format:         tc.format,
+				DownloadSHA256: stale,
+				BinarySHA256:   stale,
+			}
+
+			got, err := envoybin.Measure(t.Context(), srv.Client(), build)
+
+			if tc.msg != "" {
+				require.Error(t, err)
+
+				if tc.err != nil {
+					require.ErrorIs(t, err, tc.err)
+				}
+
+				require.ErrorContains(t, err, tc.msg)
+				assert.Equal(t, envoybin.Build{}, got)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, envoybin.Build{
+				URL:            build.URL,
+				Format:         tc.format,
+				DownloadSHA256: tc.wantDownload,
+				BinarySHA256:   tc.wantBinary,
+			}, got)
+
+			// The measured build installs, so Measure computes the
+			// hashes that Install checks.
+			inst, _ := newInstaller(t, got)
+
+			_, err = inst.Install(t.Context())
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestInstallTransportError(t *testing.T) {
 	t.Parallel()
 

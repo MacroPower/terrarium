@@ -14,15 +14,45 @@
     "gomodTidy",
     "gomodUpdateImportPaths",
   ],
+  packageRules: [
+    // The Envoy pin in envoybin/manifest.go holds SHA-256 hashes that belong
+    // to the pinned version. Renovate cannot compute them, so the post-upgrade
+    // command downloads every build of the new version and writes its hashes
+    // into the manifest. The version and the hashes then land in one commit.
+    // RENOVATE_ALLOWED_COMMANDS in .github/workflows/renovate.yaml permits the
+    // command. The command fails when a build of the new version is missing,
+    // which happens until Tetrate publishes the macOS build. The manifest
+    // then keeps the hashes of the previous version, so the envoy workflow
+    // fails on the pull request and blocks the merge. Renovate runs the
+    // command again when it rebases or retries the branch.
+    //
+    // The pin gets a branch of its own. The ci module pins the same
+    // dependency, and without the prefix both updates share one branch.
+    {
+      matchFileNames: ["envoybin/manifest.go"],
+      matchDepNames: ["envoyproxy/envoy"],
+      additionalBranchPrefix: "envoybin-",
+      commitMessageTopic: "pinned Envoy binary",
+      postUpgradeTasks: {
+        commands: ["go run ./cmd/envoymanifest update"],
+        fileFilters: ["envoybin/manifest.go"],
+        installTools: {
+          golang: {},
+        },
+      },
+    },
+  ],
   customManagers: [
     // Tool and image versions pinned as Go constants in the ci module,
     // annotated with `// renovate:` comments, e.g.:
     //   goreleaserVersion = "v2.13.3" // renovate: datasource=github-releases depName=goreleaser/goreleaser
     //   envoyVersion = "v1.37.1" // renovate: datasource=github-releases depName=envoyproxy/envoy
     // For image references, the version is the tag after the last colon.
+    // The Envoy pin in envoybin/manifest.go carries the same annotation:
+    //   const Version = "v1.40.2" // renovate: datasource=github-releases depName=envoyproxy/envoy
     {
       customType: "regex",
-      managerFilePatterns: ["/^ci/.+\\.go$/"],
+      managerFilePatterns: ["/^ci/.+\\.go$/", "/^envoybin/manifest\\.go$/"],
       matchStrings: [
         '"(?:[^"]*:)?(?<currentValue>[^":]+)"\\s*// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)',
       ],

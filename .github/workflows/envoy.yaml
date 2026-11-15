@@ -1,0 +1,73 @@
+name: envoy
+
+# Checks the provenance of the Envoy builds that envoybin/manifest.go pins.
+# Renovate merges a bump of the pin only after every job passes. A job fails
+# when a hash, a signature, an attestation, or the version commit of its
+# build does not match. A job also fails when its build of the pinned
+# version does not exist. Tetrate publishes the macOS build after the Envoy
+# release, so a bump waits with failed jobs until that build exists.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - envoybin/**
+      - cmd/envoymanifest/**
+      - go.work
+      - go.work.sum
+      - .github/workflows/envoy.yaml
+  pull_request:
+    paths:
+      - envoybin/**
+      - cmd/envoymanifest/**
+      - go.work
+      - go.work.sum
+      - .github/workflows/envoy.yaml
+  workflow_dispatch:
+
+concurrency:
+  group: envoy-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # One runner for each platform of the manifest. The verify command
+        # runs the pinned binary, so each runner must be the platform that
+        # it checks. The command fails when the runner is another platform.
+        # The macOS runner must be an Apple Silicon machine.
+        include:
+          - platform: linux-amd64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+          - platform: darwin-arm64
+            runner: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # The job trusts no state of an earlier run, so it restores no cache.
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache: false
+
+      - name: Verify the pinned Envoy build
+        run: go run ./cmd/envoymanifest verify "$PLATFORM"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          # The gh CLI reads the token for `gh attestation verify`, and the
+          # command sends it with its request to the GitHub API.
+          GH_TOKEN: ${{ github.token }}

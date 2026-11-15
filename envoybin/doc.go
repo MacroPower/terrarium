@@ -23,4 +23,12 @@
 // [ErrHashMismatch]. Neither method replaces such a binary, because the
 // mismatch can mean that someone replaced the file. The user must
 // inspect the file and remove it before a new install.
+//
+// A hash proves the origin of a binary only when the hash comes from the
+// publisher of the binary. The envoymanifest command in cmd/envoymanifest
+// maintains the hashes of the manifest. Its update command calls [Measure]
+// to compute the hashes of each build after the version changes. Its
+// verify command compares the pinned hashes with the checksums that the
+// publisher of each build signs or attests. A workflow runs the verify
+// command on every pull request that changes the pin.
 package envoybin

@@ -168,7 +168,7 @@ func (i *Installer) Install(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("create install directory: %w", err)
 	}
 
-	download, sum, err := i.download(ctx, build.URL, dir)
+	download, sum, err := fetch(ctx, i.client, build.URL, dir)
 	if err != nil {
 		return "", err
 	}
@@ -181,21 +181,12 @@ func (i *Installer) Install(ctx context.Context) (string, error) {
 		return "", mismatch(build.URL, build.DownloadSHA256, sum)
 	}
 
-	binary := download
-
-	switch build.Format {
-	case FormatBinary:
-	case FormatTarXz:
-		binary, sum, err = extractTarXz(ctx, download, dir)
-		if err != nil {
-			return "", fmt.Errorf("extract %s: %w", build.URL, err)
-		}
-
-		defer os.Remove(binary)
-
-	default:
-		return "", fmt.Errorf("%s: unknown download format %q", i.platform, build.Format)
+	binary, sum, err := unpack(ctx, build, download, sum, dir)
+	if err != nil {
+		return "", err
 	}
+
+	defer os.Remove(binary)
 
 	if sum != build.BinarySHA256 {
 		return "", mismatch(binaryName+" from "+build.URL, build.BinarySHA256, sum)
@@ -231,15 +222,45 @@ func (i *Installer) lookup() (Build, string, error) {
 	return build, filepath.Join(i.dir, i.manifest.Version, i.platform.String(), binaryName), nil
 }
 
-// download fetches url into a temporary file in dir. It returns the path
-// of the file and the hex SHA-256 of its content.
-func (i *Installer) download(ctx context.Context, url, dir string) (string, string, error) {
+// Measure downloads the build b with client and returns a copy of b whose
+// DownloadSHA256 and BinarySHA256 are the hashes of the downloaded
+// content. It ignores the hashes that b holds, so it tells nothing about
+// the origin of the content. Call it only to compute the hashes of a new
+// pin.
+//
+// It returns [ErrDownload] when the download does not complete.
+func Measure(ctx context.Context, client *http.Client, b Build) (Build, error) {
+	dir, err := os.MkdirTemp("", "envoybin-*")
+	if err != nil {
+		return Build{}, fmt.Errorf("create temporary directory: %w", err)
+	}
+
+	defer os.RemoveAll(dir)
+
+	path, sum, err := fetch(ctx, client, b.URL, dir)
+	if err != nil {
+		return Build{}, err
+	}
+
+	b.DownloadSHA256 = sum
+
+	_, b.BinarySHA256, err = unpack(ctx, b, path, sum, dir)
+	if err != nil {
+		return Build{}, err
+	}
+
+	return b, nil
+}
+
+// fetch downloads url with client into a temporary file in dir. It
+// returns the path of the file and the hex SHA-256 of its content.
+func fetch(ctx context.Context, client *http.Client, url, dir string) (string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", ErrDownload, err)
 	}
 
-	resp, err := i.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", ErrDownload, err)
 	}
@@ -256,6 +277,28 @@ func (i *Installer) download(ctx context.Context, url, dir string) (string, stri
 	}
 
 	return path, sum, nil
+}
+
+// unpack returns the path and the hex SHA-256 of the envoy binary in the
+// download of b. The download is the file at path, and sum is its hex
+// SHA-256. A [FormatBinary] download is the binary. For [FormatTarXz],
+// unpack copies the binary into a temporary file in dir.
+func unpack(ctx context.Context, b Build, path, sum, dir string) (string, string, error) {
+	switch b.Format {
+	case FormatBinary:
+		return path, sum, nil
+
+	case FormatTarXz:
+		binary, binarySum, err := extractTarXz(ctx, path, dir)
+		if err != nil {
+			return "", "", fmt.Errorf("extract %s: %w", b.URL, err)
+		}
+
+		return binary, binarySum, nil
+
+	default:
+		return "", "", fmt.Errorf("%s: unknown download format %q", b.URL, b.Format)
+	}
 }
 
 // extractTarXz copies the envoy binary out of the tar.xz archive into a

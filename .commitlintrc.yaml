@@ -32,6 +32,7 @@ rules:
       - dnstest
       - envoy
       - envoybin
+      - envoymanifest
       - eventstore
       - firewall
       - internal

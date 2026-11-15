@@ -37,6 +37,10 @@ env:
   RENOVATE_DRY_RUN: "${{ inputs.dryRun == 'true' }}"
   RENOVATE_PLATFORM: github
   RENOVATE_PLATFORM_COMMIT: true
+  # Renovate runs a post-upgrade command only when a pattern in this list
+  # matches it. The one permitted command writes the hashes of a new Envoy
+  # pin, for the package rule in .github/renovate.json5.
+  RENOVATE_ALLOWED_COMMANDS: '["^go run \\./cmd/envoymanifest update$"]'
   WORKFLOW_RENOVATE_VERSION: "${{ inputs.version || 'latest' }}"
 
 jobs:
