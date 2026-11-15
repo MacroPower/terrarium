@@ -48,6 +48,11 @@ func ReasonFor(k logprefix.Kind, ruleIdx int) eventstore.Reason {
 	return reasonFor(k, ruleIdx)
 }
 
+// EventFor exposes eventFor for nflog_test.
+func EventFor(prefix string, payload []byte, resolver Resolver) (eventstore.Event, bool) {
+	return eventFor(prefix, payload, resolver)
+}
+
 // ProtocolFor exposes protocolFor for nflog_test.
 func ProtocolFor(proto, family uint8) eventstore.Protocol {
 	return protocolFor(proto, family)

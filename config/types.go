@@ -585,8 +585,10 @@ type ResolvedPortProto struct {
 
 // ResolvedCIDR is a port-aware resolved CIDR entry. Ports are
 // inherited from the parent [EgressRule]'s toPorts; an empty Ports
-// slice means any port (no L4 restriction). RuleIndex tracks which
-// egress rule this CIDR came from, enabling per-rule iptables chains
+// slice means any port (no L4 restriction). RuleIndex is the index
+// of the rule that this CIDR came from, in the egress list for
+// [Config.ResolveCIDRRules] and in the egressDeny list for
+// [Config.ResolveDenyCIDRRules]. It enables per-rule iptables chains
 // that preserve Cilium's OR semantics across rules. When ServerNames
 // is non-empty, the CIDR rule is routed through Envoy for SNI
 // inspection instead of direct ACCEPT. When L7Ports is non-empty,
@@ -606,14 +608,31 @@ type ResolvedOpenPort struct {
 	Protocol string
 	Port     int
 	EndPort  int // 0 = no range
+	// EgressIndex is the index in the egress list of the rule that
+	// allows the port.
+	EgressIndex int
 }
 
 // FQDNRulePorts groups resolved non-TCP ports for a single FQDN
 // egress rule. Each rule gets its own ipset pair, matching Cilium's
 // per-selector isolation semantics.
 type FQDNRulePorts struct {
-	Ports     []ResolvedOpenPort
+	Ports []ResolvedOpenPort
+	// RuleIndex counts the FQDN rules with non-TCP ports and names
+	// the ipset pair of the rule. See [FQDNSetName].
 	RuleIndex int
+	// EgressIndex is the index of the rule in the egress list.
+	EgressIndex int
+}
+
+// CatchAllFQDNRule is an FQDN egress rule that the firewall enforces
+// on every port with an ipset pair.
+type CatchAllFQDNRule struct {
+	// RuleIndex counts the catch-all FQDN rules and names the ipset
+	// pair of the rule. See [CatchAllFQDNSetName].
+	RuleIndex int
+	// EgressIndex is the index of the rule in the egress list.
+	EgressIndex int
 }
 
 // LoggingConfig controls per-service logging behavior.

@@ -1,6 +1,9 @@
 package eventstore
 
-import "time"
+import (
+	"net/netip"
+	"time"
+)
 
 // Source identifies which subsystem produced an [Event].
 type Source string
@@ -95,6 +98,17 @@ type Event struct {
 	// with [time.Now] by the writer.
 	Time time.Time
 
+	// DstIP is the destination address of the flow. A firewall
+	// event holds the destination of the packet, and an Envoy event
+	// holds the upstream address that Envoy connected to. The store
+	// records an IPv4-mapped IPv6 address as the IPv4 address.
+	//
+	// The zero value means unset. A DNS event leaves it unset,
+	// because a query has no destination address. An Envoy event
+	// leaves it unset when Envoy denied the request before it chose
+	// an upstream.
+	DstIP netip.Addr
+
 	// Domain is the qname (DNS), :authority header (HTTP), or
 	// SNI (TCP/TLS) value used for grouping in `stats top`.
 	Domain string
@@ -125,6 +139,23 @@ type Event struct {
 	// Port is the destination port when known. Zero means unset.
 	Port int
 
+	// RuleIndex is the index of the rule that decided the event, in
+	// the `egress` list of the policy that was in force at the time
+	// of the event. The index starts at 0, so it holds a value only
+	// when HasRuleIndex is true. Read that policy with
+	// [Reader.PolicyAt], from the instance ID and the time of the
+	// event. A firewall event during a daemon reload can hold the index
+	// of a rule of the new policy. [Reader.PolicyAt] still returns the
+	// previous policy for it, because the daemon records the snapshot
+	// of the reload after it replaces the firewall rules.
+	//
+	// A firewall event holds a rule index when one egress rule
+	// accepted the packet in the firewall. A firewall event for a
+	// packet that no rule allows holds none. A DNS event holds none,
+	// because a name can match several rules, and an Envoy event
+	// holds none.
+	RuleIndex int
+
 	// HTTPStatus is the HTTP response status when applicable.
 	HTTPStatus int
 
@@ -136,4 +167,7 @@ type Event struct {
 
 	// DurationMS is the request duration in milliseconds.
 	DurationMS int64
+
+	// HasRuleIndex reports whether RuleIndex holds a value.
+	HasRuleIndex bool
 }

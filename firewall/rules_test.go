@@ -3,6 +3,7 @@
 package firewall_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/nftables"
@@ -14,6 +15,7 @@ import (
 
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/firewall"
+	"go.jacobcolvin.com/terrarium/firewall/logprefix"
 )
 
 var (
@@ -2763,5 +2765,282 @@ func TestApplyRules_LogRules_SyslogVsNFLog(t *testing.T) {
 				assert.False(t, found, "logging-disabled config must not emit log rules")
 			}
 		})
+	}
+}
+
+// allowLogIndices returns the egress index in the prefix of each
+// allow log rule of rules. It fails the test when an allow log rule
+// does not precede an ACCEPT that matches the same packets.
+func allowLogIndices(t *testing.T, rules []*nftables.Rule) []int {
+	t.Helper()
+
+	var indices []int
+
+	for i, r := range rules {
+		log := findLog(r)
+		if log == nil {
+			continue
+		}
+
+		kind, idx, ok := logprefix.Decode(string(log.Data))
+		require.True(t, ok, "log prefix %q must decode", log.Data)
+
+		if kind != logprefix.KindAllow {
+			continue
+		}
+
+		require.Less(t, i+1, len(rules), "allow log rule must precede a rule")
+
+		next := rules[i+1]
+		verdict, _ := ruleVerdict(next)
+		require.Equal(t, expr.VerdictAccept, verdict, "allow log rule must precede an ACCEPT")
+
+		// The log rule holds the matches of the ACCEPT, then the
+		// ct state match and the log expression.
+		matches := next.Exprs[:len(next.Exprs)-1]
+		require.Greater(t, len(r.Exprs), len(matches))
+		assert.Equal(t, matches, r.Exprs[:len(matches)],
+			"allow log rule must match the packets of its ACCEPT")
+
+		indices = append(indices, idx)
+	}
+
+	return indices
+}
+
+// logIndicesByChain returns the indices in the prefixes of the log
+// rules of rec, by chain name and in rule order: the allow log rules
+// in allow and the deny log rules in deny. It fails the test when an
+// allow log rule does not precede an ACCEPT that matches the same
+// packets, or when an ACCEPT of a per-rule chain (cidr_N or icmp_N)
+// has no allow log rule in front of it.
+func logIndicesByChain(t *testing.T, rec *ruleRecorder) (map[string][]int, map[string][]int) {
+	t.Helper()
+
+	allow := make(map[string][]int)
+	deny := make(map[string][]int)
+
+	for _, c := range rec.chains {
+		var rules []*nftables.Rule
+
+		for _, r := range rec.rules {
+			if r.Chain == c {
+				rules = append(rules, r)
+			}
+		}
+
+		if indices := allowLogIndices(t, rules); len(indices) > 0 {
+			allow[c.Name] = append(allow[c.Name], indices...)
+		}
+
+		perRule := strings.HasPrefix(c.Name, "cidr_") || strings.HasPrefix(c.Name, "icmp_")
+
+		for i, r := range rules {
+			if log := findLog(r); log != nil {
+				kind, idx, ok := logprefix.Decode(string(log.Data))
+				require.True(t, ok, "log prefix %q must decode", log.Data)
+
+				if kind == logprefix.KindDeny {
+					deny[c.Name] = append(deny[c.Name], idx)
+				}
+
+				continue
+			}
+
+			if verdict, _ := ruleVerdict(r); !perRule || verdict != expr.VerdictAccept {
+				continue
+			}
+
+			require.Positive(t, i, "ACCEPT of chain %s must follow an allow log rule", c.Name)
+			require.NotNil(t, findLog(rules[i-1]),
+				"ACCEPT of chain %s must follow an allow log rule", c.Name)
+		}
+	}
+
+	return allow, deny
+}
+
+func TestApplyRules_LogRules_PerRuleAllowIndex(t *testing.T) {
+	t.Parallel()
+
+	udp := func(port string) config.PortRule {
+		return config.PortRule{Ports: []config.Port{{Port: port, Protocol: "UDP"}}}
+	}
+
+	tests := map[string]struct {
+		egress     []config.EgressRule
+		egressDeny []config.EgressDenyRule
+		// want maps each chain with allow log rules to the egress
+		// indices in their prefixes, in rule order.
+		want map[string][]int
+	}{
+		"each kind of rule": {
+			egress: []config.EgressRule{
+				// 0: TCP to an FQDN goes to Envoy, so the firewall
+				// accepts none of it.
+				{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "envoy.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}},
+				},
+				// 1: CIDR rule.
+				{ToCIDR: []string{"10.0.0.0/8"}},
+				// 2: open UDP port.
+				{ToPorts: []config.PortRule{udp("5353")}},
+				// 3: FQDN rule with a UDP port.
+				{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "udp.example.com"}},
+					ToPorts: []config.PortRule{udp("443")},
+				},
+				// 4: catch-all FQDN rule.
+				{ToFQDNs: []config.FQDNSelector{{MatchName: "any.example.com"}}},
+				// 5: ICMP rule.
+				{ICMPs: []config.ICMPRule{{Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}}}}},
+				// 6: second CIDR rule.
+				{ToCIDR: []string{"192.0.2.0/24"}},
+			},
+			egressDeny: []config.EgressDenyRule{
+				{ToCIDR: []string{"10.1.0.0/16"}},
+				{ICMPs: []config.ICMPRule{{Fields: []config.ICMPField{{Family: "IPv4", Type: "13"}}}}},
+			},
+			want: map[string][]int{
+				"cidr_0": {1},
+				"cidr_1": {6},
+				// Open port, FQDN UDP v4 and v6, catch-all v4 and
+				// v6, and ICMP.
+				"terrarium_output": {5, 2, 3, 3, 4, 4},
+			},
+		},
+		"port-scoped CIDR, port range, and scoped ICMP": {
+			egress: []config.EgressRule{
+				// 0: TCP to an FQDN goes to Envoy.
+				{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "envoy.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}},
+				},
+				// 1: CIDR rule with a UDP port and an L7 TCP port.
+				// Envoy handles the L7 port, so only the UDP port
+				// has an ACCEPT.
+				{
+					ToCIDR: []string{"198.51.100.0/24"},
+					ToPorts: []config.PortRule{
+						udp("53"),
+						{
+							Ports: []config.Port{{Port: "80", Protocol: "TCP"}},
+							Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+						},
+					},
+				},
+				// 2: CIDR rule with serverNames. Envoy handles all
+				// of it, so its chain has no ACCEPT.
+				{
+					ToCIDR: []string{"192.0.2.0/24"},
+					ToPorts: []config.PortRule{{
+						Ports:       []config.Port{{Port: "443", Protocol: "TCP"}},
+						ServerNames: []string{"sni.example.com"},
+					}},
+				},
+				// 3: open TCP port range.
+				{ToPorts: []config.PortRule{{
+					Ports: []config.Port{{Port: "8000", EndPort: 9000, Protocol: "TCP"}},
+				}}},
+				// 4: ICMP rule scoped to an FQDN.
+				{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "icmp.example.com"}},
+					ICMPs:   []config.ICMPRule{{Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}}}},
+				},
+				// 5: ICMP rule scoped to a CIDR.
+				{
+					ToCIDR: []string{"203.0.113.0/24"},
+					ICMPs:  []config.ICMPRule{{Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}}}},
+				},
+			},
+			egressDeny: []config.EgressDenyRule{
+				{ToPorts: []config.PortRule{udp("9999")}},
+			},
+			// Every ACCEPT of a per-rule chain has a log rule, so
+			// cidr_0 holds one ACCEPT, for UDP 53, and cidr_1 none.
+			// The ICMP rules also resolve as a CIDR rule (cidr_2)
+			// and as a catch-all FQDN rule, whose accepts log the
+			// same index.
+			want: map[string][]int{
+				"cidr_0": {1},
+				"cidr_2": {5},
+				"icmp_0": {5},
+				// ICMP set lookup, TCP range, catch-all v4 and v6.
+				"terrarium_output": {4, 3, 4, 4},
+			},
+		},
+		"port-only rule that opens every port": {
+			egress: []config.EgressRule{
+				// 0: CIDR rule. The accept of rule 3 covers it, so
+				// it has no chain.
+				{ToCIDR: []string{"10.0.0.0/8"}},
+				// 1: open UDP port. The accept of rule 3 covers it.
+				{ToPorts: []config.PortRule{udp("5353")}},
+				// 2: ICMP rule.
+				{ICMPs: []config.ICMPRule{{Fields: []config.ICMPField{{Family: "IPv4", Type: "8"}}}}},
+				// 3: the first rule that opens every port.
+				{ToPorts: []config.PortRule{{}}},
+				// 4: a second rule that opens every port.
+				{ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "0"}}}}},
+			},
+			want: map[string][]int{
+				// ICMP, then the accept of all filtered traffic.
+				"terrarium_output": {2, 3},
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &config.Config{
+				Logging:    &config.LoggingConfig{Firewall: &config.FirewallLogging{Enabled: true}},
+				Stats:      &config.Stats{Enabled: true},
+				Egress:     &tc.egress,
+				EgressDeny: &tc.egressDeny,
+			}
+			require.NoError(t, cfg.Validate(t.Context()))
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+			require.NoError(t, err)
+
+			allow, deny := logIndicesByChain(t, rec)
+			assert.Equal(t, tc.want, allow)
+
+			// The rules of egressDeny log nothing, because their
+			// indices point into egressDeny. The only deny log rules
+			// are the catch-alls before the terminal DROPs.
+			assert.Equal(t, map[string][]int{
+				"output":           {-1},
+				"terrarium_output": {-1},
+			}, deny)
+		})
+	}
+}
+
+func TestApplyRules_LogRules_PerRuleAllowOff(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+			config.EgressRule{
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "5353", Protocol: "UDP"}}}},
+			},
+		),
+	}
+	require.NoError(t, cfg.Validate(t.Context()))
+
+	rec := &ruleRecorder{}
+
+	err := firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+	require.NoError(t, err)
+
+	for _, r := range rec.rules {
+		assert.False(t, ruleHasLog(r), "logging-disabled config must not emit log rules")
 	}
 }

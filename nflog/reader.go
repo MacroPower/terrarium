@@ -178,9 +178,10 @@ func (r *Reader) LastEventTime() time.Time {
 	return time.UnixMicro(usec)
 }
 
-// handle is the per-packet hook entry. Decodes the prefix, parses
-// the L3/L4 headers, looks up a qname, and emits one
-// [eventstore.Event].
+// handle is the per-packet hook entry. It counts the sequence gaps
+// and emits the [eventstore.Event] that [eventFor] builds from the
+// log prefix and the packet. A packet without a prefix or a payload,
+// and a packet that [eventFor] rejects, count as parse errors.
 func (r *Reader) handle(a nflog.Attribute) {
 	r.checkSeq(a.Seq)
 
@@ -190,34 +191,60 @@ func (r *Reader) handle(a nflog.Attribute) {
 		return
 	}
 
-	kind, ruleIdx, ok := logprefix.Decode(*a.Prefix)
+	event, ok := eventFor(*a.Prefix, *a.Payload, r.resolver)
 	if !ok {
 		r.parseErrors.Add(1)
 
 		return
 	}
 
-	tuple, ok := parsePacket(*a.Payload)
-	if !ok {
-		r.parseErrors.Add(1)
+	r.store.Emit(event)
+	r.lastEventUnix.Store(time.Now().UnixMicro())
+}
 
-		return
+// eventFor builds the [eventstore.Event] of one logged packet from
+// the log prefix of the rule that matched it and from the first bytes
+// of the packet. It returns ok=false when [logprefix.Decode] rejects
+// the prefix or the payload holds no IP header that the reader
+// parses.
+//
+// The event holds the destination address and the destination port
+// of the packet. It holds the name that resolver returns for that
+// address, and no name when resolver has none. When the prefix names
+// a rule, the event holds the index of that rule, and its reason
+// holds the same index as "rule=N".
+func eventFor(prefix string, payload []byte, resolver Resolver) (eventstore.Event, bool) {
+	kind, ruleIdx, ok := logprefix.Decode(prefix)
+	if !ok {
+		return eventstore.Event{}, false
 	}
+
+	tuple, ok := parsePacket(payload)
+	if !ok {
+		return eventstore.Event{}, false
+	}
+
+	dst := tuple.dst.Unmap()
 
 	event := eventstore.Event{
 		Source:   eventstore.SourceFirewall,
 		Decision: decisionFor(kind),
+		DstIP:    dst,
 		Port:     int(tuple.dport),
 		Protocol: protocolFor(tuple.proto, tuple.family),
 		Reason:   reasonFor(kind, ruleIdx),
 	}
 
-	if qname, ok := r.resolver.Lookup(tuple.dst.Unmap()); ok {
+	if ruleIdx >= 0 {
+		event.RuleIndex = ruleIdx
+		event.HasRuleIndex = true
+	}
+
+	if qname, ok := resolver.Lookup(dst); ok {
 		event.Domain = qname
 	}
 
-	r.store.Emit(event)
-	r.lastEventUnix.Store(time.Now().UnixMicro())
+	return event, true
 }
 
 // checkSeq tracks the per-instance sequence number reported by the

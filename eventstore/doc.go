@@ -19,14 +19,16 @@
 // process calls [Store.RecordPolicy] after it applies a policy, at
 // its start and after each reload. Each call adds one snapshot of the
 // policy document, so [Reader.PolicyAt] returns the policy in force
-// at the time of a given event. The unprivileged user of [WithUID]
-// can read the database, so the caller removes each secret from the
-// document before the call.
+// at the time of a given event. The [Event.RuleIndex] of an event is
+// an index into the egress rules of that policy. The unprivileged
+// user of [WithUID] can read the database, so the caller removes each
+// secret from the document before the call.
 //
 // Open a reader with [OpenReader], usually in another process than the
 // one that writes. Each query of the store belongs in a [Reader]
 // method, so that every consumer counts and filters events the same
 // way. A [Reader] also reads a database that an earlier version of
 // this package wrote. It returns an empty result for a table that the
-// earlier schema does not hold.
+// earlier schema does not hold, and the zero value of the field for a
+// column that the earlier schema does not hold.
 package eventstore

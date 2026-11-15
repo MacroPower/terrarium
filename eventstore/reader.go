@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,10 @@ const (
 	// PoliciesSchemaVersion created the `policies` table and the
 	// `name` and `config_path` columns of the `instances` table.
 	policiesSchemaVersion = 3
+
+	// EventFlowSchemaVersion created the `dst_ip` and `rule_index`
+	// columns of the `events` table.
+	eventFlowSchemaVersion = 4
 )
 
 // DomainColumn is the SQL expression of the lowercase `domain` column
@@ -59,7 +64,8 @@ var (
 // A Reader reads the schema version one time, in [OpenReader]. It
 // accepts each version that [Open] migrates from. On a database
 // whose version lacks the table of a method, that method returns an
-// empty result. A Reader that stays open while a [Store] migrates
+// empty result. A column that the version lacks reads as the zero
+// value of its field. A Reader that stays open while a [Store] migrates
 // the database keeps the version that it read.
 //
 // Create instances with [OpenReader].
@@ -419,6 +425,9 @@ type EventsPage struct {
 // Events returns the events that q selects, latest first. An
 // [EventsQuery.Cursor] that does not decode to a row ID gives
 // [ErrInvalidCursor].
+//
+// A database of a schema version before 4 does not record
+// [Event.DstIP] and [Event.RuleIndex], so its events hold neither.
 func (r *Reader) Events(ctx context.Context, q EventsQuery) (EventsPage, error) {
 	c := q.Filter.conditions()
 
@@ -435,13 +444,22 @@ func (r *Reader) Events(ctx context.Context, q EventsQuery) (EventsPage, error) 
 		return EventsPage{}, nil
 	}
 
+	// A database of an earlier version has no flow columns, so its
+	// events read as events without a destination address and
+	// without a rule index.
+	flow := "NULL, NULL"
+	if r.version >= eventFlowSchemaVersion {
+		flow = "dst_ip, rule_index"
+	}
+
 	//nolint:gosec // G202: the clause holds only constant terms, and values use ? placeholders.
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, ts, instance_id, source, decision,
 		       COALESCE(domain,''), COALESCE(port,0), COALESCE(protocol,''),
 		       COALESCE(http_method,''), COALESCE(http_path,''),
 		       COALESCE(http_status,0), COALESCE(flags,''), COALESCE(reason,''),
-		       COALESCE(bytes_rx,0), COALESCE(bytes_tx,0), COALESCE(duration_ms,0)
+		       COALESCE(bytes_rx,0), COALESCE(bytes_tx,0), COALESCE(duration_ms,0),
+		       `+flow+`
 		FROM events
 		`+c.where()+`
 		ORDER BY id DESC
@@ -457,20 +475,36 @@ func (r *Reader) Events(ctx context.Context, q EventsQuery) (EventsPage, error) 
 
 	for rows.Next() {
 		var (
-			e  StoredEvent
-			ts int64
+			e         StoredEvent
+			ts        int64
+			dstIP     sql.NullString
+			ruleIndex sql.NullInt64
 		)
 
 		err = rows.Scan(&e.ID, &ts, &e.InstanceID, &e.Source, &e.Decision,
 			&e.Domain, &e.Port, &e.Protocol,
 			&e.HTTPMethod, &e.HTTPPath,
 			&e.HTTPStatus, &e.Flags, &e.Reason,
-			&e.BytesRx, &e.BytesTx, &e.DurationMS)
+			&e.BytesRx, &e.BytesTx, &e.DurationMS,
+			&dstIP, &ruleIndex)
 		if err != nil {
 			return EventsPage{}, fmt.Errorf("scanning event row: %w", err)
 		}
 
 		e.Time = time.UnixMicro(ts)
+
+		if dstIP.Valid {
+			e.DstIP, err = netip.ParseAddr(dstIP.String)
+			if err != nil {
+				return EventsPage{}, fmt.Errorf("parsing the destination address of event %d: %w", e.ID, err)
+			}
+		}
+
+		if ruleIndex.Valid {
+			e.RuleIndex = int(ruleIndex.Int64)
+			e.HasRuleIndex = true
+		}
+
 		page.Events = append(page.Events, e)
 	}
 

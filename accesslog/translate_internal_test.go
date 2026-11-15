@@ -1,6 +1,7 @@
 package accesslog
 
 import (
+	"net/netip"
 	"testing"
 	"time"
 
@@ -16,6 +17,63 @@ import (
 	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
+// socketAddress returns the Envoy address of an IP address and a
+// port.
+func socketAddress(ip string, port uint32) *corev3.Address {
+	return &corev3.Address{
+		Address: &corev3.Address_SocketAddress{
+			SocketAddress: &corev3.SocketAddress{
+				Address:       ip,
+				PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: port},
+			},
+		},
+	}
+}
+
+func TestCommonDstIP(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		common *alsdata.AccessLogCommon
+		want   netip.Addr
+	}{
+		"nil entry": {},
+		"no upstream address": {
+			common: &alsdata.AccessLogCommon{UpstreamCluster: "cluster"},
+		},
+		"IPv4 upstream": {
+			common: &alsdata.AccessLogCommon{UpstreamRemoteAddress: socketAddress("192.0.2.7", 443)},
+			want:   netip.MustParseAddr("192.0.2.7"),
+		},
+		"IPv6 upstream": {
+			common: &alsdata.AccessLogCommon{UpstreamRemoteAddress: socketAddress("2001:db8::7", 443)},
+			want:   netip.MustParseAddr("2001:db8::7"),
+		},
+		"IPv4-mapped IPv6 upstream": {
+			common: &alsdata.AccessLogCommon{UpstreamRemoteAddress: socketAddress("::ffff:192.0.2.7", 443)},
+			want:   netip.MustParseAddr("192.0.2.7"),
+		},
+		"upstream address that is not an IP address": {
+			common: &alsdata.AccessLogCommon{UpstreamRemoteAddress: socketAddress("upstream.example", 443)},
+		},
+		"pipe upstream": {
+			common: &alsdata.AccessLogCommon{
+				UpstreamRemoteAddress: &corev3.Address{
+					Address: &corev3.Address_Pipe{Pipe: &corev3.Pipe{Path: "/run/upstream.sock"}},
+				},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, commonDstIP(tt.common))
+		})
+	}
+}
+
 func TestHTTPEntryToEvent(t *testing.T) {
 	t.Parallel()
 
@@ -23,11 +81,17 @@ func TestHTTPEntryToEvent(t *testing.T) {
 		entry        *alsdata.HTTPAccessLogEntry
 		wantDecision eventstore.Decision
 		wantDomain   string
-		wantStatus   int
+		// wantDstIP is the zero address for an entry without an
+		// upstream address.
+		wantDstIP  netip.Addr
+		wantPort   int
+		wantStatus int
 	}{
 		"plain 200 with authority": {
 			entry: &alsdata.HTTPAccessLogEntry{
-				CommonProperties: &alsdata.AccessLogCommon{},
+				CommonProperties: &alsdata.AccessLogCommon{
+					UpstreamRemoteAddress: socketAddress("192.0.2.7", 443),
+				},
 				Request: &alsdata.HTTPRequestProperties{
 					Authority:     "example.com",
 					Path:          "/",
@@ -39,6 +103,8 @@ func TestHTTPEntryToEvent(t *testing.T) {
 			},
 			wantDecision: eventstore.DecisionAllow,
 			wantDomain:   "example.com",
+			wantDstIP:    netip.MustParseAddr("192.0.2.7"),
+			wantPort:     443,
 			wantStatus:   200,
 		},
 		"403 rbac_access_denied is deny": {
@@ -126,6 +192,8 @@ func TestHTTPEntryToEvent(t *testing.T) {
 				assert.Equal(t, tt.wantStatus, ev.HTTPStatus)
 			}
 
+			assert.Equal(t, tt.wantDstIP, ev.DstIP)
+			assert.Equal(t, tt.wantPort, ev.Port)
 			assert.Equal(t, eventstore.ProtocolHTTP, ev.Protocol)
 		})
 	}
@@ -138,11 +206,16 @@ func TestTCPEntryToEvent(t *testing.T) {
 		entry        *alsdata.TCPAccessLogEntry
 		wantDecision eventstore.Decision
 		wantDomain   string
+		// wantDstIP is the zero address for an entry without an
+		// upstream address.
+		wantDstIP netip.Addr
+		wantPort  int
 	}{
 		"plain TCP allow with bytes": {
 			entry: &alsdata.TCPAccessLogEntry{
 				CommonProperties: &alsdata.AccessLogCommon{
-					UpstreamCluster: "tls_passthrough",
+					UpstreamCluster:       "tls_passthrough",
+					UpstreamRemoteAddress: socketAddress("2001:db8::7", 8443),
 					TlsProperties: &alsdata.TLSProperties{
 						TlsSniHostname: "example.com",
 					},
@@ -154,6 +227,8 @@ func TestTCPEntryToEvent(t *testing.T) {
 			},
 			wantDecision: eventstore.DecisionAllow,
 			wantDomain:   "example.com",
+			wantDstIP:    netip.MustParseAddr("2001:db8::7"),
+			wantPort:     8443,
 		},
 		"missing-sni blackhole NH is deny": {
 			entry: &alsdata.TCPAccessLogEntry{
@@ -215,6 +290,8 @@ func TestTCPEntryToEvent(t *testing.T) {
 				assert.Equal(t, tt.wantDomain, ev.Domain)
 			}
 
+			assert.Equal(t, tt.wantDstIP, ev.DstIP)
+			assert.Equal(t, tt.wantPort, ev.Port)
 			assert.Equal(t, eventstore.ProtocolTCP, ev.Protocol)
 		})
 	}

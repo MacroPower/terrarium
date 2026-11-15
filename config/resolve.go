@@ -637,6 +637,17 @@ func (c *Config) ExtraPorts(ctx context.Context) []int {
 // CIDR except DROPs and CIDR ACCEPTs from other rules (Cilium OR
 // semantics across rules).
 func (c *Config) HasUnrestrictedOpenPorts(ctx context.Context) bool {
+	_, ok := c.UnrestrictedOpenPortsIndex(ctx)
+
+	return ok
+}
+
+// UnrestrictedOpenPortsIndex returns the egress index of the first
+// port-only egress rule that opens every port, and true. It returns
+// false when no rule opens every port. A rule opens every port when one
+// of its toPorts entries has an empty Ports list, or lists port 0 or a
+// port that does not resolve. See [Config.HasUnrestrictedOpenPorts].
+func (c *Config) UnrestrictedOpenPortsIndex(ctx context.Context) (int, bool) {
 	eRules := c.EgressRules()
 	for ri := range eRules {
 		if len(eRules[ri].ToFQDNs) > 0 || len(eRules[ri].ToCIDR) > 0 || len(eRules[ri].ToCIDRSet) > 0 {
@@ -645,25 +656,29 @@ func (c *Config) HasUnrestrictedOpenPorts(ctx context.Context) bool {
 
 		for _, pr := range eRules[ri].ToPorts {
 			if len(pr.Ports) == 0 {
-				return true
+				return ri, true
 			}
 
 			for _, p := range pr.Ports {
 				n, err := ResolvePort(ctx, p.Port)
 				if err != nil || n == 0 {
-					return true
+					return ri, true
 				}
 			}
 		}
 	}
 
-	return false
+	return 0, false
 }
 
 // ResolveOpenPortRules returns resolved open port entries from rules
 // that have toPorts but neither toFQDNs nor toCIDRSet. These ports
 // allow all destinations (passthrough without domain filtering). ANY
-// protocol is expanded into separate TCP and UDP entries.
+// protocol is expanded into separate TCP and UDP entries. When several
+// rules list the same protocol, port, and end port, the entry holds the
+// egress index of the first of them. The result is in port order, not
+// in egress order. A range of a later rule can come before a port of
+// an earlier rule that the range holds.
 func (c *Config) ResolveOpenPortRules(ctx context.Context) []ResolvedOpenPort {
 	seen := make(map[string]bool)
 
@@ -694,7 +709,12 @@ func (c *Config) ResolveOpenPortRules(ctx context.Context) []ResolvedOpenPort {
 					if !seen[k] {
 						seen[k] = true
 
-						result = append(result, ResolvedOpenPort{Port: n, EndPort: p.EndPort, Protocol: pr})
+						result = append(result, ResolvedOpenPort{
+							Port:        n,
+							EndPort:     p.EndPort,
+							Protocol:    pr,
+							EgressIndex: ri,
+						})
 					}
 				}
 			}
@@ -812,7 +832,12 @@ func (c *Config) ResolveFQDNNonTCPPorts(ctx context.Context) []FQDNRulePorts {
 					if !seen[k] {
 						seen[k] = true
 
-						ports = append(ports, ResolvedOpenPort{Port: n, EndPort: p.EndPort, Protocol: pr})
+						ports = append(ports, ResolvedOpenPort{
+							Port:        n,
+							EndPort:     p.EndPort,
+							Protocol:    pr,
+							EgressIndex: ri,
+						})
 					}
 				}
 			}
@@ -831,7 +856,7 @@ func (c *Config) ResolveFQDNNonTCPPorts(ctx context.Context) []FQDNRulePorts {
 				return ports[i].Protocol < ports[j].Protocol
 			})
 
-			result = append(result, FQDNRulePorts{RuleIndex: ruleIdx, Ports: ports})
+			result = append(result, FQDNRulePorts{RuleIndex: ruleIdx, EgressIndex: ri, Ports: ports})
 		}
 
 		ruleIdx++
@@ -956,8 +981,6 @@ func isBareWildcard(pattern string) bool {
 func (c *Config) ResolveCIDRRules(ctx context.Context) ([]ResolvedCIDR, []ResolvedCIDR) {
 	var ipv4, ipv6 []ResolvedCIDR
 
-	ruleIdx := 0
-
 	cidrRules := c.EgressRules()
 	for ri := range cidrRules {
 		if len(cidrRules[ri].ToCIDRSet) == 0 && len(cidrRules[ri].ToCIDR) == 0 {
@@ -980,7 +1003,7 @@ func (c *Config) ResolveCIDRRules(ctx context.Context) ([]ResolvedCIDR, []Resolv
 		allCIDRs = append(allCIDRs, cidrRules[ri].ToCIDRSet...)
 
 		for _, cidr := range allCIDRs {
-			v4, v6 := classifyCIDR(cidr, ports, ruleIdx)
+			v4, v6 := classifyCIDR(cidr, ports, ri)
 			if v4 != nil {
 				v4.ServerNames = serverNames
 				v4.L7Ports = l7Ports
@@ -993,8 +1016,6 @@ func (c *Config) ResolveCIDRRules(ctx context.Context) ([]ResolvedCIDR, []Resolv
 				ipv6 = append(ipv6, *v6)
 			}
 		}
-
-		ruleIdx++
 	}
 
 	return ipv4, ipv6
@@ -1458,11 +1479,11 @@ func isCatchAllFQDNRule(rule EgressRule) bool {
 	return true
 }
 
-// ResolveCatchAllFQDNRules returns rule indices for FQDN rules that
+// ResolveCatchAllFQDNRules returns the FQDN rules that
 // need all-port ipset-based enforcement (no toPorts or wildcard port 0
 // without L7). Each rule gets its own ipset pair. Returns nil when
 // egress is unrestricted, blocked, or has no catch-all FQDN rules.
-func (c *Config) ResolveCatchAllFQDNRules() []int {
+func (c *Config) ResolveCatchAllFQDNRules() []CatchAllFQDNRule {
 	if c.IsEgressUnrestricted() {
 		return nil
 	}
@@ -1472,7 +1493,7 @@ func (c *Config) ResolveCatchAllFQDNRules() []int {
 		return nil
 	}
 
-	var result []int
+	var result []CatchAllFQDNRule
 
 	ruleIdx := 0
 
@@ -1481,7 +1502,7 @@ func (c *Config) ResolveCatchAllFQDNRules() []int {
 			continue
 		}
 
-		result = append(result, ruleIdx)
+		result = append(result, CatchAllFQDNRule{RuleIndex: ruleIdx, EgressIndex: ri})
 		ruleIdx++
 	}
 

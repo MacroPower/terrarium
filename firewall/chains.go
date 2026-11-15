@@ -350,10 +350,12 @@ func addDenyPortRules(
 // excepts independently: RETURN for except hits (try next rule),
 // ACCEPT for CIDR hits (allow packet). This preserves Cilium's
 // OR semantics across egress rules. Using jump (not goto) ensures
-// return-to-caller works for OR evaluation.
+// return-to-caller works for OR evaluation. The emitter logs the
+// first packet of each new flow that an ACCEPT matches, with the
+// egress index of the rule.
 func addCIDRChains(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
-	cidrs []config.ResolvedCIDR, uids UIDs,
+	cidrs []config.ResolvedCIDR, uids UIDs, emitter logEmitter,
 ) {
 	groups := groupCIDRsByRule(cidrs)
 
@@ -413,14 +415,10 @@ func addCIDRChains(
 			}
 
 			if len(rule.Ports) == 0 {
-				conn.AddRule(&nftables.Rule{
-					Table: table, Chain: chain,
-					Exprs: flatExprs(
-						matchFilteredTraffic(uids),
-						matchDstCIDR(cidrNet),
-						verdictExprs(expr.VerdictAccept),
-					),
-				})
+				emitter.accept(conn, table, chain, rule.RuleIndex,
+					matchFilteredTraffic(uids),
+					matchDstCIDR(cidrNet),
+				)
 			} else {
 				for _, pp := range rule.Ports {
 					// L7 ports are handled by Envoy; skip ACCEPT.
@@ -428,15 +426,11 @@ func addCIDRChains(
 						continue
 					}
 
-					conn.AddRule(&nftables.Rule{
-						Table: table, Chain: chain,
-						Exprs: flatExprs(
-							matchFilteredTraffic(uids),
-							matchPortProto(pp),
-							matchDstCIDR(cidrNet),
-							verdictExprs(expr.VerdictAccept),
-						),
-					})
+					emitter.accept(conn, table, chain, rule.RuleIndex,
+						matchFilteredTraffic(uids),
+						matchPortProto(pp),
+						matchDstCIDR(cidrNet),
+					)
 				}
 			}
 		}
@@ -453,37 +447,36 @@ func addCIDRChains(
 // ports get direct ACCEPT (security decision); TPROXY routes UDP
 // through Envoy independently for access logging. TCP port ranges get
 // direct ACCEPT (Envoy cannot create listeners for arbitrary ranges);
-// TCP single ports are handled by Envoy via NAT REDIRECT.
-func addOpenPortRule(conn Conn, table *nftables.Table, chain *nftables.Chain, op config.ResolvedOpenPort, uids UIDs) {
+// TCP single ports are handled by Envoy via NAT REDIRECT. The emitter
+// logs the first packet of each new flow that an ACCEPT matches, with
+// the egress index of the rule.
+func addOpenPortRule(
+	conn Conn, table *nftables.Table, chain *nftables.Chain,
+	op config.ResolvedOpenPort, uids UIDs, emitter logEmitter,
+) {
 	if op.Protocol == config.ProtoUDP {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchFilteredTraffic(uids),
-				matchL4Proto(protoNum(op.Protocol)),
-				matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
+		emitter.accept(conn, table, chain, op.EgressIndex,
+			matchFilteredTraffic(uids),
+			matchL4Proto(protoNum(op.Protocol)),
+			matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
+		)
 	}
 
 	if op.Protocol == config.ProtoTCP && op.EndPort > 0 {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchFilteredTraffic(uids),
-				matchL4Proto(unix.IPPROTO_TCP),
-				matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
+		emitter.accept(conn, table, chain, op.EgressIndex,
+			matchFilteredTraffic(uids),
+			matchL4Proto(unix.IPPROTO_TCP),
+			matchDstPortOrRange(port16(op.Port), port16(op.EndPort)),
+		)
 	}
 }
 
 // addFQDNPortRules adds per-rule FQDN set lookup rules. Two rules
 // per port per address family: ESTABLISHED first (zombie/CT semantics
 // -- conntrack keeps flows alive past set TTL expiry), then set
-// lookup (gates new flows requiring DNS resolution).
+// lookup (gates new flows requiring DNS resolution). The emitter logs
+// the first packet of each new flow that a set lookup accepts, with
+// the egress index of the rule.
 func addFQDNPortRules(
 	conn Conn,
 	table *nftables.Table,
@@ -491,6 +484,7 @@ func addFQDNPortRules(
 	frp config.FQDNRulePorts,
 	ref setRef,
 	uids UIDs,
+	emitter logEmitter,
 ) {
 	for _, fp := range frp.Ports {
 		proto := protoNum(fp.Protocol)
@@ -508,30 +502,22 @@ func addFQDNPortRules(
 		})
 
 		// Set lookup (v4).
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchNFProto(unix.NFPROTO_IPV4),
-				matchFilteredTraffic(uids),
-				matchL4Proto(proto),
-				matchDstPort(port16(fp.Port)),
-				setLookupDst(ref.set4),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
+		emitter.accept(conn, table, chain, frp.EgressIndex,
+			matchNFProto(unix.NFPROTO_IPV4),
+			matchFilteredTraffic(uids),
+			matchL4Proto(proto),
+			matchDstPort(port16(fp.Port)),
+			setLookupDst(ref.set4),
+		)
 
 		// Set lookup (v6).
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchNFProto(unix.NFPROTO_IPV6),
-				matchFilteredTraffic(uids),
-				matchL4Proto(proto),
-				matchDstPort(port16(fp.Port)),
-				setLookupDst(ref.set6),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
+		emitter.accept(conn, table, chain, frp.EgressIndex,
+			matchNFProto(unix.NFPROTO_IPV6),
+			matchFilteredTraffic(uids),
+			matchL4Proto(proto),
+			matchDstPort(port16(fp.Port)),
+			setLookupDst(ref.set6),
+		)
 	}
 }
 
@@ -1004,11 +990,14 @@ func addManglePreRoutingChain(
 // mirroring [addDenyCIDRChains]. Standalone entries (nil CIDRs)
 // are emitted flat on the parent chain. Deny ICMP rules are
 // evaluated before allow ICMP rules (deny precedence).
+//
+// The deny rules log nothing. The RuleIndex of a deny entry is an
+// index into egressDeny, but a log prefix names an egress rule.
 func addDenyICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, uids UIDs,
 ) {
-	addICMPVerdictRules(conn, table, parentChain, icmps, nil, uids, "deny_icmp", expr.VerdictDrop)
+	addICMPVerdictRules(conn, table, parentChain, icmps, nil, uids, logEmitter{}, "deny_icmp", expr.VerdictDrop)
 }
 
 // addICMPRules emits ACCEPT rules for allow ICMP entries. When an
@@ -1020,8 +1009,9 @@ func addDenyICMPRules(
 func addICMPRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, icmpFQDNSets map[int]setRef, uids UIDs,
+	emitter logEmitter,
 ) {
-	addICMPVerdictRules(conn, table, parentChain, icmps, icmpFQDNSets, uids, "icmp", expr.VerdictAccept)
+	addICMPVerdictRules(conn, table, parentChain, icmps, icmpFQDNSets, uids, emitter, "icmp", expr.VerdictAccept)
 }
 
 // addICMPVerdictRules is the shared implementation for
@@ -1029,11 +1019,13 @@ func addICMPRules(
 // with the given verdict kind. The chainPrefix names per-entry
 // sub-chains for CIDR-scoped entries. When icmpFQDNSets is non-nil
 // and an entry has UseFQDNSet, ESTABLISHED and set lookup rules are
-// emitted instead of CIDR chain dispatch.
+// emitted instead of CIDR chain dispatch. The emitter logs the
+// first packet of each new flow that a verdict rule matches, with the
+// RuleIndex of its entry.
 func addICMPVerdictRules(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	icmps []config.ResolvedICMP, icmpFQDNSets map[int]setRef, uids UIDs,
-	chainPrefix string, verdict expr.VerdictKind,
+	emitter logEmitter, chainPrefix string, verdict expr.VerdictKind,
 ) {
 	chainIdx := 0
 
@@ -1069,32 +1061,24 @@ func addICMPVerdictRules(
 				set = ref.set4
 			}
 
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: parentChain,
-				Exprs: flatExprs(
-					matchNFProto(nfProto),
-					matchFilteredTraffic(uids),
-					matchL4Proto(l4Proto),
-					matchICMPType(icmp.Type),
-					setLookupDst(set),
-					verdictExprs(verdict),
-				),
-			})
+			emitter.verdict(conn, table, parentChain, verdict, icmp.RuleIndex,
+				matchNFProto(nfProto),
+				matchFilteredTraffic(uids),
+				matchL4Proto(l4Proto),
+				matchICMPType(icmp.Type),
+				setLookupDst(set),
+			)
 
 			continue
 		}
 
 		if len(icmp.CIDRs) == 0 {
-			conn.AddRule(&nftables.Rule{
-				Table: table, Chain: parentChain,
-				Exprs: flatExprs(
-					matchFilteredTraffic(uids),
-					matchNFProto(nfProto),
-					matchL4Proto(l4Proto),
-					matchICMPType(icmp.Type),
-					verdictExprs(verdict),
-				),
-			})
+			emitter.verdict(conn, table, parentChain, verdict, icmp.RuleIndex,
+				matchFilteredTraffic(uids),
+				matchNFProto(nfProto),
+				matchL4Proto(l4Proto),
+				matchICMPType(icmp.Type),
+			)
 
 			continue
 		}
@@ -1107,7 +1091,7 @@ func addICMPVerdictRules(
 			Table: table,
 		})
 
-		addICMPCIDRRules(conn, table, chain, icmp, nfProto, l4Proto, uids, verdict)
+		addICMPCIDRRules(conn, table, chain, icmp, nfProto, l4Proto, uids, emitter, verdict)
 
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: parentChain,
@@ -1118,11 +1102,12 @@ func addICMPVerdictRules(
 
 // addICMPCIDRRules emits except RETURN and CIDR verdict rules for a
 // single CIDR-scoped ICMP entry on the given chain. Used by both
-// allow and deny ICMP rule generation.
+// allow and deny ICMP rule generation. The emitter logs the first
+// packet of each new flow that a verdict rule matches.
 func addICMPCIDRRules(
 	conn Conn, table *nftables.Table, chain *nftables.Chain,
 	icmp config.ResolvedICMP, nfProto, l4Proto byte, uids UIDs,
-	verdict expr.VerdictKind,
+	emitter logEmitter, verdict expr.VerdictKind,
 ) {
 	// Except RETURNs first.
 	for _, cidr := range icmp.CIDRs {
@@ -1153,17 +1138,13 @@ func addICMPCIDRRules(
 			continue
 		}
 
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchFilteredTraffic(uids),
-				matchNFProto(nfProto),
-				matchL4Proto(l4Proto),
-				matchICMPType(icmp.Type),
-				matchDstCIDR(cidrNet),
-				verdictExprs(verdict),
-			),
-		})
+		emitter.verdict(conn, table, chain, verdict, icmp.RuleIndex,
+			matchFilteredTraffic(uids),
+			matchNFProto(nfProto),
+			matchL4Proto(l4Proto),
+			matchICMPType(icmp.Type),
+			matchDstCIDR(cidrNet),
+		)
 	}
 }
 
@@ -1183,16 +1164,19 @@ func icmpProtos(family string) (byte, byte) {
 // level, matching how Cilium's datapath handles portless FQDN selectors.
 // For TCP, traffic is also captured by the catch-all NAT REDIRECT for
 // access logging via Envoy, but the ACCEPT here is the security decision.
+// The emitter logs the first packet of each new flow that a set lookup
+// accepts, with the egress index of the rule.
 func addCatchAllFQDNRules(
 	conn Conn,
 	table *nftables.Table,
 	chain *nftables.Chain,
-	ruleIndices []int,
+	rules []config.CatchAllFQDNRule,
 	sets map[int]setRef,
 	uids UIDs,
+	emitter logEmitter,
 ) {
-	for _, ruleIdx := range ruleIndices {
-		ref := sets[ruleIdx]
+	for _, rule := range rules {
+		ref := sets[rule.RuleIndex]
 
 		// ESTABLISHED first (zombie/CT semantics).
 		conn.AddRule(&nftables.Rule{
@@ -1205,26 +1189,18 @@ func addCatchAllFQDNRules(
 		})
 
 		// Set lookup (v4) -- any port, any protocol.
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchNFProto(unix.NFPROTO_IPV4),
-				matchFilteredTraffic(uids),
-				setLookupDst(ref.set4),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
+		emitter.accept(conn, table, chain, rule.EgressIndex,
+			matchNFProto(unix.NFPROTO_IPV4),
+			matchFilteredTraffic(uids),
+			setLookupDst(ref.set4),
+		)
 
 		// Set lookup (v6) -- any port, any protocol.
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchNFProto(unix.NFPROTO_IPV6),
-				matchFilteredTraffic(uids),
-				setLookupDst(ref.set6),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
+		emitter.accept(conn, table, chain, rule.EgressIndex,
+			matchNFProto(unix.NFPROTO_IPV6),
+			matchFilteredTraffic(uids),
+			setLookupDst(ref.set6),
+		)
 	}
 }
 

@@ -747,7 +747,7 @@ func statsSummaryNonZero(msg string) func(ctx context.Context, variant string, c
 // emits the canonical header row before any data rows. The header
 // must be the lowercase column names from [runStatsList].
 func statsListCSVHeader(msg string) func(ctx context.Context, variant string, ctr *dagger.Container) error {
-	want := "time,source,decision,domain,port,protocol,method,path,status,flags,reason"
+	want := "time,source,decision,domain,dst_ip,port,protocol,method,path,status,flags,reason,rule_index"
 
 	return func(ctx context.Context, _ string, ctr *dagger.Container) error {
 		out, err := runTerrarium(ctx, ctr,

@@ -9,7 +9,8 @@
 // `rule=<idx>`, with a single trailing space so syslog readers see
 // space-delimited tokens. The kinds are [KindAllow], [KindDeny],
 // and [KindLeak]. [Decode] accepts the exact combinations [Encode]
-// produces and rejects anything else.
+// produces and rejects anything else. The index names an entry of the
+// egress list of the policy and starts at 0.
 //
 // Output stays well under the 64-byte nftables `log prefix` cap.
 // See [Encode] for the exact bound.

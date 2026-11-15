@@ -2,6 +2,7 @@ package eventstore_test
 
 import (
 	"database/sql"
+	"net/netip"
 	"path/filepath"
 	"testing"
 	"time"
@@ -170,7 +171,15 @@ func TestOpenReader(t *testing.T) {
 		fails bool
 	}{
 		"current schema": {
-			stmts: []string{v2SchemaSQL, `PRAGMA user_version = 3`},
+			stmts: []string{
+				v3SchemaSQL,
+				`ALTER TABLE events ADD COLUMN dst_ip TEXT`,
+				`ALTER TABLE events ADD COLUMN rule_index INTEGER`,
+				`PRAGMA user_version = 4`,
+			},
+		},
+		"schema version 3": {
+			stmts: []string{v3SchemaSQL, `PRAGMA user_version = 3`},
 		},
 		"schema version 2": {
 			stmts: []string{v2SchemaSQL, `PRAGMA user_version = 2`},
@@ -584,20 +593,32 @@ func TestReader_Events_Fields(t *testing.T) {
 		BytesRx:    11,
 		BytesTx:    22,
 		DurationMS: 33,
+		DstIP:      netip.MustParseAddr("2001:db8::7"),
+		// Index 0 is the first rule, so it must not read as unset.
+		RuleIndex:    0,
+		HasRuleIndex: true,
 	}
 	sparse := eventstore.Event{
 		Time:     fixtureBase.Add(time.Second),
 		Source:   eventstore.SourceFirewall,
 		Decision: eventstore.DecisionDeny,
 	}
+	indexed := eventstore.Event{
+		Time:         fixtureBase.Add(2 * time.Second),
+		Source:       eventstore.SourceFirewall,
+		Decision:     eventstore.DecisionAllow,
+		DstIP:        netip.MustParseAddr("192.0.2.7"),
+		RuleIndex:    5,
+		HasRuleIndex: true,
+	}
 
-	instance := writeStore(t, path, []eventstore.Event{full, sparse})
+	instance := writeStore(t, path, []eventstore.Event{full, sparse, indexed})
 
 	got, err := openReader(t, path).Events(t.Context(), eventstore.EventsQuery{Limit: 10})
 	require.NoError(t, err)
-	require.Len(t, got.Events, 2)
+	require.Len(t, got.Events, 3)
 
-	for i, want := range []eventstore.Event{sparse, full} {
+	for i, want := range []eventstore.Event{indexed, sparse, full} {
 		e := got.Events[i]
 
 		assert.Equal(t, instance, e.InstanceID)
@@ -609,6 +630,30 @@ func TestReader_Events_Fields(t *testing.T) {
 	}
 
 	assert.Greater(t, got.Events[0].ID, got.Events[1].ID)
+}
+
+// TestReader_Events_InvalidDstIP reads a row whose `dst_ip` column
+// holds text that is not an IP address. The store never writes such a
+// row.
+func TestReader_Events_InvalidDstIP(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+	instance := writeStore(t, path, nil)
+
+	raw, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+
+	_, err = raw.ExecContext(
+		t.Context(),
+		`INSERT INTO events (ts, instance_id, source, decision, dst_ip) VALUES (1, ?, 'firewall', 'deny', 'not-an-address')`,
+		instance,
+	)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+
+	_, err = openReader(t, path).Events(t.Context(), eventstore.EventsQuery{Limit: 10})
+	require.ErrorContains(t, err, "parsing the destination address of event")
 }
 
 func TestReader_Events_Pages(t *testing.T) {
@@ -952,6 +997,13 @@ func TestReader_SchemaVersion1(t *testing.T) {
 	require.Len(t, page.Events, 2)
 	assert.Equal(t, eventstore.SourceFirewall, page.Events[0].Source)
 	assert.Equal(t, "evil.example", page.Events[1].Domain)
+
+	// Version 1 has no column for the destination address or for the
+	// rule index.
+	for i := range page.Events {
+		assert.False(t, page.Events[i].DstIP.IsValid())
+		assert.False(t, page.Events[i].HasRuleIndex)
+	}
 
 	// Version 1 has no table for heartbeats.
 	_, ok, err = r.LatestHeartbeat(t.Context(), id)

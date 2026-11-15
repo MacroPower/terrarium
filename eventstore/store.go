@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,7 +22,7 @@ import (
 
 // schemaVersion is the current `PRAGMA user_version` written by [Open].
 // Bumping this requires a migration step in [migrationSQL].
-const schemaVersion = 3
+const schemaVersion = 4
 
 // policyChanSize is the number of policy snapshots that wait for the
 // writer goroutine. A process records one snapshot at its start and
@@ -130,6 +131,14 @@ ALTER TABLE instances ADD COLUMN name TEXT;
 ALTER TABLE instances ADD COLUMN config_path TEXT;
 `
 
+// eventFlowSQL adds the `dst_ip` and `rule_index` columns to the
+// `events` table of a version 3 database. The rows that the database
+// holds keep NULL in both columns.
+const eventFlowSQL = `
+ALTER TABLE events ADD COLUMN dst_ip TEXT;
+ALTER TABLE events ADD COLUMN rule_index INTEGER;
+`
+
 // migrationSQL returns the statements that bring a database of schema
 // version from to the next version. [migrate] applies the steps in
 // order, so a database of each earlier version reaches
@@ -141,6 +150,8 @@ func migrationSQL(from int) string {
 		return instanceMetricsTableSQL
 	case 2:
 		return instanceIdentitySQL + policiesTableSQL
+	case 3:
+		return eventFlowSQL
 	default:
 		return ""
 	}
@@ -167,7 +178,9 @@ CREATE TABLE events (
   reason      TEXT,
   bytes_rx    INTEGER,
   bytes_tx    INTEGER,
-  duration_ms INTEGER
+  duration_ms INTEGER,
+  dst_ip      TEXT,
+  rule_index  INTEGER
 );
 CREATE INDEX events_ts          ON events(ts DESC);
 CREATE INDEX events_decision_ts ON events(decision, ts DESC);
@@ -354,8 +367,8 @@ const insertEventSQL = `
 INSERT INTO events (
 	ts, instance_id, source, decision, domain, port, protocol,
 	http_method, http_path, http_status, flags, reason,
-	bytes_rx, bytes_tx, duration_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	bytes_rx, bytes_tx, duration_ms, dst_ip, rule_index
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 // enableWAL switches the database behind db to the write-ahead log
@@ -404,7 +417,8 @@ func isBusy(err error) bool {
 // forward through each step of [migrationSQL] and keeps its rows.
 // Version 2 adds the `instance_metrics` table. Version 3 adds the
 // `policies` table and the `name` and `config_path` columns of the
-// `instances` table. Future versions refuse to open with
+// `instances` table. Version 4 adds the `dst_ip` and `rule_index`
+// columns of the `events` table. Future versions refuse to open with
 // [ErrSchemaTooNew].
 //
 // The read of the version, the DDL, and the `PRAGMA user_version`
@@ -844,6 +858,8 @@ func (s *Store) insertBatch(batch []Event) error {
 			nullableInt(e.BytesRx),
 			nullableInt(e.BytesTx),
 			nullableInt(e.DurationMS),
+			nullableAddr(e.DstIP),
+			sql.NullInt64{Int64: int64(e.RuleIndex), Valid: e.HasRuleIndex},
 		)
 		if err != nil {
 			_ = tx.Rollback() //nolint:errcheck // commit path owns the error; rollback is best-effort.
@@ -1164,6 +1180,18 @@ func chownDBFiles(path string, uid int) error {
 // as SQL NULL rather than empty TEXT.
 func nullableString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
+}
+
+// nullableAddr returns the text of addr as a [sql.NullString], so the
+// zero [netip.Addr] round-trips as SQL NULL. It writes an IPv4-mapped
+// IPv6 address as the IPv4 address, so each destination has one
+// text.
+func nullableAddr(addr netip.Addr) sql.NullString {
+	if !addr.IsValid() {
+		return sql.NullString{}
+	}
+
+	return sql.NullString{String: addr.Unmap().String(), Valid: true}
 }
 
 // nullableInt returns a [sql.NullInt64] so zero values round-trip as

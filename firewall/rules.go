@@ -45,8 +45,6 @@ func (le logEmitter) expr(prefix string) []expr.Any {
 // guard's UID and non-loopback predicates). No-op when the emitter is
 // disabled. A negative ruleIdx encodes a catch-all (no `rule=N`
 // segment in the [logprefix] payload).
-//
-//nolint:unparam // ruleIdx is part of the [logprefix] contract; current call sites are catch-alls.
 func (le logEmitter) emit(
 	conn Conn, table *nftables.Table, chain *nftables.Chain,
 	kind logprefix.Kind, ruleIdx int, extra ...[]expr.Any,
@@ -64,6 +62,40 @@ func (le logEmitter) emit(
 	conn.AddRule(&nftables.Rule{
 		Table: table, Chain: chain,
 		Exprs: flatExprs(groups...),
+	})
+}
+
+// accept appends to chain a rule that accepts the packets that match
+// every group of matches. When the emitter is enabled, a log rule
+// with the same matches precedes the accept, so the first packet of
+// each new flow logs as allowed by the egress rule at egressIdx.
+func (le logEmitter) accept(
+	conn Conn, table *nftables.Table, chain *nftables.Chain,
+	egressIdx int, matches ...[]expr.Any,
+) {
+	le.verdict(conn, table, chain, expr.VerdictAccept, egressIdx, matches...)
+}
+
+// verdict appends to chain a rule that applies verdict to the packets
+// that match every group of matches. When the emitter is enabled, a
+// log rule with the same matches precedes it, so the first packet of
+// each new flow logs with the index of the egress rule at egressIdx.
+// An accept logs as [logprefix.KindAllow], and every other verdict
+// logs as [logprefix.KindDeny].
+func (le logEmitter) verdict(
+	conn Conn, table *nftables.Table, chain *nftables.Chain,
+	verdict expr.VerdictKind, egressIdx int, matches ...[]expr.Any,
+) {
+	kind := logprefix.KindDeny
+	if verdict == expr.VerdictAccept {
+		kind = logprefix.KindAllow
+	}
+
+	le.emit(conn, table, chain, kind, egressIdx, matches...)
+
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(append(slices.Clone(matches), verdictExprs(verdict))...),
 	})
 }
 
@@ -316,7 +348,7 @@ func addFilterRules(
 	fqdnRulePorts := cfg.ResolveFQDNNonTCPPorts(ctx)
 	catchAllFQDNRules := cfg.ResolveCatchAllFQDNRules()
 	icmpFQDNRules := cfg.ResolveICMPFQDNRules()
-	unrestricted := cfg.HasUnrestrictedOpenPorts(ctx)
+	unrestrictedIdx, unrestricted := cfg.UnrestrictedOpenPortsIndex(ctx)
 
 	// Create FQDN sets before rules reference them.
 	fqdnSets := make(map[int]setRef)
@@ -351,10 +383,10 @@ func addFilterRules(
 	// Create catch-all FQDN sets (all-port ipset enforcement).
 	catchAllSets := make(map[int]setRef)
 
-	for _, ruleIdx := range catchAllFQDNRules {
+	for _, rule := range catchAllFQDNRules {
 		s4 := &nftables.Set{
 			Table:      table,
-			Name:       config.CatchAllFQDNSetName(ruleIdx, false),
+			Name:       config.CatchAllFQDNSetName(rule.RuleIndex, false),
 			KeyType:    nftables.TypeIPAddr,
 			HasTimeout: true,
 		}
@@ -366,7 +398,7 @@ func addFilterRules(
 
 		s6 := &nftables.Set{
 			Table:      table,
-			Name:       config.CatchAllFQDNSetName(ruleIdx, true),
+			Name:       config.CatchAllFQDNSetName(rule.RuleIndex, true),
 			KeyType:    nftables.TypeIP6Addr,
 			HasTimeout: true,
 		}
@@ -376,7 +408,7 @@ func addFilterRules(
 			return fmt.Errorf("creating set %s: %w", s6.Name, err)
 		}
 
-		catchAllSets[ruleIdx] = setRef{set4: s4, set6: s6}
+		catchAllSets[rule.RuleIndex] = setRef{set4: s4, set6: s6}
 	}
 
 	// Create ICMP FQDN sets (ICMP+toFQDNs rules).
@@ -485,38 +517,34 @@ func addFilterRules(
 	addDenyICMPRules(conn, table, terrariumChain, denyICMPs, uids)
 
 	if !unrestricted {
-		addCIDRChains(conn, table, terrariumChain, allCIDRs, uids)
+		addCIDRChains(conn, table, terrariumChain, allCIDRs, uids, emitter)
 	}
 
 	// Allow ICMP rules (after deny, after CIDR).
-	addICMPRules(conn, table, terrariumChain, allowICMPs, icmpFQDNSets, uids)
+	addICMPRules(conn, table, terrariumChain, allowICMPs, icmpFQDNSets, uids, emitter)
 
 	if unrestricted {
-		// Unrestricted open ports: ACCEPT all user traffic.
+		// Unrestricted open ports: ACCEPT all user traffic, and log
+		// it with the index of the first rule that opens every port.
 		// FQDN-port combinations are still intercepted by NAT
 		// REDIRECT rules, preserving Envoy L7 filtering.
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: terrariumChain,
-			Exprs: flatExprs(
-				matchFilteredTraffic(uids),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
+		emitter.accept(conn, table, terrariumChain, unrestrictedIdx,
+			matchFilteredTraffic(uids))
 	} else {
 		// Open port rules.
 		for _, op := range openPortRules {
-			addOpenPortRule(conn, table, terrariumChain, op, uids)
+			addOpenPortRule(conn, table, terrariumChain, op, uids, emitter)
 		}
 
 		// FQDN non-TCP port rules.
 		for _, frp := range fqdnRulePorts {
 			ref := fqdnSets[frp.RuleIndex]
-			addFQDNPortRules(conn, table, terrariumChain, frp, ref, uids)
+			addFQDNPortRules(conn, table, terrariumChain, frp, ref, uids, emitter)
 		}
 
 		// Catch-all FQDN rules (all ports via ipset).
 		addCatchAllFQDNRules(conn, table, terrariumChain,
-			catchAllFQDNRules, catchAllSets, uids)
+			catchAllFQDNRules, catchAllSets, uids, emitter)
 	}
 
 	emitter.emit(conn, table, terrariumChain, logprefix.KindDeny, -1)

@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,10 +149,13 @@ func TestStatsTopAllowed(t *testing.T) {
 	assert.EqualValues(t, 3, rows[0]["count"])
 }
 
+// TestStatsList lists a firewall event that holds a destination
+// address and the rule index 0, and a DNS event that holds neither.
 func TestStatsList(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
+	now := time.Now().Truncate(time.Second)
+	stamp := now.UTC().Format(time.RFC3339)
 
 	dbPath := seedDB(t, []eventstore.Event{
 		{
@@ -160,31 +165,80 @@ func TestStatsList(t *testing.T) {
 			Domain:   "list.example",
 			Protocol: eventstore.ProtocolDNS,
 		},
+		{
+			Time:         now,
+			Source:       eventstore.SourceFirewall,
+			Decision:     eventstore.DecisionAllow,
+			DstIP:        netip.MustParseAddr("192.0.2.7"),
+			Port:         443,
+			Protocol:     eventstore.ProtocolTCP,
+			Reason:       "rule=0",
+			RuleIndex:    0,
+			HasRuleIndex: true,
+		},
 	})
 
-	usr := config.NewUser()
-	cmd := statsCmd(usr)
+	run := func(t *testing.T, format string) string {
+		t.Helper()
 
-	buf := &bytes.Buffer{}
-	cmd.SetOut(buf)
+		cmd := statsCmd(config.NewUser())
 
-	cmd.SetArgs([]string{
-		"list",
-		"--db", dbPath,
-		"--format", "json",
-		"--limit", "10",
+		buf := &bytes.Buffer{}
+		cmd.SetOut(buf)
+		cmd.SetArgs([]string{"list", "--db", dbPath, "--format", format, "--limit", "10"})
+
+		require.NoError(t, cmd.ExecuteContext(t.Context()))
+
+		return buf.String()
+	}
+
+	t.Run("json", func(t *testing.T) {
+		t.Parallel()
+
+		var rows []map[string]any
+
+		require.NoError(t, json.Unmarshal([]byte(run(t, "json")), &rows))
+		require.Len(t, rows, 2)
+
+		// The latest row is first.
+		assert.Equal(t, "firewall", rows[0]["source"])
+		assert.Equal(t, "192.0.2.7", rows[0]["dst_ip"])
+		assert.InDelta(t, 0, rows[0]["rule_index"], 0)
+
+		assert.Equal(t, "dns", rows[1]["source"])
+		assert.Equal(t, "allow", rows[1]["decision"])
+		assert.Equal(t, "list.example", rows[1]["domain"])
+		assert.Empty(t, rows[1]["dst_ip"])
+		assert.Contains(t, rows[1], "dst_ip")
+
+		index, ok := rows[1]["rule_index"]
+		assert.True(t, ok, "the row must hold the rule_index key")
+		assert.Nil(t, index)
 	})
 
-	require.NoError(t, cmd.ExecuteContext(t.Context()))
+	t.Run("csv", func(t *testing.T) {
+		t.Parallel()
 
-	var rows []map[string]any
+		assert.Equal(t,
+			"time,source,decision,domain,dst_ip,port,protocol,method,path,status,flags,reason,rule_index\n"+
+				stamp+",firewall,allow,,192.0.2.7,443,tcp,,,0,,rule=0,0\n"+
+				stamp+",dns,allow,list.example,,0,dns,,,0,,,\n",
+			run(t, "csv"))
+	})
 
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
-	require.Len(t, rows, 1)
+	t.Run("table", func(t *testing.T) {
+		t.Parallel()
 
-	assert.Equal(t, "dns", rows[0]["source"])
-	assert.Equal(t, "allow", rows[0]["decision"])
-	assert.Equal(t, "list.example", rows[0]["domain"])
+		lines := strings.Split(strings.TrimRight(run(t, "table"), "\n"), "\n")
+		require.Len(t, lines, 3)
+
+		assert.Equal(t, []string{
+			"TIME", "SOURCE", "DECISION", "DOMAIN", "DST_IP", "PORT",
+			"PROTOCOL", "METHOD", "PATH", "STATUS", "FLAGS", "REASON", "RULE_INDEX",
+		}, strings.Fields(lines[0]))
+		assert.Contains(t, lines[1], "192.0.2.7")
+		assert.NotContains(t, lines[2], "192.0.2.7")
+	})
 }
 
 func TestStatsTopCSV(t *testing.T) {

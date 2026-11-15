@@ -3,6 +3,7 @@ package accesslog
 import (
 	"math"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -36,7 +37,8 @@ const (
 
 // httpEntryToEvent converts an Envoy HTTPAccessLogEntry into an
 // [eventstore.Event]. The response_code and response_code_details
-// mapping is in [httpDecision].
+// mapping is in [httpDecision]. The destination address of the event
+// is the result of [commonDstIP].
 func httpEntryToEvent(entry *alsdata.HTTPAccessLogEntry) eventstore.Event {
 	common := entry.GetCommonProperties()
 	req := entry.GetRequest()
@@ -47,6 +49,7 @@ func httpEntryToEvent(entry *alsdata.HTTPAccessLogEntry) eventstore.Event {
 		Source:   eventstore.SourceEnvoy,
 		Time:     extractTime(common),
 		Domain:   httpDomain(req, common),
+		DstIP:    commonDstIP(common),
 		Port:     commonPort(common),
 		Protocol: eventstore.ProtocolHTTP,
 	}
@@ -81,8 +84,10 @@ func httpEntryToEvent(entry *alsdata.HTTPAccessLogEntry) eventstore.Event {
 
 // tcpEntryToEvent converts an Envoy TCPAccessLogEntry into an
 // [eventstore.Event]. Domain selection tries SNI first (TLS), then
-// upstream cluster, then upstream remote address. Protobuf getters
-// are nil-safe, so a missing ConnectionProperties yields zero bytes.
+// upstream cluster, then upstream remote address. The destination
+// address of the event is the result of [commonDstIP]. Protobuf
+// getters are nil-safe, so a missing ConnectionProperties yields zero
+// bytes.
 func tcpEntryToEvent(entry *alsdata.TCPAccessLogEntry) eventstore.Event {
 	common := entry.GetCommonProperties()
 	conn := entry.GetConnectionProperties()
@@ -91,6 +96,7 @@ func tcpEntryToEvent(entry *alsdata.TCPAccessLogEntry) eventstore.Event {
 		Source:   eventstore.SourceEnvoy,
 		Time:     extractTime(common),
 		Domain:   tcpDomain(common),
+		DstIP:    commonDstIP(common),
 		Port:     commonPort(common),
 		Protocol: eventstore.ProtocolTCP,
 		BytesRx:  clampBytes(conn.GetReceivedBytes()),
@@ -127,6 +133,23 @@ func httpDomain(req *alsdata.HTTPRequestProperties, common *alsdata.AccessLogCom
 // if the address is missing.
 func commonPort(common *alsdata.AccessLogCommon) int {
 	return int(common.GetUpstreamRemoteAddress().GetSocketAddress().GetPortValue())
+}
+
+// commonDstIP returns the IP address of the upstream remote address
+// on an HTTP or TCP entry's [alsdata.AccessLogCommon]. An IPv4-mapped
+// IPv6 address becomes the IPv4 address.
+//
+// It returns the zero [netip.Addr] for an entry without an upstream
+// address. Envoy writes such an entry for a request that it denied
+// before it chose an upstream. It also returns the zero address for
+// an upstream address that is not an IP address.
+func commonDstIP(common *alsdata.AccessLogCommon) netip.Addr {
+	addr, err := netip.ParseAddr(common.GetUpstreamRemoteAddress().GetSocketAddress().GetAddress())
+	if err != nil {
+		return netip.Addr{}
+	}
+
+	return addr.Unmap()
 }
 
 // tcpDomain selects the canonical domain for a TCP entry. SNI takes

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/netip"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -46,7 +47,7 @@ func TestOpen_AppliesSchemaOnFreshDB(t *testing.T) {
 
 	err = db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
 	require.NoError(t, err)
-	assert.Equal(t, 3, version)
+	assert.Equal(t, 4, version)
 
 	rows, err := db.QueryContext(t.Context(), `SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
 	require.NoError(t, err)
@@ -123,10 +124,31 @@ CREATE TABLE instance_metrics (
 );
 `
 
+// v3SchemaSQL is the schema of user_version=3, which added the
+// `policies` table and the identity columns of the `instances` table
+// to [v2SchemaSQL]. The test pins it, so that the migration to
+// version 4 runs against the tables that version 3 created.
+const v3SchemaSQL = v2SchemaSQL + `
+ALTER TABLE instances ADD COLUMN name TEXT;
+ALTER TABLE instances ADD COLUMN config_path TEXT;
+CREATE TABLE policies (
+  id            INTEGER PRIMARY KEY,
+  instance_id   TEXT NOT NULL REFERENCES instances(id),
+  applied_at    INTEGER NOT NULL,
+  config_path   TEXT NOT NULL,
+  sha256        TEXT NOT NULL,
+  security_mode TEXT NOT NULL,
+  yaml          TEXT NOT NULL
+);
+CREATE INDEX policies_instance_applied ON policies(instance_id, applied_at DESC);
+`
+
 // TestOpen_MigratesToCurrentSchema opens a database of each earlier
 // schema version. The open must bring the database to the current
-// version and keep the rows that the database held. The store must
-// then record an event, a heartbeat, and a policy snapshot.
+// version and keep the rows that the database held, with NULL in the
+// columns that a later version added to the `events` table. The store
+// must then record an event with a destination address and a rule
+// index, a heartbeat, and a policy snapshot.
 func TestOpen_MigratesToCurrentSchema(t *testing.T) {
 	t.Parallel()
 
@@ -140,6 +162,9 @@ func TestOpen_MigratesToCurrentSchema(t *testing.T) {
 		// The number of `instance_metrics` rows that the database
 		// holds before the open.
 		wantMetrics int
+		// The number of `policies` rows that the database holds
+		// before the open.
+		wantPolicies int
 	}{
 		"version 1": {
 			before: []string{v1SchemaSQL, `PRAGMA user_version = 1`, seedRows},
@@ -150,6 +175,16 @@ func TestOpen_MigratesToCurrentSchema(t *testing.T) {
 				`INSERT INTO instance_metrics (instance_id, recorded_at, dnscache_size) VALUES ('old', 180, 7)`,
 			},
 			wantMetrics: 1,
+		},
+		"version 3": {
+			before: []string{
+				v3SchemaSQL, `PRAGMA user_version = 3`, seedRows,
+				`INSERT INTO instance_metrics (instance_id, recorded_at, dnscache_size) VALUES ('old', 180, 7)`,
+				`INSERT INTO policies (instance_id, applied_at, config_path, sha256, security_mode, yaml)
+				 VALUES ('old', 120, '/old.yaml', 'abc', 'filtered', 'egress: []')`,
+			},
+			wantMetrics:  1,
+			wantPolicies: 1,
 		},
 	}
 
@@ -166,7 +201,8 @@ func TestOpen_MigratesToCurrentSchema(t *testing.T) {
 			require.NoError(t, err)
 
 			store.Emit(eventstore.Event{
-				Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Domain: "new.example",
+				Source: eventstore.SourceFirewall, Decision: eventstore.DecisionAllow, Domain: "new.example",
+				DstIP: netip.MustParseAddr("192.0.2.7"), RuleIndex: 2, HasRuleIndex: true,
 			})
 			require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{DNSCacheSize: 3}))
 			store.RecordPolicy(eventstore.PolicySnapshot{
@@ -182,13 +218,14 @@ func TestOpen_MigratesToCurrentSchema(t *testing.T) {
 
 			err = db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
 			require.NoError(t, err)
-			assert.Equal(t, 3, version)
+			assert.Equal(t, 4, version)
 
 			// The rows of the earlier version.
 			var (
-				mode   string
-				domain string
-				cached int
+				mode     string
+				domain   string
+				cached   int
+				policies int
 			)
 
 			err = db.QueryRowContext(t.Context(),
@@ -197,9 +234,15 @@ func TestOpen_MigratesToCurrentSchema(t *testing.T) {
 			assert.Equal(t, "daemon", mode)
 
 			err = db.QueryRowContext(t.Context(),
-				`SELECT domain FROM events WHERE instance_id = 'old' AND ts = 150`).Scan(&domain)
+				`SELECT domain FROM events WHERE instance_id = 'old' AND ts = 150
+				 AND dst_ip IS NULL AND rule_index IS NULL`).Scan(&domain)
 			require.NoError(t, err)
 			assert.Equal(t, "kept.example", domain)
+
+			err = db.QueryRowContext(t.Context(),
+				`SELECT COUNT(*) FROM policies WHERE instance_id = 'old'`).Scan(&policies)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPolicies, policies)
 
 			if tc.wantMetrics > 0 {
 				err = db.QueryRowContext(t.Context(),
@@ -223,7 +266,18 @@ func TestOpen_MigratesToCurrentSchema(t *testing.T) {
 
 			page, err := r.Events(t.Context(), eventstore.EventsQuery{Limit: 10})
 			require.NoError(t, err)
-			assert.Len(t, page.Events, 2)
+			require.Len(t, page.Events, 2)
+
+			added := page.Events[0]
+			assert.Equal(t, "new.example", added.Domain)
+			assert.Equal(t, netip.MustParseAddr("192.0.2.7"), added.DstIP)
+			assert.True(t, added.HasRuleIndex)
+			assert.Equal(t, 2, added.RuleIndex)
+
+			kept := page.Events[1]
+			assert.Equal(t, "kept.example", kept.Domain)
+			assert.False(t, kept.DstIP.IsValid())
+			assert.False(t, kept.HasRuleIndex)
 
 			hb, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
 			require.NoError(t, err)
@@ -270,6 +324,9 @@ func TestOpen_ConcurrentOpensShareOneDB(t *testing.T) {
 		},
 		"version 2 database": {
 			before: []string{v2SchemaSQL, `PRAGMA user_version = 2`},
+		},
+		"version 3 database": {
+			before: []string{v3SchemaSQL, `PRAGMA user_version = 3`},
 		},
 	}
 
@@ -330,7 +387,7 @@ func TestOpen_ConcurrentOpensShareOneDB(t *testing.T) {
 
 			err := db.QueryRowContext(t.Context(), `PRAGMA user_version`).Scan(&version)
 			require.NoError(t, err)
-			assert.Equal(t, 3, version)
+			assert.Equal(t, 4, version)
 
 			var count int
 
@@ -429,6 +486,70 @@ func TestEmit_RecordsEvent(t *testing.T) {
 	assert.Equal(t, "deny", decision)
 	assert.Equal(t, "example.com", domain)
 	assert.Equal(t, "not-allowlisted", reason)
+}
+
+// TestEmit_RecordsFlowColumns reads the `dst_ip` and `rule_index`
+// columns that the store writes for an event.
+func TestEmit_RecordsFlowColumns(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		event     eventstore.Event
+		wantDstIP sql.NullString
+		wantRule  sql.NullInt64
+	}{
+		"no address and no rule index": {
+			event: eventstore.Event{},
+		},
+		"IPv4 address": {
+			event:     eventstore.Event{DstIP: netip.MustParseAddr("192.0.2.7")},
+			wantDstIP: sql.NullString{String: "192.0.2.7", Valid: true},
+		},
+		"IPv6 address": {
+			event:     eventstore.Event{DstIP: netip.MustParseAddr("2001:db8::7")},
+			wantDstIP: sql.NullString{String: "2001:db8::7", Valid: true},
+		},
+		"IPv4-mapped IPv6 address": {
+			event:     eventstore.Event{DstIP: netip.MustParseAddr("::ffff:192.0.2.7")},
+			wantDstIP: sql.NullString{String: "192.0.2.7", Valid: true},
+		},
+		"rule index 0": {
+			event:    eventstore.Event{HasRuleIndex: true},
+			wantRule: sql.NullInt64{Int64: 0, Valid: true},
+		},
+		"rule index 3": {
+			event:    eventstore.Event{RuleIndex: 3, HasRuleIndex: true},
+			wantRule: sql.NullInt64{Int64: 3, Valid: true},
+		},
+		"rule index without the flag": {
+			event: eventstore.Event{RuleIndex: 3},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			tc.event.Source = eventstore.SourceFirewall
+			tc.event.Decision = eventstore.DecisionDeny
+			writeStore(t, path, []eventstore.Event{tc.event})
+
+			db := openReadOnly(t, path)
+
+			var (
+				dstIP sql.NullString
+				rule  sql.NullInt64
+			)
+
+			err := db.QueryRowContext(t.Context(), `SELECT dst_ip, rule_index FROM events`).Scan(&dstIP, &rule)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantDstIP, dstIP)
+			assert.Equal(t, tc.wantRule, rule)
+		})
+	}
 }
 
 // TestEmit_FlushesPartialBatchesPeriodically pins the writer

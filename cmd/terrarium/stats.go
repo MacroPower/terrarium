@@ -296,15 +296,23 @@ type topRow struct {
 
 // listRow is one event in `terrarium stats list` output.
 type listRow struct {
-	Time       string `json:"time"`
-	Source     string `json:"source"`
-	Decision   string `json:"decision"`
-	Domain     string `json:"domain"`
+	Time     string `json:"time"`
+	Source   string `json:"source"`
+	Decision string `json:"decision"`
+	Domain   string `json:"domain"`
+	// DstIP is the destination address of the flow. It is empty for
+	// an event without one. See [eventstore.Event.DstIP].
+	DstIP      string `json:"dst_ip"`
 	Protocol   string `json:"protocol"`
 	HTTPMethod string `json:"http_method"`
 	HTTPPath   string `json:"http_path"`
 	Flags      string `json:"flags"`
 	Reason     string `json:"reason"`
+	// RuleIndex is the index of the rule that decided the event, in
+	// the `egress` list of the policy that was in force at the time
+	// of the event. It is nil, and null in JSON, for an event
+	// without a rule index. See [eventstore.Event.RuleIndex].
+	RuleIndex  *int   `json:"rule_index"`
 	NextCursor string `json:"next_cursor,omitempty"`
 	Port       int    `json:"port"`
 	HTTPStatus int    `json:"http_status"`
@@ -386,6 +394,11 @@ func parseGroupBy(by string) (eventstore.TopBy, error) {
 // latest first. When non-empty, cursor is the opaque token that a
 // prior call printed as `next_cursor`. The command then prints the
 // rows that follow the rows of that call.
+//
+// Each row holds the destination address and the rule index of its
+// event. Both are empty in the CSV and in the table for an event
+// without them. In JSON, `dst_ip` is then the empty string and
+// `rule_index` is null.
 func runStatsList(
 	ctx context.Context, out io.Writer, usr *config.User,
 	f *statsFlags, cursor string,
@@ -445,13 +458,26 @@ func runStatsList(
 			HTTPStatus: e.HTTPStatus,
 		}
 
+		// The CSV and the table leave the cell of an unset
+		// destination address or rule index empty.
+		var ruleIndex string
+
+		if e.DstIP.IsValid() {
+			row.DstIP = e.DstIP.String()
+		}
+
+		if e.HasRuleIndex {
+			row.RuleIndex = &e.RuleIndex
+			ruleIndex = strconv.Itoa(e.RuleIndex)
+		}
+
 		results = append(results, row)
 		csvRows = append(csvRows, []string{
-			row.Time, row.Source, row.Decision, row.Domain,
+			row.Time, row.Source, row.Decision, row.Domain, row.DstIP,
 			strconv.Itoa(row.Port), row.Protocol,
 			row.HTTPMethod, row.HTTPPath,
 			strconv.Itoa(row.HTTPStatus),
-			row.Flags, row.Reason,
+			row.Flags, row.Reason, ruleIndex,
 		})
 	}
 
@@ -460,8 +486,9 @@ func runStatsList(
 	}
 
 	headers := []string{
-		"time", "source", "decision", "domain", "port",
+		"time", "source", "decision", "domain", "dst_ip", "port",
 		"protocol", "method", "path", "status", "flags", "reason",
+		"rule_index",
 	}
 
 	return renderRows(out, rf.format, results, headers, csvRows)

@@ -315,6 +315,37 @@ func TestReader_SchemaVersion2(t *testing.T) {
 	assert.Equal(t, int64(4), hb.DNSCacheSize)
 }
 
+// TestReader_SchemaVersion3 reads a database whose `events` table
+// holds no `dst_ip` column and no `rule_index` column.
+func TestReader_SchemaVersion3(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+
+	rawDB(t, path,
+		v3SchemaSQL,
+		`PRAGMA user_version = 3`,
+		`INSERT INTO instances (id, started_at, ended_at, mode, name) VALUES ('v3instance', 100, NULL, 'proxy', 'p')`,
+		`INSERT INTO events (ts, instance_id, source, decision, domain, port, protocol, reason)
+		 VALUES (150, 'v3instance', 'firewall', 'allow', 'api.example', 443, 'tcp', 'rule=1')`,
+	)
+
+	r := openReader(t, path)
+
+	page, err := r.Events(t.Context(), eventstore.EventsQuery{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Events, 1)
+
+	e := page.Events[0]
+	assert.Equal(t, "v3instance", e.InstanceID)
+	assert.Equal(t, "api.example", e.Domain)
+	assert.Equal(t, 443, e.Port)
+	assert.Equal(t, eventstore.Reason("rule=1"), e.Reason)
+	assert.False(t, e.DstIP.IsValid())
+	assert.False(t, e.HasRuleIndex)
+	assert.Zero(t, e.RuleIndex)
+}
+
 // TestRetention_PolicySnapshots runs the age pruner against the
 // snapshots of an instance that ended and of the instance that
 // prunes.

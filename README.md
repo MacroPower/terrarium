@@ -799,6 +799,64 @@ Flags shared across subcommands: `--since`, `--until`, `--limit`,
 `--source dns|envoy|firewall`, `--instance ID`, `--format table|json|csv`,
 `--db PATH`. The CLI opens the DB read-only, so it has no daemon dependency.
 
+Each event of `terrarium stats list` holds two fields that say where the
+flow went and which rule decided it:
+
+| Field        | Value                                                                              |
+| ------------ | ---------------------------------------------------------------------------------- |
+| `dst_ip`     | The destination address of the flow.                                               |
+| `rule_index` | The index of the `egress` rule that decided the event. The first rule has index 0. |
+
+Firewall events hold the destination address of their packet in `dst_ip`, so
+a firewall event without a `domain` still names its destination. Envoy
+events hold the address of the upstream that Envoy connected to. DNS events
+have no `dst_ip`, and neither do the Envoy events of requests that Envoy
+denied before it chose an upstream.
+
+`rule_index` counts the rules of `egress` in the policy snapshot that the
+event maps to. Read the rule from that snapshot, which you find by the
+instance and the time of the event. The config file can change after the
+event, so the same index might name another rule there.
+
+A reload replaces the firewall rules before the daemon records the snapshot
+of the reload. A firewall event during the reload can therefore hold the index
+of a rule of the new policy and still map to the previous snapshot. In that
+snapshot, its `rule_index` can name another rule, or no rule when the previous
+`egress` list is shorter.
+
+With `logging.firewall.enabled`, the firewall logs the first packet of each
+new flow that an `egress` rule allows without Envoy. The allow event of such a
+packet holds the index of the rule that accepted it. The firewall logs the
+flows of these rules:
+
+- CIDR rules.
+- Open UDP ports and open TCP port ranges.
+- The UDP ports of FQDN rules.
+- FQDN rules without ports.
+- ICMP rules.
+- Port-only rules that open every port, with port `0` or without `ports`.
+
+When several rules allow a packet, the event holds the index of one of them,
+which is not always the first one in `egress`. The firewall checks the rules
+by kind and by port, not in the order of `egress`. A policy with a port-only
+rule that opens every port accepts all traffic with one firewall rule. The
+firewall checks that rule after the ICMP rules. Each other allow event of the
+policy holds the index of the first rule that opens every port.
+
+Envoy handles most TCP flows, such as the TCP flows of FQDN rules and of CIDR
+rules, so their events are Envoy events. These firewall events hold no
+`rule_index`:
+
+- The allow events of a policy without `egress` rules.
+- The deny events of packets that no rule allows.
+- The leak events of the postrouting guard.
+
+DNS events and Envoy events hold no `rule_index` either.
+
+Events without a `dst_ip` or a `rule_index` have an empty cell in the table
+and in the CSV. In JSON, their `dst_ip` is the empty string and their
+`rule_index` is `null`.
+
 ### Daemon mode
 
 Daemon mode (`terrarium daemon`) runs terrarium as a VM-wide network filter,

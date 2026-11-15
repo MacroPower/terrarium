@@ -4,7 +4,10 @@
 // [logprefix]-encoded decision and rule index. The [Reader] binds to
 // the same group, parses the payload plus the L3+L4 packet headers,
 // looks up a best-effort qname from a reverse cache, and emits one
-// [eventstore.Event] per packet.
+// [eventstore.Event] per packet. Each event holds the destination
+// address of its packet, so an event without a cached qname still
+// names its destination. An event holds a rule index when the prefix
+// of its log rule names one.
 //
 // The reader is consumptive only. It never mutates kernel rules, and
 // the data plane is unaffected by its liveness or backpressure. When

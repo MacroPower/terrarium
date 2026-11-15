@@ -987,7 +987,23 @@ func TestResolveOpenPortRules(t *testing.T) {
 			)},
 			want: []config.ResolvedOpenPort{
 				{Port: 8000, Protocol: "TCP"},
-				{Port: 8000, EndPort: 9000, Protocol: "TCP"},
+				{Port: 8000, EndPort: 9000, Protocol: "TCP", EgressIndex: 1},
+			},
+		},
+		"port of several rules holds the first egress index": {
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				},
+				config.EgressRule{
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "5353", Protocol: "UDP"}}}},
+				},
+				config.EgressRule{
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "5353", Protocol: "UDP"}}}},
+				},
+			)},
+			want: []config.ResolvedOpenPort{
+				{Port: 5353, Protocol: "UDP", EgressIndex: 1},
 			},
 		},
 	}
@@ -1049,6 +1065,54 @@ func TestHasUnrestrictedOpenPorts(t *testing.T) {
 	}
 }
 
+func TestUnrestrictedOpenPortsIndex(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		cfg    *config.Config
+		want   int
+		wantOK bool
+	}{
+		"first rule that opens every port": {
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{ToCIDR: []string{"10.0.0.0/8"}},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{}},
+				},
+				config.EgressRule{
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				},
+				config.EgressRule{
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "0"}}}},
+				},
+				config.EgressRule{ToPorts: []config.PortRule{{}}},
+			)},
+			want:   3,
+			wantOK: true,
+		},
+		"no rule opens every port": {
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				},
+			)},
+			want:   0,
+			wantOK: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := tt.cfg.UnrestrictedOpenPortsIndex(t.Context())
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestResolveFQDNNonTCPPorts(t *testing.T) {
 	t.Parallel()
 
@@ -1104,7 +1168,25 @@ func TestResolveFQDNNonTCPPorts(t *testing.T) {
 			)},
 			want: []config.FQDNRulePorts{
 				{RuleIndex: 0, Ports: []config.ResolvedOpenPort{{Port: 443, Protocol: "UDP"}}},
-				{RuleIndex: 1, Ports: []config.ResolvedOpenPort{{Port: 8080, Protocol: "UDP"}}},
+				{RuleIndex: 1, EgressIndex: 1, Ports: []config.ResolvedOpenPort{
+					{Port: 8080, Protocol: "UDP", EgressIndex: 1},
+				}},
+			},
+		},
+		"egress index counts rules without non-TCP ports": {
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+				},
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "b.example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "8080", Protocol: "UDP"}}}},
+				},
+			)},
+			want: []config.FQDNRulePorts{
+				{RuleIndex: 0, EgressIndex: 1, Ports: []config.ResolvedOpenPort{
+					{Port: 8080, Protocol: "UDP", EgressIndex: 1},
+				}},
 			},
 		},
 	}
@@ -1556,7 +1638,7 @@ func TestResolveCIDRRules(t *testing.T) {
 				{CIDR: "10.0.0.0/8", Ports: []config.ResolvedPortProto{
 					{Port: 443, Protocol: "TCP"},
 					{Port: 443, Protocol: "UDP"},
-				}, RuleIndex: 0},
+				}, RuleIndex: 1},
 			},
 		},
 		"port 0 CIDR rule has no port restriction": {
@@ -2243,7 +2325,7 @@ func TestResolveCatchAllFQDNRules(t *testing.T) {
 
 	tests := map[string]struct {
 		cfg  *config.Config
-		want []int
+		want []config.CatchAllFQDNRule
 	}{
 		"no toPorts": {
 			cfg: &config.Config{
@@ -2251,7 +2333,7 @@ func TestResolveCatchAllFQDNRules(t *testing.T) {
 					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
 				}),
 			},
-			want: []int{0},
+			want: []config.CatchAllFQDNRule{{RuleIndex: 0, EgressIndex: 0}},
 		},
 		"wildcard port 0": {
 			cfg: &config.Config{
@@ -2260,7 +2342,7 @@ func TestResolveCatchAllFQDNRules(t *testing.T) {
 					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "0"}}}},
 				}),
 			},
-			want: []int{0},
+			want: []config.CatchAllFQDNRule{{RuleIndex: 0, EgressIndex: 0}},
 		},
 		"explicit ports not catch-all": {
 			cfg: &config.Config{
@@ -2286,7 +2368,10 @@ func TestResolveCatchAllFQDNRules(t *testing.T) {
 					},
 				),
 			},
-			want: []int{0, 1},
+			want: []config.CatchAllFQDNRule{
+				{RuleIndex: 0, EgressIndex: 0},
+				{RuleIndex: 1, EgressIndex: 2},
+			},
 		},
 		"unrestricted returns nil": {
 			cfg:  &config.Config{},
