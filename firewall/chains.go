@@ -19,6 +19,7 @@ import (
 const (
 	chainOutput    = "output"
 	chainForward   = "forward"
+	chainInput     = "input"
 	chainNATOutput = "nat_output"
 
 	chainDenyPortNAT = "deny_port_nat"
@@ -968,6 +969,11 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 // TPROXY interception; forwarded TCP uses DNAT in NAT PREROUTING
 // ([addNATPreRouting]) because br_netfilter's br_nf_pre_routing_finish
 // only re-routes packets locally when DNAT changes the destination.
+//
+// Policy routing delivers the marked forwarded UDP to a local socket,
+// so that UDP passes the INPUT hook and not the FORWARD hook. The
+// INPUT chain ([addInputChain]) policy-evaluates it before Envoy
+// receives it.
 func addManglePreRoutingChain(
 	conn Conn, table *nftables.Table,
 	udpPort uint16,
@@ -1076,8 +1082,9 @@ func addManglePreRoutingChain(
 			})
 		}
 
-		// Deny CIDR: ACCEPT to skip TPROXY so traffic falls to the
-		// FORWARD chain for policy DROP.
+		// Deny CIDR: ACCEPT to skip TPROXY. The packet keeps its
+		// mark, so it reaches the INPUT chain, and the deny rules
+		// of the policy chain DROP it there.
 		addForwardedDenyCIDRTPROXYSkip(conn, table, chain, denyCIDR4, unix.NFPROTO_IPV4)
 		addForwardedDenyCIDRTPROXYSkip(conn, table, chain, denyCIDR6, unix.NFPROTO_IPV6)
 
@@ -1606,9 +1613,11 @@ func tproxyNFProtoGuard(nfProto byte) []expr.Any {
 
 // addForwardedDenyCIDRTPROXYSkip creates per-rule deny CIDR chains
 // that ACCEPT (skip TPROXY) for denied CIDRs in the given address
-// family. Traffic that skips TPROXY falls to the FORWARD chain where
-// the filter deny rules DROP it. Mirrors [addDenyCIDRChainsWithVerdict]
-// but scoped to TPROXY-marked forwarded traffic.
+// family. Traffic that skips TPROXY keeps [tproxyMark], so policy
+// routing still delivers it locally. It reaches the INPUT chain
+// ([addInputChain]), where the deny rules of the policy chain DROP
+// it. Mirrors [addDenyCIDRChainsWithVerdict] but scoped to
+// TPROXY-marked forwarded traffic.
 func addForwardedDenyCIDRTPROXYSkip(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, nfProto byte,
@@ -1864,6 +1873,49 @@ func addForwardChain(conn Conn, table *nftables.Table, terrariumChain *nftables.
 	})
 
 	// Terminal DROP via chain policy.
+}
+
+// addInputChain creates an INPUT chain for VM mode that
+// policy-evaluates the forwarded UDP that TPROXY delivers to Envoy.
+// The mangle PREROUTING chain marks that UDP with [tproxyMark], and
+// policy routing delivers the marked packets to a local socket. So
+// the packets pass the INPUT hook and never reach the FORWARD chain.
+// The chain jumps to the terrarium_output chain for each of those
+// packets, and that chain accepts or drops it. TPROXY leaves the
+// destination of a packet unchanged, so the policy rules match the
+// address and the port that the sender chose.
+//
+// The jump skips three kinds of packets, and the ACCEPT policy of the
+// chain accepts them:
+//
+//   - Packets from the loopback interface. They are local UDP, which
+//     the OUTPUT chain evaluated before policy routing sent it to
+//     loopback.
+//   - UDP to port 53. The mangle PREROUTING chain sends marked IPv6
+//     DNS to the DNS proxy, not to Envoy.
+//   - Packets without [tproxyMark]. They are inbound traffic for the
+//     VM, which the host firewall filters.
+func addInputChain(conn Conn, table *nftables.Table, terrariumChain *nftables.Chain) {
+	policy := nftables.ChainPolicyAccept
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     chainInput,
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookInput,
+		Priority: nftables.ChainPriorityFilter,
+		Policy:   &policy,
+	})
+
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchNotIIFName("lo"),
+			matchMark(tproxyMark),
+			matchL4Proto(unix.IPPROTO_UDP),
+			notMatchDstPort(53),
+			verdictExprs(expr.VerdictJump, terrariumChain.Name),
+		),
+	})
 }
 
 // addForwardChainUnrestricted creates a FORWARD chain for VM mode

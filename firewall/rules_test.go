@@ -2898,6 +2898,100 @@ func TestApplyRules_VMMode_ForwardChain_Blocked(t *testing.T) {
 	}
 }
 
+func TestApplyRules_VMMode_InputChain(t *testing.T) {
+	t.Parallel()
+
+	filtered := func() *[]config.EgressRule {
+		return egressRules(config.EgressRule{
+			ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+			ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+		})
+	}
+
+	tcs := map[string]struct {
+		egress *[]config.EgressRule
+		uids   firewall.UIDs
+		want   bool
+	}{
+		"VM filtered":        {egress: filtered(), uids: testVMUIDs, want: true},
+		"VM unrestricted":    {uids: testVMUIDs},
+		"VM blocked":         {egress: egressRules(config.EgressRule{}), uids: testVMUIDs},
+		"container filtered": {egress: filtered(), uids: testUIDs},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+			cfg := &config.Config{Egress: tc.egress}
+
+			err := firewall.ApplyRules(t.Context(), rec, cfg, tc.uids)
+			require.NoError(t, err)
+
+			if !tc.want {
+				assert.NotContains(t, rec.chainNames(), "input")
+
+				return
+			}
+
+			idx := slices.IndexFunc(rec.chains, func(c *nftables.Chain) bool {
+				return c.Name == "input"
+			})
+			require.NotEqual(t, -1, idx, "VM filtered mode should create the input chain")
+
+			// The chain accepts by default, so that inbound traffic
+			// for the VM stays with the host firewall.
+			chain := rec.chains[idx]
+			assert.Equal(t, nftables.ChainTypeFilter, chain.Type)
+			require.NotNil(t, chain.Hooknum)
+			assert.Equal(t, *nftables.ChainHookInput, *chain.Hooknum)
+			require.NotNil(t, chain.Priority)
+			assert.Equal(t, *nftables.ChainPriorityFilter, *chain.Priority)
+			require.NotNil(t, chain.Policy)
+			assert.Equal(t, nftables.ChainPolicyAccept, *chain.Policy)
+
+			// The only rule sends the forwarded UDP that TPROXY
+			// delivers to Envoy through the policy chain.
+			rules := rec.rulesForChain("input")
+			require.Len(t, rules, 1)
+
+			lo := make([]byte, 16)
+			copy(lo, "lo")
+
+			want := []expr.Any{
+				// iifname != "lo"
+				&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: lo},
+				// meta mark & 0x1 != 0
+				&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+				&expr.Bitwise{
+					SourceRegister: 1,
+					DestRegister:   1,
+					Len:            4,
+					Mask:           binaryutil.NativeEndian.PutUint32(0x1),
+					Xor:            make([]byte, 4),
+				},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+				// meta l4proto udp
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
+				// udp dport != 53
+				&expr.Payload{
+					DestRegister: 1,
+					Base:         expr.PayloadBaseTransportHeader,
+					Offset:       2,
+					Len:          2,
+				},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.BigEndian.PutUint16(53)},
+				// jump terrarium_output
+				&expr.Verdict{Kind: expr.VerdictJump, Chain: "terrarium_output"},
+			}
+			assert.Equal(t, want, rules[0].Exprs)
+		})
+	}
+}
+
 func TestApplyRules_VMMode_MangleForwarded(t *testing.T) {
 	t.Parallel()
 

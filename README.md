@@ -976,6 +976,7 @@ locally-originated traffic:
 | `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 DNS + per-port TCP to Envoy on `127.0.0.1`    |
 | `mangle_prerouting` | PREROUTING  | -150     | Mark forwarded UDP for TPROXY; dispatch to Envoy/DNS proxy        |
 | `forward`           | FORWARD     | 0        | Policy-evaluate forwarded traffic not intercepted by DNAT (ICMP)  |
+| `input`             | INPUT       | 0        | Policy-evaluate forwarded UDP before Envoy receives it            |
 | `postrouting_guard` | POSTROUTING | 0        | Catch locally-originated leaks (forwarded traffic passes through) |
 
 All forwarded TCP uses DNAT in NAT PREROUTING. When `br_netfilter` is loaded
@@ -1008,8 +1009,24 @@ rules intentionally omit the non-local destination check so queries to
 bridge-local resolvers (e.g., BuildKit's embedded DNS on the CNI gateway) are
 also intercepted. DNS UDP DNAT requires
 `net.ipv4.conf.default.route_localnet=1` so dynamically-created bridge
-interfaces allow routing to 127.0.0.0/8. Deny CIDRs skip TPROXY so the
-FORWARD chain's terminal DROP applies.
+interfaces allow routing to 127.0.0.0/8.
+
+Forwarded UDP to every port except IPv4 port 53 uses TPROXY. The
+`mangle_prerouting` chain marks that UDP, and policy routing delivers the
+marked packets to a local socket. The packets pass the INPUT hook and never
+reach the `forward` chain, so the `input` chain sends them through the policy
+rules that the `forward` chain uses. Those rules drop the UDP that an
+`egressDeny` rule denies and the UDP that no `egress` rule allows. UDP to a
+CIDR of an `egressDeny` rule skips TPROXY and keeps its mark, so the `input`
+chain drops it too.
+
+The `input` chain exists only in filtered mode. It accepts these packets
+without a policy check:
+
+- Marked UDP to port 53, which is the IPv6 DNS that the DNS proxy receives.
+- Packets from the loopback interface, which are the local UDP that the
+  `output` chain evaluated.
+- Packets without the mark, such as inbound traffic for the VM.
 
 #### Guard table
 
@@ -1112,9 +1129,12 @@ TPROXY-marked forwarded UDP packets:
 
 #### Host firewall
 
-Terrarium is an egress filter and does not create an INPUT chain. Inbound
-filtering is the responsibility of the host firewall (NixOS firewall, iptables,
-etc.) or, in container mode, the container runtime's bridge/port-mapping rules.
+Terrarium is an egress filter and does not filter inbound traffic. In daemon
+mode with a filtered policy, its `input` chain evaluates only the forwarded UDP
+that TPROXY delivers to Envoy, and it accepts every other packet. Inbound
+filtering is the responsibility of the host firewall, such as the NixOS
+firewall or iptables. In container mode, it is the responsibility of the
+container runtime's bridge and port-mapping rules.
 
 The host firewall must accept traffic patterns created by terrarium's NAT and
 TPROXY interception. Without these rules, DNATted bridge-container traffic

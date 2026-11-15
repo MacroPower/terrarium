@@ -569,10 +569,12 @@ func addFilterRules(
 	// NAT chain.
 	addNATRules(conn, table, cfg, resolvedPorts, cidr4, cidr6, allDenyCIDRs, denyPortOnly, uids)
 
-	// VM mode: NAT PREROUTING and FORWARD for forwarded container traffic.
+	// VM mode: NAT PREROUTING, FORWARD, and INPUT for forwarded
+	// container traffic.
 	if uids.VMMode {
 		addNATPreRouting(conn, table, resolvedPorts, cfg.TCPForwards, deny4, denyPortOnly, uids)
 		addForwardChain(conn, table, terrariumChain)
+		addInputChain(conn, table, terrariumChain)
 	}
 
 	// Mangle chains for UDP TPROXY (forwarded TCP uses DNAT in NAT PREROUTING).
