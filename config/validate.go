@@ -773,6 +773,31 @@ func combinesMismatchRoutes(hm HeaderMatch) bool {
 	}
 }
 
+// changesReservedHeader reports whether hm asks for a change to a
+// header that an Envoy route cannot change. Envoy does not load a
+// route that adds or removes the Host header or a header whose name
+// starts with ":", such as ":authority" and ":path".
+//
+// The [MismatchADD] and [MismatchREPLACE] actions add the header, and
+// the [MismatchDELETE] action with a value removes it. A
+// [MismatchDELETE] entry without a value and a [MismatchLOG] entry
+// change no request.
+func changesReservedHeader(hm HeaderMatch) bool {
+	switch hm.Mismatch {
+	case MismatchADD, MismatchREPLACE:
+	case MismatchDELETE:
+		if hm.Value == "" {
+			return false
+		}
+
+	default:
+		return false
+	}
+
+	// Envoy compares the name with "host" without regard to case.
+	return strings.HasPrefix(hm.Name, ":") || strings.EqualFold(hm.Name, "host")
+}
+
 // validateHTTPRules checks that HTTP rule path and method patterns are
 // valid regular expressions.
 func validateHTTPRules(pr PortRule, ruleIdx int) error {
@@ -801,6 +826,13 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 						ErrHeaderMatchMismatchInvalid, ruleIdx, i, hm.Mismatch,
 					)
 				}
+			}
+
+			if changesReservedHeader(hm) {
+				return fmt.Errorf(
+					"%w: rule %d headerMatches[%d] name %q mismatch %q",
+					ErrHeaderMatchMismatchReservedHeader, ruleIdx, i, hm.Name, hm.Mismatch,
+				)
 			}
 
 			if hm.Secret != nil {

@@ -2607,8 +2607,75 @@ func TestProxyBootstrapStatsSocketTooLong(t *testing.T) {
 		"  socket: /"+strings.Repeat("a", accesslog.MaxSocketPathLen)+"\n"+
 		"egress: []\n")
 
+	requireEnvoyLoadsProxyBootstrap(t, cfg, "")
+}
+
+// TestProxyBootstrapReservedHeaderMatches checks that Envoy accepts
+// the proxy bootstrap of each headerMatches entry that the config
+// validation allows for the Host header and for a header whose name
+// starts with ":". Envoy rejects a route that adds or removes one of
+// these headers, so the entries must generate a route without such a
+// change.
+func TestProxyBootstrapReservedHeaderMatches(t *testing.T) {
+	t.Parallel()
+	requireEnvoy(t)
+
+	// The bootstrap of an HTTP rule names the CA bundle that verifies
+	// the upstream certificates, and Envoy reads that file.
+	caPath, _ := e2eCerts(t, "test.example")
+
+	tests := map[string]struct {
+		entry string
+	}{
+		"Host without mismatch": {
+			entry: "name: Host, value: other.example",
+		},
+		"Host LOG": {
+			entry: "name: Host, value: other.example, mismatch: LOG",
+		},
+		"Host DELETE without value": {
+			entry: "name: Host, mismatch: DELETE",
+		},
+		"authority without mismatch": {
+			entry: `name: ":authority", value: other.example`,
+		},
+		"authority LOG": {
+			entry: `name: ":authority", value: other.example, mismatch: LOG`,
+		},
+		"path DELETE without value": {
+			entry: `name: ":path", mismatch: DELETE`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := parseProxyConfig(t, "egress:\n"+
+				"  - toFQDNs:\n"+
+				"      - matchName: test.example\n"+
+				"    toPorts:\n"+
+				"      - ports:\n"+
+				"          - port: \"80\"\n"+
+				"        rules:\n"+
+				"          http:\n"+
+				"            - method: GET\n"+
+				"              headerMatches:\n"+
+				"                - {"+tt.entry+"}\n")
+
+			requireEnvoyLoadsProxyBootstrap(t, cfg, caPath)
+		})
+	}
+}
+
+// requireEnvoyLoadsProxyBootstrap fails the test when Envoy rejects
+// the proxy bootstrap of cfg. The bootstrap verifies upstream
+// certificates against the CA bundle at caBundlePath.
+func requireEnvoyLoadsProxyBootstrap(t *testing.T, cfg *config.Config, caBundlePath string) {
+	t.Helper()
+
 	bootstrap, err := GenerateProxyEnvoyFromConfig(
-		t.Context(), cfg, "", "", "127.0.0.1", 8080, nil, "0123456789abcdef")
+		t.Context(), cfg, "", caBundlePath, "127.0.0.1", 8080, nil, "0123456789abcdef")
 	require.NoError(t, err)
 
 	path := filepath.Join(t.TempDir(), "envoy-proxy.yaml")

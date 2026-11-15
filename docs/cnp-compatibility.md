@@ -61,6 +61,8 @@ egress:
                   # ADD keeps the values that the client sent and adds the value.
                   # At most 8 headerMatches of one HTTP rule can use ADD, LOG,
                   # or DELETE with a value, counted together.
+                  # ADD, REPLACE, and DELETE with a value are rejected for the
+                  # Host header and for a header whose name starts with ":".
                   mismatch: ADD
                   value: "injected"
                 - name: "X-Strip"
@@ -270,6 +272,15 @@ each action applies only to a header that mismatches. The number of routes
 doubles with each entry, and the limit bounds the route table. An entry with
 `mismatch: REPLACE` does not count, and an entry with `mismatch: DELETE` and no
 `value` does not count either.
+
+Terrarium rejects a `headerMatches` entry whose `mismatch` action changes the
+`Host` header or a header whose name starts with `:`, such as `:authority` or
+`:path`. `ADD` and `REPLACE` change the header, and so does `DELETE` with a
+`value`. Cilium accepts these entries. Envoy does not load a route that adds or
+removes one of these headers, so Terrarium cannot apply the action. An entry
+for one of these headers is valid without a `mismatch` action, with
+`mismatch: LOG`, and with `mismatch: DELETE` and no `value`, because these
+entries change no request.
 
 ### Proxy port and range limits
 

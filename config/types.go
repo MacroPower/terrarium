@@ -494,6 +494,11 @@ type HTTPRule struct {
 // with any value, as in Cilium. Only a request that lacks the header
 // mismatches. ADD and REPLACE give that request the header with an
 // empty value, and DELETE changes no request.
+//
+// An entry must not change the Host header or a header whose name
+// starts with ":", such as ":authority" or ":path". Validation returns
+// [ErrHeaderMatchMismatchReservedHeader] when such an entry uses ADD,
+// REPLACE, or DELETE with a Value.
 type HeaderMatch struct {
 	// Secret is a Cilium field for referencing Kubernetes Secrets
 	// to populate the header value. Terrarium does not run inside

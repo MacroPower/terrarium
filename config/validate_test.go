@@ -2133,6 +2133,122 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestValidateHeaderMatchReservedHeader checks which headerMatches
+// entries the validation rejects for the Host header and for a header
+// whose name starts with ":". Envoy does not load a route that adds or
+// removes one of these headers.
+func TestValidateHeaderMatchReservedHeader(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		name     string
+		value    string
+		mismatch config.MismatchAction
+		err      error
+	}{
+		"Host REPLACE rejected": {
+			name: "Host", value: "other.example", mismatch: config.MismatchREPLACE,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"Host ADD rejected": {
+			name: "Host", value: "other.example", mismatch: config.MismatchADD,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"Host DELETE with value rejected": {
+			name: "Host", value: "other.example", mismatch: config.MismatchDELETE,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"Host REPLACE without value rejected": {
+			name: "Host", mismatch: config.MismatchREPLACE,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"Host ADD without value rejected": {
+			name: "Host", mismatch: config.MismatchADD,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"lowercase host REPLACE rejected": {
+			name: "host", value: "other.example", mismatch: config.MismatchREPLACE,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"uppercase HOST DELETE with value rejected": {
+			name: "HOST", value: "other.example", mismatch: config.MismatchDELETE,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"authority REPLACE rejected": {
+			name: ":authority", value: "other.example", mismatch: config.MismatchREPLACE,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"path DELETE with value rejected": {
+			name: ":path", value: "/v1", mismatch: config.MismatchDELETE,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"method ADD rejected": {
+			name: ":method", value: "GET", mismatch: config.MismatchADD,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"unknown pseudo-header ADD rejected": {
+			name: ":custom", value: "v", mismatch: config.MismatchADD,
+			err: config.ErrHeaderMatchMismatchReservedHeader,
+		},
+		"Host DELETE without value accepted": {
+			name: "Host", mismatch: config.MismatchDELETE,
+		},
+		"path DELETE without value accepted": {
+			name: ":path", mismatch: config.MismatchDELETE,
+		},
+		"Host LOG accepted": {
+			name: "Host", value: "other.example", mismatch: config.MismatchLOG,
+		},
+		"authority LOG accepted": {
+			name: ":authority", value: "other.example", mismatch: config.MismatchLOG,
+		},
+		"Host without mismatch accepted": {
+			name: "Host", value: "other.example",
+		},
+		"path without mismatch accepted": {
+			name: ":path", value: "/v1",
+		},
+		"name that ends with host REPLACE accepted": {
+			name: "X-Forwarded-Host", value: "other.example", mismatch: config.MismatchREPLACE,
+		},
+		"name with a colon after the first character REPLACE accepted": {
+			name: "x:custom", value: "v", mismatch: config.MismatchREPLACE,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{
+							HeaderMatches: []config.HeaderMatch{
+								{Name: "X-Token", Value: "secret"},
+								{Name: tt.name, Value: tt.value, Mismatch: tt.mismatch},
+							},
+						}}},
+					}},
+				}),
+			}
+
+			err := cfg.Validate(t.Context())
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+				assert.ErrorContains(t, err, fmt.Sprintf(
+					"rule 0 headerMatches[1] name %q mismatch %q", tt.name, tt.mismatch))
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestNamedPortValidation(t *testing.T) {
 	t.Parallel()
 

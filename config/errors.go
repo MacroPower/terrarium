@@ -69,6 +69,16 @@ var (
 		"too many headerMatches with mismatch ADD, DELETE, or LOG in one http rule: the maximum is 8 (terrarium constraint: each one doubles the Envoy routes of the rule)",
 	)
 
+	// ErrHeaderMatchMismatchReservedHeader is returned when a
+	// [HeaderMatch] names the Host header or a header whose name
+	// starts with ":", and its Mismatch action changes the header. The
+	// actions that change the header are [MismatchADD],
+	// [MismatchREPLACE], and [MismatchDELETE] with a value. Envoy does
+	// not load a route that adds or removes one of these headers.
+	ErrHeaderMatchMismatchReservedHeader = errors.New(
+		"headerMatch mismatch must not change the Host header or a header that starts with \":\" (terrarium constraint: an Envoy route cannot add or remove these headers)",
+	)
+
 	// ErrHeaderMatchSecret is returned when a [HeaderMatch] sets
 	// a Secret field. Cilium uses this to reference Kubernetes
 	// Secrets for populating header values. Terrarium does not run

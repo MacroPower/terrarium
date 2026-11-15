@@ -266,6 +266,10 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // The number of these routes doubles with each ADD, DELETE, and LOG
 // header. [config.Config.Validate] limits these headers of one HTTP
 // rule for that reason.
+//
+// Envoy does not load a route that adds or removes the Host header or
+// a header whose name starts with ":". [config.Config.Validate] rejects
+// each entry that asks for such a change, so matches must not hold one.
 func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluster string) []route {
 	forward := func(matched, apply []config.HeaderMatch) []route {
 		m := match
