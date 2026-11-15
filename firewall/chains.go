@@ -25,6 +25,11 @@ const (
 	chainDenyPortNAT = "deny_port_nat"
 )
 
+// neighborDiscoveryTypes holds the ICMPv6 types of the neighbor
+// discovery messages (RFC 4861) that a host sends: router
+// solicitation, neighbor solicitation, and neighbor advertisement.
+var neighborDiscoveryTypes = []byte{133, 135, 136}
+
 // matchFilteredTraffic returns UID-match expressions that scope a
 // rule to policy-evaluated traffic. In container mode this matches
 // the single Terrarium UID; in VM mode it returns nil so the
@@ -137,7 +142,15 @@ func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain,
 
 // addOutputEstablishedAndICMP adds the OUTPUT rules that appear after
 // the UID 1000 dispatch (or in its place for unrestricted/blocked
-// modes): CT state ESTABLISHED, per-type ICMP RELATED, and root DNS.
+// modes). The rules accept CT state ESTABLISHED, per-type ICMP
+// RELATED, IPv6 neighbor discovery, and root DNS.
+//
+// The neighbor discovery rules accept router solicitations, neighbor
+// solicitations, and neighbor advertisements under every policy. The
+// kernel sends those messages to resolve the link-layer address of
+// each IPv6 next hop and to answer the solicitations of its
+// neighbors. The messages have no socket owner and conntrack does not
+// track them, so no UID rule and no CT state rule accepts them.
 func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftables.Chain, uids UIDs) {
 	// CT state established -> accept (covers root, Envoy, and
 	// ownerless kernel packets).
@@ -177,6 +190,22 @@ func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftabl
 				matchL4Proto(unix.IPPROTO_ICMPV6),
 				matchICMPType(icmpType),
 				matchCtState(expr.CtStateBitRELATED),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
+
+	// ICMPv6 neighbor discovery: router-solicitation(133),
+	// neighbor-solicitation(135), neighbor-advertisement(136). Not
+	// UID-scoped and not CT-scoped, because the kernel sends these
+	// without a socket owner and conntrack leaves them untracked.
+	for _, icmpType := range neighborDiscoveryTypes {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV6),
+				matchL4Proto(unix.IPPROTO_ICMPV6),
+				matchICMPType(icmpType),
 				verdictExprs(expr.VerdictAccept),
 			),
 		})

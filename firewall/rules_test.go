@@ -2319,6 +2319,103 @@ func TestApplyRules_VMMode_Blocked(t *testing.T) {
 	assert.Equal(t, 2, vmRedirCount, "should have DNS UDP and DNS TCP REDIRECTs")
 }
 
+// ruleIsBareVerdict reports whether a rule holds one verdict and no
+// match, so that the verdict applies to every packet that reaches the
+// rule.
+func ruleIsBareVerdict(r *nftables.Rule) bool {
+	if len(r.Exprs) != 1 {
+		return false
+	}
+
+	_, ok := r.Exprs[0].(*expr.Verdict)
+
+	return ok
+}
+
+func TestApplyRules_NeighborDiscovery(t *testing.T) {
+	t.Parallel()
+
+	// The subtests run in parallel, so each case gets its own config.
+	filtered := func() *config.Config {
+		return &config.Config{
+			Egress: egressRules(
+				config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+				},
+			),
+		}
+	}
+	blocked := func() *config.Config {
+		return &config.Config{Egress: egressRules(config.EgressRule{})}
+	}
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		uids firewall.UIDs
+	}{
+		"container unrestricted": {cfg: &config.Config{}, uids: testUIDs},
+		"container blocked":      {cfg: blocked(), uids: testUIDs},
+		"container filtered":     {cfg: filtered(), uids: testUIDs},
+		"vm unrestricted":        {cfg: &config.Config{}, uids: testVMUIDs},
+		"vm blocked":             {cfg: blocked(), uids: testVMUIDs},
+		"vm filtered":            {cfg: filtered(), uids: testVMUIDs},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tc.cfg, tc.uids)
+			require.NoError(t, err)
+
+			rules := rec.rulesForChain("output")
+
+			// The first rule without a match is the terminal verdict
+			// of the chain, or the jump that sends every packet into
+			// policy evaluation. No later rule sees a packet.
+			terminal := slices.IndexFunc(rules, ruleIsBareVerdict)
+			require.NotEqual(t, -1, terminal, "output chain must end in a rule without a match")
+
+			// Router solicitation, neighbor solicitation, and
+			// neighbor advertisement.
+			for _, icmpType := range []byte{133, 135, 136} {
+				// The rule matches no UID and no CT state. The kernel
+				// sends these messages without a socket owner, and
+				// conntrack does not track them.
+				want := []expr.Any{
+					// meta nfproto ipv6
+					&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
+					// meta l4proto icmpv6
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
+					// icmpv6 type
+					&expr.Payload{
+						DestRegister: 1,
+						Base:         expr.PayloadBaseTransportHeader,
+						Offset:       0,
+						Len:          1,
+					},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{icmpType}},
+					// accept
+					&expr.Verdict{Kind: expr.VerdictAccept},
+				}
+
+				idx := slices.IndexFunc(rules, func(r *nftables.Rule) bool {
+					return assert.ObjectsAreEqual(want, r.Exprs)
+				})
+				require.NotEqual(t, -1, idx,
+					"output chain must accept ICMPv6 type %d for every sender", icmpType)
+				assert.Less(t, idx, terminal,
+					"ACCEPT for ICMPv6 type %d must come before the rule that ends the chain", icmpType)
+			}
+		})
+	}
+}
+
 func TestApplyRules_ExcludeUIDs(t *testing.T) {
 	t.Parallel()
 

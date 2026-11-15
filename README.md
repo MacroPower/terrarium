@@ -1362,6 +1362,14 @@ DNS proxy listens on both `127.0.0.1:53` and `[::1]:53`. NAT OUTPUT REDIRECT
 rules intercept port 53 for both address families, so no `/etc/resolv.conf`
 modification is needed.
 
+Under every policy, the `output` chain accepts the ICMPv6 neighbor discovery
+messages that the kernel sends: router solicitations, neighbor solicitations,
+and neighbor advertisements. The kernel resolves the link-layer address of each
+IPv6 next hop with these messages, and it answers the solicitations of its
+neighbors with them. IPv6 on a link fails without them. The `egress` and
+`egressDeny` rules with `icmps` do not apply to these messages. In daemon mode,
+those rules apply to the ICMPv6 that containers send through the VM.
+
 At startup, init checks whether IPv6 is actually available via
 `net.ipv6.conf.all.disable_ipv6`. If the stack appears disabled, IPv6 is
 explicitly turned off via sysctl on all interfaces as defense-in-depth. The
