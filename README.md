@@ -833,6 +833,10 @@ Every `terrarium stats` command takes `--since`, `--until`,
 so it does not take `--limit`. The CLI opens the DB read-only, so it has no
 daemon dependency.
 
+Without `--instance`, each command reads the events of the run with the latest
+start. That run might have ended. To read an earlier run that is still running,
+pass its ID with `--instance`.
+
 Each event of `terrarium stats list` holds two fields that say where the
 flow went and which rule decided it:
 

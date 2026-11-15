@@ -222,11 +222,11 @@ func openStatsReader(ctx context.Context, path string) (*eventstore.Reader, erro
 	return r, nil
 }
 
-// resolveInstance returns the instance ID to filter on. Empty input
-// means the most recent in-progress run, falling back to the most
-// recent overall row when no run is in progress. Defers to
-// [eventstore.Reader.LatestInstanceID] so the stats CLI and the
-// status renderer agree on which instance is "latest".
+// resolveInstance returns the instance ID to filter on. The empty
+// explicit ID selects the run with the latest start, which is the
+// instance of [eventstore.Reader.LatestInstanceID]. The stats CLI,
+// the status report, and the MCP tools therefore read the same
+// instance by default.
 func resolveInstance(ctx context.Context, r *eventstore.Reader, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
@@ -307,7 +307,7 @@ func statsListCmd(usr *config.User) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "list",
+		Use:   "list", //nolint:goconst // the other occurrences are test inputs.
 		Short: "List raw events",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -626,10 +626,15 @@ func (r *Reader) Instances(ctx context.Context) ([]Instance, error) {
 	return out, nil
 }
 
-// LatestInstanceID returns the ID of the running instance with the
-// latest start. When no instance is running, it returns the ID of
-// the instance with the latest start. It returns ok=false when the
-// store holds no instance.
+// LatestInstanceID returns the ID of the instance with the latest
+// start, which is the first instance of [Reader.Instances]. It
+// returns ok=false when the store holds no instance.
+//
+// The end of an instance does not change the result. An instance
+// without an end is running, or its process stopped without a
+// [Store.Close], and the store does not record which of the two
+// happened. A running instance therefore does not win over an
+// instance that started later.
 func (r *Reader) LatestInstanceID(ctx context.Context) (string, bool, error) {
 	if r.version < eventsSchemaVersion {
 		return "", false, nil
@@ -639,7 +644,7 @@ func (r *Reader) LatestInstanceID(ctx context.Context) (string, bool, error) {
 
 	err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM instances
-		 ORDER BY (ended_at IS NULL) DESC, started_at DESC
+		 ORDER BY started_at DESC, rowid DESC
 		 LIMIT 1`,
 	).Scan(&id)
 

@@ -50,8 +50,7 @@ const (
 		"such as 30m or 24h, or an RFC 3339 time. Defaults to 24h."
 	untilDesc    = "End of the time window, inclusive, as an RFC 3339 time. Defaults to now."
 	instanceDesc = "ID of the instance to read, from list_instances. " +
-		"Defaults to the running instance with the latest start, " +
-		"or to the instance with the latest start when none runs."
+		"Defaults to the instance with the latest start."
 	limitDesc = "Maximum number of rows. Defaults to 50. A value greater than 200 returns 200 rows."
 )
 
@@ -314,8 +313,7 @@ func (s *Server) addTools() {
 		Annotations: readOnly("Event store health"),
 		InputSchema: inputSchema[GetHealthInput](func(p properties) {
 			p.describe("instance", "ID of the instance whose heartbeat to read, from list_instances. "+
-				"Defaults to the running instance with the latest start, "+
-				"or to the instance with the latest start when none runs.")
+				"Defaults to the instance with the latest start.")
 		}),
 	}, handler(s, getHealth))
 }

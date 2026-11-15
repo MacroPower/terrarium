@@ -242,6 +242,68 @@ func TestStatsList(t *testing.T) {
 	})
 }
 
+func TestStatsListReadsLatestRun(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	path := filepath.Join(t.TempDir(), "stats.db")
+
+	// The first store stays open, so its run records no end, as a
+	// process does that stops without closing the store.
+	unended, err := eventstore.Open(t.Context(), path,
+		eventstore.WithBatchSize(1),
+		eventstore.WithBatchInterval(10*time.Millisecond))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, unended.Close()) })
+
+	unended.Emit(eventstore.Event{
+		Time:     now,
+		Source:   eventstore.SourceDNS,
+		Decision: eventstore.DecisionAllow,
+		Domain:   "unended.example",
+	})
+
+	require.Eventually(t, func() bool {
+		r, err := eventstore.OpenReader(t.Context(), path)
+		if err != nil {
+			return false
+		}
+
+		defer r.Close() //nolint:errcheck // read-only handle in polling closure.
+
+		page, err := r.Events(t.Context(), eventstore.EventsQuery{Limit: 1})
+
+		return err == nil && len(page.Events) == 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	later, err := eventstore.Open(t.Context(), path)
+	require.NoError(t, err)
+
+	later.Emit(eventstore.Event{
+		Time:     now,
+		Source:   eventstore.SourceDNS,
+		Decision: eventstore.DecisionAllow,
+		Domain:   "later.example",
+	})
+
+	require.NoError(t, later.Close())
+
+	cmd := statsCmd(config.NewUser())
+
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"list", "--db", path, "--format", "json"})
+
+	require.NoError(t, cmd.ExecuteContext(t.Context()))
+
+	var rows []map[string]any
+
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "later.example", rows[0]["domain"])
+}
+
 func TestStatsTopCSV(t *testing.T) {
 	t.Parallel()
 

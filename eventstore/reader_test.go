@@ -829,16 +829,28 @@ func TestReader_LatestInstanceID(t *testing.T) {
 			want:   "new",
 			wantOK: true,
 		},
-		"a running instance wins over a later ended one": {
+		"a later ended instance wins over an instance without an end": {
 			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
-				('running', 100, NULL, 'init'), ('ended', 200, 250, 'init');`,
+				('crashed', 100, NULL, 'init'), ('ended', 200, 250, 'init');`,
+			want:   "ended",
+			wantOK: true,
+		},
+		"a later instance without an end wins over an ended instance": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('ended', 100, 150, 'init'), ('running', 200, NULL, 'init');`,
 			want:   "running",
 			wantOK: true,
 		},
-		"latest start wins among running instances": {
+		"latest start wins among instances without an end": {
 			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
 				('old', 100, NULL, 'init'), ('new', 200, NULL, 'init');`,
 			want:   "new",
+			wantOK: true,
+		},
+		"the later row wins among instances with the same start": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('b', 100, NULL, 'init'), ('a', 100, 150, 'init');`,
+			want:   "a",
 			wantOK: true,
 		},
 	}
@@ -856,6 +868,26 @@ func TestReader_LatestInstanceID(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestReader_LatestInstanceIDAfterRunWithoutEnd(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+
+	// A store that stays open records no end, as a process does
+	// that stops without a Close.
+	unended, err := eventstore.Open(t.Context(), path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, unended.Close()) })
+
+	later := writeStore(t, path, nil)
+
+	got, ok, err := openReader(t, path).LatestInstanceID(t.Context())
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, later, got)
 }
 
 func TestReader_Health(t *testing.T) {
