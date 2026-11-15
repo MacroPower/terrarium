@@ -932,7 +932,8 @@ func ValidEnvoyLogLevels() []string {
 // populated copy with defaults applied.
 type EnvoySettings struct {
 	// DrainTimeout is the maximum duration to wait for Envoy to exit
-	// after SIGTERM before proceeding with shutdown.
+	// after SIGTERM. Terrarium kills an Envoy that still runs after
+	// that duration.
 	DrainTimeout Duration `yaml:"drainTimeout,omitempty"`
 	// StartupTimeout is the maximum duration to wait for Envoy to
 	// begin accepting connections after launch.

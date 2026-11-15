@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -532,6 +533,127 @@ func TestStartEnvoyAndWaitStartFails(t *testing.T) {
 	err := startEnvoyAndWait(t.Context(), cmd, readySocket(t), config.EnvoySettings{})
 	require.ErrorContains(t, err, "starting envoy")
 	require.NotErrorIs(t, err, ErrEnvoyNotRunning)
+}
+
+// startEnvoyStub starts a process that stands in for Envoy and stays
+// alive for 60 seconds. With ignoreTerm, the process ignores SIGTERM,
+// as an Envoy that outlives its drain does. The process has set its
+// signal handling when startEnvoyStub returns.
+func startEnvoyStub(t *testing.T, ignoreTerm bool) *exec.Cmd {
+	t.Helper()
+
+	// An ignored signal stays ignored in the program that exec starts.
+	script := "echo ready; exec sleep 60"
+	if ignoreTerm {
+		script = `trap "" TERM; ` + script
+	}
+
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", script)
+
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+
+	require.NoError(t, cmd.Start())
+
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "ready\n", line)
+
+	return cmd
+}
+
+// TestStopEnvoy checks that the process has exited when stopEnvoy
+// returns, and that stopEnvoy kills only a process that outlives the
+// drain timeout.
+func TestStopEnvoy(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		ignoreTerm   bool
+		drainTimeout time.Duration
+		want         syscall.Signal
+	}{
+		"exits on SIGTERM": {
+			drainTimeout: 30 * time.Second,
+			want:         syscall.SIGTERM,
+		},
+		"outlives the drain timeout": {
+			ignoreTerm:   true,
+			drainTimeout: 300 * time.Millisecond,
+			want:         syscall.SIGKILL,
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := startEnvoyStub(t, tc.ignoreTerm)
+
+			start := time.Now()
+
+			stopEnvoy(t.Context(), cmd, tc.drainTimeout)
+
+			elapsed := time.Since(start)
+
+			require.NotNil(t, cmd.ProcessState, "the process must have exited and been waited on")
+
+			status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+			require.True(t, ok)
+			require.True(t, status.Signaled(), "a signal must have ended the process")
+			assert.Equal(t, tc.want, status.Signal())
+
+			if tc.want == syscall.SIGKILL {
+				assert.GreaterOrEqual(t, elapsed, tc.drainTimeout,
+					"the kill must wait for the drain timeout")
+			} else {
+				assert.Less(t, elapsed, tc.drainTimeout)
+			}
+		})
+	}
+}
+
+// TestStopEnvoyNotRunning checks that stopEnvoy returns without a wait
+// for a command that has no running process.
+func TestStopEnvoyNotRunning(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		cmd func(t *testing.T) *exec.Cmd
+	}{
+		"nil command": {
+			cmd: func(*testing.T) *exec.Cmd { return nil },
+		},
+		"never started": {
+			cmd: func(t *testing.T) *exec.Cmd {
+				t.Helper()
+
+				return exec.CommandContext(t.Context(), "sleep", "60")
+			},
+		},
+		"already waited on": {
+			cmd: func(t *testing.T) *exec.Cmd {
+				t.Helper()
+
+				cmd := exec.CommandContext(t.Context(), "true")
+				require.NoError(t, cmd.Run())
+
+				return cmd
+			},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			start := time.Now()
+
+			stopEnvoy(t.Context(), tc.cmd(t), 30*time.Second)
+
+			assert.Less(t, time.Since(start), 30*time.Second)
+		})
+	}
 }
 
 func TestWaitForProxyListener(t *testing.T) {

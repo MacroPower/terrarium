@@ -396,9 +396,18 @@ func probeProxyListener(ctx context.Context, client *http.Client, addr, token st
 	return resp.StatusCode == http.StatusOK && string(body) == token, nil
 }
 
-// stopEnvoy sends SIGTERM to the Envoy process and waits up to
-// drainTimeout for it to exit gracefully. If the process has
-// already exited or was never started, it returns immediately.
+// stopEnvoy stops the Envoy process of cmd and waits for it, so the
+// process has exited when stopEnvoy returns.
+//
+// It sends SIGTERM and waits up to drainTimeout for Envoy to exit.
+// When Envoy still runs after drainTimeout, stopEnvoy sends SIGKILL
+// and waits until the process exits. A caller that starts another
+// Envoy after stopEnvoy therefore never starts it while the old Envoy
+// still runs.
+//
+// It returns immediately when cmd is nil or never started. It also
+// returns immediately when the process does not accept the SIGTERM,
+// which is the case after a caller waited on the process.
 func stopEnvoy(ctx context.Context, cmd *exec.Cmd, drainTimeout time.Duration) {
 	if cmd == nil || cmd.Process == nil {
 		return
@@ -424,7 +433,23 @@ func stopEnvoy(ctx context.Context, cmd *exec.Cmd, drainTimeout time.Duration) {
 
 	select {
 	case <-envoyDone:
+		return
+
 	case <-time.After(drainTimeout):
-		slog.WarnContext(ctx, "envoy did not exit within drain timeout, proceeding")
 	}
+
+	slog.WarnContext(ctx, "envoy did not exit within drain timeout, killing it",
+		slog.Duration("drain_timeout", drainTimeout))
+
+	// Kill reports [os.ErrProcessDone] when Envoy exited between the
+	// timeout and the kill.
+	err = cmd.Process.Kill()
+	if err != nil && !errors.Is(err, os.ErrProcessDone) {
+		// Without the kill, Envoy can run forever, and so can the wait.
+		slog.ErrorContext(ctx, "killing envoy", slog.Any("err", err))
+
+		return
+	}
+
+	<-envoyDone
 }
