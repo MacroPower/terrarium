@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -885,6 +887,77 @@ func TestProxyE2EEnvoyLog(t *testing.T) {
 
 		return err == nil && info.Size() > 0
 	}, 15*time.Second, 100*time.Millisecond, "envoy did not write to its log file")
+}
+
+// TestProxyE2EEnvoyStderr checks that Envoy writes its whole output to
+// its log file when it starts with the arguments of a proxy that has a
+// log file. The stderr of that Envoy is the stderr of the proxy, which
+// must hold only the log lines of terrarium.
+//
+// Envoy writes a line to its stderr when it logs the line before it
+// applies --log-path. See [proxyEnvoyArgs] for the line that the
+// arguments prevent.
+//
+//nolint:paralleltest // e2e tests run envoy subprocesses.
+func TestProxyE2EEnvoyStderr(t *testing.T) {
+	requireEnvoy(t)
+
+	const token = "0123456789abcdef0123456789abcdef"
+
+	dir := t.TempDir()
+	port := freePort(t)
+	cfg := parseProxyConfig(t, "egress: []\n")
+
+	bootstrap, err := GenerateProxyEnvoyFromConfig(
+		t.Context(), cfg, "", "", loopbackIPv4, port, nil, token)
+	require.NoError(t, err)
+
+	bootstrapPath := filepath.Join(dir, "envoy-proxy.yaml")
+	require.NoError(t, os.WriteFile(bootstrapPath, []byte(bootstrap), 0o644))
+
+	logPath := filepath.Join(dir, "logs", "envoy.log")
+	require.NoError(t, prepareProxyEnvoyLog(logPath))
+
+	// Envoy logs its startup at the info level.
+	args := proxyEnvoyArgs(runtime.GOOS, bootstrapPath, "info", logPath)
+
+	// See startProxy for the reason not to use t.Context.
+	//nolint:usetesting // see comment above.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+
+	cmd := exec.CommandContext(ctx, envoyCommand, args...)
+
+	cmd.Env = append(os.Environ(), envoy.ProxyProbeTokenEnv+"="+token)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = 5 * time.Second
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+
+	require.NoError(t, cmd.Start())
+
+	// Envoy has applied its arguments when it serves the address.
+	addr := net.JoinHostPort(loopbackIPv4, strconv.Itoa(port))
+	waitErr := waitForProxyListener(t.Context(), addr, token, nil, 15*time.Second)
+
+	cancel()
+
+	// Envoy exits with status 0 after SIGTERM, and Wait then returns
+	// the error of the canceled context. Wait also returns only after
+	// the buffers hold the whole output of Envoy.
+	require.ErrorIs(t, cmd.Wait(), context.Canceled)
+	require.NoError(t, waitErr)
+
+	assert.Empty(t, stderr.String(), "envoy wrote to its stderr")
+	assert.Empty(t, stdout.String(), "envoy wrote to its stdout")
+
+	info, err := os.Stat(logPath)
+	require.NoError(t, err)
+	assert.Positive(t, info.Size(), "envoy did not write to its log file")
 }
 
 // shortTempDir creates a temp dir directly under /tmp and removes it

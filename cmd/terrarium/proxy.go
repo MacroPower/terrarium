@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,6 +55,9 @@ const (
 	loopbackIPv4 = "127.0.0.1"
 	loopbackIPv6 = "::1"
 )
+
+// osLinux is the [runtime.GOOS] value of Linux.
+const osLinux = "linux"
 
 // proxyOptions carries the proxy command's flag values.
 type proxyOptions struct {
@@ -206,6 +210,43 @@ func proxyEnvoyLogDefault(opts proxyOptions) string {
 // addresses therefore have different default sockets.
 func proxyStatsSocket(cfg *config.Config, opts proxyOptions) string {
 	return cfg.StatsSocket(config.ProxyStatsSocketDefault(proxyInstanceName(opts)))
+}
+
+// proxyEnvoyArgs returns the arguments of the Envoy that a proxy runs
+// on the operating system goos, which is a value of [runtime.GOOS].
+// Envoy loads the bootstrap at bootstrapPath and logs at logLevel. It
+// writes its process log to logPath, or to its stderr when logPath is
+// empty.
+//
+// Without the --concurrency argument, Envoy counts the CPUs of the host
+// while it parses its arguments, before it applies --log-level and
+// --log-path. On every system but Linux, it logs a debug line about
+// that count at that moment. The line reaches the stderr of Envoy at
+// every log level, also when Envoy has a log file. The arguments for
+// those systems therefore set --concurrency to the number of logical
+// CPUs, which is the count of Envoy there.
+//
+// On Linux, Envoy does not log that line, and its count also honors
+// the CPU limit of the cgroup. The arguments for Linux leave that count
+// to Envoy.
+func proxyEnvoyArgs(goos, bootstrapPath, logLevel, logPath string) []string {
+	args := []string{
+		"-c", bootstrapPath,
+		"--log-level", logLevel,
+		// Hot restart uses a shared-memory region keyed by base-id.
+		// Disabling it lets multiple Envoys coexist on one host.
+		"--disable-hot-restart",
+	}
+
+	if logPath != "" {
+		args = append(args, "--log-path", logPath)
+	}
+
+	if goos != osLinux {
+		args = append(args, "--concurrency", strconv.Itoa(runtime.NumCPU()))
+	}
+
+	return args
 }
 
 // prepareProxyEnvoyLog creates the Envoy process log file at path, and
@@ -793,7 +834,8 @@ func newProbeToken() (string, error) {
 //
 // Envoy writes its process log to the logging.envoy.path of the policy,
 // or to usr.EnvoyLogPath when the policy does not set one. When both
-// are empty, Envoy logs to the stderr of the proxy.
+// are empty, Envoy logs to the stderr of the proxy. See
+// [proxyEnvoyArgs] for the arguments of Envoy.
 //
 // When usr.ReadyFile is set, Proxy creates that file after its own
 // Envoy answers on the listen address and removes it before it returns.
@@ -903,14 +945,6 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 
 	envoySettings := cfg.EnvoyDefaults()
 
-	envoyArgs := []string{
-		"-c", bootstrapPath,
-		"--log-level", cfg.EnvoyLogLevel(),
-		// Hot restart uses a shared-memory region keyed by base-id;
-		// disabling it lets multiple Envoys coexist on one host.
-		"--disable-hot-restart",
-	}
-
 	envoyLogPath := cfg.EnvoyLogPath(usr.EnvoyLogPath)
 	if envoyLogPath != "" {
 		err = prepareProxyEnvoyLog(envoyLogPath)
@@ -918,15 +952,14 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 			return err
 		}
 
-		envoyArgs = append(envoyArgs, "--log-path", envoyLogPath)
-
 		// The Envoy log does not reach the terminal, so name the
 		// file before Envoy starts.
 		slog.InfoContext(ctx, "proxy: starting envoy",
 			slog.String("envoy_log", envoyLogPath))
 	}
 
-	cmd := envoyBin.command(ctx, envoyArgs...)
+	cmd := envoyBin.command(ctx,
+		proxyEnvoyArgs(runtime.GOOS, bootstrapPath, cfg.EnvoyLogLevel(), envoyLogPath)...)
 
 	// Envoy writes here what it does not send to its log file, such as
 	// a command line that it rejects.

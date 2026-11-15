@@ -1678,6 +1678,115 @@ func TestProxyEnvoyLog(t *testing.T) {
 	}
 }
 
+// TestProxyEnvoyArgs checks the Envoy arguments of a proxy on each
+// operating system. Only the arguments for a system other than Linux
+// set --concurrency. The Envoy of those systems logs a debug line to
+// its stderr when it counts the CPUs itself.
+func TestProxyEnvoyArgs(t *testing.T) {
+	t.Parallel()
+
+	const (
+		bootstrapPath = "/run/envoy.yaml"
+		logPath       = "/logs/envoy.log"
+	)
+
+	// The arguments for every system.
+	common := []string{
+		"-c", bootstrapPath,
+		"--log-level", "info",
+		"--disable-hot-restart",
+	}
+
+	cpus := strconv.Itoa(runtime.NumCPU())
+
+	tests := map[string]struct {
+		goos    string
+		logPath string
+		// want holds the arguments that follow the common ones.
+		want []string
+	}{
+		"linux with a log file": {
+			goos:    osLinux,
+			logPath: logPath,
+			want:    []string{"--log-path", logPath},
+		},
+		"linux without a log file": {
+			goos: osLinux,
+		},
+		"darwin with a log file": {
+			goos:    "darwin",
+			logPath: logPath,
+			want:    []string{"--log-path", logPath, "--concurrency", cpus},
+		},
+		"darwin without a log file": {
+			goos: "darwin",
+			want: []string{"--concurrency", cpus},
+		},
+		"freebsd without a log file": {
+			goos: "freebsd",
+			want: []string{"--concurrency", cpus},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := proxyEnvoyArgs(tt.goos, bootstrapPath, "info", tt.logPath)
+			assert.Equal(t, append(slices.Clone(common), tt.want...), got)
+		})
+	}
+}
+
+// TestProxyEnvoyConcurrency checks that [Proxy] passes the
+// --concurrency argument of the host system to Envoy. See
+// [proxyEnvoyArgs] for the systems that get the argument. The stub
+// envoy records its arguments.
+//
+//nolint:paralleltest // sets PATH for the whole process.
+func TestProxyEnvoyConcurrency(t *testing.T) {
+	started, argsPath := stubEnvoy(t)
+
+	dir := t.TempDir()
+	usr := stubProxyUser(t, dir, "egress: []\n")
+	usr.EnvoyLogPath = filepath.Join(dir, "envoy.log")
+
+	opts := proxyOptions{
+		envoyPath:   envoyCommand,
+		bindAddress: loopbackIPv4,
+		httpPort:    freePort(t),
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
+	}()
+
+	requireStubStarted(t, started)
+	cancel()
+	requireProxyShutDown(t, errCh)
+
+	data, err := os.ReadFile(argsPath) //nolint:gosec // test fixture path.
+	require.NoError(t, err)
+
+	args := strings.Split(strings.TrimSpace(string(data)), "\n")
+
+	if runtime.GOOS == osLinux {
+		assert.NotContains(t, args, "--concurrency")
+
+		return
+	}
+
+	i := slices.Index(args, "--concurrency")
+	require.GreaterOrEqual(t, i, 0, "envoy args: %v", args)
+	require.Less(t, i+1, len(args))
+	assert.Equal(t, strconv.Itoa(runtime.NumCPU()), args[i+1])
+}
+
 // TestProxyCmdEnvoyLog checks which --log-path the proxy command passes
 // to Envoy. Without the --envoy-log flag, the path holds the listen
 // address, so each proxy and container mode write their own log file.
