@@ -22,14 +22,35 @@ import (
 func freePort(t *testing.T) int {
 	t.Helper()
 
+	return freePorts(t, 1)[0]
+}
+
+// freePorts returns n TCP ports of the IPv4 loopback address that the
+// kernel picked. The ports differ, because every listener stays open
+// until each listener has a port. It closes the listeners before it
+// returns, so it does not reserve the ports, as [freePort] does not.
+func freePorts(t *testing.T, n int) []int {
+	t.Helper()
+
 	lc := net.ListenConfig{}
 
-	ln, err := lc.Listen(t.Context(), "tcp4", net.JoinHostPort(loopbackIPv4, "0"))
-	require.NoError(t, err)
+	ports := make([]int, n)
+	listeners := make([]net.Listener, n)
 
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	require.True(t, ok)
-	require.NoError(t, ln.Close())
+	for i := range ports {
+		ln, err := lc.Listen(t.Context(), "tcp4", net.JoinHostPort(loopbackIPv4, "0"))
+		require.NoError(t, err)
 
-	return addr.Port
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		require.True(t, ok)
+
+		ports[i] = addr.Port
+		listeners[i] = ln
+	}
+
+	for _, ln := range listeners {
+		require.NoError(t, ln.Close())
+	}
+
+	return ports
 }

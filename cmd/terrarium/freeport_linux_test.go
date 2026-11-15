@@ -53,6 +53,21 @@ func freePort(t *testing.T) int {
 	return port
 }
 
+// freePorts returns n TCP ports that the kernel picked, and it
+// reserves each port until the test ends, as [freePort] does. The
+// ports differ, because the kernel does not give a reserved port to
+// the next reservation.
+func freePorts(t *testing.T, n int) []int {
+	t.Helper()
+
+	ports := make([]int, n)
+	for i := range ports {
+		ports[i] = freePort(t)
+	}
+
+	return ports
+}
+
 // reservePort binds a socket of the address family family to port 0
 // with SO_REUSEADDR and returns the socket and its port. An IPv6
 // socket binds the wildcard address of both families. An IPv4 socket

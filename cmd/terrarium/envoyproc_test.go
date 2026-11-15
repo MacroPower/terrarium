@@ -85,64 +85,18 @@ func TestCheckListenAddress(t *testing.T) {
 		},
 	}
 
-	// The kernel can give one port to two listeners that ask at
-	// different times or for different address families. A case
-	// that shared its port with another case would see the listener
-	// of that case. The test therefore opens every listener here,
-	// before a subtest runs. Each case reserves its port on the IPv4
-	// loopback address, and all reservations stay open until every
-	// case has a port.
-	var (
-		lc       net.ListenConfig
-		reserved []net.Listener
-	)
-
-	ports := make(map[string]string, len(tests))
-	skips := make(map[string]error, len(tests))
+	// [freePorts] gives each case a port of its own, because a case
+	// sees every listener on its port. On Linux, the ports stay
+	// reserved until the test ends, so a case never binds a port that
+	// a listener held and closed. Such a port can stay bound after the
+	// close. A child process that another test starts during the close
+	// holds a copy of the listener until it runs its program.
+	ports := freePorts(t, len(tests))
 
 	for name, tt := range tests {
-		ln, err := lc.Listen(t.Context(), "tcp4", net.JoinHostPort(loopbackIPv4, "0"))
-		require.NoError(t, err)
+		port := strconv.Itoa(ports[0])
+		ports = ports[1:]
 
-		_, port, err := net.SplitHostPort(ln.Addr().String())
-		require.NoError(t, err)
-
-		ports[name] = port
-
-		// The reservation is the held listener of a case that holds
-		// the IPv4 loopback address.
-		if tt.held == loopbackIPv4 {
-			t.Cleanup(func() {
-				assert.NoError(t, ln.Close())
-			})
-
-			continue
-		}
-
-		reserved = append(reserved, ln)
-
-		if tt.held == "" {
-			continue
-		}
-
-		skips[name] = loopbackError(t, tt.held)
-		if skips[name] != nil {
-			continue
-		}
-
-		held, err := lc.Listen(t.Context(), "tcp", net.JoinHostPort(tt.held, port))
-		require.NoError(t, err)
-
-		t.Cleanup(func() {
-			assert.NoError(t, held.Close())
-		})
-	}
-
-	for _, ln := range reserved {
-		require.NoError(t, ln.Close())
-	}
-
-	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -150,11 +104,20 @@ func TestCheckListenAddress(t *testing.T) {
 				t.Skip("needs the bind rules of Linux")
 			}
 
-			if skips[name] != nil {
-				t.Skip(skips[name])
+			if tt.held != "" {
+				requireLoopback(t, tt.held)
+
+				var lc net.ListenConfig
+
+				held, err := lc.Listen(t.Context(), "tcp", net.JoinHostPort(tt.held, port))
+				require.NoError(t, err)
+
+				t.Cleanup(func() {
+					assert.NoError(t, held.Close())
+				})
 			}
 
-			addr := net.JoinHostPort(tt.host, ports[name])
+			addr := net.JoinHostPort(tt.host, port)
 
 			err := checkListenAddress(t.Context(), addr)
 			if tt.err == nil {
