@@ -124,6 +124,7 @@ func TestEnvoyDefaults(t *testing.T) {
 		"full override returns user values": {
 			cfg: &config.Config{
 				Envoy: &config.EnvoySettings{
+					Path:                     "envoy",
 					DrainTimeout:             config.Duration{Duration: 30 * time.Second},
 					StartupTimeout:           config.Duration{Duration: 20 * time.Second},
 					MaxDownstreamConnections: 1024,
@@ -131,6 +132,7 @@ func TestEnvoyDefaults(t *testing.T) {
 				},
 			},
 			want: config.EnvoySettings{
+				Path:                     "envoy",
 				DrainTimeout:             config.Duration{Duration: 30 * time.Second},
 				StartupTimeout:           config.Duration{Duration: 20 * time.Second},
 				MaxDownstreamConnections: 1024,

@@ -17,10 +17,16 @@
 // binary or nothing.
 //
 // [Installer.Verify] hashes the installed binary and returns its path.
-// Call it before every start of Envoy. A missing binary returns
-// [ErrNotInstalled], which a caller can answer with
-// [Installer.Install]. A binary with the wrong hash returns
-// [ErrHashMismatch]. Neither method replaces such a binary, because the
+// [Installer.Open] does the same check and returns the open file. Call
+// [Installer.Open] before every start of Envoy and execute the binary
+// through the open file where the platform allows it. On Linux, the path
+// /proc/self/fd/<n> names the open file. A process that replaces the
+// file at the install path after the check then has no effect on the
+// binary that runs.
+//
+// A missing binary returns [ErrNotInstalled], which a caller can answer
+// with [Installer.Install]. A binary with the wrong hash returns
+// [ErrHashMismatch]. No method replaces such a binary, because the
 // mismatch can mean that someone replaced the file. The user must
 // inspect the file and remove it before a new install.
 //

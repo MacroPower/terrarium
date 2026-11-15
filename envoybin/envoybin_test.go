@@ -1049,6 +1049,97 @@ func TestVerifyModifiedBinary(t *testing.T) {
 	assert.Equal(t, modified, data)
 }
 
+// TestOpen checks that the file from [envoybin.Installer.Open] is the
+// file that Open hashed, also after another file takes the install
+// path.
+func TestOpen(t *testing.T) {
+	t.Parallel()
+
+	srv, _ := serveBytes(t, testBinary)
+	inst, path := newInstaller(t, envoybin.Build{
+		URL:            srv.URL + "/envoy",
+		Format:         envoybin.FormatBinary,
+		DownloadSHA256: sha256Hex(testBinary),
+		BinarySHA256:   sha256Hex(testBinary),
+	})
+
+	_, err := inst.Install(t.Context())
+	require.NoError(t, err)
+
+	f, err := inst.Open()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, f.Close())
+	})
+
+	assert.Equal(t, path, f.Name())
+
+	// A rename puts another file at the install path. A write to the
+	// path changes the open file itself.
+	other := filepath.Join(t.TempDir(), "other")
+	require.NoError(t, os.WriteFile(other, []byte("not the checked binary"), 0o755))
+	require.NoError(t, os.Rename(other, path))
+
+	// The read starts at the first byte, although the hash read the
+	// whole file.
+	data, err := io.ReadAll(f)
+	require.NoError(t, err)
+	assert.Equal(t, testBinary, data)
+
+	_, err = inst.Open()
+	require.ErrorIs(t, err, envoybin.ErrHashMismatch)
+	require.ErrorContains(t, err, path)
+}
+
+func TestOpenErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		// installed is the content of the file at the install path.
+		// A nil value means that no file exists.
+		installed []byte
+		platform  envoybin.Platform
+		err       error
+	}{
+		"not installed": {
+			platform: testPlatform,
+			err:      envoybin.ErrNotInstalled,
+		},
+		"another hash": {
+			installed: []byte("not envoy"),
+			platform:  testPlatform,
+			err:       envoybin.ErrHashMismatch,
+		},
+		"platform without a build": {
+			platform: envoybin.Platform{OS: "plan9", Arch: "mips"},
+			err:      envoybin.ErrUnsupportedPlatform,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			inst, path := newInstaller(t, envoybin.Build{
+				URL:            "http://127.0.0.1:0/envoy",
+				Format:         envoybin.FormatBinary,
+				DownloadSHA256: sha256Hex(testBinary),
+				BinarySHA256:   sha256Hex(testBinary),
+			}, envoybin.WithPlatform(tt.platform))
+
+			if tt.installed != nil {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+				require.NoError(t, os.WriteFile(path, tt.installed, 0o755))
+			}
+
+			f, err := inst.Open()
+			require.ErrorIs(t, err, tt.err)
+			assert.Nil(t, f)
+		})
+	}
+}
+
 func TestVerifyNotInstalled(t *testing.T) {
 	t.Parallel()
 

@@ -80,10 +80,13 @@ func newRootCmd() *cobra.Command {
 		)
 	}
 
+	// The envoy commands install the build that the proxy runs.
+	envoyInst := envoybin.NewInstaller(config.EnvoyDirDefault())
+
 	rootCmd.AddCommand(
 		generateCmd(usr),
-		envoyCmd(envoybin.NewInstaller(config.EnvoyDirDefault())),
-		proxyCmd(usr),
+		envoyCmd(envoyInst),
+		proxyCmd(usr, envoyInst),
 		statsCmd(usr),
 	)
 

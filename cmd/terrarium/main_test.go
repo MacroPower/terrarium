@@ -120,6 +120,7 @@ func TestCommandAcceptsFlagBeforeName(t *testing.T) {
 		"--ready-file=/ready proxy --help":         {},
 		"--ready-file /ready proxy --help":         {},
 		"--envoy-config=/envoy.yaml proxy --help":  {},
+		"--envoy-path=/envoy proxy --help":         {},
 		"--ca-dir=/ca generate --help":             {},
 		"--ca-dir /ca --config=/c generate --help": {},
 	}
@@ -166,6 +167,8 @@ func TestCommandRejectsUnreadFlags(t *testing.T) {
 		"envoy --ca-dir=/ca --help":                {err: "unknown flag: --ca-dir"},
 		"envoy install --ca-dir=/ca --help":        {err: "unknown flag: --ca-dir"},
 		"envoy install --uid=1000 --help":          {err: "unknown flag: --uid"},
+		"envoy install --envoy-path=/envoy --help": {err: "unknown flag: --envoy-path"},
+		"generate --envoy-path=/envoy --help":      {err: "unknown flag: --envoy-path"},
 	}
 
 	for line, tt := range tests {

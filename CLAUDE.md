@@ -37,7 +37,7 @@ The data flow is: YAML config -> `config` (parse, validate, normalize, resolve) 
 - **config**: Policy engine. Parses Cilium-compatible YAML, validates, normalizes (lowercase FQDNs, uppercase protocols), and resolves into firewall/envoy-ready structures. Extensive typed errors with per-rule context.
 - **firewall**: nftables rule generation via google/nftables netlink backend. Per-rule chain isolation for OR semantics across egress rules. FQDN IP sets with TTLs.
 - **envoy**: Models a subset of Envoy v3 API for bootstrap config generation. SNI-based filter chains, HTTP connection manager with route matching, RBAC for header/SNI validation.
-- **envoybin**: Installs the pinned Envoy binary for the host into the XDG data directory and checks its SHA-256 against a compiled-in manifest. Backs `terrarium envoy install`.
+- **envoybin**: Installs the pinned Envoy binary for the host into the XDG data directory and checks its SHA-256 against a compiled-in manifest. Backs `terrarium envoy install` and the Envoy that `terrarium proxy` runs by default.
 - **dnsproxy**: DNS proxy using miekg/dns that resolves FQDNs and updates firewall IP sets dynamically.
 - **dnstest**: Shared test helpers that start a mock DNS server (`StartServer(t, ip)`) or a DNS proxy (`StartProxy(t, cfg, upstream)`) on a free loopback port. `Listen(t)` binds one port for UDP and TCP.
 - **certs**: MITM certificate generation (CA + leaf) for L7-restricted TLS rules.

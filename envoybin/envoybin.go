@@ -115,18 +115,44 @@ func (i *Installer) Path() (string, error) {
 // It returns [ErrUnsupportedPlatform] when the manifest has no build for
 // the platform and [ErrNotInstalled] when the binary is missing. It
 // returns [ErrHashMismatch] when the binary has a different hash.
+//
+// Another process can replace the file at the returned path after the
+// check. A caller that executes the binary uses [Installer.Open], which
+// returns the checked file itself.
 func (i *Installer) Verify() (string, error) {
-	build, path, err := i.lookup()
+	f, err := i.Open()
 	if err != nil {
 		return "", err
 	}
 
-	err = verifyFile(path, build.BinarySHA256)
+	path := f.Name()
+
+	err = f.Close()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("close binary: %w", err)
 	}
 
 	return path, nil
+}
+
+// Open opens the installed binary for reading and hashes it through the
+// open file. It returns the file when the hash equals the manifest's
+// hash. The name of the file is the install path, and the read offset
+// is at the start of the file.
+//
+// The returned file is the file that Open hashed, also after another
+// process puts a different file at the install path. A caller that
+// executes the binary through the open file therefore runs the checked
+// file. The caller closes the file.
+//
+// Open returns the same errors as [Installer.Verify].
+func (i *Installer) Open() (*os.File, error) {
+	build, path, err := i.lookup()
+	if err != nil {
+		return nil, err
+	}
+
+	return openVerified(path, build.BinarySHA256)
 }
 
 // Install downloads the pinned build, checks it, and returns the path of
@@ -152,8 +178,13 @@ func (i *Installer) Install(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	err = verifyFile(path, build.BinarySHA256)
+	installed, err := openVerified(path, build.BinarySHA256)
 	if err == nil {
+		closeErr := installed.Close()
+		if closeErr != nil {
+			return "", fmt.Errorf("close binary: %w", closeErr)
+		}
+
 		return path, nil
 	}
 
@@ -387,34 +418,39 @@ func writeTemp(dir string, r io.Reader) (string, string, error) {
 	return f.Name(), hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// verifyFile compares the SHA-256 of the file at path with want. It
-// returns [ErrNotInstalled] when the file does not exist and
-// [ErrHashMismatch] when the hashes differ.
-func verifyFile(path, want string) error {
+// openVerified opens the file at path and compares the SHA-256 of its
+// content with want. It returns the open file, with the read offset at
+// the start, when the hashes are equal. It returns [ErrNotInstalled]
+// when the file does not exist and [ErrHashMismatch] when the hashes
+// differ.
+func openVerified(path, want string) (*os.File, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("%w: %s", ErrNotInstalled, path)
+		return nil, fmt.Errorf("%w: %s", ErrNotInstalled, path)
 	}
 
 	if err != nil {
-		return fmt.Errorf("open binary: %w", err)
+		return nil, fmt.Errorf("open binary: %w", err)
 	}
-
-	defer f.Close() //nolint:errcheck // read-only file.
 
 	h := sha256.New()
 
 	_, err = io.Copy(h, f)
 	if err != nil {
-		return fmt.Errorf("hash %s: %w", path, err)
+		return nil, errors.Join(fmt.Errorf("hash %s: %w", path, err), f.Close())
 	}
 
 	got := hex.EncodeToString(h.Sum(nil))
 	if got != want {
-		return mismatch(path, want, got)
+		return nil, errors.Join(mismatch(path, want, got), f.Close())
 	}
 
-	return nil
+	_, err = f.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("rewind %s: %w", path, err), f.Close())
+	}
+
+	return f, nil
 }
 
 // mismatch returns an [ErrHashMismatch] that names the checked subject

@@ -727,11 +727,13 @@ func TestParseEnvoySettings(t *testing.T) {
 		"all fields": {
 			yaml: `
 envoy:
+  path: /opt/envoy/bin/envoy
   drainTimeout: "10s"
   startupTimeout: "30s"
   maxDownstreamConnections: 1024
 `,
 			want: config.EnvoySettings{
+				Path:                     "/opt/envoy/bin/envoy",
 				DrainTimeout:             config.Duration{Duration: 10 * time.Second},
 				StartupTimeout:           config.Duration{Duration: 30 * time.Second},
 				MaxDownstreamConnections: 1024,

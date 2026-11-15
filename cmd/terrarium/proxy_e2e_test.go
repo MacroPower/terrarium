@@ -146,6 +146,7 @@ func startProxy(
 	port := freePort(t)
 
 	opts := proxyOptions{
+		envoyPath:   envoyCommand,
 		bindAddress: "127.0.0.1",
 		httpPort:    port,
 	}
@@ -166,7 +167,7 @@ func startProxy(
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- Proxy(ctx, usr, opts)
+		errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
 	}()
 
 	t.Cleanup(func() {
@@ -485,6 +486,7 @@ func TestProxyE2ESimultaneousStart(t *testing.T) {
 	requireEnvoy(t)
 
 	opts := proxyOptions{
+		envoyPath:   envoyCommand,
 		bindAddress: loopbackIPv4,
 		httpPort:    freePort(t),
 	}
@@ -499,7 +501,7 @@ func TestProxyE2ESimultaneousStart(t *testing.T) {
 		usr := stubProxyUser(t, t.TempDir(), "egress: []\n")
 
 		go func() {
-			errCh <- Proxy(ctx, usr, opts)
+			errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
 		}()
 	}
 
@@ -548,6 +550,67 @@ func TestProxyE2ESimultaneousStart(t *testing.T) {
 
 	default:
 	}
+}
+
+// TestProxyE2EManagedEnvoy checks that a proxy without an Envoy
+// override installs the managed build and serves with it. The managed
+// build of the test is the envoy on PATH, which a local server offers
+// for download.
+//
+//nolint:paralleltest // e2e tests run envoy subprocesses.
+func TestProxyE2EManagedEnvoy(t *testing.T) {
+	requireEnvoy(t)
+
+	hostEnvoy, err := exec.LookPath(envoyCommand)
+	require.NoError(t, err)
+
+	binary, err := os.ReadFile(hostEnvoy) //nolint:gosec // G304: the envoy on PATH.
+	require.NoError(t, err)
+
+	inst, path, requests := managedEnvoyInstaller(t, binary)
+
+	dir := t.TempDir()
+	usr := stubProxyUser(t, dir, "egress: []\n")
+	usr.ReadyFile = filepath.Join(dir, "ready")
+
+	opts := proxyOptions{
+		bindAddress: loopbackIPv4,
+		httpPort:    freePort(t),
+	}
+
+	// See startProxy for the reason not to use t.Context.
+	//nolint:usetesting // see comment above.
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- Proxy(ctx, usr, inst, opts)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+
+		select {
+		case err := <-errCh:
+			assert.NoError(t, err)
+		case <-time.After(15 * time.Second):
+			t.Error("proxy did not shut down")
+		}
+	})
+
+	requireReadyFile(t, usr.ReadyFile)
+
+	assert.Equal(t, int64(1), requests.Load())
+	assert.FileExists(t, path)
+
+	proxyURL, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", opts.httpPort))
+	require.NoError(t, err)
+
+	waitProxyReady(t, proxyURL)
+
+	client := proxyClient(t, proxyURL, x509.NewCertPool())
+	assert.Equal(t, http.StatusForbidden,
+		getStatus(t, client, "http://anything.example/"))
 }
 
 // startProbeEnvoy starts Envoy with the bootstrap at bootstrapPath and with
@@ -705,6 +768,7 @@ func TestProxyE2ESharedBootstrap(t *testing.T) {
 	for round := range 3 {
 		t.Run(strconv.Itoa(round), func(t *testing.T) {
 			opts := proxyOptions{
+				envoyPath:   envoyCommand,
 				bindAddress: loopbackIPv4,
 				httpPort:    freePort(t),
 			}
@@ -732,7 +796,7 @@ func TestProxyE2ESharedBootstrap(t *testing.T) {
 
 			for _, r := range runs {
 				go func() {
-					r.errCh <- Proxy(ctx, r.usr, opts)
+					r.errCh <- Proxy(ctx, r.usr, noManagedEnvoy(), opts)
 				}()
 			}
 

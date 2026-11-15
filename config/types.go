@@ -59,8 +59,9 @@ type Config struct {
 	// A nil pointer means the field was absent from YAML.
 	EgressDeny *[]EgressDenyRule `yaml:"egressDeny,omitempty"`
 	// Envoy configures Envoy proxy runtime behavior (timeouts,
-	// connection limits). A nil pointer means the field was absent
-	// from YAML; all defaults apply. See [EnvoySettings].
+	// connection limits) and names the Envoy binary of proxy mode. A
+	// nil pointer means the field was absent from YAML; all defaults
+	// apply. See [EnvoySettings].
 	Envoy *EnvoySettings `yaml:"envoy,omitempty"`
 	// Logging controls per-service logging behavior. See [LoggingConfig].
 	Logging *LoggingConfig `yaml:"logging,omitempty"`
@@ -927,10 +928,17 @@ func ValidEnvoyLogLevels() []string {
 }
 
 // EnvoySettings controls Envoy proxy runtime behavior (timeouts,
-// connection limits). All fields are optional; zero values mean
-// "use default." Use [Config.EnvoyDefaults] to obtain a fully
-// populated copy with defaults applied.
+// connection limits) and names the Envoy binary of proxy mode. All
+// fields are optional; zero values mean "use default." Use
+// [Config.EnvoyDefaults] to obtain a fully populated copy with
+// defaults applied.
 type EnvoySettings struct {
+	// Path names the Envoy binary that `terrarium proxy` runs in place
+	// of the managed build. A value without a path separator is a
+	// command name, which the proxy looks up on PATH. The proxy does
+	// not check the hash of this binary. An empty value selects the
+	// managed build. The container modes do not read Path.
+	Path string `yaml:"path,omitempty"`
 	// DrainTimeout is the maximum duration to wait for Envoy to exit
 	// after SIGTERM. Terrarium kills an Envoy that still runs after
 	// that duration.
@@ -960,6 +968,8 @@ func (c *Config) EnvoyDefaults() EnvoySettings {
 	if c.Envoy == nil {
 		return s
 	}
+
+	s.Path = c.Envoy.Path
 
 	if c.Envoy.DrainTimeout.Duration != 0 {
 		s.DrainTimeout = c.Envoy.DrainTimeout

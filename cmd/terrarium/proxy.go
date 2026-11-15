@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -26,6 +25,7 @@ import (
 	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/envoy"
+	"go.jacobcolvin.com/terrarium/envoybin"
 	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
@@ -35,11 +35,6 @@ var (
 	// CIDRs, ports, and ICMP at the packet layer). Refusing to start
 	// keeps deny semantics fail-closed.
 	ErrDenyRulesUnsupported = errors.New("egressDeny rules are not supported in proxy mode")
-
-	// ErrEnvoyNotFound is returned when no envoy binary is on PATH.
-	ErrEnvoyNotFound = errors.New(
-		"envoy binary not found on PATH " +
-			"(install it from envoyproxy.io on Linux or `brew install envoy` on macOS)")
 
 	// ErrSystemCABundleMissing means that --ca-bundle-out is set but no
 	// system CA bundle exists, so the client bundle has no roots.
@@ -64,23 +59,38 @@ type proxyOptions struct {
 	bindAddress string
 	caOut       string
 	caBundleOut string
-	resolvers   []string
-	httpPort    int
+	// The name of an Envoy binary that replaces the managed build. See
+	// [proxyEnvoyPath].
+	envoyPath string
+	resolvers []string
+	httpPort  int
 }
 
 // proxyCmd builds the `terrarium proxy` subcommand: an HTTP forward
 // proxy on the host, filtered by the same policy YAML as the
 // container modes. It serves as Claude Code's
 // sandbox.network.httpProxyPort.
-func proxyCmd(usr *config.User) *cobra.Command {
+//
+// The proxy runs the managed Envoy build of inst, unless the
+// --envoy-path flag or the envoy.path config key names another binary.
+func proxyCmd(usr *config.User, inst *envoybin.Installer) *cobra.Command {
 	opts := proxyOptions{}
 
 	cmd := &cobra.Command{
 		Use:   "proxy",
 		Short: "Run an HTTP forward proxy filtered by the egress policy",
-		Args:  cobra.NoArgs,
+		Long: "Run an HTTP forward proxy filtered by the egress policy.\n\n" +
+			"The proxy runs Envoy " + envoybin.Version + " from " +
+			"$XDG_DATA_HOME/terrarium/envoy. It checks the SHA-256 of that " +
+			"binary at every start, and it installs the binary when the " +
+			"binary is missing. Run `terrarium envoy install` ahead of time " +
+			"on a machine that starts the proxy offline.\n\n" +
+			"To run another Envoy binary, pass --envoy-path or set the " +
+			"envoy.path config key. The proxy does not check the hash of " +
+			"that binary.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return Proxy(cmd.Context(), usr, opts)
+			return Proxy(cmd.Context(), usr, inst, opts)
 		},
 	}
 
@@ -94,6 +104,9 @@ func proxyCmd(usr *config.User) *cobra.Command {
 		"write the system CA bundle plus the MITM CA to this path, for clients that read one trust file")
 	cmd.Flags().StringSliceVar(&opts.resolvers, "resolver", nil,
 		"DNS resolver ip:port for upstream resolution (default: system resolver)")
+	cmd.Flags().StringVar(&opts.envoyPath, "envoy-path", "",
+		"Envoy binary to run without a hash check, as a path or a command on PATH "+
+			"(default: the managed build)")
 
 	// The proxy runs as the invoking user and does not intercept DNS,
 	// so it does not register the UID flags of the container modes.
@@ -122,6 +135,18 @@ func parseResolvers(resolvers []string) ([]netip.AddrPort, error) {
 	}
 
 	return out, nil
+}
+
+// proxyEnvoyPath returns the name of the Envoy binary that replaces the
+// managed build. The value of the --envoy-path flag in opts takes
+// priority over the envoy.path key of cfg. An empty result selects the
+// managed build.
+func proxyEnvoyPath(cfg *config.Config, opts proxyOptions) string {
+	if opts.envoyPath != "" {
+		return opts.envoyPath
+	}
+
+	return cfg.EnvoyDefaults().Path
 }
 
 // proxyBootstrapPath returns the proxy-mode Envoy bootstrap path:
@@ -701,6 +726,12 @@ func newProbeToken() (string, error) {
 // root, network namespaces, or nftables involved: the only privilege
 // needed is binding the listen port.
 //
+// Proxy runs the managed Envoy build of inst and checks the hash of
+// that binary before every start. It installs the build when the build
+// is missing. When [proxyEnvoyPath] names a binary, Proxy runs that
+// binary without a hash check and does not use inst. See [resolveEnvoy]
+// for the errors of both cases.
+//
 // Envoy writes its process log to the logging.envoy.path of the policy,
 // or to usr.EnvoyLogPath when the policy does not set one. When both
 // are empty, Envoy logs to the stderr of the proxy.
@@ -745,11 +776,12 @@ func newProbeToken() (string, error) {
 // that flush.
 //
 // A signal or a cancellation of ctx stops Envoy and makes Proxy return
-// nil. Proxy also returns nil when either arrives before Envoy starts
-// or before Envoy answers the probe. Proxy returns [ErrEnvoyNotRunning]
-// when Envoy exits by itself or does not answer the probe within the
-// startup timeout.
-func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
+// nil. Proxy also returns nil when either arrives before Envoy starts,
+// which includes the install of the managed build, or before Envoy
+// answers the probe. Proxy returns [ErrEnvoyNotRunning] when Envoy
+// exits by itself or does not answer the probe within the startup
+// timeout.
+func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts proxyOptions) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -770,10 +802,26 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 		return err
 	}
 
-	envoyBin, err := exec.LookPath("envoy")
+	envoyBin, err := resolveEnvoy(ctx, inst, proxyEnvoyPath(cfg, opts))
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrEnvoyNotFound, err)
+		if ctx.Err() != nil {
+			// The shutdown arrived before Envoy started. It ends an
+			// install of the managed build with an error.
+			slog.InfoContext(ctx, "proxy: shut down")
+
+			return nil
+		}
+
+		return err
 	}
+
+	// Envoy holds the binary open itself after it starts.
+	defer func() {
+		closeErr := envoyBin.Close()
+		if closeErr != nil {
+			slog.DebugContext(ctx, "closing envoy binary", slog.Any("err", closeErr))
+		}
+	}()
 
 	addr := net.JoinHostPort(opts.bindAddress, strconv.Itoa(opts.httpPort))
 
@@ -809,8 +857,7 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 			slog.String("envoy_log", envoyLogPath))
 	}
 
-	//nolint:gosec // G204: binary from PATH lookup, args from CLI flags.
-	cmd := exec.CommandContext(ctx, envoyBin, envoyArgs...)
+	cmd := envoyBin.command(ctx, envoyArgs...)
 
 	// Envoy writes here what it does not send to its log file, such as
 	// a command line that it rejects.
@@ -840,7 +887,7 @@ func Proxy(ctx context.Context, usr *config.User, opts proxyOptions) error {
 			return nil
 		}
 
-		return fmt.Errorf("starting envoy: %w", err)
+		return fmt.Errorf("starting envoy %s: %w", envoyBin.path, err)
 	}
 
 	// A connection to addr can reach a process that took addr after

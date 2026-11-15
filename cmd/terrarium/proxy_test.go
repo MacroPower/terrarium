@@ -26,6 +26,7 @@ import (
 	"go.jacobcolvin.com/terrarium/certs"
 	"go.jacobcolvin.com/terrarium/config"
 	"go.jacobcolvin.com/terrarium/envoy"
+	"go.jacobcolvin.com/terrarium/envoybin"
 )
 
 // parseProxyConfig parses a policy YAML for proxy bootstrap tests.
@@ -597,31 +598,60 @@ func TestGenerateProxyReusesCA(t *testing.T) {
 	assert.True(t, bytes.HasSuffix(bundle, first), "bundle must end with the MITM CA")
 }
 
-// stubEnvoy puts a stub envoy first on PATH. The stub writes its
-// arguments to the args file, one per line, and its probe token to the
-// file that [stubProbeToken] reads. It then writes its process ID to
-// the started file and sleeps. It never listens, so the proxy stays in
-// startup until the test answers the probe request or cancels the
-// context. See [serveProxyProbe] for the helper that answers it.
+// envoyCommand is the Envoy override of the tests that run the envoy on
+// PATH. That envoy is the stub of [stubEnvoy] or, in the end-to-end
+// tests, the Envoy of the host.
+const envoyCommand = "envoy"
+
+// stubEnvoy puts a stub envoy first on PATH, where a proxy with the
+// override [envoyCommand] finds it. It returns the started file and the
+// args file of the stub. See [stubEnvoyScript] for the stub.
 func stubEnvoy(t *testing.T) (string, string) {
 	t.Helper()
 
 	binDir := t.TempDir()
-	started := filepath.Join(binDir, "started")
-	args := filepath.Join(binDir, "args")
+	stub, started, args := stubEnvoyScript(binDir)
+
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, envoyCommand), []byte(stub), 0o755))
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	return started, args
+}
+
+// stubEnvoyScript returns a shell script that stands for Envoy, and the
+// paths of its started file and its args file in dir.
+//
+// The stub writes its arguments to the args file, one per line, and its
+// probe token to the file that [stubProbeToken] reads. It then writes
+// its process ID to the started file and sleeps. It never listens, so
+// the proxy stays in startup until the test answers the probe request
+// or cancels the context. See [serveProxyProbe] for the helper that
+// answers it.
+//
+// The stub sets PATH to the value that the test process has during the
+// call, so it finds its commands when the proxy runs with another PATH.
+func stubEnvoyScript(dir string) (string, string, string) {
+	started := filepath.Join(dir, "started")
+	args := filepath.Join(dir, "args")
 
 	stub := "#!/bin/sh\n" +
+		"PATH='" + os.Getenv("PATH") + "'\n" +
 		"printf '%s\\n' \"$@\" > '" + args + "'\n" +
 		"printf '%s' \"$" + envoy.ProxyProbeTokenEnv + "\" > '" + started + ".token'\n" +
 		// The rename makes the file appear with the process ID in it.
 		"echo $$ > '" + started + ".tmp'\n" +
 		"mv '" + started + ".tmp' '" + started + "'\n" +
 		"exec sleep 60\n"
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, "envoy"), []byte(stub), 0o755))
 
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return stub, started, args
+}
 
-	return started, args
+// noManagedEnvoy returns an installer whose manifest holds no build. A
+// proxy that runs without an Envoy override then returns an error, and
+// it never downloads a build.
+func noManagedEnvoy() *envoybin.Installer {
+	return envoybin.NewInstaller("", envoybin.WithManifest(envoybin.Manifest{}))
 }
 
 // stubProxyUser writes policy to dir and returns a user whose paths
@@ -857,6 +887,7 @@ func TestProxyCancelDuringStartup(t *testing.T) {
 			usr.ReadyFile = filepath.Join(dir, "ready")
 
 			opts := proxyOptions{
+				envoyPath:   envoyCommand,
 				bindAddress: loopbackIPv4,
 				httpPort:    freePort(t),
 			}
@@ -871,7 +902,7 @@ func TestProxyCancelDuringStartup(t *testing.T) {
 			errCh := make(chan error, 1)
 
 			go func() {
-				errCh <- Proxy(ctx, usr, opts)
+				errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
 			}()
 
 			if !tt.beforeStart {
@@ -926,6 +957,7 @@ func TestProxyReadyFile(t *testing.T) {
 			require.NoError(t, os.WriteFile(usr.ReadyFile, nil, 0o600))
 
 			opts := proxyOptions{
+				envoyPath:   envoyCommand,
 				bindAddress: tt.bindAddress,
 				httpPort:    freePort(t),
 			}
@@ -936,7 +968,7 @@ func TestProxyReadyFile(t *testing.T) {
 			errCh := make(chan error, 1)
 
 			go func() {
-				errCh <- Proxy(ctx, usr, opts)
+				errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
 			}()
 
 			requireStubStarted(t, started)
@@ -993,6 +1025,7 @@ func TestProxyListenAddressInUse(t *testing.T) {
 	})
 
 	opts := proxyOptions{
+		envoyPath:   envoyCommand,
 		bindAddress: loopbackIPv4,
 		httpPort:    freePort(t),
 	}
@@ -1005,7 +1038,7 @@ func TestProxyListenAddressInUse(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- Proxy(ctx, usr, opts)
+		errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
 	}()
 
 	select {
@@ -1089,6 +1122,7 @@ func TestProxyListenAddressTakenAfterStart(t *testing.T) {
 			})
 
 			opts := proxyOptions{
+				envoyPath:   envoyCommand,
 				bindAddress: loopbackIPv4,
 				httpPort:    freePort(t),
 			}
@@ -1096,7 +1130,7 @@ func TestProxyListenAddressTakenAfterStart(t *testing.T) {
 			errCh := make(chan error, 1)
 
 			go func() {
-				errCh <- Proxy(t.Context(), usr, opts)
+				errCh <- Proxy(t.Context(), usr, noManagedEnvoy(), opts)
 			}()
 
 			requireStubStarted(t, started)
@@ -1136,6 +1170,7 @@ func TestProxyProbeToken(t *testing.T) {
 	usr := stubProxyUser(t, t.TempDir(), "egress: []\n")
 
 	opts := proxyOptions{
+		envoyPath:   envoyCommand,
 		bindAddress: loopbackIPv4,
 		httpPort:    freePort(t),
 	}
@@ -1146,7 +1181,7 @@ func TestProxyProbeToken(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- Proxy(ctx, usr, opts)
+		errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
 	}()
 
 	requireStubStarted(t, started)
@@ -1174,6 +1209,7 @@ func TestProxyReadyFileError(t *testing.T) {
 	usr.ReadyFile = filepath.Join(dir, "missing", "ready")
 
 	opts := proxyOptions{
+		envoyPath:   envoyCommand,
 		bindAddress: loopbackIPv4,
 		httpPort:    freePort(t),
 	}
@@ -1181,7 +1217,7 @@ func TestProxyReadyFileError(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- Proxy(t.Context(), usr, opts)
+		errCh <- Proxy(t.Context(), usr, noManagedEnvoy(), opts)
 	}()
 
 	requireStubStarted(t, started)
@@ -1228,11 +1264,12 @@ func TestProxyReadyFileIsDir(t *testing.T) {
 			}
 
 			opts := proxyOptions{
+				envoyPath:   envoyCommand,
 				bindAddress: loopbackIPv4,
 				httpPort:    freePort(t),
 			}
 
-			err := Proxy(t.Context(), usr, opts)
+			err := Proxy(t.Context(), usr, noManagedEnvoy(), opts)
 			require.ErrorIs(t, err, ErrReadyFileIsDir)
 
 			assert.DirExists(t, usr.ReadyFile)
@@ -1257,6 +1294,7 @@ func TestProxyReadyFileReplacedByDir(t *testing.T) {
 	usr.ReadyFile = filepath.Join(dir, "ready")
 
 	opts := proxyOptions{
+		envoyPath:   envoyCommand,
 		bindAddress: loopbackIPv4,
 		httpPort:    freePort(t),
 	}
@@ -1267,7 +1305,7 @@ func TestProxyReadyFileReplacedByDir(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- Proxy(ctx, usr, opts)
+		errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
 	}()
 
 	requireStubStarted(t, started)
@@ -1432,6 +1470,7 @@ func TestProxyEnvoyLog(t *testing.T) {
 			}
 
 			opts := proxyOptions{
+				envoyPath:   envoyCommand,
 				bindAddress: loopbackIPv4,
 				httpPort:    freePort(t),
 			}
@@ -1442,7 +1481,7 @@ func TestProxyEnvoyLog(t *testing.T) {
 			errCh := make(chan error, 1)
 
 			go func() {
-				errCh <- Proxy(ctx, usr, opts)
+				errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
 			}()
 
 			requireStubStarted(t, started)
@@ -1494,11 +1533,12 @@ func TestProxyEnvoyLogError(t *testing.T) {
 	usr.EnvoyLogPath = filepath.Join(blocker, "envoy.log")
 
 	opts := proxyOptions{
+		envoyPath:   envoyCommand,
 		bindAddress: loopbackIPv4,
 		httpPort:    freePort(t),
 	}
 
-	err := Proxy(t.Context(), usr, opts)
+	err := Proxy(t.Context(), usr, noManagedEnvoy(), opts)
 	require.ErrorContains(t, err, "creating envoy log directory")
 
 	assert.NoFileExists(t, started, "envoy must not start")

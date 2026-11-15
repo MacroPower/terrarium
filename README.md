@@ -84,16 +84,29 @@ to replace the [Claude Code sandbox proxy](https://code.claude.com/docs/en/sandb
 for HTTP traffic. Your existing network policies then filter every sandboxed
 HTTP request.
 
-Envoy is an external dependency in this mode (it is not bundled with
-the host binary):
+The proxy runs an Envoy build that terrarium pins by version and by
+SHA-256. It installs the build into `$XDG_DATA_HOME/terrarium/envoy` at
+its first start, and it checks the hash of the binary at every start. To
+install the build ahead of time, for example on a machine that starts
+the proxy offline, run `terrarium envoy install`.
 
-- **Linux:** install the Envoy project's official release (tarball or
-  Deb/RPM, `amd64`/`arm64`) and put `envoy` on `PATH`. See the
-  [Envoy install docs](https://www.envoyproxy.io/docs/envoy/latest/start/install).
-- **macOS:** `brew install envoy` (Apple Silicon and Intel). The Envoy
-  project does not publish macOS tarballs; Homebrew is the supported
-  native path. Bottles can trail the Linux release by a version or two,
-  which terrarium tolerates.
+The proxy exits with an error when the binary does not have the pinned
+hash, and it does not download a replacement. Inspect the file that the
+error names, remove it, and run `terrarium envoy install`.
+
+On Linux, the proxy executes the open file that it checked, so the
+host must mount `/proc`. The process name of that Envoy is a number,
+and its command line starts with the path of the binary.
+
+Terrarium pins a build for glibc Linux on `amd64` and `arm64`, and for
+macOS on Apple Silicon. On every other host, such as an Intel Mac or
+musl Linux, the proxy exits with an error unless you name your own
+Envoy binary. Name it with the `--envoy-path` flag or with the
+`envoy.path` key of the policy file. The flag overrides the key. The
+value is a path, or a command name that the proxy looks up on `PATH`.
+For example, `--envoy-path envoy` runs the Envoy that Homebrew or Nix
+installed. The proxy does not check the hash of that binary, and it
+logs a warning at every start.
 
 Run it, writing the CA files where the sandbox can read them. The example
 writes them to a `proxy` directory beside the CA directory under
