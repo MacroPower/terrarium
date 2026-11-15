@@ -1896,10 +1896,14 @@ wait "$child"`
 		},
 	},
 
-	// The vm-daemon-reload-cli case exercises the `terrarium daemon reload`
-	// CLI's pre-validation and SIGHUP plumbing. Companion to
-	// vm-config-reload, which goes through systemctl reload and
-	// bypasses the CLI's pre-validation.
+	// The vm-daemon-reload-cli case runs `terrarium daemon reload`
+	// directly. For each reload that the command rejects, it checks the
+	// exit code and the output of the command. For a reload that
+	// succeeds, it checks the exit code. The vm-config-reload case is
+	// its companion. It runs the same command through
+	// `systemctl reload terrarium`, because the ExecReload of the unit
+	// is `terrarium daemon reload`, and it checks only a reload that
+	// succeeds.
 	{
 		name:   "vm-daemon-reload-cli",
 		config: fqdnPort443Config,

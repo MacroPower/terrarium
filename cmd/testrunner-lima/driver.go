@@ -237,6 +237,10 @@ func (d *driver) restartDaemon(ctx context.Context) error {
 
 // reloadDaemon signals the terrarium daemon to reload its configuration
 // via `systemctl reload` and restarts nscd to clear stale DNS state.
+// The ExecReload of the unit runs `terrarium daemon reload`, so the
+// reload makes the same checks as [driver.reloadDaemonViaCli]. The
+// returned error does not carry the exit code or the stderr of that
+// command.
 func (d *driver) reloadDaemon(ctx context.Context) error {
 	_, err := d.shell(ctx, "sudo", "systemctl", "reload", terrariumName)
 	if err != nil {
@@ -291,9 +295,9 @@ const VMTerrariumStatsDB = "/var/lib/terrarium/stats.db"
 
 // reloadDaemonViaCli runs `sudo terrarium daemon reload` inside the
 // VM and returns its exit code along with captured stdout and stderr.
-// Distinct from [driver.reloadDaemon] (which shells systemctl)
-// because this path exercises terrarium's own pre-validation and
-// SIGHUP plumbing.
+// [driver.reloadDaemon] runs the same command through
+// `systemctl reload`, which hides the exit code and the stderr of the
+// command. Tests that assert on either one call this method.
 //
 // The CLI returns after the daemon finished the reload. On success
 // the daemon runs the new config. On failure the CLI returns a
