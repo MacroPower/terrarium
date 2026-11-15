@@ -92,17 +92,67 @@ func TestCollectStatsHeartbeatAbsent(t *testing.T) {
 	assert.True(t, got.HeartbeatRecordedAt.IsZero())
 }
 
-func TestCollectStatsMode(t *testing.T) {
+func TestCollectStatsHeartbeatInstance(t *testing.T) {
 	t.Parallel()
 
+	// run is one instance that opens the store, records one
+	// heartbeat, and closes the store.
+	type run struct {
+		mode eventstore.Mode
+		// drops marks the heartbeat of the run.
+		drops int64
+	}
+
 	tcs := map[string]struct {
-		mode         eventstore.Mode
-		wantSections bool
+		// runs lists the instances with the earliest start first.
+		runs []run
+		// want is the marker of the heartbeat that the section
+		// holds, or zero when the section holds no heartbeat.
+		want int64
 	}{
-		"daemon": {mode: eventstore.ModeDaemon, wantSections: true},
-		"init":   {mode: eventstore.ModeInit, wantSections: true},
-		// A proxy has no firewall log and no DNS cache.
-		"proxy": {mode: eventstore.ModeProxy, wantSections: false},
+		"daemon": {
+			runs: []run{{mode: eventstore.ModeDaemon, drops: 1}},
+			want: 1,
+		},
+		"init": {
+			runs: []run{{mode: eventstore.ModeInit, drops: 1}},
+			want: 1,
+		},
+		"proxy after daemon": {
+			runs: []run{
+				{mode: eventstore.ModeDaemon, drops: 1},
+				{mode: eventstore.ModeProxy, drops: 2},
+			},
+			want: 1,
+		},
+		"proxy after init": {
+			runs: []run{
+				{mode: eventstore.ModeInit, drops: 1},
+				{mode: eventstore.ModeProxy, drops: 2},
+			},
+			want: 1,
+		},
+		"daemon after proxy": {
+			runs: []run{
+				{mode: eventstore.ModeProxy, drops: 1},
+				{mode: eventstore.ModeDaemon, drops: 2},
+			},
+			want: 2,
+		},
+		"latest daemon between proxies": {
+			runs: []run{
+				{mode: eventstore.ModeDaemon, drops: 1},
+				{mode: eventstore.ModeProxy, drops: 2},
+				{mode: eventstore.ModeDaemon, drops: 3},
+				{mode: eventstore.ModeProxy, drops: 4},
+			},
+			want: 3,
+		},
+		// The store holds no init or daemon instance.
+		"proxy": {
+			runs: []run{{mode: eventstore.ModeProxy, drops: 1}},
+			want: 0,
+		},
 	}
 
 	for name, tc := range tcs {
@@ -111,77 +161,94 @@ func TestCollectStatsMode(t *testing.T) {
 
 			path := filepath.Join(t.TempDir(), "stats.db")
 
-			store, err := eventstore.Open(t.Context(), path,
-				eventstore.WithBatchInterval(20*time.Millisecond),
-				eventstore.WithMode(tc.mode))
-			require.NoError(t, err)
+			for _, r := range tc.runs {
+				store, err := eventstore.Open(t.Context(), path,
+					eventstore.WithBatchInterval(20*time.Millisecond),
+					eventstore.WithMode(r.mode))
+				require.NoError(t, err)
 
-			require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
-				RecordedAt: time.Now(),
-			}))
+				require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
+					RecordedAt:          time.Now(),
+					EventStoreDropCount: r.drops,
+				}))
 
-			require.NoError(t, store.Close())
+				require.NoError(t, store.Close())
+			}
 
 			got := collectStats(t.Context(), statsCfg(path))
 			require.NoError(t, got.Err)
-			assert.Equal(t, tc.mode, got.Mode)
-			assert.False(t, got.HeartbeatRecordedAt.IsZero())
+			assert.Equal(t, tc.want, got.EventStoreDropCount)
 
 			out := renderReportInternal(t, Report{Stats: got})
-			assert.Contains(t, out, "heartbeat:")
+
+			if tc.want == 0 {
+				assert.True(t, got.HeartbeatRecordedAt.IsZero())
+				assert.Contains(t, out, "(none yet)")
+
+				for _, section := range []string{"NFLOG", "DNS CACHE", "FIREWALL EVENTS (1h)"} {
+					assert.NotContains(t, out, section)
+				}
+
+				return
+			}
+
+			assert.False(t, got.HeartbeatRecordedAt.IsZero())
 			assert.NotContains(t, out, "(none yet)")
 
 			for _, section := range []string{"NFLOG", "DNS CACHE", "FIREWALL EVENTS (1h)"} {
-				if tc.wantSections {
-					assert.Contains(t, out, section)
-				} else {
-					assert.NotContains(t, out, section)
-				}
+				assert.Contains(t, out, section)
 			}
 		})
 	}
 }
 
-func TestCollectStatsProxyAfterDaemon(t *testing.T) {
+func TestCollectStatsStoppedProxyAfterDaemon(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "stats.db")
 
+	// The daemon holds the store open while the proxy runs.
 	daemon, err := eventstore.Open(t.Context(), path,
-		eventstore.WithBatchSize(1),
-		eventstore.WithBatchInterval(10*time.Millisecond),
+		eventstore.WithBatchInterval(20*time.Millisecond),
 		eventstore.WithMode(eventstore.ModeDaemon))
 	require.NoError(t, err)
-
-	daemon.Emit(eventstore.Event{
-		Time: time.Now(), Source: eventstore.SourceFirewall, Decision: eventstore.DecisionDeny,
-	})
-
-	require.NoError(t, daemon.Close())
 
 	proxy, err := eventstore.Open(t.Context(), path,
 		eventstore.WithBatchInterval(20*time.Millisecond),
 		eventstore.WithMode(eventstore.ModeProxy))
 	require.NoError(t, err)
 
+	// The proxy stopped more than [heartbeatStaleAfter] ago.
 	require.NoError(t, proxy.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
-		RecordedAt: time.Now(),
+		RecordedAt: time.Now().Add(-2 * heartbeatStaleAfter),
 	}))
 
 	require.NoError(t, proxy.Close())
 
+	now := time.Now()
+	require.NoError(t, daemon.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
+		RecordedAt:        now,
+		NFLogKernelDrops:  3,
+		NFLogParseErrors:  7,
+		DNSCacheSize:      42,
+		DNSCacheEvictions: 5,
+	}))
+
+	require.NoError(t, daemon.Close())
+
 	got := collectStats(t.Context(), statsCfg(path))
 	require.NoError(t, got.Err)
-	assert.Equal(t, eventstore.ModeProxy, got.Mode)
-	assert.Equal(t, int64(1), got.FirewallEvents1h)
 
-	// The firewall events of the daemon stay visible. The counters of
-	// the proxy heartbeat for the firewall log and the DNS cache are
-	// left out.
+	assert.WithinDuration(t, now, got.HeartbeatRecordedAt, time.Second)
+	assert.Equal(t, uint64(3), got.NFLogKernelDrops)
+	assert.Equal(t, uint64(7), got.NFLogParseErrors)
+	assert.Equal(t, int64(42), got.DNSCacheSize)
+	assert.Equal(t, uint64(5), got.DNSCacheEvictions)
+
 	out := renderReportInternal(t, Report{Stats: got})
-	assert.Contains(t, out, "FIREWALL EVENTS (1h)")
-	assert.NotContains(t, out, "NFLOG")
-	assert.NotContains(t, out, "DNS CACHE")
+	assert.NotContains(t, out, "(stale)")
+	assert.Contains(t, out, "NFLOG")
+	assert.Contains(t, out, "DNS CACHE")
 }
 
 func TestRenderStatsHeartbeatStale(t *testing.T) {

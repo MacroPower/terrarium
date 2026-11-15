@@ -13,6 +13,11 @@ import (
 // collectStats reads a high-level summary of the SQLite event store
 // when stats is enabled. Failures land on [StatsSection.Err] so the
 // renderer can still produce useful output.
+//
+// The heartbeat of the summary is the heartbeat of the latest
+// instance whose mode [hasFirewall] selects. A `terrarium proxy` run
+// can write to the same store, and its heartbeat does not describe
+// the daemon.
 func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 	if cfg == nil || !cfg.StatsEnabled() {
 		return StatsSection{}
@@ -46,20 +51,22 @@ func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 
 	defer r.Close() //nolint:errcheck // read-only.
 
-	// The first instance is the instance of
-	// [eventstore.Reader.LatestInstanceID]. The list also holds its
-	// mode.
+	// The list holds the instance with the latest start first.
 	instances, err := r.Instances(ctx)
 	if err != nil {
 		s.Err = fmt.Errorf("resolving instance: %w", err)
 		return s
 	}
 
+	// The empty ID selects no heartbeat.
 	var instanceID string
 
-	if len(instances) > 0 {
-		instanceID = instances[0].ID
-		s.Mode = instances[0].Mode
+	for _, in := range instances {
+		if hasFirewall(in.Mode) {
+			instanceID = in.ID
+
+			break
+		}
 	}
 
 	h, err := r.Health(ctx, instanceID)
@@ -90,4 +97,12 @@ func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 	}
 
 	return s
+}
+
+// hasFirewall reports whether an instance of the given mode runs the
+// firewall, the firewall log, and the DNS cache that `terrarium
+// status` reports on. `terrarium daemon` and `terrarium init` run
+// them, and `terrarium proxy` does not.
+func hasFirewall(mode eventstore.Mode) bool {
+	return mode == eventstore.ModeDaemon || mode == eventstore.ModeInit
 }

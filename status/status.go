@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"go.jacobcolvin.com/terrarium/config"
-	"go.jacobcolvin.com/terrarium/eventstore"
 )
 
 // Options controls what [Collect] gathers.
@@ -221,11 +220,14 @@ type EnvoySection struct {
 // path, the most recent event timestamp, and the event count over
 // the last 24 hours.
 //
-// Ingestion-health counters live in the [eventstore.Store] of the
-// running instance, and for init and daemon runs also in its
-// [nflog.Reader] and [dnscache.Cache]. The CLI reads them through the
-// heartbeat row that the instance writes into `instance_metrics` (see
-// [eventstore.Reader.LatestHeartbeat]).
+// Ingestion-health counters live in the [eventstore.Store], the
+// [nflog.Reader], and the [dnscache.Cache] of the running daemon. The
+// CLI reads them through the heartbeat row that the daemon writes
+// into `instance_metrics` (see [eventstore.Reader.LatestHeartbeat]).
+// The section holds the heartbeat of the latest instance of the store
+// with the mode [eventstore.ModeDaemon] or [eventstore.ModeInit]. It
+// never holds the heartbeat of a `terrarium proxy` run that writes to
+// the same store.
 type StatsSection struct {
 	// LastEvent is the timestamp of the most recent event. Zero
 	// when no events have been written. Sourced from
@@ -234,8 +236,9 @@ type StatsSection struct {
 	LastEvent time.Time
 
 	// HeartbeatRecordedAt is the wall-clock time of the most
-	// recent heartbeat row for the current instance. Zero when the
-	// instance recorded no heartbeat.
+	// recent heartbeat row of the latest init or daemon instance.
+	// Zero when that instance recorded no heartbeat, and when the
+	// store holds no init or daemon instance.
 	// The renderer uses [time.Since] against this to decide
 	// staleness.
 	HeartbeatRecordedAt time.Time
@@ -254,16 +257,6 @@ type StatsSection struct {
 	// DBPath is the path the collector resolved from config and
 	// XDG defaults. Empty when stats is disabled.
 	DBPath string
-
-	// Mode is the mode of the instance whose heartbeat the section
-	// holds, which is the instance with the latest start. It is empty
-	// when the store holds no instance. The renderer omits the NFLOG
-	// and DNS CACHE sub-sections for [eventstore.ModeProxy], because a
-	// proxy has no firewall log and no DNS cache. For a proxy, it
-	// prints the FIREWALL EVENTS (1h) sub-section only when
-	// FirewallEvents1h is more than zero, because that count covers
-	// every instance.
-	Mode eventstore.Mode
 
 	// Events24h is the total event count in the last 24 hours.
 	Events24h int64

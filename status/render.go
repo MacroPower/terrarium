@@ -271,13 +271,9 @@ var heartbeatStaleAfter = 2 * eventstore.HeartbeatInterval
 
 // renderStats prints the event store summary. When stats is disabled,
 // the section heading is suppressed entirely so the output stays
-// compact for the off-by-default case. The other sub-sections follow
-// the STATS section only for an instance with a heartbeat. The NFLOG
-// and DNS CACHE sub-sections hold the counters of that heartbeat, so
-// they print only for a mode other than [eventstore.ModeProxy]. The
-// FIREWALL EVENTS (1h) sub-section counts the firewall events of
-// every instance, so for a proxy it prints when the store holds a
-// firewall event of the last hour.
+// compact for the off-by-default case. The NFLOG, DNS CACHE, and
+// FIREWALL EVENTS (1h) sub-sections follow the STATS section only
+// when the section holds a heartbeat.
 func renderStats(w io.Writer, s StatsSection) error {
 	if !s.Enabled {
 		return nil
@@ -315,24 +311,14 @@ func renderStats(w io.Writer, s StatsSection) error {
 		return nil
 	}
 
-	// A proxy has no firewall log and no DNS cache, so the counters of
-	// those sub-sections are zero in the heartbeat of a proxy.
-	if s.Mode != eventstore.ModeProxy {
-		err = renderNFLog(w, s)
-		if err != nil {
-			return err
-		}
-
-		err = renderDNSCache(w, s)
-		if err != nil {
-			return err
-		}
+	err = renderNFLog(w, s)
+	if err != nil {
+		return err
 	}
 
-	// Another instance that writes to the same store might have
-	// recorded firewall events, which the count covers.
-	if s.Mode == eventstore.ModeProxy && s.FirewallEvents1h == 0 {
-		return nil
+	err = renderDNSCache(w, s)
+	if err != nil {
+		return err
 	}
 
 	return renderFirewallEvents1h(w, s)

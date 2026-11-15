@@ -224,9 +224,10 @@ func openStatsReader(ctx context.Context, path string) (*eventstore.Reader, erro
 
 // resolveInstance returns the instance ID to filter on. The empty
 // explicit ID selects the run with the latest start, which is the
-// instance of [eventstore.Reader.LatestInstanceID]. The stats CLI,
-// the status report, and the MCP tools therefore read the same
-// instance by default.
+// instance of [eventstore.Reader.LatestInstanceID]. The stats CLI
+// and the MCP tools therefore read the same instance by default.
+// The status report reads the heartbeat of the latest init or daemon
+// instance instead, because a proxy run can start later.
 func resolveInstance(ctx context.Context, r *eventstore.Reader, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
