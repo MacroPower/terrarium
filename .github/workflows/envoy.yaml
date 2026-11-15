@@ -1,28 +1,23 @@
 name: envoy
 
 # Checks the provenance of the Envoy builds that envoybin/manifest.go pins.
-# Renovate merges a bump of the pin only after every job passes. A job fails
-# when a hash, a signature, an attestation, or the version commit of its
-# build does not match. A job also fails when its build of the pinned
+# Renovate merges a bump of the pin only after every job passes. A verify job
+# fails when a hash, a signature, an attestation, or the version commit of its
+# build does not match. A verify job also fails when its build of the pinned
 # version does not exist. Tetrate publishes the macOS build after the Envoy
 # release, so a bump waits with failed jobs until that build exists.
+#
+# The workflow runs for every pull request, and the envoy-pin job reports its
+# result under one fixed name. To stop the merge of a pull request whose pin
+# fails a check, add envoy-pin to the required status checks of the main
+# branch. Do not require a verify job. The verify jobs run only for a change
+# to the pin, and GitHub holds a pull request until every required check
+# reports a result.
 on:
   push:
     branches:
       - main
-    paths:
-      - envoybin/**
-      - cmd/envoymanifest/**
-      - go.work
-      - go.work.sum
-      - .github/workflows/envoy.yaml
   pull_request:
-    paths:
-      - envoybin/**
-      - cmd/envoymanifest/**
-      - go.work
-      - go.work.sum
-      - .github/workflows/envoy.yaml
   workflow_dispatch:
 
 concurrency:
@@ -33,8 +28,59 @@ permissions:
   contents: read
 
 jobs:
+  # A path filter on the trigger skips the whole workflow, and then the
+  # envoy-pin job reports no result. This job applies the filter instead.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      pin: ${{ steps.diff.outputs.pin }}
+    steps:
+      # A push can hold any number of commits, so the commit before the push
+      # can sit at any depth of the history.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The pin output is "true" when the change touches a file that the
+      # verify jobs depend on. For a pull request, the checkout is the merge
+      # commit, and its first parent is the base branch. For a push, the base
+      # is the commit before the push. A manual run has no base, and the
+      # history does not hold the base of every push. The output is "true"
+      # in both cases, so the verify jobs run whenever the diff is unknown.
+      - name: Find changes to the pin
+        id: diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base='HEAD^1' ;;
+            push) base="$BEFORE" ;;
+            *) base='' ;;
+          esac
+
+          pin=true
+          if [ -n "$base" ] && git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+            if git diff --quiet "$base" HEAD -- \
+              envoybin \
+              cmd/envoymanifest \
+              go.work \
+              go.work.sum \
+              .github/workflows/envoy.yaml; then
+              pin=false
+            fi
+          fi
+
+          echo "pin=$pin" >>"$GITHUB_OUTPUT"
+
   verify:
     name: verify (${{ matrix.platform }})
+    needs: [changes]
+    if: ${{ needs.changes.outputs.pin == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
@@ -71,3 +117,46 @@ jobs:
           # The gh CLI reads the token for `gh attestation verify`, and the
           # command sends it with its request to the GitHub API.
           GH_TOKEN: ${{ github.token }}
+
+  # This job is the check to require for a merge. It runs for every change,
+  # and it passes only when every verify job passed or the change does not
+  # touch the pin. The always() condition is necessary. Without it, GitHub
+  # skips this job when a verify job fails, and a skipped job satisfies a
+  # required check.
+  result:
+    name: envoy-pin
+    needs: [changes, verify]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check the results of the other jobs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          PIN_CHANGED: ${{ needs.changes.outputs.pin }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          echo "changes: $CHANGES_RESULT, pin changed: $PIN_CHANGED, verify: $VERIFY_RESULT"
+
+          if [ "$CHANGES_RESULT" != success ]; then
+            echo "::error::The changes job did not succeed, so the state of the pin is unknown."
+            exit 1
+          fi
+
+          case "$VERIFY_RESULT" in
+            success)
+              echo "Every verify job passed."
+              ;;
+            skipped)
+              if [ "$PIN_CHANGED" != false ]; then
+                echo "::error::The verify jobs did not run for a change to the pin."
+                exit 1
+              fi
+
+              echo "The change does not touch the pin, so no verify job ran."
+              ;;
+            *)
+              echo "::error::A verify job did not pass."
+              exit 1
+              ;;
+          esac
