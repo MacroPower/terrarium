@@ -46,10 +46,20 @@ func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 
 	defer r.Close() //nolint:errcheck // read-only.
 
-	instanceID, _, err := r.LatestInstanceID(ctx)
+	// The first instance is the instance of
+	// [eventstore.Reader.LatestInstanceID]. The list also holds its
+	// mode.
+	instances, err := r.Instances(ctx)
 	if err != nil {
 		s.Err = fmt.Errorf("resolving instance: %w", err)
 		return s
+	}
+
+	var instanceID string
+
+	if len(instances) > 0 {
+		instanceID = instances[0].ID
+		s.Mode = instances[0].Mode
 	}
 
 	h, err := r.Health(ctx, instanceID)

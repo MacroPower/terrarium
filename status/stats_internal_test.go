@@ -92,6 +92,98 @@ func TestCollectStatsHeartbeatAbsent(t *testing.T) {
 	assert.True(t, got.HeartbeatRecordedAt.IsZero())
 }
 
+func TestCollectStatsMode(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		mode         eventstore.Mode
+		wantSections bool
+	}{
+		"daemon": {mode: eventstore.ModeDaemon, wantSections: true},
+		"init":   {mode: eventstore.ModeInit, wantSections: true},
+		// A proxy has no firewall log and no DNS cache.
+		"proxy": {mode: eventstore.ModeProxy, wantSections: false},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			store, err := eventstore.Open(t.Context(), path,
+				eventstore.WithBatchInterval(20*time.Millisecond),
+				eventstore.WithMode(tc.mode))
+			require.NoError(t, err)
+
+			require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
+				RecordedAt: time.Now(),
+			}))
+
+			require.NoError(t, store.Close())
+
+			got := collectStats(t.Context(), statsCfg(path))
+			require.NoError(t, got.Err)
+			assert.Equal(t, tc.mode, got.Mode)
+			assert.False(t, got.HeartbeatRecordedAt.IsZero())
+
+			out := renderReportInternal(t, Report{Stats: got})
+			assert.Contains(t, out, "heartbeat:")
+			assert.NotContains(t, out, "(none yet)")
+
+			for _, section := range []string{"NFLOG", "DNS CACHE", "FIREWALL EVENTS (1h)"} {
+				if tc.wantSections {
+					assert.Contains(t, out, section)
+				} else {
+					assert.NotContains(t, out, section)
+				}
+			}
+		})
+	}
+}
+
+func TestCollectStatsProxyAfterDaemon(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+
+	daemon, err := eventstore.Open(t.Context(), path,
+		eventstore.WithBatchSize(1),
+		eventstore.WithBatchInterval(10*time.Millisecond),
+		eventstore.WithMode(eventstore.ModeDaemon))
+	require.NoError(t, err)
+
+	daemon.Emit(eventstore.Event{
+		Time: time.Now(), Source: eventstore.SourceFirewall, Decision: eventstore.DecisionDeny,
+	})
+
+	require.NoError(t, daemon.Close())
+
+	proxy, err := eventstore.Open(t.Context(), path,
+		eventstore.WithBatchInterval(20*time.Millisecond),
+		eventstore.WithMode(eventstore.ModeProxy))
+	require.NoError(t, err)
+
+	require.NoError(t, proxy.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
+		RecordedAt: time.Now(),
+	}))
+
+	require.NoError(t, proxy.Close())
+
+	got := collectStats(t.Context(), statsCfg(path))
+	require.NoError(t, got.Err)
+	assert.Equal(t, eventstore.ModeProxy, got.Mode)
+	assert.Equal(t, int64(1), got.FirewallEvents1h)
+
+	// The firewall events of the daemon stay visible. The counters of
+	// the proxy heartbeat for the firewall log and the DNS cache are
+	// left out.
+	out := renderReportInternal(t, Report{Stats: got})
+	assert.Contains(t, out, "FIREWALL EVENTS (1h)")
+	assert.NotContains(t, out, "NFLOG")
+	assert.NotContains(t, out, "DNS CACHE")
+}
+
 func TestRenderStatsHeartbeatStale(t *testing.T) {
 	t.Parallel()
 

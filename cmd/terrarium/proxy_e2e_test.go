@@ -2984,6 +2984,198 @@ func TestProxyE2EPolicySnapshot(t *testing.T) {
 	assert.Equal(t, usr.ConfigPath, instances[0].ConfigPath)
 }
 
+// TestProxyE2EHeartbeat checks that a proxy with stats enabled records
+// a heartbeat when it starts and one more when its context ends,
+// before it closes the store. The age of the heartbeat is how a reader
+// of the store finds a proxy that stopped without recording its end.
+//
+//nolint:paralleltest // e2e tests set env and run envoy subprocesses.
+func TestProxyE2EHeartbeat(t *testing.T) {
+	requireEnvoy(t)
+
+	dbPath := filepath.Join(t.TempDir(), "stats.db")
+
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
+
+	policy := "stats:\n" +
+		"  enabled: true\n" +
+		"  path: " + dbPath + "\n" +
+		"egress: []\n"
+
+	// The time of the heartbeat of the start, which the test sets
+	// before it returns.
+	var firstHeartbeat time.Time
+
+	// Cleanup functions run in reverse order, so this function runs
+	// after the cleanup of startProxy has stopped the proxy.
+	t.Cleanup(func() {
+		if !firstHeartbeat.IsZero() {
+			requireFinalProxyHeartbeat(t, dbPath, firstHeartbeat)
+		}
+	})
+
+	startProxy(t, policy, "")
+
+	firstHeartbeat = requireStartProxyHeartbeat(t, dbPath)
+}
+
+// TestProxyE2EHeartbeatEnvoyExit checks that a proxy whose Envoy exits
+// records its final heartbeat before it closes the store. The context
+// of the proxy does not end, so the final heartbeat comes from the
+// stop function of the heartbeat, which must run before the store
+// closes.
+//
+//nolint:paralleltest // e2e tests set env and run envoy subprocesses.
+func TestProxyE2EHeartbeatEnvoyExit(t *testing.T) {
+	requireEnvoy(t)
+
+	hostEnvoy, err := exec.LookPath("envoy")
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "stats.db")
+	pidPath := filepath.Join(dir, "envoy.pid")
+
+	// The wrapper records its PID, which exec keeps for Envoy.
+	wrapperPath := filepath.Join(dir, "envoy-wrapper")
+	wrapper := "#!/bin/sh\necho $$ >'" + pidPath + "'\nexec '" + hostEnvoy + "' \"$@\"\n"
+	require.NoError(t, os.WriteFile(wrapperPath, []byte(wrapper), 0o755))
+
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
+
+	policyPath := filepath.Join(dir, "policy.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte("stats:\n"+
+		"  enabled: true\n"+
+		"  path: "+dbPath+"\n"+
+		"egress: []\n"), 0o644))
+
+	usr := &config.User{
+		ConfigPath:      policyPath,
+		CADir:           filepath.Join(dir, "ca"),
+		CertsDir:        filepath.Join(dir, "certs"),
+		EnvoyConfigPath: filepath.Join(dir, "envoy.yaml"),
+		ReadyFile:       filepath.Join(dir, "ready"),
+	}
+
+	opts := proxyOptions{
+		envoyPath:   wrapperPath,
+		bindAddress: "127.0.0.1",
+		httpPort:    freePort(t),
+	}
+
+	// The cancel stops a proxy that the test leaves running after a
+	// failed check.
+	//nolint:usetesting // t.Context ends before the proxy returns.
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+
+		select {
+		case <-errCh:
+		case <-time.After(15 * time.Second):
+			t.Error("proxy did not shut down")
+		}
+	})
+
+	requireReadyFile(t, usr.ReadyFile)
+
+	firstHeartbeat := requireStartProxyHeartbeat(t, dbPath)
+
+	pidText, err := os.ReadFile(pidPath)
+	require.NoError(t, err)
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidText)))
+	require.NoError(t, err)
+
+	require.NoError(t, syscall.Kill(pid, syscall.SIGTERM))
+
+	select {
+	case err = <-errCh:
+		require.ErrorIs(t, err, ErrEnvoyNotRunning)
+
+		// The cleanup must not wait for the result again.
+		errCh <- err
+
+	case <-time.After(15 * time.Second):
+		t.Fatal("proxy did not return after its envoy exited")
+	}
+
+	requireFinalProxyHeartbeat(t, dbPath, firstHeartbeat)
+}
+
+// requireStartProxyHeartbeat waits for the heartbeat that the only
+// instance of the store at dbPath records at its start, and returns
+// the time of that heartbeat. The instance must be a proxy.
+func requireStartProxyHeartbeat(t *testing.T, dbPath string) time.Time {
+	t.Helper()
+
+	r, err := eventstore.OpenReader(t.Context(), dbPath)
+	require.NoError(t, err)
+
+	defer func() { assert.NoError(t, r.Close()) }()
+
+	instances, err := r.Instances(t.Context())
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	require.Equal(t, eventstore.ModeProxy, instances[0].Mode)
+
+	// The writer goroutine of the store adds the row.
+	require.Eventually(t, func() bool {
+		_, ok, hbErr := r.LatestHeartbeat(t.Context(), instances[0].ID)
+		return hbErr == nil && ok
+	}, 15*time.Second, 50*time.Millisecond)
+
+	hb, ok, err := r.LatestHeartbeat(t.Context(), instances[0].ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.WithinDuration(t, time.Now(), hb.RecordedAt, time.Minute)
+
+	// A proxy has no firewall log and no DNS cache.
+	assert.Zero(t, hb.NFLogKernelDrops)
+	assert.Zero(t, hb.NFLogParseErrors)
+	assert.True(t, hb.NFLogLastEvent.IsZero())
+	assert.Zero(t, hb.DNSCacheSize)
+	assert.Zero(t, hb.DNSCacheEvictions)
+
+	return hb.RecordedAt
+}
+
+// requireFinalProxyHeartbeat checks the store at dbPath after its only
+// instance stopped. The instance must have recorded its end and a
+// heartbeat after first. The store drops a heartbeat that arrives after
+// it closed, so the later heartbeat shows that the instance recorded
+// its final heartbeat before it closed the store.
+func requireFinalProxyHeartbeat(t *testing.T, dbPath string, first time.Time) {
+	t.Helper()
+
+	// The test context has ended when a cleanup calls this function.
+	//nolint:usetesting // see comment above.
+	ctx := context.Background()
+
+	r, err := eventstore.OpenReader(ctx, dbPath)
+	require.NoError(t, err)
+
+	defer func() { assert.NoError(t, r.Close()) }()
+
+	instances, err := r.Instances(ctx)
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.False(t, instances[0].EndedAt.IsZero(), "proxy recorded no end")
+
+	hb, ok, err := r.LatestHeartbeat(ctx, instances[0].ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.True(t, hb.RecordedAt.After(first),
+		"latest heartbeat %s is not after the heartbeat of the start %s",
+		hb.RecordedAt, first)
+}
+
 // TestProxyBootstrapStatsSocketTooLong checks that Envoy accepts the
 // proxy bootstrap when stats.socket is longer than the platform limit.
 // Envoy rejects a bootstrap that names such a path, so the bootstrap

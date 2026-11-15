@@ -263,14 +263,21 @@ func renderEnvoy(w io.Writer, s EnvoySection) error {
 }
 
 // heartbeatStaleAfter is the staleness window past which the
-// renderer flags a heartbeat row as stale. Twice the daemon's tick
-// cadence so one missed tick is forgiven and two missed ticks raise
+// renderer flags a heartbeat row as stale. It is twice the heartbeat
+// cadence of an instance ([eventstore.HeartbeatInterval]), so that
+// one missed heartbeat is forgiven and two missed heartbeats raise
 // the flag.
 var heartbeatStaleAfter = 2 * eventstore.HeartbeatInterval
 
 // renderStats prints the event store summary. When stats is disabled,
 // the section heading is suppressed entirely so the output stays
-// compact for the off-by-default case.
+// compact for the off-by-default case. The other sub-sections follow
+// the STATS section only for an instance with a heartbeat. The NFLOG
+// and DNS CACHE sub-sections hold the counters of that heartbeat, so
+// they print only for a mode other than [eventstore.ModeProxy]. The
+// FIREWALL EVENTS (1h) sub-section counts the firewall events of
+// every instance, so for a proxy it prints when the store holds a
+// firewall event of the last hour.
 func renderStats(w io.Writer, s StatsSection) error {
 	if !s.Enabled {
 		return nil
@@ -308,14 +315,24 @@ func renderStats(w io.Writer, s StatsSection) error {
 		return nil
 	}
 
-	err = renderNFLog(w, s)
-	if err != nil {
-		return err
+	// A proxy has no firewall log and no DNS cache, so the counters of
+	// those sub-sections are zero in the heartbeat of a proxy.
+	if s.Mode != eventstore.ModeProxy {
+		err = renderNFLog(w, s)
+		if err != nil {
+			return err
+		}
+
+		err = renderDNSCache(w, s)
+		if err != nil {
+			return err
+		}
 	}
 
-	err = renderDNSCache(w, s)
-	if err != nil {
-		return err
+	// Another instance that writes to the same store might have
+	// recorded firewall events, which the count covers.
+	if s.Mode == eventstore.ModeProxy && s.FirewallEvents1h == 0 {
+		return nil
 	}
 
 	return renderFirewallEvents1h(w, s)

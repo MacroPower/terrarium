@@ -659,11 +659,17 @@ func (s *Store) LastWriteTime() time.Time {
 	return time.UnixMicro(usec)
 }
 
-// Heartbeat is a periodic snapshot of daemon-internal counters that
-// the daemon writes to the `instance_metrics` table. The
-// `terrarium status` CLI reads it through [Reader.LatestHeartbeat] to
-// surface ingestion health it cannot observe through the
-// process boundary.
+// Heartbeat is a snapshot of the counters of a running instance. The
+// instance writes one to the `instance_metrics` table at its start
+// and then one every [HeartbeatInterval]. The `terrarium status` CLI
+// reads it through [Reader.LatestHeartbeat] to surface ingestion
+// health it cannot observe through the process boundary.
+//
+// An instance of each [Mode] records heartbeats. A reader therefore
+// takes an instance with an old heartbeat and without an end for an
+// instance whose process stopped without a [Store.Close]. A proxy has
+// no nflog reader and no DNS cache, so the counters of those two are
+// zero in its heartbeats.
 type Heartbeat struct {
 	// RecordedAt is the wall-clock time the snapshot was taken.
 	RecordedAt time.Time
@@ -695,11 +701,11 @@ type Heartbeat struct {
 	EventStoreDropCount int64
 }
 
-// HeartbeatInterval is the production cadence at which the daemon
+// HeartbeatInterval is the production cadence at which an instance
 // snapshots a [Heartbeat] into the `instance_metrics` table.
-// Consumers gauging heartbeat-row staleness (e.g. `terrarium status`)
-// reference this constant so a daemon-side change cannot drift from
-// the staleness threshold readers compare against.
+// Consumers gauging heartbeat-row staleness, such as
+// `terrarium status`, reference this constant so a writer-side change
+// cannot drift from the staleness threshold readers compare against.
 const HeartbeatInterval = 60 * time.Second
 
 // RecordHeartbeat sends h to the writer goroutine for upsert into the

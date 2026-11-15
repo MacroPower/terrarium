@@ -40,9 +40,9 @@ const (
 const defaultSince = "24h"
 
 // heartbeatStaleAfter is the age past which get_health reports a
-// heartbeat as stale. An instance records one heartbeat in each
-// [eventstore.HeartbeatInterval], so a stale heartbeat means that the
-// instance missed two of them.
+// heartbeat as stale. An instance of each mode records one heartbeat
+// at its start and then one in each [eventstore.HeartbeatInterval],
+// so a stale heartbeat means that the instance missed two of them.
 const heartbeatStaleAfter = 2 * eventstore.HeartbeatInterval
 
 // The descriptions of the arguments that several tools share.
@@ -96,7 +96,7 @@ type InstanceInfo struct {
 	ConfigPath string `json:"config_path,omitempty" jsonschema:"path of the config file of the run"`
 	StartedAt  string `json:"started_at"            jsonschema:"start of the run, as an RFC 3339 time"`
 	EndedAt    string `json:"ended_at,omitempty"    jsonschema:"end of the run, as an RFC 3339 time. Absent when the run recorded no end"`
-	InProgress bool   `json:"in_progress"           jsonschema:"true when the run recorded no end. A run whose process stopped without a clean exit also recorded no end, so check the heartbeat age in get_health"`
+	InProgress bool   `json:"in_progress"           jsonschema:"true when the run recorded no end. A run whose process stopped without a clean exit also recorded no end. To tell such a run from a running one, call get_health with the ID of the run. The heartbeat of a stopped run is stale"`
 }
 
 // InstancesResult is the result of the list_instances tool.
@@ -207,12 +207,14 @@ type GetHealthInput struct {
 }
 
 // HeartbeatInfo holds the counters that an instance records about
-// itself, in the result of the get_health tool.
+// itself, in the result of the get_health tool. An instance of each
+// mode records heartbeats. A proxy has no firewall log and no DNS
+// cache, so the counters of those two are zero for a proxy.
 type HeartbeatInfo struct {
 	RecordedAt        string `json:"recorded_at"                   jsonschema:"time of the heartbeat, as an RFC 3339 time"`
 	StoreLastWriteAt  string `json:"store_last_write_at,omitempty" jsonschema:"time of the latest write of events to the store. Absent before the first write"`
 	NFLogLastEventAt  string `json:"nflog_last_event_at,omitempty" jsonschema:"time of the latest firewall event. Absent before the first one"`
-	AgeSeconds        int64  `json:"age_seconds"                   jsonschema:"seconds from the heartbeat to now. A running instance records one heartbeat each minute"`
+	AgeSeconds        int64  `json:"age_seconds"                   jsonschema:"seconds from the heartbeat to now. A running instance records one heartbeat at its start and then one each minute"`
 	StoreDrops        int64  `json:"store_drops"                   jsonschema:"events that the instance dropped because the store wrote too slowly"`
 	NFLogKernelDrops  uint64 `json:"nflog_kernel_drops"            jsonschema:"firewall log records that the kernel dropped"`
 	NFLogParseErrors  uint64 `json:"nflog_parse_errors"            jsonschema:"firewall log records that the instance did not parse"`
@@ -310,7 +312,10 @@ func (s *Server) addTools() {
 		Description: "Reports how well terrarium records events: the counters of the latest heartbeat " +
 			"of one run, the age of that heartbeat, the time of the latest event, the number of events " +
 			"in the last 24 hours, and the size of the database. " +
-			"Call it when events are missing. Dropped events and a stale heartbeat explain gaps.",
+			"Call it when events are missing. Dropped events and a stale heartbeat explain gaps. " +
+			"Call it also for a run that list_instances reports as in progress. A stale heartbeat " +
+			"means that the process of the run stopped. " +
+			"A proxy run has no firewall log and no DNS cache, so its nflog and dns_cache counters are 0.",
 		Annotations: readOnly("Event store health"),
 		InputSchema: inputSchema[GetHealthInput](func(p properties) {
 			p.describe("instance", "ID of the instance whose heartbeat to read, from list_instances. "+

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.jacobcolvin.com/terrarium/eventstore"
 	"go.jacobcolvin.com/terrarium/status"
 )
 
@@ -243,6 +244,74 @@ func TestRenderStatsHeartbeatSubsections(t *testing.T) {
 	assert.Contains(t, out, "FIREWALL EVENTS (1h)")
 	assert.Contains(t, out, "null domain rate:")
 	assert.Contains(t, out, "12.5% (3 / 24)")
+}
+
+func TestRenderStatsHeartbeatMode(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		mode           eventstore.Mode
+		firewallEvents int64
+		wantCounters   bool
+		wantFirewall   bool
+	}{
+		"daemon": {
+			mode:         eventstore.ModeDaemon,
+			wantCounters: true,
+			wantFirewall: true,
+		},
+		"no instance": {
+			mode:         "",
+			wantCounters: true,
+			wantFirewall: true,
+		},
+		// A proxy has no firewall log and no DNS cache.
+		"proxy": {
+			mode: eventstore.ModeProxy,
+		},
+		// The firewall events of another instance in the same store.
+		"proxy with firewall events": {
+			mode:           eventstore.ModeProxy,
+			firewallEvents: 4,
+			wantFirewall:   true,
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			r := reportFixture()
+			r.Stats = status.StatsSection{
+				Enabled:             true,
+				DBPath:              "/var/lib/terrarium/events.db",
+				Mode:                tc.mode,
+				EventStoreDropCount: 2,
+				HeartbeatRecordedAt: time.Now().Add(-5 * time.Second),
+				FirewallEvents1h:    tc.firewallEvents,
+			}
+
+			out := render(t, r)
+
+			assert.Contains(t, out, "STATS")
+			assert.Contains(t, out, "eventstore drops:")
+			assert.Contains(t, out, "heartbeat:")
+
+			for _, section := range []string{"NFLOG", "DNS CACHE"} {
+				if tc.wantCounters {
+					assert.Contains(t, out, section)
+				} else {
+					assert.NotContains(t, out, section)
+				}
+			}
+
+			if tc.wantFirewall {
+				assert.Contains(t, out, "FIREWALL EVENTS (1h)")
+			} else {
+				assert.NotContains(t, out, "FIREWALL EVENTS (1h)")
+			}
+		})
+	}
 }
 
 func TestRenderStatsHeartbeatNoneYet(t *testing.T) {

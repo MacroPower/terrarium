@@ -1026,6 +1026,13 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 			}
 		}()
 
+		// A proxy that stops without closing the store records no
+		// end. The heartbeat is then the only sign in the store that
+		// the proxy stopped. The store closes after the last
+		// heartbeat, because the deferred calls run in reverse order.
+		stopHeartbeat := startHeartbeat(ctx, store, nil)
+		defer stopHeartbeat()
+
 		// Envoy serves the policy, so record it as the policy in
 		// force. The snapshot comes before the ready file, so a
 		// process that waits for the file finds the snapshot queued.

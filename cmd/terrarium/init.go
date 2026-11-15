@@ -438,9 +438,27 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 	// reload does not restart it. The goroutine reads through the
 	// same [*infra] reference, so reload-time component swaps are
 	// picked up automatically on the next tick.
-	inf.heartbeatStop = startHeartbeat(ctx, inf)
+	inf.heartbeatStop = startHeartbeat(ctx, inf.eventStore, inf.heartbeatCounters)
 
 	return inf, nil
+}
+
+// heartbeatCounters adds the counters of the nflog reader and of the
+// DNS cache of inf to h. It is the [heartbeatCounters] of the init and
+// daemon modes. The counters of a nil nflog reader stay zero, which
+// is the case in unrestricted mode and with firewall logging
+// disabled. The counters of a nil DNS cache stay zero as well.
+func (inf *infra) heartbeatCounters(h *eventstore.Heartbeat) {
+	if inf.nflogReader != nil {
+		h.NFLogKernelDrops = inf.nflogReader.KernelDrops()
+		h.NFLogParseErrors = inf.nflogReader.ParseErrors()
+		h.NFLogLastEvent = inf.nflogReader.LastEventTime()
+	}
+
+	if inf.dnsCache != nil {
+		h.DNSCacheSize = int64(inf.dnsCache.Size())
+		h.DNSCacheEvictions = inf.dnsCache.Evictions()
+	}
 }
 
 // openNflog binds the nfnetlink_log reader when stats and firewall
