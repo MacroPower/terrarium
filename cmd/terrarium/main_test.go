@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -184,6 +188,93 @@ func TestCommandRejectsUnreadFlags(t *testing.T) {
 
 			err := root.ExecuteContext(t.Context())
 			require.ErrorContains(t, err, tt.err)
+		})
+	}
+}
+
+// ansiStyle matches the escape sequences that set the color and the
+// style of terminal text.
+var ansiStyle = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+
+// helpText returns the first line of a flag description or a command
+// description with a capital first letter. The help prints that text
+// for a description that starts with a word in lowercase.
+func helpText(description string) string {
+	line, _, _ := strings.Cut(description, "\n")
+
+	first, size := utf8.DecodeRuneInString(line)
+	if size == 0 {
+		return line
+	}
+
+	return string(unicode.ToUpper(first)) + line[size:]
+}
+
+// TestHelpKeepsDescriptions names each test case after the command
+// path whose help it renders. Fang renders the first word of each flag
+// description and of each command description in title case. Title
+// case lowercases every letter of the word after the first letter. A
+// description that starts with an acronym, such as DNS, therefore
+// loses the capitals of the acronym. Each test case fails when the
+// help of its command changes more of a description than the case of
+// the first letter.
+func TestHelpKeepsDescriptions(t *testing.T) {
+	t.Parallel()
+
+	var (
+		paths []string
+		walk  func(cmd *cobra.Command)
+	)
+
+	walk = func(cmd *cobra.Command) {
+		paths = append(paths, cmd.CommandPath())
+
+		for _, sub := range cmd.Commands() {
+			walk(sub)
+		}
+	}
+
+	walk(newRootCmd())
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			var stdout bytes.Buffer
+
+			args := strings.Fields(path)[1:]
+
+			root := newRootCmd()
+			root.SetArgs(append(slices.Clone(args), "--help"))
+			root.SetOut(&stdout)
+			root.SetErr(io.Discard)
+
+			require.Equal(t, 0, run(t.Context(), root))
+
+			cmd, _, err := root.Find(args)
+			require.NoError(t, err)
+			require.Equal(t, path, cmd.CommandPath())
+
+			help := ansiStyle.ReplaceAllString(stdout.String(), "")
+
+			const hint = "the help changed the description of %s, " +
+				"so start the description with a word that has no capital after its first letter"
+
+			cmd.Flags().VisitAll(func(f *pflag.Flag) {
+				if f.Hidden {
+					return
+				}
+
+				assert.Contains(t, help, helpText(f.Usage), hint, "--"+f.Name)
+			})
+
+			for _, sub := range cmd.Commands() {
+				if sub.Hidden {
+					continue
+				}
+
+				assert.Contains(t, help, helpText(sub.Short), hint, sub.CommandPath())
+			}
 		})
 	}
 }

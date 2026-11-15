@@ -845,13 +845,13 @@ func (u *User) RegisterFlags(flags *pflag.FlagSet, names ...string) {
 	all.StringVar(&u.GID, u.Flags.GID, "1000", "terrarium user GID")
 	all.StringVar(&u.EnvoyUID, u.Flags.EnvoyUID, "1001", "Envoy process UID")
 	all.UintSliceVar(&u.ExcludeDNSUIDs, u.Flags.ExcludeDNSUIDs, nil,
-		"UIDs excluded from DNS interception (e.g., local DNS forwarder)")
+		"exclude these UIDs from DNS interception, such as the UID of a local DNS forwarder")
 	all.StringVar(&u.ConfigPath, u.Flags.ConfigPath,
 		filepath.Join(userConfigDir(), "terrarium", "config.yaml"), "terrarium config file path")
 	all.StringVar(&u.CertsDir, u.Flags.CertsDir,
-		filepath.Join(userDataDir(), "terrarium", "certs"), "MITM leaf certificate directory")
+		filepath.Join(userDataDir(), "terrarium", "certs"), "directory of the MITM leaf certificates")
 	all.StringVar(&u.CADir, u.Flags.CADir,
-		filepath.Join(userDataDir(), "terrarium", "ca"), "CA cert and key directory")
+		filepath.Join(userDataDir(), "terrarium", "ca"), "directory of the CA cert and key")
 	all.StringVar(&u.EnvoyConfigPath, u.Flags.EnvoyConfigPath,
 		envoyConfigDefault(),
 		"Envoy config output path (proxy writes envoy-proxy-<bind-address>-<http-port>.yaml in the same directory)")

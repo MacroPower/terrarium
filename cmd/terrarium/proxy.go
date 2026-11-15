@@ -114,13 +114,13 @@ func proxyCmd(usr *config.User, inst *envoybin.Installer) *cobra.Command {
 	cmd.Flags().IntVar(&opts.httpPort, "http-port", 8080,
 		"port for the HTTP proxy listener")
 	cmd.Flags().StringVar(&opts.bindAddress, "bind-address", loopbackIPv4,
-		"IP address the proxy listener binds")
+		"bind the proxy listener to this IP address")
 	cmd.Flags().StringVar(&opts.caOut, "ca-out", "",
 		"write the MITM CA certificate PEM to this path (only when the policy has L7 rules)")
 	cmd.Flags().StringVar(&opts.caBundleOut, "ca-bundle-out", "",
 		"write the system CA bundle plus the MITM CA to this path, for clients that read one trust file")
 	cmd.Flags().StringSliceVar(&opts.resolvers, "resolver", nil,
-		"DNS resolver ip:port for upstream resolution (default: system resolver)")
+		"upstream DNS resolver as ip:port (default: system resolver)")
 	cmd.Flags().StringVar(&opts.envoyPath, "envoy-path", "",
 		"Envoy binary to run without a hash check, as a path or a command on PATH "+
 			"(default: the managed build)")
