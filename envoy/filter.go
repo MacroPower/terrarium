@@ -181,22 +181,32 @@ func buildPassthroughFilterChain(
 // The connection manager removes the port and the trailing dot of the
 // host from the Host header of each request before it matches the
 // header against the virtual host of the domain. A request for
-// "example.com." then matches the rule for "example.com". The routes
-// do not change the Host header, so the upstream receives the host
-// without the port and without the dot. Envoy does not add the port of
-// the upstream to the header. Some upstreams compare the header as
-// text, such as an upstream that checks a request signature that
-// covers the header.
+// "example.com." then matches the rule for "example.com".
+//
+// The upstream receives the host without the dot. When upstreamPort is
+// 443, the upstream receives the host without a port, because 443 is
+// the default port of the "https" scheme. For every other port, the
+// routes append upstreamPort to the host, see [appendHostPort]. The
+// upstream of a request for "https://example.com:8443/" then receives
+// the Host header "example.com:8443", which RFC 9110 section 7.2
+// requires. Some upstreams compare the header as text, such as an
+// upstream that checks a request signature that covers the header.
 //
 // The chain sends each request that a route forwards to upstreamPort
-// of the host that the Host header names. An HTTP filter stores
-// upstreamPort under the key "envoy.upstream.dynamic_port" in the
-// filter state of each request, and the dynamic forward proxy connects
-// to that port. Without the key, the dynamic forward proxy takes the
-// port from the Host header. The connection manager removes that
-// port. The dynamic forward proxy then connects to port 443, which is
-// the default port of the TLS cluster of the routes. The port in the
-// Host header of the client never selects the port of the upstream.
+// of the host that the Host header names. Two parts of the chain carry
+// upstreamPort. An HTTP filter stores upstreamPort under the key
+// "envoy.upstream.dynamic_port" in the filter state of each request.
+// The dynamic forward proxy filter then resolves the host for
+// upstreamPort, and the dynamic forward proxy cluster connects to that
+// port.
+//
+// When upstreamPort is not 443, the routes also put upstreamPort into
+// the Host header that the dynamic forward proxy cluster reads. The
+// header and the filter state then name the same port. When
+// upstreamPort is 443, the Host header has no port, and 443 is the
+// default port of the TLS cluster of the routes. The connection manager removes the port
+// that the client put in the Host header, so that port never selects
+// the port of the upstream.
 //
 // The connection manager serves HTTP/1.0 requests, and the virtual
 // host applies the same HTTP rules to the requests of every HTTP
@@ -219,6 +229,7 @@ func buildMITMFilterChain(
 	keyPath := fmt.Sprintf("%s/%s/key.pem", certsDir, sn)
 
 	vhosts, _, _ := buildHTTPVirtualHosts([]config.ResolvedRule{rule}, mitmForwardProxyCluster)
+	appendHostPort(vhosts, upstreamPort)
 
 	httpFilters := make([]filter, 0, 4)
 	if httpRBACFilter != nil {
@@ -294,6 +305,37 @@ func buildMITMFilterChain(
 				HTTPFilters:    httpFilters,
 			},
 		}},
+	}
+}
+
+// appendHostPort makes each route of vhosts that forwards a request
+// append port to the Host header of the request. It changes nothing
+// when port is [defaultHTTPSPort], because a Host header without a port
+// names that port.
+//
+// The connection manager of a MITM filter chain removes the port from
+// the Host header, so every request reaches the routes without a port.
+// The upstream therefore receives port, whatever port the Host header
+// of the client named. The router rewrites the header after the route
+// matchers and the HTTP filters ran, so they see the host without the
+// port.
+//
+// The router also stores the Host header that it replaced, which is the
+// host without the port, in the "x-envoy-original-host" header of the
+// request to the upstream.
+func appendHostPort(vhosts []virtualHost, port int) {
+	if port == defaultHTTPSPort {
+		return
+	}
+
+	rewrite := "%REQ(:AUTHORITY)%:" + strconv.Itoa(port)
+
+	for _, vh := range vhosts {
+		for i := range vh.Routes {
+			if action := vh.Routes[i].Route; action != nil {
+				action.HostRewrite = rewrite
+			}
+		}
 	}
 }
 

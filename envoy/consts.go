@@ -57,6 +57,10 @@ const (
 	// The HTTP/2 :authority pseudo-header.
 	authorityHeader = ":authority"
 
+	// The default port of the "https" scheme. A Host header without a
+	// port names this port on a TLS connection.
+	defaultHTTPSPort = 443
+
 	// The HCM stream idle timeout, encoded as an Envoy duration
 	// string. It reaps idle streams and tunnels without capping
 	// active long-lived transfers.

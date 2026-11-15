@@ -492,10 +492,22 @@ type metadata struct {
 	FilterMetadata map[string]map[string]string `yaml:"filter_metadata"`
 }
 
+// routeAction models the fields of Envoy's RouteAction that the routes
+// set.
+//
+// HostRewrite is a substitution format string. When it is not empty,
+// the router replaces the Host header of each request with the result
+// of the format before it sends the request to the upstream. The
+// router also stores the Host header that it replaced in the
+// "x-envoy-original-host" header of the request. The route matchers
+// and the other HTTP filters run before the router, so they see the
+// Host header as it was. The cluster of the route selects its host
+// after the router replaced the header.
 type routeAction struct {
 	MaxStreamDuration *maxStreamDuration   `yaml:"max_stream_duration,omitempty"`
 	Cluster           string               `yaml:"cluster"`
 	Timeout           string               `yaml:"timeout,omitempty"`
+	HostRewrite       string               `yaml:"host_rewrite,omitempty"`
 	UpgradeConfigs    []routeUpgradeConfig `yaml:"upgrade_configs,omitempty"`
 }
 

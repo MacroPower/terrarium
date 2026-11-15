@@ -558,7 +558,8 @@ func TestProxyE2EMITM(t *testing.T) {
 
 // TestProxyE2EMITMPort checks that the proxy sends a decrypted request
 // to the port of the CONNECT request, for an HTTP rule on TLS ports
-// other than 443.
+// other than 443. It also checks that the upstream receives that port
+// in the Host header.
 //
 //nolint:paralleltest // e2e tests bind fixed ports, set env, and run envoy subprocesses.
 func TestProxyE2EMITMPort(t *testing.T) {
@@ -567,8 +568,24 @@ func TestProxyE2EMITMPort(t *testing.T) {
 
 	caPath, tlsCfg := e2eCerts(t, "test.example")
 
-	startTLSServer(t, "127.0.0.1:18445", tlsCfg, "upstream 18445")
-	startTLSServer(t, "127.0.0.1:18446", tlsCfg, "upstream 18446")
+	// Each upstream answers the path /allowed/host with its name and
+	// the Host header that it received, and every other path with its
+	// name.
+	upstream := func(name string) http.Handler {
+		mux := http.NewServeMux()
+		mux.Handle("/", fixedBodyHandler(t, name))
+		mux.HandleFunc("/allowed/host", func(w http.ResponseWriter, r *http.Request) {
+			_, err := io.WriteString(w, name+" Host="+r.Host)
+			if err != nil {
+				t.Logf("upstream write: %v", err)
+			}
+		})
+
+		return mux
+	}
+
+	startTLSHandlerServer(t, "127.0.0.1:18445", tlsCfg, upstream("upstream 18445"))
+	startTLSHandlerServer(t, "127.0.0.1:18446", tlsCfg, upstream("upstream 18446"))
 
 	// The proxy validates its re-encrypted upstream connection against
 	// the system bundle, so point the bundle at the test CA.
@@ -628,6 +645,67 @@ func TestProxyE2EMITMPort(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
 			getStatus(t, client, "https://test.example:18445/forbidden"))
 	})
+
+	// The Go client sends the port of the URL in the Host header,
+	// because the port is not the default port of the scheme.
+	hostTests := map[string]struct {
+		url  string
+		want string
+	}{
+		"upstream of the first port receives the Host header of the client": {
+			url:  "https://test.example:18445/allowed/host",
+			want: "upstream 18445 Host=test.example:18445",
+		},
+		"upstream of the second port receives the Host header of the client": {
+			url:  "https://test.example:18446/allowed/host",
+			want: "upstream 18446 Host=test.example:18446",
+		},
+		"upstream receives the Host header without the trailing dot": {
+			url:  "https://test.example.:18445/allowed/host",
+			want: "upstream 18445 Host=test.example:18445",
+		},
+	}
+
+	for name, tc := range hostTests {
+		t.Run(name, func(t *testing.T) {
+			resp, err := client.Get(tc.url) //nolint:noctx // test client has a timeout.
+			require.NoError(t, err)
+
+			defer func() {
+				assert.NoError(t, resp.Body.Close())
+			}()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+			assert.Equal(t, tc.want, string(body))
+		})
+	}
+
+	// The port in the Host header of the client selects neither the
+	// upstream nor the port that the upstream receives. Each request
+	// goes through a tunnel to port 18445.
+	rawHostTests := map[string]string{
+		"Host header without a port":           "test.example",
+		"Host header with the port of the URL": "test.example:18445",
+		"Host header with another rule's port": "test.example:18446",
+		"Host header with a port of no rule":   "test.example:18999",
+	}
+
+	for name, host := range rawHostTests {
+		t.Run(name, func(t *testing.T) {
+			conn := tls.Client(connectHTTP10(t, proxyURL, "test.example:18445"), &tls.Config{
+				ServerName: "test.example",
+				RootCAs:    loadPool(t, filepath.Join(usr.CADir, "ca.pem")),
+				MinVersion: tls.VersionTLS12,
+			})
+
+			status, body := rawRoundTrip(t, conn,
+				"GET /allowed/host HTTP/1.1\r\nHost: "+host+"\r\nConnection: close\r\n\r\n")
+			require.Equal(t, http.StatusOK, status, body)
+			assert.Equal(t, "upstream 18445 Host=test.example:18445", body)
+		})
+	}
 }
 
 // startHeaderEchoServer serves plain HTTP on addr. The body of each
