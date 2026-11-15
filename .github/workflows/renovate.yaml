@@ -41,8 +41,10 @@ env:
   # matches it. Each permitted command belongs to a package rule in
   # .github/renovate.json5. The envoymanifest command writes the hashes of a
   # new Envoy pin. The vendorhash command writes the vendorHash of the Lima
-  # flake after a change to a dependency of the root Go module.
-  RENOVATE_ALLOWED_COMMANDS: '["^go run \\./cmd/envoymanifest update$", "^go run \\./cmd/vendorhash update$"]'
+  # flake after a change to a dependency of the root Go module. The modsum
+  # command writes go.sum of the Dagger modules in `ci` and `ci/tests` after
+  # a change to a dependency in their go.mod.
+  RENOVATE_ALLOWED_COMMANDS: '["^go run \\./cmd/envoymanifest update$", "^go run \\./cmd/vendorhash update$", "^go run \\./cmd/modsum update$"]'
   WORKFLOW_RENOVATE_VERSION: "${{ inputs.version || 'latest' }}"
 
 jobs:

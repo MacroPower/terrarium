@@ -143,7 +143,8 @@ func (m *Ci) runTask(ctx context.Context, target string) error {
 }
 
 // Lint runs the lint gate (golangci-lint, go mod tidy check, vendorHash
-// check, prettier) inside the devbox environment, mirroring `task lint`.
+// check, go.sum check of the Dagger modules, prettier) inside the devbox
+// environment. It mirrors `task lint`.
 //
 // +check
 func (m *Ci) Lint(ctx context.Context) error {

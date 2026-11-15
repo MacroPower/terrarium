@@ -27,11 +27,13 @@ tasks:
       - task: go:generate
       - task: go:format
       - task: go:vendor-hash
+      - task: go:mod-sum
       - task: fmt:format
 
   lint:
     desc: Runs all lint targets
-    deps: [go:lint, go:tidy:check, go:vendor-hash:check, fmt:lint]
+    deps:
+      [go:lint, go:tidy:check, go:vendor-hash:check, go:mod-sum:check, fmt:lint]
 
   test:
     desc: Runs all test targets (unit and integration)

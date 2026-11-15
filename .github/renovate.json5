@@ -59,6 +59,27 @@
         },
       },
     },
+    // The Dagger modules in `ci` and `ci/tests` are outside the workspace of
+    // go.work, and Dagger generates part of their packages. Renovate changes
+    // a requirement in their go.mod and leaves go.sum with the hashes of the
+    // previous version. The lint task fails when go.sum is stale. The
+    // post-upgrade command runs `go mod download` in both modules and writes
+    // the hashes of the new version into go.sum, so the requirement and the
+    // hashes land in one commit. The go command raises another requirement
+    // in go.mod when the new version needs a later version of it, so the
+    // commit takes go.mod too. RENOVATE_ALLOWED_COMMANDS in
+    // .github/workflows/renovate.yaml permits the command.
+    {
+      matchManagers: ["gomod"],
+      matchFileNames: ["ci/go.mod", "ci/tests/go.mod"],
+      postUpgradeTasks: {
+        commands: ["go run ./cmd/modsum update"],
+        fileFilters: ["ci/go.mod", "ci/go.sum", "ci/tests/go.mod", "ci/tests/go.sum"],
+        installTools: {
+          golang: {},
+        },
+      },
+    },
   ],
   customManagers: [
     // Tool and image versions pinned as Go constants in the ci module,

@@ -61,7 +61,9 @@ func TestTasksRunCommands(t *testing.T) {
 	root := readRepoFile(t, "Taskfile.yaml")
 
 	assert.Regexp(t, `(?m)^  format:\n(    .*\n)*      - task: go:vendor-hash\n`, root)
-	assert.Regexp(t, `(?m)^  lint:\n(    .*\n)*    deps: \[.*\bgo:vendor-hash:check\b.*\]\n`, root)
+	// Prettier moves a list that does not fit on the line of its key to
+	// the next line.
+	assert.Regexp(t, `(?m)^  lint:\n(    .*\n)*    deps:\s+\[[^\]]*\bgo:vendor-hash:check\b[^\]]*\]\n`, root)
 }
 
 // TestRenovateRunsUpdate checks that Renovate runs the update command

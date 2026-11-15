@@ -146,6 +146,40 @@ tasks:
     sources: *go-vendor-hash-sources
     cmd: go run ./cmd/vendorhash check
 
+  # mod-sum and mod-sum:check keep go.sum equal to the requirements of go.mod
+  # in the Dagger modules in `ci` and `ci/tests`. Those modules are outside
+  # the workspace of go.work, so tidy and tidy:check do not reach them. `go
+  # mod tidy` cannot run there, because Dagger generates part of their
+  # packages and git ignores the generated files. The two commands read
+  # go.mod and go.sum of each module and no other file of the module.
+  mod-sum:
+    desc: Writes the hashes that go.mod requires into go.sum in the Dagger modules
+    summary: |
+      Runs `go run ./cmd/modsum update`. The command runs `go mod download`
+      in `ci` and in `ci/tests`, so it needs each dependency of those
+      modules in the module cache, or internet access to download it. The
+      go command also raises a requirement in go.mod when another
+      requirement needs a later version.
+    sources: &go-mod-sum-sources
+      - cmd/modsum/*.go
+      - ci/go.mod
+      - ci/go.sum
+      - ci/tests/go.mod
+      - ci/tests/go.sum
+    cmd: go run ./cmd/modsum update
+
+  mod-sum:check:
+    desc: Verifies go.sum against go.mod in the Dagger modules
+    summary: |
+      Runs `go run ./cmd/modsum check`. The command exits non-zero when
+      go.sum in `ci` or in `ci/tests` does not hold the hashes of a module
+      version that go.mod requires, or holds the hash of another version of
+      a required module. It changes no file, and it downloads no dependency
+      of those modules. Run `task format` or `task go:mod-sum` to write the
+      hashes.
+    sources: *go-mod-sum-sources
+    cmd: go run ./cmd/modsum check
+
   # test, test:integration, and test:cover are deliberately not fingerprinted
   # with `sources`. Go's build/test cache is content-addressed over the full
   # transitive dependency graph and re-runs exactly the packages that changed;

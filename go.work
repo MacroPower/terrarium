@@ -3,6 +3,7 @@ go 1.26.3
 use (
 	.
 	./cmd/envoymanifest
+	./cmd/modsum
 	./cmd/testrunner
 	./cmd/testrunner-lima
 	./cmd/vendorhash
