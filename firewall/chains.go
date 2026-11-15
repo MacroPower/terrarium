@@ -225,7 +225,9 @@ func addDenyCIDRChains(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs, emitter logEmitter,
 ) {
-	addDenyCIDRChainsWithVerdict(conn, table, parentChain, cidrs, uids, emitter, "deny_cidr", expr.VerdictDrop, nil)
+	addDenyCIDRChainsWithVerdict(
+		conn, table, parentChain, cidrs, uids, emitter, "deny_cidr", expr.VerdictDrop, nil, false,
+	)
 }
 
 // addDenyCIDRChainsWithVerdict is the shared implementation for deny
@@ -237,11 +239,14 @@ func addDenyCIDRChains(
 // caller that passes another verdict must pass a disabled emitter,
 // because the emitter logs an ACCEPT as allowed by an egress rule.
 // The jumpGuard expressions scope each jump from the parent chain. A
-// nil jumpGuard jumps for every packet.
+// nil jumpGuard jumps for every packet. With returnLoopback, each
+// chain starts with the rules of [addLoopbackReturns], so the verdict
+// never applies to a packet to a loopback address.
 func addDenyCIDRChainsWithVerdict(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs, emitter logEmitter,
 	chainPrefix string, verdict expr.VerdictKind, jumpGuard []expr.Any,
+	returnLoopback bool,
 ) {
 	groups := groupCIDRsByRule(cidrs)
 
@@ -251,6 +256,10 @@ func addDenyCIDRChainsWithVerdict(
 			Name:  chainName,
 			Table: table,
 		})
+
+		if returnLoopback {
+			addLoopbackReturns(conn, table, chain)
+		}
 
 		// Except RETURNs: don't deny these sub-ranges.
 		for _, rule := range group {
@@ -696,6 +705,13 @@ func addUnrestrictedNAT(conn Conn, table *nftables.Table, cfg *config.Config, ui
 // vs 0), deny CIDRs must be enforced here to prevent denied traffic
 // from being redirected to Envoy and forwarded via original_dst.
 //
+// Each chain returns packets to 127.0.0.0/8 and ::1 to the NAT output
+// chain before its ACCEPT rules. The filter output chain accepts those
+// destinations before it evaluates the deny rules. TCP to loopback
+// reaches the REDIRECT rules. So a deny CIDR that covers a loopback
+// address never opens a direct path to an Envoy listener or to
+// another local service.
+//
 // The NAT chains log nothing. The filter chain logs the packet when
 // it drops the packet.
 func addDenyCIDRNATAccept(
@@ -703,8 +719,30 @@ func addDenyCIDRNATAccept(
 	cidrs []config.ResolvedCIDR, uids UIDs,
 ) {
 	addDenyCIDRChainsWithVerdict(
-		conn, table, parentChain, cidrs, uids, logEmitter{}, "deny_cidr_nat", expr.VerdictAccept, nil,
+		conn, table, parentChain, cidrs, uids, logEmitter{}, "deny_cidr_nat", expr.VerdictAccept, nil, true,
 	)
+}
+
+// addLoopbackReturns adds to chain one RETURN rule for packets to
+// 127.0.0.0/8 and one for packets to ::1. The chain must be one that
+// the NAT output chain jumps to. The caller must add the ACCEPT rules
+// of the chain after this call.
+//
+// The filter output chain accepts loopback destinations before it
+// evaluates the deny rules ([addOutputBaseRules]). So an ACCEPT in
+// NAT lets a packet reach its loopback destination. After a RETURN,
+// the REDIRECT rules of the NAT output chain send loopback TCP to
+// Envoy.
+func addLoopbackReturns(conn Conn, table *nftables.Table, chain *nftables.Chain) {
+	for _, loopback := range []string{"127.0.0.0/8", "::1/128"} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchDstCIDR(mustParseCIDR(loopback)),
+				verdictExprs(expr.VerdictReturn),
+			),
+		})
+	}
 }
 
 // addDenyCIDRNATPreRoutingAccept creates per-rule deny CIDR chains
@@ -737,6 +775,7 @@ func addDenyCIDRNATPreRoutingAccept(
 			matchL4Proto(unix.IPPROTO_TCP),
 			matchNotLocalDst(),
 		),
+		false,
 	)
 }
 
@@ -772,15 +811,7 @@ func addDenyPortNATAccept(
 		Table: table,
 	})
 
-	for _, loopback := range []string{"127.0.0.0/8", "::1/128"} {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchDstCIDR(mustParseCIDR(loopback)),
-				verdictExprs(expr.VerdictReturn),
-			),
-		})
-	}
+	addLoopbackReturns(conn, table, chain)
 
 	for _, match := range matches {
 		conn.AddRule(&nftables.Rule{

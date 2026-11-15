@@ -659,7 +659,9 @@ that an `egressDeny` rule denies. The NAT chain evaluates its rules in this
 order:
 
 1. Deny CIDR chains ACCEPT the TCP to each CIDR of an `egressDeny` rule. A
-   rule with `icmps` denies only ICMP, so it gets no deny CIDR chain.
+   rule with `icmps` denies only ICMP, so it gets no deny CIDR chain. TCP to
+   `127.0.0.0/8` and `::1` skips these chains and goes on to the REDIRECT
+   rules, even when a deny CIDR such as `0.0.0.0/0` covers the address.
 2. Deny port rules ACCEPT the TCP to each port of an `egressDeny` rule that has
    ports and no destination. TCP to `127.0.0.0/8` and `::1` skips these rules
    and goes on to the REDIRECT rules.
@@ -674,11 +676,11 @@ match the packet and drop it. The REDIRECT verdict rewrites the destination to
 an Envoy listener on loopback, and the filter chain accepts loopback traffic
 before it evaluates the deny rules.
 
-The deny port rules return TCP to a loopback address to the NAT chain before
-they accept any TCP. Accepted TCP keeps its destination, and the filter chain
-accepts loopback traffic before it evaluates the deny rules. So an ACCEPT for
-loopback TCP opens a direct path to the Envoy listeners and to every other
-local service.
+The deny CIDR chains and the deny port rules return TCP to a loopback address
+to the NAT chain before they accept any TCP. Accepted TCP keeps its
+destination, and the filter chain accepts loopback traffic before it evaluates
+the deny rules. So an ACCEPT for loopback TCP opens a direct path to the Envoy
+listeners and to every other local service.
 
 Specialized listeners handle ports 443 (TLS passthrough, port 15443) and 80
 (HTTP forward, port 15080). Per-rule port restrictions get dedicated listeners

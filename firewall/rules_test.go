@@ -2640,6 +2640,176 @@ func ruleDstCIDR(r *nftables.Rule) string {
 	return ""
 }
 
+// denyCIDRNATRuleDesc describes rule i of a per-rule deny CIDR chain
+// of a NAT chain. The description holds the verdict of the rule, its
+// destination CIDR, and its destination port when the rule matches
+// one. A verdict other than ACCEPT and RETURN fails the test.
+func denyCIDRNATRuleDesc(t *testing.T, chain string, i int, r *nftables.Rule) string {
+	t.Helper()
+
+	verdict, _ := ruleVerdict(r)
+
+	var kind string
+
+	switch verdict {
+	case expr.VerdictAccept:
+		kind = "accept"
+	case expr.VerdictReturn:
+		kind = "return"
+	default:
+		require.Failf(t, "unexpected verdict", "%s: rule %d has verdict %v", chain, i, verdict)
+	}
+
+	desc := kind + " " + ruleDstCIDR(r)
+	if ports := ruleDstPorts(r); ports != "" {
+		desc += " " + ports
+	}
+
+	return desc
+}
+
+func TestApplyRules_DenyCIDR_SkipsNAT(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chainPrefix    = "deny_cidr_nat_"
+		preChainPrefix = "deny_cidr_nat_pre_"
+	)
+
+	tcp443 := []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}}
+
+	// The rules that open each chain. They send TCP to a loopback
+	// address back to nat_output, where a REDIRECT rule matches it.
+	loopback := []string{"return 127.0.0.0/8", "return ::1/128"}
+
+	tests := map[string]struct {
+		deny []config.EgressDenyRule
+		// want holds the rules of each deny_cidr_nat_N chain that
+		// follow the RETURN rules for loopback, in chain order and in
+		// rule order. Each rule is its verdict, its destination CIDR,
+		// and its destination port when it matches one.
+		want [][]string
+	}{
+		"every IPv4 address": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"0.0.0.0/0"}}},
+			want: [][]string{{"accept 0.0.0.0/0"}},
+		},
+		"every IPv6 address": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"::/0"}}},
+			want: [][]string{{"accept ::/0"}},
+		},
+		"loopback CIDRs": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"127.0.0.0/8", "::1/128"}}},
+			want: [][]string{{"accept 127.0.0.0/8", "accept ::1/128"}},
+		},
+		"CIDR that does not cover loopback": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"10.99.0.0/24"}}},
+			want: [][]string{{"accept 10.99.0.0/24"}},
+		},
+		"CIDR with except": {
+			deny: []config.EgressDenyRule{{
+				ToCIDRSet: []config.CIDRRule{{CIDR: "0.0.0.0/0", Except: []string{"10.0.0.0/8"}}},
+			}},
+			want: [][]string{{"return 10.0.0.0/8", "accept 0.0.0.0/0"}},
+		},
+		"CIDR with a TCP port": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"0.0.0.0/0"}, ToPorts: tcp443}},
+			want: [][]string{{"accept 0.0.0.0/0 443"}},
+		},
+		"two rules": {
+			deny: []config.EgressDenyRule{
+				{ToCIDR: []string{"0.0.0.0/0"}},
+				{ToCIDR: []string{"::/0"}},
+			},
+			want: [][]string{{"accept 0.0.0.0/0"}, {"accept ::/0"}},
+		},
+		"port-only rule": {
+			deny: []config.EgressDenyRule{{ToPorts: tcp443}},
+		},
+	}
+
+	modes := map[string]firewall.UIDs{
+		"container": testUIDs,
+		"VM":        testVMUIDs,
+	}
+
+	for name, tc := range tests {
+		for modeName, uids := range modes {
+			t.Run(name+"/"+modeName, func(t *testing.T) {
+				t.Parallel()
+
+				cfg := &config.Config{
+					Egress: egressRules(config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+						ToPorts: tcp443,
+					}),
+					EgressDeny: &tc.deny,
+				}
+
+				rec := &ruleRecorder{}
+
+				err := firewall.ApplyRules(t.Context(), rec, cfg, uids)
+				require.NoError(t, err)
+
+				// The rules of each chain.
+				var (
+					got        [][]string
+					wantChains []string
+				)
+
+				for _, chain := range rec.chainNames() {
+					if !strings.HasPrefix(chain, chainPrefix) || strings.HasPrefix(chain, preChainPrefix) {
+						continue
+					}
+
+					wantChains = append(wantChains, chainPrefix+strconv.Itoa(len(wantChains)))
+
+					var rules []string
+
+					for i, r := range rec.rulesForChain(chain) {
+						assert.False(t, ruleHasLog(r), "%s: rule %d must not log", chain, i)
+
+						rules = append(rules, denyCIDRNATRuleDesc(t, chain, i, r))
+					}
+
+					require.GreaterOrEqual(t, len(rules), len(loopback),
+						"%s must open with the RETURN rules for loopback", chain)
+					assert.Equal(t, loopback, rules[:len(loopback)],
+						"%s must open with the RETURN rules for loopback", chain)
+
+					got = append(got, rules[len(loopback):])
+				}
+
+				assert.Equal(t, tc.want, got,
+					"rules of the %sN chains after the RETURN rules for loopback", chainPrefix)
+
+				// nat_output jumps to each chain before the rules
+				// that send TCP to Envoy.
+				rules := rec.rulesForChain("nat_output")
+
+				firstToEnvoy := slices.IndexFunc(rules, natSendsTCPToEnvoy)
+				require.NotEqual(t, -1, firstToEnvoy, "nat_output must send TCP to Envoy")
+
+				var jumps []string
+
+				for i, r := range rules {
+					verdict, target := ruleVerdict(r)
+					if verdict != expr.VerdictJump || !strings.HasPrefix(target, chainPrefix) {
+						continue
+					}
+
+					jumps = append(jumps, target)
+
+					assert.Less(t, i, firstToEnvoy,
+						"jump to %s must precede the rules that send TCP to Envoy", target)
+				}
+
+				assert.Equal(t, wantChains, jumps, "jumps of nat_output to the %sN chains", chainPrefix)
+			})
+		}
+	}
+}
+
 func TestApplyRules_VMMode_NATPreRouting_DenyCIDR(t *testing.T) {
 	t.Parallel()
 
@@ -2732,25 +2902,7 @@ func TestApplyRules_VMMode_NATPreRouting_DenyCIDR(t *testing.T) {
 					assert.False(t, ruleHasMetaKey(r, expr.MetaKeySKUID),
 						"%s: rule %d must match every UID", chain, i)
 
-					verdict, _ := ruleVerdict(r)
-
-					var kind string
-
-					switch verdict {
-					case expr.VerdictAccept:
-						kind = "accept"
-					case expr.VerdictReturn:
-						kind = "return"
-					default:
-						require.Failf(t, "unexpected verdict", "%s: rule %d has verdict %v", chain, i, verdict)
-					}
-
-					desc := kind + " " + ruleDstCIDR(r)
-					if ports := ruleDstPorts(r); ports != "" {
-						desc += " " + ports
-					}
-
-					rules = append(rules, desc)
+					rules = append(rules, denyCIDRNATRuleDesc(t, chain, i, r))
 				}
 
 				got = append(got, rules)
