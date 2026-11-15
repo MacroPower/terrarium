@@ -118,6 +118,34 @@ tasks:
         task: _tidy:check
         vars: { MODULE: "{{.ITEM}}" }
 
+  # vendor-hash and vendor-hash:check keep the vendorHash in lima/flake.nix
+  # equal to the hash of the vendor tree of the root module. The Lima flake
+  # builds terrarium with buildGoModule, and that build fails when the two
+  # hashes differ. The vendor tree holds each package that the root module
+  # imports, so every Go file is a source next to go.mod and go.sum. The
+  # tasks run in the root of the repository, where `**/*.go` also matches
+  # the files of the other workspace modules. A change to one of those
+  # files runs the command again and does not change its result.
+  vendor-hash:
+    desc: Writes the hash of the root module's vendor tree into lima/flake.nix
+    sources: &go-vendor-hash-sources
+      - "**/*.go"
+      - go.mod
+      - go.sum
+      - lima/flake.nix
+    cmd: go run ./cmd/vendorhash update
+
+  vendor-hash:check:
+    desc: Verifies the vendorHash in lima/flake.nix against the root module
+    summary: |
+      Runs `go run ./cmd/vendorhash check`. The command creates the vendor
+      tree of the root module in a temporary directory and computes the hash
+      that Nix computes for the tree. It exits non-zero when lima/flake.nix
+      holds another hash. It changes no file, and it does not need Nix or
+      .git. Run `task format` or `task go:vendor-hash` to write the hash.
+    sources: *go-vendor-hash-sources
+    cmd: go run ./cmd/vendorhash check
+
   # test, test:integration, and test:cover are deliberately not fingerprinted
   # with `sources`. Go's build/test cache is content-addressed over the full
   # transitive dependency graph and re-runs exactly the packages that changed;

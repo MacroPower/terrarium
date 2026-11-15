@@ -5,4 +5,5 @@ use (
 	./cmd/envoymanifest
 	./cmd/testrunner
 	./cmd/testrunner-lima
+	./cmd/vendorhash
 )

@@ -41,6 +41,24 @@
         },
       },
     },
+    // The Lima flake in lima/flake.nix holds the hash of the vendor tree of
+    // the root Go module as vendorHash. Every change to a dependency in the
+    // root go.mod changes the vendor tree, and the lint task fails when the
+    // hash is stale. The post-upgrade command creates the vendor tree and
+    // writes its hash into the flake, so the dependency and the hash land in
+    // one commit. RENOVATE_ALLOWED_COMMANDS in .github/workflows/renovate.yaml
+    // permits the command.
+    {
+      matchManagers: ["gomod"],
+      matchFileNames: ["go.mod"],
+      postUpgradeTasks: {
+        commands: ["go run ./cmd/vendorhash update"],
+        fileFilters: ["lima/flake.nix"],
+        installTools: {
+          golang: {},
+        },
+      },
+    },
   ],
   customManagers: [
     // Tool and image versions pinned as Go constants in the ci module,

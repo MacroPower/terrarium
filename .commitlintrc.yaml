@@ -46,6 +46,7 @@ rules:
       - testrunner
       - testrunner-lima
       - toolchains
+      - vendorhash
   header-max-length:
     - 2
     - always

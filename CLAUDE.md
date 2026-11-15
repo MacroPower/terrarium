@@ -11,8 +11,8 @@ It is designed to closely align with CiliumNetworkPolicy semantics.
 ## Build & Test Commands
 
 ```bash
-task format    # Format and tidy code, run generators
-task lint      # golangci-lint, go mod tidy check, prettier
+task format    # Format and tidy code, run generators, update the Lima vendorHash
+task lint      # golangci-lint, go mod tidy check, Lima vendorHash check, prettier
 task test      # Run all tests (unit + integration)
 task check     # Local gate: lint + test (tools on the devbox PATH, no Dagger)
 task check:all # Everything CI runs (adds security + GitHub config + releaser, via Dagger)
@@ -40,6 +40,22 @@ the version and the hashes change in one commit. Renovate runs `update` when it
 bumps the pin, and the `envoy` workflow runs `verify` on one runner for each
 platform of the manifest.
 
+The `cmd/vendorhash` tool maintains the `vendorHash` in `lima/flake.nix`, which
+is the hash of the vendor tree of the root Go module. Run its commands from the
+root of the repository. They need each dependency of the root module in the
+module cache, or internet access to download it.
+
+```bash
+go run ./cmd/vendorhash check  # Fail when the vendorHash in lima/flake.nix is not the hash of the vendor tree
+go run ./cmd/vendorhash update # Write the hash of the vendor tree into lima/flake.nix
+```
+
+`task lint` runs `check`, and `task format` runs `update`. The vendor tree
+changes with the dependencies in the root `go.mod` and with the packages that
+the root module imports. Run `task format` after each of these changes, so that
+the change and the hash land in one commit. Renovate runs `update` when it
+changes a dependency in the root `go.mod`.
+
 ## Architecture
 
 Three security modes drive the design: unrestricted (nil/empty egress rules), blocked (deny-all via `egress: [{}]`), and filtered (rules with FQDN/CIDR/L7 matchers).
@@ -48,6 +64,7 @@ The data flow is: YAML config -> `config` (parse, validate, normalize, resolve) 
 
 - **cmd/terrarium**: CLI with `generate` (config + certs + Envoy bootstrap) and `init` (firewall + DNS proxy + Envoy + privilege drop + exec) commands. Uses cobra + charmbracelet/fang for arg parsing.
 - **cmd/envoymanifest**: Maintains the Envoy pin of `envoybin`, which is `Version` and the SHA-256 hashes in `envoybin/manifest.go`. `update` downloads every build of the pinned version and replaces the hashes in that file. `verify` checks the hashes, the publisher's signature or build attestation, and the version commit of the build for the host platform. It is a separate module in `go.work`, so its OpenPGP dependency (`github.com/ProtonMail/go-crypto`) stays out of the root `go.mod`.
+- **cmd/vendorhash**: Maintains the `vendorHash` of the Lima flake in `lima/flake.nix`. `check` creates the vendor tree of the root module with `go mod vendor` and computes the hash that Nix computes for the tree. It fails when the flake holds another hash. `update` writes that hash into the flake. The tool computes the hash in Go, so it does not need Nix.
 - **config**: Policy engine. Parses Cilium-compatible YAML, validates, normalizes (lowercase FQDNs, uppercase protocols), and resolves into firewall/envoy-ready structures. Extensive typed errors with per-rule context.
 - **firewall**: nftables rule generation via google/nftables netlink backend. Per-rule chain isolation for OR semantics across egress rules. FQDN IP sets with TTLs.
 - **envoy**: Models a subset of Envoy v3 API for bootstrap config generation. SNI-based filter chains, HTTP connection manager with route matching, RBAC for header/SNI validation.

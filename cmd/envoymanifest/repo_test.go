@@ -76,11 +76,20 @@ func TestRenovateRunsUpdate(t *testing.T) {
 	var allowed []string
 
 	require.NoError(t, json.Unmarshal([]byte(match[1]), &allowed))
-	require.Len(t, allowed, 1)
 
-	pattern, err := regexp.Compile(allowed[0])
-	require.NoError(t, err)
+	// The patterns that permit the command.
+	var permits []string
 
-	assert.True(t, pattern.MatchString(command), "%q does not permit %q", allowed[0], command)
-	assert.False(t, pattern.MatchString(command+" && true"), "%q permits a longer command", allowed[0])
+	for _, expr := range allowed {
+		pattern, err := regexp.Compile(expr)
+		require.NoError(t, err)
+
+		if pattern.MatchString(command) {
+			permits = append(permits, expr)
+		}
+
+		assert.False(t, pattern.MatchString(command+" && true"), "%q permits a longer command", expr)
+	}
+
+	assert.Len(t, permits, 1, "want one pattern of %q that permits %q", allowed, command)
 }

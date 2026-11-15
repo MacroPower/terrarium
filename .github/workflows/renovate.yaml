@@ -38,9 +38,11 @@ env:
   RENOVATE_PLATFORM: github
   RENOVATE_PLATFORM_COMMIT: true
   # Renovate runs a post-upgrade command only when a pattern in this list
-  # matches it. The one permitted command writes the hashes of a new Envoy
-  # pin, for the package rule in .github/renovate.json5.
-  RENOVATE_ALLOWED_COMMANDS: '["^go run \\./cmd/envoymanifest update$"]'
+  # matches it. Each permitted command belongs to a package rule in
+  # .github/renovate.json5. The envoymanifest command writes the hashes of a
+  # new Envoy pin. The vendorhash command writes the vendorHash of the Lima
+  # flake after a change to a dependency of the root Go module.
+  RENOVATE_ALLOWED_COMMANDS: '["^go run \\./cmd/envoymanifest update$", "^go run \\./cmd/vendorhash update$"]'
   WORKFLOW_RENOVATE_VERSION: "${{ inputs.version || 'latest' }}"
 
 jobs:
