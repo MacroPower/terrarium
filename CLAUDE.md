@@ -27,6 +27,19 @@ The `ci` module composes the shared toolchains from github.com/MacroPower/x
 `dagger.json`; the `dagger` CLI must be on PATH and match the pinned
 `engineVersion`.
 
+The `cmd/envoymanifest` tool maintains the Envoy pin in `envoybin/manifest.go`.
+Run its commands from the root of the repository. They need internet access.
+
+```bash
+go run ./cmd/envoymanifest update            # Write the hashes of the pinned Envoy version into envoybin/manifest.go
+go run ./cmd/envoymanifest verify [platform] # Check the provenance of the pinned Envoy build for the host
+```
+
+Run `update` after every change to `Version` in `envoybin/manifest.go`, so that
+the version and the hashes change in one commit. Renovate runs `update` when it
+bumps the pin, and the `envoy` workflow runs `verify` on one runner for each
+platform of the manifest.
+
 ## Architecture
 
 Three security modes drive the design: unrestricted (nil/empty egress rules), blocked (deny-all via `egress: [{}]`), and filtered (rules with FQDN/CIDR/L7 matchers).
@@ -34,6 +47,7 @@ Three security modes drive the design: unrestricted (nil/empty egress rules), bl
 The data flow is: YAML config -> `config` (parse, validate, normalize, resolve) -> `firewall` (nftables rules) + `envoy` (bootstrap config) + `certs` (MITM CA/leaf for L7-restricted rules). The `dnsproxy` package handles FQDN resolution and updates nftables IP sets in real-time with per-element TTLs.
 
 - **cmd/terrarium**: CLI with `generate` (config + certs + Envoy bootstrap) and `init` (firewall + DNS proxy + Envoy + privilege drop + exec) commands. Uses cobra + charmbracelet/fang for arg parsing.
+- **cmd/envoymanifest**: Maintains the Envoy pin of `envoybin`, which is `Version` and the SHA-256 hashes in `envoybin/manifest.go`. `update` downloads every build of the pinned version and replaces the hashes in that file. `verify` checks the hashes, the publisher's signature or build attestation, and the version commit of the build for the host platform. It is a separate module in `go.work`, so its OpenPGP dependency (`github.com/ProtonMail/go-crypto`) stays out of the root `go.mod`.
 - **config**: Policy engine. Parses Cilium-compatible YAML, validates, normalizes (lowercase FQDNs, uppercase protocols), and resolves into firewall/envoy-ready structures. Extensive typed errors with per-rule context.
 - **firewall**: nftables rule generation via google/nftables netlink backend. Per-rule chain isolation for OR semantics across egress rules. FQDN IP sets with TTLs.
 - **envoy**: Models a subset of Envoy v3 API for bootstrap config generation. SNI-based filter chains, HTTP connection manager with route matching, RBAC for header/SNI validation.
