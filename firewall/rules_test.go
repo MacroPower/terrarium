@@ -2592,6 +2592,220 @@ func TestApplyRules_VMMode_NATPreRouting_TCPForwards(t *testing.T) {
 		"should have bridge-local DNAT for TCPForward port 22")
 }
 
+// ruleHasFib reports whether a rule holds a fib expression.
+func ruleHasFib(r *nftables.Rule) bool {
+	for _, e := range r.Exprs {
+		if _, ok := e.(*expr.Fib); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleDstCIDR returns the CIDR that a rule matches the destination
+// address against, or the empty string for a rule without that match.
+func ruleDstCIDR(r *nftables.Rule) string {
+	for i, e := range r.Exprs {
+		p, ok := e.(*expr.Payload)
+		if !ok || p.Base != expr.PayloadBaseNetworkHeader || i+2 >= len(r.Exprs) {
+			continue
+		}
+
+		if (p.Offset != 16 || p.Len != 4) && (p.Offset != 24 || p.Len != 16) {
+			continue
+		}
+
+		b, ok := r.Exprs[i+1].(*expr.Bitwise)
+		if !ok {
+			continue
+		}
+
+		if c, ok := r.Exprs[i+2].(*expr.Cmp); ok && c.Op == expr.CmpOpEq {
+			return (&net.IPNet{IP: c.Data, Mask: b.Mask}).String()
+		}
+	}
+
+	return ""
+}
+
+func TestApplyRules_VMMode_NATPreRouting_DenyCIDR(t *testing.T) {
+	t.Parallel()
+
+	const chainPrefix = "deny_cidr_nat_pre_"
+
+	tcp443 := []config.PortRule{{Ports: []config.Port{{Port: "443", Protocol: "TCP"}}}}
+
+	tests := map[string]struct {
+		deny []config.EgressDenyRule
+		// want holds the rules of each deny_cidr_nat_pre_N chain, in
+		// chain order and in rule order. Each rule is its verdict,
+		// its destination CIDR, and its destination port when it
+		// matches one.
+		want [][]string
+	}{
+		"CIDR": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"10.99.0.0/24"}}},
+			want: [][]string{{"accept 10.99.0.0/24"}},
+		},
+		"CIDR with except": {
+			deny: []config.EgressDenyRule{{
+				ToCIDRSet: []config.CIDRRule{{CIDR: "10.99.0.0/24", Except: []string{"10.99.0.128/25"}}},
+			}},
+			want: [][]string{{"return 10.99.0.128/25", "accept 10.99.0.0/24"}},
+		},
+		"CIDR with a TCP port": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"10.99.0.0/24"}, ToPorts: tcp443}},
+			want: [][]string{{"accept 10.99.0.0/24 443"}},
+		},
+		"two CIDRs in one rule": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"10.99.0.0/24", "10.98.0.0/16"}}},
+			want: [][]string{{"accept 10.99.0.0/24", "accept 10.98.0.0/16"}},
+		},
+		"two rules": {
+			deny: []config.EgressDenyRule{
+				{ToCIDR: []string{"10.99.0.0/24"}},
+				{ToCIDR: []string{"10.98.0.0/16"}},
+			},
+			want: [][]string{{"accept 10.99.0.0/24"}, {"accept 10.98.0.0/16"}},
+		},
+		"IPv6 CIDR": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"2001:db8::/32"}}},
+		},
+		"IPv4 and IPv6 CIDR in one rule": {
+			deny: []config.EgressDenyRule{{ToCIDR: []string{"2001:db8::/32", "10.99.0.0/24"}}},
+			want: [][]string{{"accept 10.99.0.0/24"}},
+		},
+		"IPv6 rule before IPv4 rule": {
+			deny: []config.EgressDenyRule{
+				{ToCIDR: []string{"2001:db8::/32"}},
+				{ToCIDR: []string{"10.99.0.0/24"}},
+			},
+			want: [][]string{{"accept 10.99.0.0/24"}},
+		},
+		"port-only rule": {
+			deny: []config.EgressDenyRule{{ToPorts: tcp443}},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+					ToPorts: tcp443,
+				}),
+				EgressDeny:  &tc.deny,
+				TCPForwards: []config.TCPForward{{Port: 22, Host: "github.com"}},
+			}
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+			require.NoError(t, err)
+
+			// The rules of each chain.
+			var got [][]string
+
+			for _, chain := range rec.chainNames() {
+				if !strings.HasPrefix(chain, chainPrefix) {
+					continue
+				}
+
+				var rules []string
+
+				for i, r := range rec.rulesForChain(chain) {
+					assert.False(t, ruleHasLog(r), "%s: rule %d must not log", chain, i)
+					assert.False(t, ruleHasMetaKey(r, expr.MetaKeySKUID),
+						"%s: rule %d must match every UID", chain, i)
+
+					verdict, _ := ruleVerdict(r)
+
+					var kind string
+
+					switch verdict {
+					case expr.VerdictAccept:
+						kind = "accept"
+					case expr.VerdictReturn:
+						kind = "return"
+					default:
+						require.Failf(t, "unexpected verdict", "%s: rule %d has verdict %v", chain, i, verdict)
+					}
+
+					desc := kind + " " + ruleDstCIDR(r)
+					if ports := ruleDstPorts(r); ports != "" {
+						desc += " " + ports
+					}
+
+					rules = append(rules, desc)
+				}
+
+				got = append(got, rules)
+			}
+
+			assert.Equal(t, tc.want, got, "rules of the %sN chains", chainPrefix)
+
+			// The jumps of nat_prerouting follow the DNS rules and
+			// precede the DNAT rules that send TCP to Envoy.
+			rules := rec.rulesForChain("nat_prerouting")
+
+			firstToEnvoy := slices.IndexFunc(rules, natSendsTCPToEnvoy)
+			require.NotEqual(t, -1, firstToEnvoy, "nat_prerouting must send TCP to Envoy")
+
+			lastDNS := -1
+
+			for i, r := range rules {
+				if ruleHasNAT(r) && ruleHasDstPort(r, 53) {
+					lastDNS = i
+				}
+			}
+
+			require.NotEqual(t, -1, lastDNS, "nat_prerouting must send DNS to the DNS proxy")
+
+			var jumps []string
+
+			for i, r := range rules {
+				verdict, target := ruleVerdict(r)
+				if verdict != expr.VerdictJump {
+					continue
+				}
+
+				jumps = append(jumps, target)
+
+				assert.Greater(t, i, lastDNS, "jump to %s must follow the DNS rules", target)
+				assert.Less(t, i, firstToEnvoy,
+					"jump to %s must precede the rules that send TCP to Envoy", target)
+				assert.True(t, ruleHasMetaKey(r, expr.MetaKeyIIFNAME),
+					"jump to %s must match the input interface", target)
+				assert.True(t, ruleMatchesNFProto(r, unix.NFPROTO_IPV4), "jump to %s must match IPv4", target)
+				assert.True(t, ruleMatchesL4Proto(r, unix.IPPROTO_TCP), "jump to %s must match TCP", target)
+				assert.True(t, ruleHasFib(r), "jump to %s must match the destination address type", target)
+			}
+
+			var wantJumps []string
+
+			for i := range tc.want {
+				wantJumps = append(wantJumps, chainPrefix+strconv.Itoa(i))
+			}
+
+			assert.Equal(t, wantJumps, jumps, "jumps of nat_prerouting")
+
+			// Container mode has no nat_prerouting chain, so it has
+			// no chain for that chain to jump to.
+			rec = &ruleRecorder{}
+
+			err = firewall.ApplyRules(t.Context(), rec, cfg, testUIDs)
+			require.NoError(t, err)
+
+			for _, chain := range rec.chainNames() {
+				assert.False(t, strings.HasPrefix(chain, chainPrefix), "container mode must not create %s", chain)
+			}
+		})
+	}
+}
+
 func TestApplyRules_VMMode_ForwardChain(t *testing.T) {
 	t.Parallel()
 

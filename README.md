@@ -984,12 +984,20 @@ and is L2-forwarded to the original destination, bypassing Envoy entirely.
 TPROXY does not modify the IP header, so it cannot trigger this re-route.
 
 Per-port DNAT rules redirect configured TCP ports to Envoy's proxy listeners
-(ProxyPortBase + port). Before those rules, the chain accepts forwarded TCP to
-each port of an `egressDeny` rule that has ports and no destination. That TCP
-keeps its destination, so the `forward` chain evaluates it and the deny rules
-drop it. The non-loopback interface check prevents the DNAT rules from
-matching locally-generated TPROXY traffic re-entering PREROUTING on loopback.
-Per-port matching avoids intercepting SSH (port 22).
+(ProxyPortBase + port). Before those rules, the chain accepts the forwarded TCP
+that an `egressDeny` rule denies:
+
+- TCP to each IPv4 CIDR of an `egressDeny` rule, unless the destination is an
+  address of the VM.
+- TCP to each port of an `egressDeny` rule that has ports and no destination.
+
+That TCP keeps its destination, so the `forward` chain evaluates it and the
+deny rules drop it. TCP to an address of the VM never reaches the `forward`
+chain, so the deny CIDR rules leave that TCP to the DNAT rules.
+
+The non-loopback interface check prevents the DNAT rules from matching
+locally-generated TPROXY traffic re-entering PREROUTING on loopback. Per-port
+matching avoids intercepting SSH (port 22).
 
 DNS (UDP and TCP port 53) also uses DNAT in NAT PREROUTING. The DNS DNAT
 rules intentionally omit the non-local destination check so queries to

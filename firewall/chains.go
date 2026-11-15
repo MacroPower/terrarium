@@ -224,7 +224,7 @@ func addDenyCIDRChains(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs, emitter logEmitter,
 ) {
-	addDenyCIDRChainsWithVerdict(conn, table, parentChain, cidrs, uids, emitter, "deny_cidr", expr.VerdictDrop)
+	addDenyCIDRChainsWithVerdict(conn, table, parentChain, cidrs, uids, emitter, "deny_cidr", expr.VerdictDrop, nil)
 }
 
 // addDenyCIDRChainsWithVerdict is the shared implementation for deny
@@ -235,10 +235,12 @@ func addDenyCIDRChains(
 // the verdict matches, with the egressDeny index of the rule. A
 // caller that passes another verdict must pass a disabled emitter,
 // because the emitter logs an ACCEPT as allowed by an egress rule.
+// The jumpGuard expressions scope each jump from the parent chain. A
+// nil jumpGuard jumps for every packet.
 func addDenyCIDRChainsWithVerdict(
 	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
 	cidrs []config.ResolvedCIDR, uids UIDs, emitter logEmitter,
-	chainPrefix string, verdict expr.VerdictKind,
+	chainPrefix string, verdict expr.VerdictKind, jumpGuard []expr.Any,
 ) {
 	groups := groupCIDRsByRule(cidrs)
 
@@ -308,7 +310,7 @@ func addDenyCIDRChainsWithVerdict(
 		// Jump from parent chain.
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: parentChain,
-			Exprs: flatExprs(verdictExprs(expr.VerdictJump, chainName)),
+			Exprs: flatExprs(jumpGuard, verdictExprs(expr.VerdictJump, chainName)),
 		})
 	}
 }
@@ -700,7 +702,40 @@ func addDenyCIDRNATAccept(
 	cidrs []config.ResolvedCIDR, uids UIDs,
 ) {
 	addDenyCIDRChainsWithVerdict(
-		conn, table, parentChain, cidrs, uids, logEmitter{}, "deny_cidr_nat", expr.VerdictAccept,
+		conn, table, parentChain, cidrs, uids, logEmitter{}, "deny_cidr_nat", expr.VerdictAccept, nil,
+	)
+}
+
+// addDenyCIDRNATPreRoutingAccept creates per-rule deny CIDR chains
+// for the NAT PREROUTING chain of VM mode and adds a jump to each
+// chain from the parent chain. This mirrors [addDenyCIDRNATAccept]
+// (NAT OUTPUT) for forwarded TCP. An ACCEPT in a jumped-to chain ends
+// the parent chain before its per-port DNAT rules. The packet keeps
+// its destination, so the FORWARD chain evaluates it and the deny
+// CIDR chains of the filter ([addDenyCIDRChains]) DROP it.
+//
+// Each jump matches only IPv4 TCP that arrives on an interface other
+// than loopback and has a destination address that the host does not
+// own. The FORWARD chain never sees TCP to an address of the host.
+// The jumps leave that TCP to the DNAT rules, because an ACCEPT for
+// it opens a direct path from a container to the services of the
+// host.
+//
+// The cidrs must be the IPv4 deny CIDRs, because the parent chain
+// DNATs only IPv4. The chains log nothing. The filter chain logs the
+// packet when it drops the packet.
+func addDenyCIDRNATPreRoutingAccept(
+	conn Conn, table *nftables.Table, parentChain *nftables.Chain,
+	cidrs []config.ResolvedCIDR, uids UIDs,
+) {
+	addDenyCIDRChainsWithVerdict(
+		conn, table, parentChain, cidrs, uids, logEmitter{}, "deny_cidr_nat_pre", expr.VerdictAccept,
+		flatExprs(
+			matchNotIIFName("lo"),
+			matchNFProto(unix.NFPROTO_IPV4),
+			matchL4Proto(unix.IPPROTO_TCP),
+			matchNotLocalDst(),
+		),
 	)
 }
 
@@ -1419,12 +1454,14 @@ func dnsGuardExprs() []expr.Any {
 // re-entering PREROUTING on loopback.
 //
 // Before the per-port DNAT rules, the chain accepts forwarded TCP to
-// the ports of port-only deny rules ([denyPortNATMatches]). That
+// the IPv4 CIDRs of deny rules ([addDenyCIDRNATPreRoutingAccept]) and
+// to the ports of port-only deny rules ([denyPortNATMatches]). That
 // TCP keeps its destination, so the FORWARD chain evaluates it and
-// the deny port rules DROP it.
+// the deny rules DROP it.
 func addNATPreRouting(
 	conn Conn, table *nftables.Table,
-	resolvedPorts []int, tcpForwards []config.TCPForward, denyPorts []config.ResolvedDenyPort,
+	resolvedPorts []int, tcpForwards []config.TCPForward,
+	denyCIDR4 []config.ResolvedCIDR, denyPorts []config.ResolvedDenyPort, uids UIDs,
 ) {
 	chain := conn.AddChain(&nftables.Chain{
 		Name:     "nat_prerouting",
@@ -1448,6 +1485,10 @@ func addNATPreRouting(
 			),
 		})
 	}
+
+	// Deny CIDR ACCEPT: forwarded TCP to the CIDRs of deny rules
+	// skips the DNAT rules below.
+	addDenyCIDRNATPreRoutingAccept(conn, table, chain, denyCIDR4, uids)
 
 	// Deny port ACCEPT: forwarded TCP to the ports of port-only deny
 	// rules skips the DNAT rules below.
