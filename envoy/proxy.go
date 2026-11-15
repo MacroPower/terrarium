@@ -128,6 +128,11 @@ type ProxyListenerParams struct {
 // authority. The HCM intentionally does not strip authority ports:
 // the port picks the internal listener.
 //
+// The listener serves HTTP/1.0 requests, because some clients send
+// their CONNECT request in HTTP/1.0, such as `openssl s_client -proxy`.
+// The routes apply the same policy to the requests of every HTTP
+// version.
+//
 // The listener turns SO_REUSEPORT off, so only one Envoy listens on
 // p.BindAddress and p.Port. By default, Envoy sets the option on
 // Linux. With the option, the kernel shares the incoming connections
@@ -197,7 +202,10 @@ func BuildProxyListener(p ProxyListenerParams) Listener {
 					NormalizePath:     boolPtr(true),
 					UseRemoteAddress:  boolPtr(true),
 					SkipXffAppend:     boolPtr(true),
-					MergeSlashes:      true,
+					HTTPProtocolOptions: &http1ProtocolOptions{
+						AcceptHTTP10: true,
+					},
+					MergeSlashes: true,
 					RouteConfig: routeConfig{
 						VirtualHosts: vhosts,
 					},

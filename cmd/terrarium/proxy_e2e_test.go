@@ -327,6 +327,47 @@ func TestProxyE2EPassthrough(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
 			getStatus(t, client, "http://test.example/"))
 	})
+
+	t.Run("HTTP/1.0 CONNECT to an allowed FQDN opens the tunnel", func(t *testing.T) {
+		tunnel := connectHTTP10(t, proxyURL, "test.example:18443")
+
+		conn := tls.Client(tunnel, &tls.Config{
+			ServerName: "test.example",
+			RootCAs:    loadPool(t, caPath),
+			MinVersion: tls.VersionTLS12,
+		})
+
+		_, err := io.WriteString(conn,
+			"GET / HTTP/1.1\r\nHost: test.example:18443\r\nConnection: close\r\n\r\n")
+		require.NoError(t, err)
+
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		require.NoError(t, err)
+
+		defer func() {
+			assert.NoError(t, resp.Body.Close())
+		}()
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "hello from upstream", string(body))
+	})
+
+	t.Run("HTTP/1.0 CONNECT to a denied domain gets 403", func(t *testing.T) {
+		assert.Equal(t, http.StatusForbidden,
+			rawRequestStatus(t, proxyURL, "CONNECT denied.example:18443 HTTP/1.0\r\n\r\n"))
+	})
+
+	t.Run("plain HTTP/1.0 to a denied domain gets 403", func(t *testing.T) {
+		assert.Equal(t, http.StatusForbidden,
+			rawRequestStatus(t, proxyURL, "GET http://denied.example/ HTTP/1.0\r\n\r\n"))
+	})
+
+	t.Run("HTTP/1.0 request without an authority gets 400", func(t *testing.T) {
+		assert.Equal(t, http.StatusBadRequest,
+			rawRequestStatus(t, proxyURL, "GET / HTTP/1.0\r\n\r\n"))
+	})
 }
 
 //nolint:paralleltest // e2e tests bind fixed ports, set env, and run envoy subprocesses.
@@ -423,6 +464,16 @@ func TestProxyE2EBlocked(t *testing.T) {
 	t.Run("plain HTTP denied", func(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
 			getStatus(t, client, "http://anything.example/"))
+	})
+
+	t.Run("HTTP/1.0 CONNECT denied", func(t *testing.T) {
+		assert.Equal(t, http.StatusForbidden,
+			rawRequestStatus(t, proxyURL, "CONNECT anything.example:443 HTTP/1.0\r\n\r\n"))
+	})
+
+	t.Run("plain HTTP/1.0 denied", func(t *testing.T) {
+		assert.Equal(t, http.StatusForbidden,
+			rawRequestStatus(t, proxyURL, "GET http://anything.example/ HTTP/1.0\r\n\r\n"))
 	})
 }
 
@@ -1055,6 +1106,53 @@ func rawRequestStatus(t *testing.T, proxyURL *url.URL, request string) int {
 	}()
 
 	return resp.StatusCode
+}
+
+// tunnelConn is the connection of a client after the proxy answered
+// its CONNECT request. It reads through the buffer that read the
+// answer, so it returns the bytes of the tunnel that the buffer holds.
+type tunnelConn struct {
+	net.Conn
+
+	r *bufio.Reader
+}
+
+// Read reads the next bytes of the tunnel.
+func (c *tunnelConn) Read(p []byte) (int, error) {
+	return c.r.Read(p)
+}
+
+// connectHTTP10 sends an HTTP/1.0 CONNECT request for authority to the
+// proxy at proxyURL, in the form that `openssl s_client -proxy` sends
+// it. It requires status 200 and returns the connection, which then
+// carries the tunnel. The connection closes when the test ends.
+func connectHTTP10(t *testing.T, proxyURL *url.URL, authority string) net.Conn {
+	t.Helper()
+
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+
+	conn, err := dialer.DialContext(t.Context(), "tcp", proxyURL.Host)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, conn.Close())
+	})
+
+	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
+
+	_, err = io.WriteString(conn, "CONNECT "+authority+" HTTP/1.0\r\n\r\n")
+	require.NoError(t, err)
+
+	r := bufio.NewReader(conn)
+
+	// The request tells ReadResponse that the answer to a CONNECT has
+	// no body, so the bytes after the header stay in the buffer.
+	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	return &tunnelConn{Conn: conn, r: r}
 }
 
 // TestProxyE2EStatsDefaultSocket checks that the proxy records Envoy

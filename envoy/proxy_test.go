@@ -154,6 +154,39 @@ func TestBuildProxyListener_NoReusePort(t *testing.T) {
 	}
 }
 
+// TestBuildProxyListener_AcceptsHTTP10 checks that the front listener
+// serves HTTP/1.0 requests in every mode. Envoy answers them with
+// status 426 when the HTTP connection manager omits the option, and
+// some clients send their CONNECT request in HTTP/1.0.
+func TestBuildProxyListener_AcceptsHTTP10(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		mode envoy.ProxyMode
+	}{
+		"filtered": {mode: envoy.ProxyModeFiltered},
+		"open":     {mode: envoy.ProxyModeOpen},
+		"blocked":  {mode: envoy.ProxyModeBlocked},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			l := envoy.BuildProxyListener(envoy.ProxyListenerParams{
+				BindAddress: "127.0.0.1",
+				Port:        8080,
+				Mode:        tt.mode,
+			})
+
+			y := marshalYAML(t, l)
+
+			assert.Contains(t, y, "http_protocol_options:")
+			assert.Contains(t, y, "accept_http_10: true")
+		})
+	}
+}
+
 // TestBuildProxyListener_Probe checks that the front listener answers
 // the probe request for the probe token in every mode, and that its
 // access loggers skip the probe request.

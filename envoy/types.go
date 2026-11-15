@@ -302,19 +302,30 @@ type substitutionFormatString struct {
 }
 
 type httpConnManagerConfig struct {
-	NormalizePath                *bool           `yaml:"normalize_path,omitempty"`
-	UseRemoteAddress             *bool           `yaml:"use_remote_address,omitempty"`
-	SkipXffAppend                *bool           `yaml:"skip_xff_append,omitempty"`
-	AtType                       string          `yaml:"@type"`
-	StatPrefix                   string          `yaml:"stat_prefix"`
-	StreamIdleTimeout            string          `yaml:"stream_idle_timeout,omitempty"`
-	PathWithEscapedSlashesAction string          `yaml:"path_with_escaped_slashes_action,omitempty"`
-	RouteConfig                  routeConfig     `yaml:"route_config"`
-	AccessLog                    []AccessLog     `yaml:"access_log,omitempty"`
-	HTTPFilters                  []filter        `yaml:"http_filters"`
-	UpgradeConfigs               []upgradeConfig `yaml:"upgrade_configs,omitempty"`
-	MergeSlashes                 bool            `yaml:"merge_slashes,omitempty"`
-	StripAnyHostPort             bool            `yaml:"strip_any_host_port,omitempty"`
+	NormalizePath                *bool                 `yaml:"normalize_path,omitempty"`
+	UseRemoteAddress             *bool                 `yaml:"use_remote_address,omitempty"`
+	SkipXffAppend                *bool                 `yaml:"skip_xff_append,omitempty"`
+	HTTPProtocolOptions          *http1ProtocolOptions `yaml:"http_protocol_options,omitempty"`
+	AtType                       string                `yaml:"@type"`
+	StatPrefix                   string                `yaml:"stat_prefix"`
+	StreamIdleTimeout            string                `yaml:"stream_idle_timeout,omitempty"`
+	PathWithEscapedSlashesAction string                `yaml:"path_with_escaped_slashes_action,omitempty"`
+	RouteConfig                  routeConfig           `yaml:"route_config"`
+	AccessLog                    []AccessLog           `yaml:"access_log,omitempty"`
+	HTTPFilters                  []filter              `yaml:"http_filters"`
+	UpgradeConfigs               []upgradeConfig       `yaml:"upgrade_configs,omitempty"`
+	MergeSlashes                 bool                  `yaml:"merge_slashes,omitempty"`
+	StripAnyHostPort             bool                  `yaml:"strip_any_host_port,omitempty"`
+}
+
+// http1ProtocolOptions models the fields of Envoy's
+// core.Http1ProtocolOptions that an HTTP connection manager sets for
+// its HTTP/1 downstream connections.
+//
+// With AcceptHTTP10, Envoy serves HTTP/1.0 requests. Without it, Envoy
+// answers each of them with status 426.
+type http1ProtocolOptions struct {
+	AcceptHTTP10 bool `yaml:"accept_http_10,omitempty"`
 }
 
 type upgradeConfig struct {
