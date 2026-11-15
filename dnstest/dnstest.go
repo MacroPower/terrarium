@@ -16,9 +16,9 @@ import (
 	"go.jacobcolvin.com/terrarium/dnsproxy"
 )
 
-// startAttempts is the number of ports that [Listen] and [StartProxy]
-// try before they fail the test.
-const startAttempts = 10
+// listenAttempts is the number of ports that [Listen] tries before it
+// fails the test.
+const listenAttempts = 10
 
 // Listen binds a UDP socket and a TCP listener to one loopback port
 // and returns both with the port. The caller closes both.
@@ -46,7 +46,7 @@ func Listen(t *testing.T) (net.PacketConn, net.Listener, int) {
 
 		require.NoError(t, pc.Close())
 
-		if attempt == startAttempts || !errors.Is(err, syscall.EADDRINUSE) {
+		if attempt == listenAttempts || !errors.Is(err, syscall.EADDRINUSE) {
 			require.NoError(t, err)
 		}
 	}
@@ -56,25 +56,17 @@ func Listen(t *testing.T) (net.PacketConn, net.Listener, int) {
 // the kernel picks, with IPv6 disabled. The caller shuts the proxy
 // down.
 //
-// [dnsproxy.Start] binds its UDP port first and then the same TCP
-// port, so it can meet the collision that [Listen] describes. When the
-// proxy reports that the address is in use, StartProxy starts the
-// proxy again, and the kernel picks a different port.
+// [dnsproxy.Start] finds a port that is free for both UDP and TCP, so
+// StartProxy does not handle the collision that [Listen] describes.
 func StartProxy(
 	t *testing.T, cfg *config.Config, upstream string, opts ...dnsproxy.Option,
 ) *dnsproxy.Proxy {
 	t.Helper()
 
-	for attempt := 1; ; attempt++ {
-		proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true, opts...)
-		if err == nil {
-			return proxy
-		}
+	proxy, err := dnsproxy.Start(t.Context(), cfg, upstream, "127.0.0.1:0", true, opts...)
+	require.NoError(t, err)
 
-		if attempt == startAttempts || !errors.Is(err, syscall.EADDRINUSE) {
-			require.NoError(t, err)
-		}
-	}
+	return proxy
 }
 
 // StartServer starts a mock DNS server that responds to all queries

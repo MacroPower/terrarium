@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -42,6 +43,10 @@ const (
 	modeAllowlist
 )
 
+// bindAttempts is the number of ports that [Start] tries when the
+// kernel picks the port.
+const bindAttempts = 10
+
 // minIPSetTTL is the minimum timeout (in seconds) for ipset entries
 // populated from DNS responses.
 const minIPSetTTL = 60
@@ -58,6 +63,7 @@ type Proxy struct {
 	logger           *slog.Logger
 	cancel           context.CancelFunc
 	fqdnSetFunc      func(ctx context.Context, setName string, ips []net.IP, ttl time.Duration) error
+	listenTCP        func(ctx context.Context, lc *net.ListenConfig, addr string) (net.Listener, error)
 	eventStore       *eventstore.Store
 	reverseCache     ReverseCache
 	udp4             *dns.Server
@@ -164,6 +170,15 @@ func WithReverseCache(c ReverseCache) Option {
 // responses matching the compiled patterns populate ipsets with
 // TTL-aware timeouts. Blocks until ready.
 //
+// Start serves UDP and TCP on one port. When listenAddr has the port
+// 0, the kernel picks a port that is free for the IPv4 UDP socket.
+// Another process can hold that port number for one of the other
+// sockets of the proxy. Start then tries a different port, and it
+// returns the bind error when 10 ports in a row are in use. The Addr
+// field of the returned [Proxy] holds the address that Start bound.
+// When listenAddr names a port and a socket of the proxy cannot bind
+// it, Start returns the bind error.
+//
 // IPv6 listener: if ipv6Disabled is true, only IPv4 listeners are
 // created. If ipv6Disabled is false and binding [::1] fails, startup
 // returns an error (IPv6 bypass risk).
@@ -178,6 +193,7 @@ func Start(
 		cancel:        cancel,
 		ctx:           ctx,
 		clientTimeout: 10 * time.Second,
+		listenTCP:     listenTCP,
 	}
 
 	// Determine filtering mode.
@@ -251,107 +267,33 @@ func Start(
 		opt(p)
 	}
 
-	// Collect servers and listeners for cleanup on error.
-	type closer interface{ Close() error }
-
-	var closers []closer
-
-	cleanup := func() {
+	socks, err := p.listen(ctx, listenAddr)
+	if err != nil {
 		cancel()
 
-		for _, c := range closers {
-			err := c.Close()
-			if err != nil {
-				slog.WarnContext(ctx, "closing listener", slog.Any("err", err))
-			}
-		}
+		return nil, err
 	}
 
-	lc := net.ListenConfig{}
-
-	// UDP IPv4.
-	udp4PC, err := lc.ListenPacket(ctx, "udp", listenAddr)
-	if err != nil {
-		cleanup()
-
-		return nil, fmt.Errorf("listening UDP %s: %w", listenAddr, err)
-	}
-
-	closers = append(closers, udp4PC)
-
-	// Resolve actual address (port may be 0).
-	udpAddr, ok := udp4PC.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		cleanup()
-
-		return nil, fmt.Errorf("unexpected address type: %T", udp4PC.LocalAddr())
-	}
-
-	p.Addr = udpAddr.String()
+	p.Addr = socks.udp4.LocalAddr().String()
 
 	p.udp4 = &dns.Server{
-		PacketConn: udp4PC,
+		PacketConn: socks.udp4,
 		Handler:    dns.HandlerFunc(p.handleUDPQuery),
 	}
 
-	// TCP IPv4 on the same port.
-	tcp4Ln, err := lc.Listen(ctx, "tcp", p.Addr)
-	if err != nil {
-		cleanup()
-
-		return nil, fmt.Errorf("listening TCP %s: %w", p.Addr, err)
-	}
-
-	closers = append(closers, tcp4Ln)
-
 	p.tcp4 = &dns.Server{
-		Listener: tcp4Ln,
+		Listener: socks.tcp4,
 		Handler:  dns.HandlerFunc(p.handleTCPQuery),
 	}
 
-	// IPv6 listeners.
-	if !ipv6Disabled {
-		host6 := "::1"
-		if p.vmMode {
-			host6 = "::"
-		}
-
-		addr6 := fmt.Sprintf("[%s]:%d", host6, udpAddr.Port)
-
-		// VM mode: set IPV6_TRANSPARENT so the socket can accept
-		// TPROXY'd packets with non-local destination addresses.
-		lc6 := lc
-		if p.vmMode {
-			lc6 = net.ListenConfig{
-				Control: setIPv6Transparent,
-			}
-		}
-
-		udp6PC, err := lc6.ListenPacket(ctx, "udp", addr6)
-		if err != nil {
-			cleanup()
-
-			return nil, fmt.Errorf("listening UDP %s: %w", addr6, err)
-		}
-
-		closers = append(closers, udp6PC)
-
+	if socks.udp6 != nil {
 		p.udp6 = &dns.Server{
-			PacketConn: udp6PC,
+			PacketConn: socks.udp6,
 			Handler:    dns.HandlerFunc(p.handleUDPQuery),
 		}
 
-		tcp6Ln, err := lc6.Listen(ctx, "tcp", addr6)
-		if err != nil {
-			cleanup()
-
-			return nil, fmt.Errorf("listening TCP %s: %w", addr6, err)
-		}
-
-		closers = append(closers, tcp6Ln)
-
 		p.tcp6 = &dns.Server{
-			Listener: tcp6Ln,
+			Listener: socks.tcp6,
 			Handler:  dns.HandlerFunc(p.handleTCPQuery),
 		}
 	}
@@ -379,6 +321,149 @@ func Start(
 	wg.Wait()
 
 	return p, nil
+}
+
+// sockets holds the sockets that a [Proxy] serves, all bound to one
+// port. The IPv6 sockets are nil when IPv6 is disabled.
+type sockets struct {
+	udp4 net.PacketConn
+	tcp4 net.Listener
+	udp6 net.PacketConn
+	tcp6 net.Listener
+}
+
+// close closes every socket that s holds.
+func (s *sockets) close(ctx context.Context) {
+	for _, c := range []io.Closer{s.udp4, s.tcp4, s.udp6, s.tcp6} {
+		if c == nil {
+			continue
+		}
+
+		err := c.Close()
+		if err != nil {
+			slog.WarnContext(ctx, "closing listener", slog.Any("err", err))
+		}
+	}
+}
+
+// listen binds the sockets of the proxy on listenAddr.
+//
+// When listenAddr leaves the choice of the port to the kernel, the
+// kernel picks a port that is free for the first socket, the IPv4 UDP
+// socket. A socket of another process can hold the same port number
+// for TCP or for IPv6. When a bind reports that the address is in use,
+// listen closes the sockets that it bound and starts again. The kernel
+// then picks a different port. After [bindAttempts] ports, listen
+// returns the bind error. A listenAddr that names a port gets one
+// attempt.
+func (p *Proxy) listen(ctx context.Context, listenAddr string) (*sockets, error) {
+	attempts := 1
+	if kernelPicksPort(listenAddr) {
+		attempts = bindAttempts
+	}
+
+	for attempt := 1; ; attempt++ {
+		socks, err := p.bind(ctx, listenAddr)
+		if err == nil {
+			return socks, nil
+		}
+
+		if attempt == attempts || !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, err
+		}
+
+		slog.DebugContext(ctx, "dns proxy port is in use, trying another port",
+			slog.Int("attempt", attempt),
+			slog.Any("err", err),
+		)
+	}
+}
+
+// bind binds the IPv4 UDP socket on listenAddr, and then the other
+// sockets of the proxy on the port of that socket. When a bind fails,
+// bind closes the sockets that it bound.
+func (p *Proxy) bind(ctx context.Context, listenAddr string) (*sockets, error) {
+	lc := net.ListenConfig{}
+	socks := &sockets{}
+
+	var err error
+
+	// UDP IPv4.
+	socks.udp4, err = lc.ListenPacket(ctx, protoUDP, listenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("listening UDP %s: %w", listenAddr, err)
+	}
+
+	// Resolve actual address (port may be 0).
+	udpAddr, ok := socks.udp4.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		socks.close(ctx)
+
+		return nil, fmt.Errorf("unexpected address type: %T", socks.udp4.LocalAddr())
+	}
+
+	// TCP IPv4 on the same port.
+	socks.tcp4, err = p.listenTCP(ctx, &lc, udpAddr.String())
+	if err != nil {
+		socks.close(ctx)
+
+		return nil, err
+	}
+
+	if p.ipv6Disabled {
+		return socks, nil
+	}
+
+	// IPv6 listeners.
+	host6 := "::1"
+	if p.vmMode {
+		host6 = "::"
+	}
+
+	addr6 := fmt.Sprintf("[%s]:%d", host6, udpAddr.Port)
+
+	// VM mode: set IPV6_TRANSPARENT so the socket can accept
+	// TPROXY'd packets with non-local destination addresses.
+	lc6 := lc
+	if p.vmMode {
+		lc6 = net.ListenConfig{
+			Control: setIPv6Transparent,
+		}
+	}
+
+	socks.udp6, err = lc6.ListenPacket(ctx, protoUDP, addr6)
+	if err != nil {
+		socks.close(ctx)
+
+		return nil, fmt.Errorf("listening UDP %s: %w", addr6, err)
+	}
+
+	socks.tcp6, err = p.listenTCP(ctx, &lc6, addr6)
+	if err != nil {
+		socks.close(ctx)
+
+		return nil, err
+	}
+
+	return socks, nil
+}
+
+// listenTCP binds a TCP listener on addr with lc.
+func listenTCP(ctx context.Context, lc *net.ListenConfig, addr string) (net.Listener, error) {
+	ln, err := lc.Listen(ctx, protoTCP, addr)
+	if err != nil {
+		return nil, fmt.Errorf("listening TCP %s: %w", addr, err)
+	}
+
+	return ln, nil
+}
+
+// kernelPicksPort reports whether listenAddr leaves the choice of the
+// port to the kernel, with the port 0 or with an empty port.
+func kernelPicksPort(listenAddr string) bool {
+	_, port, err := net.SplitHostPort(listenAddr)
+
+	return err == nil && (port == "" || port == "0")
 }
 
 // Shutdown gracefully stops the proxy. In-flight queries are dropped
