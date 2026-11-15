@@ -461,6 +461,44 @@ func TestProxyE2EMITM(t *testing.T) {
 			getStatus(t, client, "https://test.example./forbidden"))
 	})
 
+	// The proxy applies the L7 rules to an HTTP/1.0 request inside the
+	// TLS session as it does to an HTTP/1.1 request. Without a Host
+	// header, the proxy has no host to match against the rules.
+	http10Tests := map[string]struct {
+		request string
+		want    int
+	}{
+		"HTTP/1.0 request for an allowed path": {
+			request: "GET /allowed HTTP/1.0\r\nHost: test.example\r\n\r\n",
+			want:    http.StatusOK,
+		},
+		"HTTP/1.0 request for a denied path gets 403": {
+			request: "GET /forbidden HTTP/1.0\r\nHost: test.example\r\n\r\n",
+			want:    http.StatusForbidden,
+		},
+		"HTTP/1.0 request without a Host header gets 400": {
+			request: "GET /allowed HTTP/1.0\r\n\r\n",
+			want:    http.StatusBadRequest,
+		},
+	}
+
+	for name, tc := range http10Tests {
+		t.Run(name, func(t *testing.T) {
+			conn := tls.Client(connectHTTP10(t, proxyURL, "test.example:443"), &tls.Config{
+				ServerName: "test.example",
+				RootCAs:    loadPool(t, filepath.Join(usr.CADir, "ca.pem")),
+				MinVersion: tls.VersionTLS12,
+			})
+
+			status, body := rawRoundTrip(t, conn, tc.request)
+			require.Equal(t, tc.want, status)
+
+			if tc.want == http.StatusOK {
+				assert.Equal(t, "mitm upstream", body)
+			}
+		})
+	}
+
 	// A client that trusts only the exported bundle verifies both the
 	// MITM leaf and the upstream certificate of a tunneled host.
 	bundleClient := proxyClient(t, proxyURL, loadPool(t, bundlePath))
@@ -1260,6 +1298,37 @@ func TestProxyE2EPlainHTTP(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "Host=test.example:80\n", string(body))
 	})
+
+	// The proxy applies the policy to an HTTP/1.0 request inside a
+	// tunnel to port 80 as it does to an HTTP/1.1 request.
+	t.Run("HTTP/1.0 request in a tunnel to an allowed FQDN", func(t *testing.T) {
+		tunnel := connectHTTP10(t, proxyURL, "test.example:80")
+
+		status, body := rawRoundTrip(t, tunnel, "GET / HTTP/1.0\r\nHost: test.example\r\n\r\n")
+		assert.Equal(t, http.StatusOK, status)
+		assert.Equal(t, "Host=test.example:80\n", body)
+	})
+
+	t.Run("HTTP/1.0 request in a tunnel to a denied domain gets 403", func(t *testing.T) {
+		tunnel := connectHTTP10(t, proxyURL, "test.example:80")
+
+		status, _ := rawRoundTrip(t, tunnel, "GET / HTTP/1.0\r\nHost: denied.example\r\n\r\n")
+		assert.Equal(t, http.StatusForbidden, status)
+	})
+
+	// Without a Host header, the proxy has no host to match against
+	// the policy.
+	t.Run("HTTP/1.0 request in a tunnel without a Host header gets 400", func(t *testing.T) {
+		tunnel := connectHTTP10(t, proxyURL, "test.example:80")
+
+		status, _ := rawRoundTrip(t, tunnel, "GET / HTTP/1.0\r\n\r\n")
+		assert.Equal(t, http.StatusBadRequest, status)
+	})
+
+	t.Run("plain HTTP/1.0 to an allowed FQDN", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK,
+			rawRequestStatus(t, proxyURL, "GET http://test.example/ HTTP/1.0\r\n\r\n"))
+	})
 }
 
 //nolint:paralleltest // e2e tests run envoy subprocesses.
@@ -1968,6 +2037,28 @@ func connectHTTP10(t *testing.T, proxyURL *url.URL, authority string) net.Conn {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	return &tunnelConn{Conn: conn, r: r}
+}
+
+// rawRoundTrip writes request to conn as it is, and returns the status
+// and the body of the response. The caller sets the deadline of conn
+// and closes it.
+func rawRoundTrip(t *testing.T, conn io.ReadWriter, request string) (int, string) {
+	t.Helper()
+
+	_, err := io.WriteString(conn, request)
+	require.NoError(t, err)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+
+	defer func() {
+		assert.NoError(t, resp.Body.Close())
+	}()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	return resp.StatusCode, string(body)
 }
 
 // TestProxyE2EStatsDefaultSocket checks that the proxy records Envoy

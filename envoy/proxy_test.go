@@ -154,47 +154,11 @@ func TestBuildProxyListener_NoReusePort(t *testing.T) {
 	}
 }
 
-// TestBuildProxyListener_AcceptsHTTP10 checks that the front listener
-// serves HTTP/1.0 requests in every mode. Envoy answers them with
-// status 426 when the HTTP connection manager omits the option, and
-// some clients send their CONNECT request in HTTP/1.0.
-func TestBuildProxyListener_AcceptsHTTP10(t *testing.T) {
-	t.Parallel()
-
-	tests := map[string]struct {
-		mode envoy.ProxyMode
-	}{
-		"filtered": {mode: envoy.ProxyModeFiltered},
-		"open":     {mode: envoy.ProxyModeOpen},
-		"blocked":  {mode: envoy.ProxyModeBlocked},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			l := envoy.BuildProxyListener(envoy.ProxyListenerParams{
-				BindAddress: "127.0.0.1",
-				Port:        8080,
-				Mode:        tt.mode,
-			})
-
-			y := marshalYAML(t, l)
-
-			assert.Contains(t, y, "http_protocol_options:")
-			assert.Contains(t, y, "accept_http_10: true")
-		})
-	}
-}
-
-// TestListeners_StripTrailingHostDot checks that every HTTP connection
-// manager that matches the host of a request against the policy
-// removes the trailing dot of the host first. Without the option, a
-// request for "example.com." does not match the rule for
-// "example.com".
-func TestListeners_StripTrailingHostDot(t *testing.T) {
-	t.Parallel()
-
+// policyListeners returns one listener for each place where an HTTP
+// connection manager matches the host of a request against the policy,
+// keyed by a name for the place. Each listener has one HTTP connection
+// manager.
+func policyListeners() map[string]envoy.Listener {
 	plain := []config.ResolvedRule{{Domain: "plain.example.com"}}
 	restricted := []config.ResolvedRule{{
 		Domain:    "restricted.example.com",
@@ -211,39 +175,55 @@ func TestListeners_StripTrailingHostDot(t *testing.T) {
 		})
 	}
 
-	tests := map[string]struct {
-		listener envoy.Listener
-	}{
-		"proxy front listener, filtered": {
-			listener: front(envoy.ProxyModeFiltered),
-		},
-		"proxy front listener, open": {
-			listener: front(envoy.ProxyModeOpen),
-		},
-		"proxy front listener, blocked": {
-			listener: front(envoy.ProxyModeBlocked),
-		},
-		"proxy internal HTTP listener": {
-			listener: envoy.BuildInternalHTTPListener(plain, false, nil, nil),
-		},
-		"proxy internal TLS listener with a MITM chain": {
-			listener: envoy.BuildInternalTLSListener(443, restricted, false, nil, nil, "/certs", nil),
-		},
-		"container HTTP listener": {
-			listener: envoy.BuildHTTPForwardListener(plain, false, nil, false),
-		},
-		"container TLS listener with a MITM chain": {
-			listener: envoy.BuildTLSListener(
-				"tls_443", 15443, 443, "tls_443", restricted, false, nil, nil, "/certs", false,
-			),
-		},
+	return map[string]envoy.Listener{
+		"proxy front listener, filtered": front(envoy.ProxyModeFiltered),
+		"proxy front listener, open":     front(envoy.ProxyModeOpen),
+		"proxy front listener, blocked":  front(envoy.ProxyModeBlocked),
+		"proxy internal HTTP listener":   envoy.BuildInternalHTTPListener(plain, false, nil, nil),
+		"proxy internal TLS listener with a MITM chain": envoy.BuildInternalTLSListener(
+			443, restricted, false, nil, nil, "/certs", nil,
+		),
+		"container HTTP listener": envoy.BuildHTTPForwardListener(plain, false, nil, false),
+		"container TLS listener with a MITM chain": envoy.BuildTLSListener(
+			"tls_443", 15443, 443, "tls_443", restricted, false, nil, nil, "/certs", false,
+		),
 	}
+}
 
-	for name, tt := range tests {
+// TestListeners_AcceptHTTP10 checks that every HTTP connection manager
+// that matches the host of a request against the policy serves
+// HTTP/1.0 requests. Without the option, Envoy answers each of them
+// with status 426, also when the policy allows the host. Some clients
+// send their CONNECT request in HTTP/1.0, and the requests inside a
+// tunnel can have any HTTP version.
+func TestListeners_AcceptHTTP10(t *testing.T) {
+	t.Parallel()
+
+	for name, l := range policyListeners() {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			y := marshalYAML(t, tt.listener)
+			y := marshalYAML(t, l)
+
+			assert.Equal(t, 1, countOccurrences(y, "envoy.filters.network.http_connection_manager\n"))
+			assert.Equal(t, 1, countOccurrences(y, "accept_http_10: true"))
+		})
+	}
+}
+
+// TestListeners_StripTrailingHostDot checks that every HTTP connection
+// manager that matches the host of a request against the policy
+// removes the trailing dot of the host first. Without the option, a
+// request for "example.com." does not match the rule for
+// "example.com".
+func TestListeners_StripTrailingHostDot(t *testing.T) {
+	t.Parallel()
+
+	for name, l := range policyListeners() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			y := marshalYAML(t, l)
 
 			assert.Equal(t, 1, countOccurrences(y, "envoy.filters.network.http_connection_manager\n"))
 			assert.Equal(t, 1, countOccurrences(y, "strip_trailing_host_dot: true"))

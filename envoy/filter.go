@@ -183,6 +183,11 @@ func buildPassthroughFilterChain(
 // "example.com." then matches the rule for "example.com", and the
 // upstream receives the host without the dot.
 //
+// The connection manager serves HTTP/1.0 requests, and the virtual
+// host applies the same HTTP rules to the requests of every HTTP
+// version. An HTTP/1.0 request without a Host header names no host to
+// match, so Envoy answers it with status 400.
+//
 // The access loggers of the connection manager are accessLog and, when
 // a headerMatches entry of rule has the LOG mismatch action, the logger
 // of [withMismatchAccessLog].
@@ -247,6 +252,7 @@ func buildMITMFilterChain(
 				NormalizePath:                boolPtr(true),
 				UseRemoteAddress:             boolPtr(true),
 				SkipXffAppend:                boolPtr(true),
+				HTTPProtocolOptions:          &http1ProtocolOptions{AcceptHTTP10: true},
 				MergeSlashes:                 true,
 				StripAnyHostPort:             true,
 				StripTrailingHostDot:         true,
