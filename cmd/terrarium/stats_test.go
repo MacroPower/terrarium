@@ -279,30 +279,137 @@ func TestStatsTopCSV(t *testing.T) {
 func TestStatsSummary(t *testing.T) {
 	t.Parallel()
 
+	early := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
+	late := time.Date(2020, 1, 3, 12, 0, 0, 0, time.UTC)
+
+	dbPath := seedDB(t, []eventstore.Event{
+		{Time: early, Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Domain: "ok.example"},
+		{Time: early, Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Domain: "blocked.example"},
+		{Time: late, Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Domain: "blocked.example"},
+		{Time: early, Source: eventstore.SourceEnvoy, Decision: eventstore.DecisionAllow, Domain: "ok.example"},
+		{Time: late, Source: eventstore.SourceEnvoy, Decision: eventstore.DecisionAllow, Domain: "ok.example"},
+		{Time: late, Source: eventstore.SourceFirewall, Decision: eventstore.DecisionDeny, Domain: "blocked.example"},
+	})
+
+	type row struct {
+		Source   eventstore.Source   `json:"source"`
+		Decision eventstore.Decision `json:"decision"`
+		Count    int64               `json:"count"`
+	}
+
+	// Every case passes --since, because the events are older than
+	// the default window.
+	since := []string{"--since", "2020-01-01T00:00:00Z"}
+
+	tcs := map[string]struct {
+		args []string
+		want []row
+	}{
+		"all events": {
+			want: []row{
+				{Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Count: 1},
+				{Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Count: 2},
+				{Source: eventstore.SourceEnvoy, Decision: eventstore.DecisionAllow, Count: 2},
+				{Source: eventstore.SourceFirewall, Decision: eventstore.DecisionDeny, Count: 1},
+			},
+		},
+		"until bounds the window": {
+			args: []string{"--until", "2020-01-02T00:00:00Z"},
+			want: []row{
+				{Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Count: 1},
+				{Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Count: 1},
+				{Source: eventstore.SourceEnvoy, Decision: eventstore.DecisionAllow, Count: 1},
+			},
+		},
+		"until includes its own time": {
+			args: []string{"--until", "2020-01-03T12:00:00Z", "--source", "firewall"},
+			want: []row{
+				{Source: eventstore.SourceFirewall, Decision: eventstore.DecisionDeny, Count: 1},
+			},
+		},
+		"source selects one source": {
+			args: []string{"--source", "dns"},
+			want: []row{
+				{Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Count: 1},
+				{Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Count: 2},
+			},
+		},
+		"source and until": {
+			args: []string{"--source", "dns", "--until", "2020-01-02T00:00:00Z"},
+			want: []row{
+				{Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Count: 1},
+				{Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Count: 1},
+			},
+		},
+		"no event matches": {
+			args: []string{"--source", "firewall", "--until", "2020-01-02T00:00:00Z"},
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := statsCmd(config.NewUser())
+
+			buf := &bytes.Buffer{}
+			cmd.SetOut(buf)
+
+			args := []string{"--db", dbPath, "--format", "json"}
+			args = append(args, since...)
+			cmd.SetArgs(append(args, tc.args...))
+
+			require.NoError(t, cmd.ExecuteContext(t.Context()))
+
+			var got []row
+
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestStatsLimitFlag checks which stats commands take --limit. The
+// summary prints every pair of a source and a decision, so it rejects
+// the flag.
+func TestStatsLimitFlag(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
 
 	dbPath := seedDB(t, []eventstore.Event{
-		{Time: now, Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow, Domain: "ok.example"},
 		{Time: now, Source: eventstore.SourceDNS, Decision: eventstore.DecisionDeny, Domain: "blocked.example"},
 	})
 
-	usr := config.NewUser()
-	cmd := statsCmd(usr)
+	// Each name is a command line. The words after the first word
+	// are the arguments of the stats command.
+	tcs := map[string]struct {
+		err string
+	}{
+		"stats --limit 1":      {err: "unknown flag: --limit"},
+		"stats top --limit 1":  {},
+		"stats list --limit 1": {},
+	}
 
-	buf := &bytes.Buffer{}
-	cmd.SetOut(buf)
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	cmd.SetArgs([]string{
-		"--db", dbPath,
-		"--format", "json",
-	})
+			cmd := statsCmd(config.NewUser())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append(strings.Fields(name)[1:], "--db", dbPath))
 
-	require.NoError(t, cmd.ExecuteContext(t.Context()))
+			err := cmd.ExecuteContext(t.Context())
+			if tc.err != "" {
+				require.ErrorContains(t, err, tc.err)
 
-	var rows []map[string]any
+				return
+			}
 
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
-	require.Len(t, rows, 2)
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestStatsMissingDB(t *testing.T) {

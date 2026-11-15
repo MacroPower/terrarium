@@ -788,6 +788,7 @@ Read events with the CLI:
 
 ```
 terrarium stats                                          # last-24h summary
+terrarium stats --source dns --since 1h                  # summary of the DNS events of the last hour
 terrarium stats top  [--denied|--allowed]                # top-N by domain (default --denied)
 terrarium stats top --by sni                             # group by TLS SNI
 terrarium stats top --by path                            # group by HTTP path (query string stripped)
@@ -795,9 +796,12 @@ terrarium stats list                                     # raw events; --cursor 
 terrarium stats list --source firewall --since 1h        # firewall-source events only
 ```
 
-Flags shared across subcommands: `--since`, `--until`, `--limit`,
-`--source dns|envoy|firewall`, `--instance ID`, `--format table|json|csv`,
-`--db PATH`. The CLI opens the DB read-only, so it has no daemon dependency.
+Every `terrarium stats` command takes `--since`, `--until`,
+`--source dns|envoy|firewall`, `--instance ID`, `--format table|json|csv`, and
+`--db PATH`. `terrarium stats top` and `terrarium stats list` also take
+`--limit`. The summary prints one row for each pair of a source and a decision,
+so it does not take `--limit`. The CLI opens the DB read-only, so it has no
+daemon dependency.
 
 Each event of `terrarium stats list` holds two fields that say where the
 flow went and which rule decided it:

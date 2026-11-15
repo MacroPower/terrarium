@@ -60,8 +60,9 @@ func parseSource(s string) (eventstore.Source, error) {
 	}
 }
 
-// statsFlags holds the shared flags surfaced on every `terrarium stats`
-// subcommand.
+// statsFlags holds the flags of the `terrarium stats` commands.
+// [statsFlags.register] attaches the flags that every command takes,
+// and [statsFlags.registerLimit] attaches --limit.
 type statsFlags struct {
 	since    string
 	until    string
@@ -72,13 +73,13 @@ type statsFlags struct {
 	limit    int
 }
 
-// register attaches the shared flags to cmd.
+// register attaches to cmd the flags that every `terrarium stats`
+// command takes.
 func (f *statsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.since, "since", "24h",
 		"start of the time window (Go duration ago, e.g. 1h, 24h, or RFC3339)")
 	cmd.Flags().StringVar(&f.until, "until", "",
 		"end of the time window (RFC3339; defaults to now)")
-	cmd.Flags().IntVar(&f.limit, "limit", 20, "maximum rows returned")
 	cmd.Flags().StringVar(&f.source, "source", "",
 		"filter by event source (dns, envoy, firewall)")
 	cmd.Flags().StringVar(&f.instance, "instance", "",
@@ -87,6 +88,14 @@ func (f *statsFlags) register(cmd *cobra.Command) {
 		"output format: table, json, csv")
 	cmd.Flags().StringVar(&f.dbPath, "db", "",
 		"path to stats db (default: $XDG_DATA_HOME/terrarium/stats.db)")
+}
+
+// registerLimit attaches the --limit flag to cmd. Only the commands
+// that print a bounded number of rows take the flag. The summary
+// prints one row for each pair of a source and a decision, so it does
+// not take it.
+func (f *statsFlags) registerLimit(cmd *cobra.Command) {
+	cmd.Flags().IntVar(&f.limit, "limit", 20, "maximum rows returned")
 }
 
 // resolved bundles the parsed/validated form of [statsFlags] used by
@@ -257,6 +266,7 @@ func statsTopCmd(usr *config.User) *cobra.Command {
 	}
 
 	f.register(cmd)
+	f.registerLimit(cmd)
 	cmd.Flags().BoolVar(&denied, "denied", false, "show top denied domains (default)")
 	cmd.Flags().BoolVar(&allowed, "allowed", false, "show top allowed domains")
 	cmd.Flags().StringVar(&groupBy, "by", string(eventstore.TopByDomain),
@@ -282,6 +292,7 @@ func statsListCmd(usr *config.User) *cobra.Command {
 	}
 
 	f.register(cmd)
+	f.registerLimit(cmd)
 	cmd.Flags().StringVar(&cursor, "cursor", "",
 		"opaque pagination cursor returned by a previous run")
 
@@ -494,8 +505,11 @@ func runStatsList(
 	return renderRows(out, rf.format, results, headers, csvRows)
 }
 
-// runStatsSummary prints a compact 24-hour summary. Used when the
-// user types `terrarium stats` with no subcommand.
+// runStatsSummary prints the number of events for each pair of a
+// source and a decision. It is the handler of `terrarium stats`
+// without a subcommand. The --since and --until flags bound the
+// events that it counts, and the window covers the last 24 hours by
+// default. The --source flag limits the rows to one source.
 func runStatsSummary(
 	ctx context.Context, out io.Writer, usr *config.User, f *statsFlags,
 ) error {
@@ -526,6 +540,8 @@ func runStatsSummary(
 
 	counts, err := r.Summary(ctx, eventstore.Filter{
 		Since:    rf.since,
+		Until:    rf.until,
+		Source:   rf.source,
 		Instance: instance,
 	})
 	if err != nil {
