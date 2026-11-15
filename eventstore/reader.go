@@ -75,8 +75,10 @@ type Reader struct {
 }
 
 // OpenReader creates a new [Reader] on the SQLite event store at path.
-// A database with a schema newer than this package supports returns
-// [ErrSchemaTooNew]. The caller must call [Reader.Close].
+// A path that holds no file returns an error, and OpenReader does not
+// create the file. A database with a schema newer than this package
+// supports returns [ErrSchemaTooNew]. The caller must call
+// [Reader.Close].
 func OpenReader(ctx context.Context, path string) (*Reader, error) {
 	db, err := OpenReadOnly(ctx, path)
 	if err != nil {

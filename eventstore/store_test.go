@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -27,6 +28,181 @@ func openReadOnly(t *testing.T, path string) *sql.DB {
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
 	return db
+}
+
+// closedStore creates an event store at path and closes it, so that
+// the file holds the schema and one instance row.
+func closedStore(t *testing.T, path string) {
+	t.Helper()
+
+	store, err := eventstore.Open(t.Context(), path)
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+}
+
+// countInstances returns the number of rows in the instances table.
+func countInstances(t *testing.T, db *sql.DB) int {
+	t.Helper()
+
+	var n int
+
+	err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM instances`).Scan(&n)
+	require.NoError(t, err)
+
+	return n
+}
+
+func TestOpenReadOnly_MissingFile(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		// path returns the path to open for an empty temporary
+		// directory.
+		path func(dir string) string
+	}{
+		"missing file": {
+			path: func(dir string) string { return filepath.Join(dir, "stats.db") },
+		},
+		"missing directory": {
+			path: func(dir string) string { return filepath.Join(dir, "missing", "stats.db") },
+		},
+		"name with a query": {
+			path: func(dir string) string { return filepath.Join(dir, "stats.db?mode=rwc") },
+		},
+		// SQLite opens a temporary database for an empty name.
+		"empty path": {
+			path: func(string) string { return "" },
+		},
+		// SQLite opens an in-memory database for this name.
+		"in-memory name": {
+			path: func(string) string { return ":memory:" },
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+
+			db, err := eventstore.OpenReadOnly(t.Context(), tc.path(dir))
+			require.Error(t, err)
+			assert.Nil(t, db)
+
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			assert.Empty(t, entries)
+		})
+	}
+}
+
+func TestOpenReadOnly_RejectsWrites(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+	closedStore(t, path)
+
+	db := openReadOnly(t, path)
+
+	tcs := map[string]string{
+		"delete": `DELETE FROM instances`,
+		"insert": `INSERT INTO instances (id, started_at) VALUES ('x', 1)`,
+		"create": `CREATE TABLE extra (id INTEGER)`,
+		"pragma": `PRAGMA user_version = 99`,
+	}
+
+	for name, stmt := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := db.ExecContext(t.Context(), stmt)
+			require.ErrorContains(t, err, "attempt to write a readonly database")
+
+			assert.Equal(t, 1, countInstances(t, db))
+		})
+	}
+}
+
+func TestOpenReadOnly_CloseRemovesWALFiles(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+	closedStore(t, path)
+
+	db, err := eventstore.OpenReadOnly(t.Context(), path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, countInstances(t, db))
+	assert.FileExists(t, path+"-wal")
+	assert.FileExists(t, path+"-shm")
+
+	require.NoError(t, db.Close())
+
+	assert.NoFileExists(t, path+"-wal")
+	assert.NoFileExists(t, path+"-shm")
+}
+
+func TestOpenReadOnly_Paths(t *testing.T) {
+	t.Parallel()
+
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+
+	tcs := map[string]struct {
+		// path returns the path to open for the absolute path of
+		// the database. A nil path opens the absolute path.
+		path func(abs string) (string, error)
+		// name is the file name of the database.
+		name string
+	}{
+		"plain":            {name: "stats.db"},
+		"question mark":    {name: "a?b.db"},
+		"number sign":      {name: "a#b.db"},
+		"percent sign":     {name: "a%41b.db"},
+		"space":            {name: "a b.db"},
+		"query separators": {name: "a&b=c.db"},
+		"colon":            {name: "a:b.db"},
+		"non-ASCII":        {name: "caf\u00e9.db"},
+		"relative path": {
+			name: "stats.db",
+			path: func(abs string) (string, error) { return filepath.Rel(wd, abs) },
+		},
+		"two leading slashes": {
+			name: "stats.db",
+			path: func(abs string) (string, error) { return "/" + abs, nil },
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+
+			// The test creates the store under a plain name and
+			// renames the file, so that the test depends only on the
+			// path that OpenReadOnly reads.
+			seed := filepath.Join(dir, "seed.db")
+			closedStore(t, seed)
+
+			abs := filepath.Join(dir, "db", tc.name)
+			require.NoError(t, os.Mkdir(filepath.Dir(abs), 0o755))
+			require.NoError(t, os.Rename(seed, abs))
+
+			path := abs
+
+			if tc.path != nil {
+				var err error
+
+				path, err = tc.path(abs)
+				require.NoError(t, err)
+			}
+
+			db := openReadOnly(t, path)
+
+			assert.Equal(t, 1, countInstances(t, db))
+		})
+	}
 }
 
 func TestOpen_AppliesSchemaOnFreshDB(t *testing.T) {

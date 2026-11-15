@@ -198,6 +198,9 @@ func TestOpenReader(t *testing.T) {
 			stmts: []string{`PRAGMA user_version = -1`},
 			fails: true,
 		},
+		"missing file": {
+			fails: true,
+		},
 		"missing directory": {
 			dir:   "missing",
 			fails: true,
@@ -215,6 +218,10 @@ func TestOpenReader(t *testing.T) {
 			}
 
 			r, err := eventstore.OpenReader(t.Context(), path)
+
+			if tc.stmts == nil {
+				assert.NoFileExists(t, path)
+			}
 
 			switch {
 			case tc.err != nil:

@@ -305,6 +305,36 @@ func TestStatsSummary(t *testing.T) {
 	require.Len(t, rows, 2)
 }
 
+func TestStatsMissingDB(t *testing.T) {
+	t.Parallel()
+
+	// Each name is a command line. The words after the first word
+	// are the arguments of the stats command.
+	tcs := map[string]struct{}{
+		"stats":      {},
+		"stats top":  {},
+		"stats list": {},
+	}
+
+	for name := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dbPath := filepath.Join(t.TempDir(), "stats.db")
+
+			cmd := statsCmd(config.NewUser())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append(strings.Fields(name)[1:], "--db", dbPath))
+
+			err := cmd.ExecuteContext(t.Context())
+			require.ErrorContains(t, err, "opening stats db")
+
+			assert.NoFileExists(t, dbPath)
+		})
+	}
+}
+
 func TestResolveSince(t *testing.T) {
 	t.Parallel()
 

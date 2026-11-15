@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,7 +38,7 @@ const pruneChunkSize int64 = 1000
 
 // busyTimeout is how long a connection waits for the lock of another
 // connection before SQLite returns SQLITE_BUSY. [writerDSNSuffix] and
-// [readOnlyDSNSuffix] set the same value in milliseconds.
+// [readOnlyDSNQuery] set the same value in milliseconds.
 const busyTimeout = 2 * time.Second
 
 // walRetryInterval is the pause between two attempts of
@@ -51,17 +52,64 @@ const walRetryInterval = 10 * time.Millisecond
 // writer is about to change.
 const writerDSNSuffix = "?_pragma=busy_timeout(2000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 
-// readOnlyDSNSuffix is the query string appended to the SQLite path by
-// [OpenReadOnly].
-const readOnlyDSNSuffix = "?mode=ro&_pragma=busy_timeout(2000)"
+// readOnlyDSNQuery is the query string of the URI that [readOnlyDSN]
+// returns. SQLite reads `mode=rw`, so it opens an existing file and
+// does not create a missing one. The driver reads `_pragma`. It sets
+// `query_only` on each new connection, so each statement that changes
+// a table, an index, or the schema fails with `attempt to write a
+// readonly database` until a statement turns `query_only` off.
+// The pragma does not stop a change of `journal_mode`, a checkpoint,
+// or an `ATTACH`, and each of these still writes files.
+//
+// The query does not set `mode=ro`. A connection that SQLite opens for
+// reads only cannot remove the `-wal` and `-shm` files of the database
+// when it closes. The files then stay after the last connection
+// closes, and the next [Open] fails when another user owns them.
+const readOnlyDSNQuery = "?mode=rw&_pragma=query_only(1)&_pragma=busy_timeout(2000)"
+
+// readOnlyDSN returns the data source name that [OpenReadOnly] opens
+// for the SQLite file at path. The name is a `file:` URI. For a name
+// in another form, the driver removes the query string before SQLite
+// reads the name. SQLite then never reads `mode=rw`, so it creates a
+// missing file.
+//
+// The URI escapes the characters of path that end the path of a URI,
+// such as `?` and `#`. The URI of an absolute path holds an empty
+// authority. Without the authority, SQLite reads the first element of
+// a path that starts with `//` as a host. The URI of a relative path
+// starts with `./`, so that SQLite reads the empty path and the name
+// `:memory:` as paths of files. Without the `./`, SQLite opens a
+// temporary database for the empty path and an in-memory database for
+// `:memory:`.
+func readOnlyDSN(path string) string {
+	prefix := "file:./"
+	if filepath.IsAbs(path) {
+		prefix = "file://"
+	}
+
+	return prefix + (&url.URL{Path: path}).EscapedPath() + readOnlyDSNQuery
+}
 
 // OpenReadOnly opens the SQLite event store at path for reads only.
 // No writer goroutine, no schema apply, no instance row. It gives raw
 // SQL access to a database written by a separate [*Store] in the
 // daemon. Use [OpenReader] for the typed queries. The caller owns
 // closing the returned [*sql.DB].
+//
+// A path that holds no file returns an error, and OpenReadOnly does
+// not create the file. Each connection of the returned [*sql.DB] sets
+// the pragma `query_only`. Each statement that changes a table, an
+// index, or the schema then fails until the caller turns the pragma
+// off. The pragma does not stop `PRAGMA journal_mode`, a checkpoint,
+// or `ATTACH`. The store keeps a write-ahead log, so a query creates
+// the `-shm` and `-wal` files beside the database when they are
+// missing. When the returned [*sql.DB] closes the last connection to
+// the database, SQLite removes both files, but only when the caller
+// can write the database file. SQLite opens a file that the caller
+// cannot write for reads only, and that connection leaves both files
+// behind.
 func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+readOnlyDSNSuffix)
+	db, err := sql.Open("sqlite", readOnlyDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
