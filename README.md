@@ -142,9 +142,14 @@ managed build does not run on them:
   glibc, so the proxy exits with the same error.
 - **A Linux host without the standard glibc loader, such as NixOS
   without nix-ld.** The proxy installs the managed build, but the build
-  does not start.
+  does not start. NixOS 24.05 and later puts a stub at the path of the
+  loader by default. The stub prints that NixOS cannot run the binary,
+  and Envoy exits with status 127. On a host that holds no file at the
+  path of the loader, the error names that path. In both cases, the
+  error names the flag and the key.
 - **A Linux host that does not mount `/proc`.** The proxy executes the
-  checked file through `/proc`, so Envoy does not start.
+  checked file through `/proc`, so Envoy does not start. The proxy exits
+  with an error that names `/proc`, the flag, and the key.
 
 Run the proxy, and write the CA files where the sandbox can read them. The example
 writes them to a `proxy` directory beside the CA directory under

@@ -784,6 +784,13 @@ func newProbeToken() (string, error) {
 // binary without a hash check and does not use inst. See [resolveEnvoy]
 // for the errors of both cases.
 //
+// When the host cannot execute the managed build, the error of Proxy
+// names the --envoy-path flag and the envoy.path config key. See
+// [envoyBinary.startError] for the causes that the error also names.
+// The error also names the flag and the key when the managed build
+// exits with the status of a dynamic loader that cannot run it. See
+// [envoyBinary.exitError].
+//
 // Envoy writes its process log to the logging.envoy.path of the policy,
 // or to usr.EnvoyLogPath when the policy does not set one. When both
 // are empty, Envoy logs to the stderr of the proxy.
@@ -949,7 +956,7 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 			return nil
 		}
 
-		return fmt.Errorf("starting envoy %s: %w", envoyBin.path, err)
+		return envoyBin.startError(err)
 	}
 
 	// A connection to addr can reach a process that took addr after
@@ -1014,7 +1021,7 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 	case errors.Is(err, ErrEnvoyExited):
 		// The process state exists, because the wait for the process
 		// has returned.
-		return fmt.Errorf("%w: %w: %s", ErrEnvoyNotRunning, err, cmd.ProcessState)
+		return envoyBin.exitError(err, cmd.ProcessState)
 
 	default:
 		stopEnvoy(ctx, proc, envoySettings.DrainTimeout.Duration)

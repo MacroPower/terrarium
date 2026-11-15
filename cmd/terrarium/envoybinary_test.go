@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -565,6 +566,120 @@ func TestProxyManagedEnvoyChanged(t *testing.T) {
 	data, err := os.ReadFile(path) //nolint:gosec // test fixture path.
 	require.NoError(t, err)
 	assert.Equal(t, changed, data)
+}
+
+// TestProxyEnvoyDoesNotStart checks the error of a [Proxy] whose Envoy
+// binary the host cannot execute. Only the error of the managed build
+// names the ways to run another binary.
+func TestProxyEnvoyDoesNotStart(t *testing.T) {
+	t.Parallel()
+
+	advice := "set --envoy-path or the envoy.path config key"
+
+	// The file has execute permission, but it holds no program.
+	binary := []byte("not a program")
+
+	tests := map[string]struct {
+		// override says whether the --envoy-path flag names the file.
+		// Without it, the file is the managed build.
+		override bool
+	}{
+		"managed build":   {},
+		"unpinned binary": {override: true},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			usr := stubProxyUser(t, dir, "egress: []\n")
+			usr.ReadyFile = filepath.Join(dir, "ready")
+
+			opts := proxyOptions{bindAddress: loopbackIPv4, httpPort: freePort(t)}
+
+			inst, path, _ := managedEnvoyInstaller(t, binary)
+
+			if tt.override {
+				path = filepath.Join(dir, "custom-envoy")
+				require.NoError(t, os.WriteFile(path, binary, 0o755))
+
+				opts.envoyPath = path
+			}
+
+			err := Proxy(t.Context(), usr, inst, opts)
+			require.ErrorIs(t, err, syscall.ENOEXEC)
+			require.ErrorContains(t, err, "starting envoy "+path+": ")
+
+			if tt.override {
+				assert.NotContains(t, err.Error(), advice)
+			} else {
+				assert.Contains(t, err.Error(), advice)
+			}
+
+			assert.NoFileExists(t, usr.ReadyFile)
+		})
+	}
+}
+
+// TestProxyEnvoyExitAdvice checks the error of a [Proxy] whose Envoy
+// binary exits before it is ready. Only the error of a managed build
+// that exits with the status of a dynamic loader that cannot run it
+// names the ways to run another binary.
+func TestProxyEnvoyExitAdvice(t *testing.T) {
+	t.Parallel()
+
+	advice := "set --envoy-path or the envoy.path config key"
+
+	tests := map[string]struct {
+		// code is the exit status of the binary.
+		code int
+		// override says whether the --envoy-path flag names the file.
+		// Without it, the file is the managed build.
+		override bool
+		// advice says whether the error names the flag and the key.
+		advice bool
+	}{
+		"managed build exits with the loader status":   {code: 127, advice: true},
+		"unpinned binary exits with the loader status": {code: 127, override: true},
+		"managed build exits with another status":      {code: 1},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			binary := []byte("#!/bin/sh\nexit " + strconv.Itoa(tt.code) + "\n")
+
+			dir := t.TempDir()
+			usr := stubProxyUser(t, dir, "egress: []\n")
+			usr.ReadyFile = filepath.Join(dir, "ready")
+
+			opts := proxyOptions{bindAddress: loopbackIPv4, httpPort: freePort(t)}
+
+			inst, _, _ := managedEnvoyInstaller(t, binary)
+
+			if tt.override {
+				path := filepath.Join(dir, "custom-envoy")
+				require.NoError(t, os.WriteFile(path, binary, 0o755))
+
+				opts.envoyPath = path
+			}
+
+			err := Proxy(t.Context(), usr, inst, opts)
+			require.ErrorIs(t, err, ErrEnvoyNotRunning)
+			require.ErrorIs(t, err, ErrEnvoyExited)
+			require.ErrorContains(t, err, "exit status "+strconv.Itoa(tt.code))
+
+			if tt.advice {
+				assert.Contains(t, err.Error(), advice)
+			} else {
+				assert.NotContains(t, err.Error(), advice)
+			}
+
+			assert.NoFileExists(t, usr.ReadyFile)
+		})
+	}
 }
 
 // TestProxyEnvoyOverride checks that [Proxy] runs the binary that the

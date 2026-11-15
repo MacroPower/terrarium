@@ -15,6 +15,16 @@ import (
 // config key names a binary that the proxy cannot execute.
 var ErrEnvoyNotFound = errors.New("envoy binary not found")
 
+// The advice that ends the error of a managed build that the host
+// cannot run.
+const envoyOverrideAdvice = "set --envoy-path or the envoy.path config key to run another envoy binary"
+
+// The exit status of a program that its dynamic loader cannot run. The
+// glibc loader exits with it when a library is missing. The stub
+// loader that NixOS installs at the glibc loader path exits with it for
+// every program.
+const loaderExitCode = 127
+
 // envoyBinary is the Envoy executable of one proxy run. Create
 // instances with [resolveEnvoy].
 type envoyBinary struct {
@@ -71,8 +81,7 @@ func unpinnedEnvoy(ctx context.Context, name string) (*envoyBinary, error) {
 func managedEnvoy(ctx context.Context, inst *envoybin.Installer) (*envoyBinary, error) {
 	path, err := inst.Path()
 	if err != nil {
-		return nil, fmt.Errorf(
-			"%w: set --envoy-path or the envoy.path config key to run another envoy binary", err)
+		return nil, fmt.Errorf("%w: %s", err, envoyOverrideAdvice)
 	}
 
 	f, err := inst.Open()
@@ -107,7 +116,9 @@ func managedEnvoy(ctx context.Context, inst *envoybin.Installer) (*envoyBinary, 
 // command has the path of the binary as its first argument.
 //
 // The command of a managed binary executes the open, hash-checked file
-// where the platform allows it. See [execOpenFile].
+// where the platform allows it. See [execOpenFile]. When the command
+// does not start, pass the error of the start to
+// [envoyBinary.startError].
 func (b *envoyBinary) command(ctx context.Context, args ...string) *exec.Cmd {
 	//nolint:gosec // G204: the managed build, or the binary that the user names.
 	cmd := exec.CommandContext(ctx, b.path, args...)
@@ -117,6 +128,39 @@ func (b *envoyBinary) command(ctx context.Context, args ...string) *exec.Cmd {
 	}
 
 	return cmd
+}
+
+// startError returns the error of a proxy whose command of the binary
+// did not start. Err is the error of that start.
+//
+// The error of a managed binary ends with the advice to name another
+// binary with the --envoy-path flag or the envoy.path config key. It
+// also names the cause that [execOpenFileError] finds. The error of an
+// unpinned binary carries neither, because the user chose that binary.
+func (b *envoyBinary) startError(err error) error {
+	if b.file == nil {
+		return fmt.Errorf("starting envoy %s: %w", b.path, err)
+	}
+
+	return fmt.Errorf("starting envoy %s: %w: %s",
+		b.path, execOpenFileError(b.file, err), envoyOverrideAdvice)
+}
+
+// exitError returns the error of a proxy whose Envoy process exited
+// before it was ready. Err is the error of the wait for that process,
+// and state is the state of the exited process.
+//
+// The error of a managed binary that exited with status 127 ends with
+// the advice to name another binary with the --envoy-path flag or the
+// envoy.path config key. A dynamic loader exits with that status when
+// it cannot run the binary. The error of every other exit carries no
+// advice.
+func (b *envoyBinary) exitError(err error, state *os.ProcessState) error {
+	if b.file == nil || state.ExitCode() != loaderExitCode {
+		return fmt.Errorf("%w: %w: %s", ErrEnvoyNotRunning, err, state)
+	}
+
+	return fmt.Errorf("%w: %w: %s: %s", ErrEnvoyNotRunning, err, state, envoyOverrideAdvice)
 }
 
 // Close closes the open file of a managed binary. A process that the
