@@ -62,17 +62,25 @@ func listenAdditionalAddrs(transparent bool, port int) []additionalAddr {
 }
 
 // BuildTLSListener creates a TLS listener that matches connections by
-// SNI, with passthrough, wildcard RBAC, and MITM filter chains. When
-// transparent is true, the listener binds to [::] (dual-stack) with
-// IP_TRANSPARENT for TPROXY-delivered traffic in VM mode.
+// SNI, with passthrough and MITM filter chains. When transparent is
+// true, the listener binds to [::] (dual-stack) with IP_TRANSPARENT
+// for TPROXY-delivered traffic in VM mode.
 //
-// Every chain connects to upstreamPort of its upstream host. A
-// passthrough chain takes the host from the SNI, and a MITM chain
-// takes the host from the Host header of each decrypted request.
+// The filter chain matcher of the listener selects the chain of each
+// connection by its SNI. An exact domain of rules matches only its own
+// name. A wildcard domain matches the label depth of its pattern, so
+// "*.example.com" matches "a.example.com" but not "a.b.example.com".
+// A connection whose SNI no domain matches uses the default chain,
+// unless open is true. The default chain rejects the connection before
+// Envoy resolves the SNI or connects to an upstream.
+//
+// The passthrough chains and the MITM chains connect to upstreamPort
+// of their upstream host. A passthrough chain takes the host from the
+// SNI, and a MITM chain takes the host from the Host header of each
+// decrypted request.
 //
 // The tcpAL is the access log slice for the TCP-level chains. These
-// are the passthrough chains, the wildcard passthrough chain, and the
-// default chain, which rejects each connection without an allowed SNI.
+// are the passthrough chains and the default chain.
 // The httpAL is the access log slice for the HCM-based MITM chain.
 // Pass distinct slices when stats is enabled so receivers can tell
 // passthrough events from MITM events.
@@ -86,7 +94,7 @@ func BuildTLSListener(
 	certsDir string,
 	transparent bool,
 ) Listener {
-	chains, defaultChain := buildTLSFilterChains(
+	chains, defaultChain, chainMatcher := buildTLSFilterChains(
 		upstreamPort, statPrefix, rules, open, tcpAL, httpAL, certsDir, sharedDNSCacheConfig,
 	)
 
@@ -96,19 +104,47 @@ func BuildTLSListener(
 		AdditionalAddresses: listenAdditionalAddrs(transparent, listenPort),
 		Transparent:         transparent,
 		DefaultFilterChain:  &defaultChain,
+		FilterChainMatcher:  chainMatcher,
 		ListenerFilters:     []NamedTyped{tlsInspectorListenerFilter()},
 		FilterChains:        chains,
 	}
 }
 
-// buildTLSFilterChains builds the SNI-matched filter chains shared by
-// the container-mode TLS listener ([BuildTLSListener]) and the
-// proxy-mode internal TLS listener ([BuildInternalTLSListener]):
-// passthrough chains for SNI-only domains, wildcard chains with RBAC
-// depth enforcement, MITM chains for L7-restricted rules, an optional
-// open catch-all, and the default reject chain for connections
-// without SNI. The passthrough chains and the MITM chains connect to
-// upstreamPort of their upstream host.
+const (
+	// The name of the filter chain that forwards each TLS connection
+	// whose SNI a rule without L7 restrictions allows.
+	passthroughChainName = "passthrough"
+
+	// The name of the filter chain that forwards each TLS connection
+	// of an open port that no other chain handles.
+	openPassthroughChainName = "passthrough_open"
+)
+
+// buildTLSFilterChains builds the filter chains shared by the
+// container-mode TLS listener ([BuildTLSListener]) and the proxy-mode
+// internal TLS listener ([BuildInternalTLSListener]). It returns the
+// named chains, the default chain, and the filter chain matcher. The
+// matcher selects a named chain for each connection by its SNI, see
+// [buildTLSFilterChainMatcher].
+//
+// The named chains are these:
+//
+//   - One passthrough chain with the name [passthroughChainName] for
+//     the domains of the rules without L7 restrictions. The rules
+//     with L7 restrictions also use it when certsDir is empty.
+//   - One MITM chain for each rule with L7 restrictions, with the name
+//     that [mitmFilterChainName] returns.
+//   - One passthrough chain with the name [openPassthroughChainName]
+//     when open is true, or when a rule without L7 restrictions has
+//     the domain "*". The matcher selects it for each TLS connection
+//     that no domain matches.
+//
+// The passthrough chains and the MITM chains connect to upstreamPort
+// of their upstream host. The default chain is the chain of
+// [buildDefaultRejectFilterChain]. It handles each connection that the
+// matcher gives no named chain. Such a connection is not TLS, has no
+// SNI, or has an SNI that the policy does not allow. The matcher is
+// nil when there is no named chain.
 func buildTLSFilterChains(
 	upstreamPort int,
 	statPrefix string,
@@ -117,64 +153,40 @@ func buildTLSFilterChains(
 	tcpAL, httpAL []AccessLog,
 	certsDir string,
 	dnsCache dnsCacheConfig,
-) ([]filterChain, filterChain) {
+) ([]filterChain, filterChain, *matcher) {
 	var (
-		passthroughDomains []string
-		mitmRules          []config.ResolvedRule
+		routes      []serverNameRoute
+		mitmRules   []config.ResolvedRule
+		passthrough bool
 	)
 
 	for _, r := range rules {
-		if r.IsRestricted() && certsDir != "" {
+		switch {
+		case r.IsRestricted() && certsDir != "":
 			mitmRules = append(mitmRules, r)
-		} else {
-			passthroughDomains = append(passthroughDomains, r.Domain)
-		}
-	}
+			routes = append(routes, serverNameRoute{
+				domain: r.Domain,
+				chain:  mitmFilterChainName(WildcardServerName(r.Domain)),
+				mitm:   true,
+			})
 
-	// Bare wildcard "*" matches all FQDNs. Envoy does not support "*"
-	// in server_names (FilterChainMatch) -- the docs say to omit
-	// server_names for catch-all matching. Convert to an unrestricted
-	// passthrough chain (no SNI filter), same as the open-port path.
-	if slices.Contains(passthroughDomains, "*") {
-		passthroughDomains = slices.DeleteFunc(passthroughDomains, func(s string) bool {
-			return s == "*"
-		})
-		open = true
-	}
+		case r.Domain == "*":
+			// The bare wildcard "*" matches every server name, so
+			// the port is open.
+			open = true
 
-	// Wildcard domains ("*.example.com" or "**.example.com") are placed
-	// in a separate filter chain with an RBAC filter that enforces the
-	// correct wildcard depth (single-label for *, multi-label for **),
-	// matching CiliumNetworkPolicy semantics. Without this, Envoy's
-	// suffix-based server_names matching would allow arbitrarily deep
-	// subdomains for single-star patterns like "*.example.com".
-	var exactDomains, wildcardDomains []string
+		default:
+			passthrough = true
 
-	for _, d := range passthroughDomains {
-		if IsWildcardDomain(d) {
-			wildcardDomains = append(wildcardDomains, d)
-		} else {
-			exactDomains = append(exactDomains, d)
+			routes = append(routes, serverNameRoute{domain: r.Domain, chain: passthroughChainName})
 		}
 	}
 
 	var chains []filterChain
 
-	if len(exactDomains) > 0 {
+	if passthrough {
 		chains = append(chains, buildPassthroughFilterChain(
-			upstreamPort, statPrefix, exactDomains, tcpAL, nil, dnsCache))
-	}
-
-	if len(wildcardDomains) > 0 {
-		rbac := buildWildcardRBACFilter(wildcardDomains)
-
-		envoyNames := make([]string, len(wildcardDomains))
-		for i, d := range wildcardDomains {
-			envoyNames[i] = WildcardServerName(d)
-		}
-
-		chains = append(chains, buildPassthroughFilterChain(
-			upstreamPort, statPrefix+"_wildcard", envoyNames, tcpAL, &rbac, dnsCache))
+			passthroughChainName, upstreamPort, statPrefix, tcpAL, dnsCache))
 	}
 
 	for _, r := range mitmRules {
@@ -188,21 +200,21 @@ func buildTLSFilterChains(
 		chains = append(chains, buildMITMFilterChain(r, upstreamPort, httpAL, certsDir, httpRBAC, dnsCache))
 	}
 
-	// Open ports get a catch-all passthrough chain (no SNI restriction).
+	openChain := ""
+
 	if open {
+		openChain = openPassthroughChainName
 		chains = append(chains, buildPassthroughFilterChain(
-			upstreamPort, statPrefix+"_open", nil, tcpAL, nil, dnsCache))
+			openPassthroughChainName, upstreamPort, statPrefix+"_open", tcpAL, dnsCache))
 	}
 
-	// Default filter chain catches connections without SNI (e.g., TLS
-	// by IP address) and connections whose SNI matches no chain.
-	// Without this, Envoy silently drops the connection with no log
-	// entry, making diagnosis difficult (ISSUE-34). The stderr access
-	// log always fires (regardless of the logging flag) since
-	// missing-SNI connections indicate a configuration or client issue
-	// that should be visible. The tcpAL loggers record the connection
-	// as a TCP deny.
-	return chains, buildDefaultRejectFilterChain(statPrefix, tcpAL)
+	// Without the default filter chain, Envoy drops each connection
+	// that the matcher gives no chain and writes no log entry, so the
+	// cause is hard to find (ISSUE-34). The stderr access log of the
+	// default chain always writes a line, whatever the logging flag,
+	// because these connections show a fault in the policy or in the
+	// client. The tcpAL loggers record the connection as a TCP deny.
+	return chains, buildDefaultRejectFilterChain(statPrefix, tcpAL), buildTLSFilterChainMatcher(routes, openChain)
 }
 
 // tlsInspectorListenerFilter returns the tls_inspector listener

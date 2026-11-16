@@ -251,10 +251,8 @@ func httpDecision(status uint32, details string) eventstore.Decision {
 
 // tcpDecision implements the TCP row of the decision table. An entry
 // that carries [envoy.SNIRejectTag] is a deny. NH on a missing-SNI
-// blackhole route is a deny. Non-empty
-// connection_termination_details signals a network-RBAC deny. Bytes
-// flowing in either direction without a terminal flag is an allow.
-// Anything else is an error.
+// blackhole route is a deny. Bytes flowing in either direction
+// without a terminal flag is an allow. Anything else is an error.
 func tcpDecision(common *alsdata.AccessLogCommon, conn *alsdata.ConnectionProperties) eventstore.Decision {
 	if _, ok := common.GetCustomTags()[envoy.SNIRejectTag]; ok {
 		return eventstore.DecisionDeny
@@ -262,10 +260,6 @@ func tcpDecision(common *alsdata.AccessLogCommon, conn *alsdata.ConnectionProper
 
 	if common.GetResponseFlags().GetNoHealthyUpstream() &&
 		common.GetUpstreamCluster() == envoy.MissingSNIBlackholeCluster {
-		return eventstore.DecisionDeny
-	}
-
-	if details := common.GetConnectionTerminationDetails(); details != "" {
 		return eventstore.DecisionDeny
 	}
 

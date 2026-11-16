@@ -822,9 +822,10 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			want: []string{
 				"tls_passthrough",
 				"tls_passthrough_open",
+				"name: passthrough_open",
 			},
 			notWant: []string{
-				`server_names`,
+				"ServerNameInput",
 			},
 		},
 		"bare wildcard HTTP catch-all vhost": {
@@ -926,25 +927,25 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				"DownstreamTlsContext",
 			},
 		},
-		"wildcard gets RBAC filter": {
+		"wildcard gets server name regex": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchPattern: "*.example.com"}},
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			want: []string{
-				"envoy.filters.network.rbac",
-				"stat_prefix: wildcard_depth",
-				"ALLOW",
+				"filter_chain_matcher:",
+				"envoy.extensions.matching.common_inputs.network.v3.ServerNameInput",
 				`^[-a-zA-Z0-9_]+\\.example\\.com$`,
 			},
+			notWant: []string{"envoy.filters.network.rbac"},
 		},
-		"double-star wildcard gets multi-label RBAC regex": {
+		"double-star wildcard gets multi-label regex": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
 				ToFQDNs: []config.FQDNSelector{{MatchPattern: "**.example.com"}},
 				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}, {Port: "80"}}}},
 			})},
 			want: []string{
-				"envoy.filters.network.rbac",
+				"filter_chain_matcher:",
 				"ALLOW",
 				`^[-a-zA-Z0-9_]+(\\.[-a-zA-Z0-9_]+)*\\.example\\.com$`,
 				"*.example.com",
@@ -953,6 +954,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			},
 			notWant: []string{
 				"**.example.com",
+				"envoy.filters.network.rbac",
 			},
 		},
 		"exact domain no RBAC": {
@@ -975,11 +977,11 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				},
 			)},
 			want: []string{
-				"github.com",
+				"exact: github.com",
 				"*.example.com",
-				"envoy.filters.network.rbac",
 				`^[-a-zA-Z0-9_]+\\.example\\.com$`,
 			},
+			notWant: []string{"envoy.filters.network.rbac"},
 		},
 		"multiple wildcards": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
@@ -992,8 +994,8 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			want: []string{
 				`^[-a-zA-Z0-9_]+\\.a\\.com$`,
 				`^[-a-zA-Z0-9_]+\\.b\\.com$`,
-				"envoy.filters.network.rbac",
 			},
+			notWant: []string{"envoy.filters.network.rbac"},
 		},
 		"wildcard on extra port": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
@@ -1002,9 +1004,10 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			})},
 			want: []string{
 				"tls_passthrough_8080",
-				"envoy.filters.network.rbac",
+				"filter_chain_matcher:",
 				`^[-a-zA-Z0-9_]+\\.example\\.com$`,
 			},
+			notWant: []string{"envoy.filters.network.rbac"},
 		},
 		"MITM on extra port": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
@@ -1032,9 +1035,9 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				"envoy.filters.http.rbac",
 				":authority",
 				`^[-a-zA-Z0-9_]+\\.example\\.com(:\\d+)?$`,
-				"envoy.filters.network.rbac",
 				`^[-a-zA-Z0-9_]+\\.example\\.com$`,
 			},
+			notWant: []string{"envoy.filters.network.rbac"},
 		},
 		"exact domain HTTP no RBAC": {
 			cfg: &config.Config{Egress: egressRules(config.EgressRule{
@@ -1310,7 +1313,7 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 				"missing_sni src=%DOWNSTREAM_REMOTE_ADDRESS% dst=%DOWNSTREAM_LOCAL_ADDRESS%",
 			},
 		},
-		"TLS filter chains have transport_protocol tls": {
+		"TLS filter chain matcher selects by transport protocol": {
 			cfg: &config.Config{Egress: egressRules(
 				config.EgressRule{
 					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
@@ -1328,8 +1331,10 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			certsDir:     "/etc/terrarium/certs",
 			caBundlePath: "/etc/ssl/bundle.pem",
 			want: []string{
-				"transport_protocol: tls",
+				"envoy.extensions.matching.common_inputs.network.v3.TransportProtocolInput",
+				"tls:",
 			},
+			notWant: []string{"filter_chain_match:"},
 		},
 		"clusters have connect timeout": {
 			caBundlePath: "/etc/ssl/bundle.pem",
@@ -1372,6 +1377,40 @@ func TestGenerateEnvoyFromConfig(t *testing.T) {
 			want: []string{
 				fmt.Sprintf("max_active_downstream_connections: %d", config.DefaultEnvoyMaxDownstreamConnections),
 			},
+		},
+		"cidr http rules on port opened by udp rule": {
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443", Protocol: config.ProtoUDP}},
+					}},
+				},
+				config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+					}},
+				},
+			)},
+			caBundlePath: "/etc/ssl/bundle.pem",
+			want:         []string{"tls_passthrough"},
+			notWant:      []string{"mitm_*"},
+		},
+		"cidr http rules beside toPorts entry without ports": {
+			cfg: &config.Config{Egress: egressRules(
+				config.EgressRule{
+					ToPorts: []config.PortRule{{}},
+				},
+				config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+					}},
+				},
+			)},
+			err: config.ErrCIDRL7RequiresHTTPPort,
 		},
 	}
 

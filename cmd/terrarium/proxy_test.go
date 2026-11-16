@@ -228,6 +228,76 @@ func TestGenerateProxyEnvoyFromConfig(t *testing.T) {
 				"envoy.access_loggers.http_grpc",
 			},
 		},
+		"cidr http rules on port opened by tcp rule": {
+			yaml: "egress:\n" +
+				"  - toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n" +
+				"            protocol: TCP\n" +
+				"  - toCIDR:\n" +
+				"      - 10.0.0.0/8\n" +
+				"    toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n" +
+				"        rules:\n" +
+				"          http:\n" +
+				"            - method: GET\n",
+			want: []string{
+				"name: tls_internal_443",
+			},
+			wantAbsent: []string{
+				"mitm_*",
+			},
+		},
+		"cidr http rules on port opened by udp rule": {
+			yaml: "egress:\n" +
+				"  - toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n" +
+				"            protocol: UDP\n" +
+				"  - toCIDR:\n" +
+				"      - 10.0.0.0/8\n" +
+				"    toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n" +
+				"        rules:\n" +
+				"          http:\n" +
+				"            - method: GET\n",
+			err: config.ErrCIDRL7RequiresHTTPPort,
+		},
+		"cidr http rules on port opened by port range": {
+			yaml: "egress:\n" +
+				"  - toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n" +
+				"            endPort: 450\n" +
+				"  - toCIDR:\n" +
+				"      - 10.0.0.0/8\n" +
+				"    toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n" +
+				"        rules:\n" +
+				"          http:\n" +
+				"            - method: GET\n",
+			err: config.ErrCIDRL7RequiresHTTPPort,
+		},
+		"cidr http rules beside toPorts entry without ports": {
+			yaml: "egress:\n" +
+				"  - toPorts:\n" +
+				"      - {}\n" +
+				"  - toCIDR:\n" +
+				"      - 10.0.0.0/8\n" +
+				"    toPorts:\n" +
+				"      - ports:\n" +
+				"          - port: \"443\"\n" +
+				"        rules:\n" +
+				"          http:\n" +
+				"            - method: GET\n",
+			wantAbsent: []string{
+				"tls_internal_443",
+				"mitm_*",
+			},
+		},
 	}
 
 	for name, tt := range tests {

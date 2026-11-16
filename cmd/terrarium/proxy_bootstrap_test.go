@@ -70,8 +70,11 @@ func containerOnlyExtensionTypes() []string {
 //
 // The filtered policy has one rule for each kind of filter chain: TLS
 // passthrough, TLS inspection, and plain HTTP. Each rule allows an
-// exact name and a wildcard. Its HTTP rules use every matcher and every
-// mismatch action of a headerMatches entry. The bootstrap of that
+// exact name and a wildcard. The passthrough rule also allows a
+// multi-label wildcard with the suffix of its single-label wildcard,
+// so the TLS listener matches the two patterns of that suffix on one
+// port. The HTTP rules of the policy use every matcher and every
+// mismatch action of a headerMatches entry. The bootstrap of the
 // policy also has the access loggers of an enabled stats block and the
 // resolver of the --resolver flag.
 //
@@ -120,6 +123,7 @@ func proxyCoverageBootstraps(t *testing.T) map[string]string {
 			"  - toFQDNs:\n" +
 			"      - matchName: passthrough.example\n" +
 			"      - matchPattern: \"*.passthrough.example\"\n" +
+			"      - matchPattern: \"**.passthrough.example\"\n" +
 			"    toPorts:\n" +
 			"      - ports:\n" +
 			"          - port: \"443\"\n" +

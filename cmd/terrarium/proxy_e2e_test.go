@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -368,9 +370,10 @@ func TestProxyE2EPassthrough(t *testing.T) {
 	})
 
 	t.Run("wildcard depth enforced", func(t *testing.T) {
-		// a.b.wild.example exceeds the single-label * depth; the
-		// internal RBAC chain closes the tunnel mid-TLS rather than
-		// returning an HTTP status.
+		// a.b.wild.example has one label more than the single-label *
+		// allows. The front listener opens the tunnel, and the internal
+		// TLS listener closes it during the TLS handshake, so the
+		// client gets no HTTP status.
 		_, err := client.Get("https://a.b.wild.example:18443/") //nolint:noctx,bodyclose // error expected.
 		require.Error(t, err)
 	})
@@ -430,6 +433,206 @@ func TestProxyE2EPassthrough(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest,
 			rawRequestStatus(t, proxyURL, "GET / HTTP/1.0\r\n\r\n"))
 	})
+}
+
+// startCountingListener starts a TCP listener on addr that accepts
+// each connection and closes it. The function that it returns reports
+// the number of connections that the listener accepted. The listener
+// closes when the test ends.
+func startCountingListener(t *testing.T, addr string) func() int64 {
+	t.Helper()
+
+	lc := net.ListenConfig{}
+
+	ln, err := lc.Listen(t.Context(), "tcp", addr)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, ln.Close())
+	})
+
+	var accepted atomic.Int64
+
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+
+			accepted.Add(1)
+
+			closeErr := conn.Close()
+			if closeErr != nil {
+				t.Logf("upstream close: %v", closeErr)
+			}
+		}
+	}()
+
+	return accepted.Load
+}
+
+// startRecordingDNS starts a DNS server that answers each query with
+// one A record for 127.0.0.1, as the server of [dnstest.StartServer]
+// does. It returns the address of the server and a function that
+// reports whether the server received a query for name. The name has
+// no trailing dot.
+func startRecordingDNS(t *testing.T) (string, func(name string) bool) {
+	t.Helper()
+
+	pc, tcpLn, port := dnstest.Listen(t)
+
+	var (
+		mu      sync.Mutex
+		queried = make(map[string]bool)
+	)
+
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		name := r.Question[0].Name
+
+		mu.Lock()
+
+		queried[strings.ToLower(strings.TrimSuffix(name, "."))] = true
+		mu.Unlock()
+
+		resp := new(dns.Msg)
+		resp.SetReply(r)
+
+		if r.Question[0].Qtype == dns.TypeA {
+			resp.Answer = append(resp.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+				A:   net.IPv4(127, 0, 0, 1),
+			})
+		}
+
+		assert.NoError(t, w.WriteMsg(resp))
+	})
+
+	for _, srv := range []*dns.Server{
+		{PacketConn: pc, Handler: handler},
+		{Listener: tcpLn, Handler: handler},
+	} {
+		ready := make(chan struct{})
+		srv.NotifyStartedFunc = func() { close(ready) }
+
+		go func() {
+			serveErr := srv.ActivateAndServe()
+			if serveErr != nil {
+				t.Logf("recording dns server: %v", serveErr)
+			}
+		}()
+
+		<-ready
+
+		t.Cleanup(func() {
+			assert.NoError(t, srv.Shutdown())
+		})
+	}
+
+	return fmt.Sprintf("127.0.0.1:%d", port), func(name string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return queried[name]
+	}
+}
+
+// TestProxyE2EDeniedServerNameUpstream checks that the proxy denies a
+// tunnel whose server name a wildcard rule does not allow before it
+// resolves the name and before it connects to the upstream. The rule
+// "*.wild.example" allows one label before "wild.example". The front
+// listener opens a tunnel for each authority that ends in
+// ".wild.example", and the internal TLS listener then applies the rule
+// to the server name.
+//
+//nolint:paralleltest // e2e tests set env and run envoy subprocesses.
+func TestProxyE2EDeniedServerNameUpstream(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
+
+	port := strconv.Itoa(freePort(t))
+	accepted := startCountingListener(t, "127.0.0.1:"+port)
+	dnsAddr, queried := startRecordingDNS(t)
+	dbPath := filepath.Join(t.TempDir(), "stats.db")
+
+	policy := "stats:\n" +
+		"  enabled: true\n" +
+		"  path: " + dbPath + "\n" +
+		"  flushIntervalMs: 100\n" +
+		"egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchPattern: '*.wild.example'\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"" + port + "\"\n"
+
+	proxyURL, _ := startProxy(t, policy, dnsAddr)
+
+	// handshake starts a TLS handshake with serverName inside a tunnel
+	// to the same name. The handshake fails for every name, because the
+	// upstream closes each connection.
+	handshake := func(serverName string) {
+		conn := tls.Client(connectHTTP10(t, proxyURL, serverName+":"+port), &tls.Config{
+			ServerName: serverName,
+			MinVersion: tls.VersionTLS12,
+		})
+		require.Error(t, conn.HandshakeContext(t.Context()))
+	}
+
+	// events returns the Envoy events of domain in the stats DB.
+	events := func(domain string) []eventstore.StoredEvent {
+		r, err := eventstore.OpenReader(t.Context(), dbPath)
+		if err != nil {
+			return nil
+		}
+
+		defer func() { assert.NoError(t, r.Close()) }()
+
+		page, err := r.Events(t.Context(), eventstore.EventsQuery{
+			Filter: eventstore.Filter{Source: eventstore.SourceEnvoy, Domain: domain},
+			Limit:  -1,
+		})
+		if err != nil {
+			return nil
+		}
+
+		return page.Events
+	}
+
+	const (
+		denied  = "a.b.wild.example"
+		allowed = "sub.wild.example"
+	)
+
+	handshake(denied)
+
+	// Envoy records the connection when the connection closes, which
+	// is after each filter of its chain ran.
+	require.Eventually(t, func() bool {
+		return len(events(denied)) > 0
+	}, 15*time.Second, 100*time.Millisecond)
+
+	got := events(denied)
+	require.Len(t, got, 1)
+	assert.Equal(t, eventstore.DecisionDeny, got[0].Decision)
+	assert.Equal(t, eventstore.ProtocolTCP, got[0].Protocol)
+	assert.False(t, got[0].DstIP.IsValid(), "the deny event must not hold the address of an upstream")
+
+	assert.False(t, queried(denied), "the proxy must not resolve a denied server name")
+	assert.Zero(t, accepted(), "the proxy must not connect to the upstream of a denied server name")
+
+	// A server name that the rule allows shows that the resolver and
+	// the listener observe the proxy.
+	handshake(allowed)
+
+	require.Eventually(t, func() bool {
+		return accepted() == 1
+	}, 15*time.Second, 100*time.Millisecond)
+
+	assert.True(t, queried(allowed))
+	assert.False(t, queried(denied))
 }
 
 //nolint:paralleltest // e2e tests bind fixed ports, set env, and run envoy subprocesses.
@@ -3178,8 +3381,8 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 	// The front listener opens a tunnel for an authority that matches
 	// the wildcard. The internal TLS listener then denies the
 	// connection, because its server name has one label too many.
-	// Envoy chose the upstream before it denied the connection, so the
-	// event holds the port of the upstream.
+	// Envoy denies the connection before it chooses an upstream, so the
+	// event holds no port.
 	deep := tls.Client(connectHTTP10(t, proxyURL, "a.b.wild.example:"+tunnelPort), &tls.Config{
 		ServerName: "a.b.wild.example",
 		RootCAs:    loadPool(t, caPath),
@@ -3191,7 +3394,6 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 		Decision: eventstore.DecisionDeny,
 		Protocol: eventstore.ProtocolTCP,
 		Domain:   "a.b.wild.example",
-		Port:     ports[0],
 	})
 
 	// The internal TLS listener denies a tunnel whose server name the

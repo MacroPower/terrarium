@@ -173,11 +173,10 @@ func (c *Config) TCPForwardHosts() []string {
 // none (unrestricted wins).
 //
 // Note: matchPattern values (e.g. "*.example.com", "**.example.com")
-// are preserved as domain keys. Envoy server_names uses suffix-based
-// matching, which would match arbitrarily deep subdomains; an RBAC
-// network filter (see buildWildcardRBACFilter) is prepended to
-// wildcard filter chains to enforce the correct depth (single-label
-// for *, multi-label for **), matching CiliumNetworkPolicy semantics.
+// are preserved as domain keys. The filter chain matcher of each TLS
+// listener matches the SNI of a connection against the pattern with
+// the correct depth (single-label for *, multi-label for **), which
+// is the meaning of the pattern in a CiliumNetworkPolicy.
 func (c *Config) ResolveRulesForPort(ctx context.Context, port int) []ResolvedRule {
 	type merged struct {
 		httpRules    []ResolvedHTTPRule
@@ -241,6 +240,9 @@ func (c *Config) ResolveRulesForPort(ctx context.Context, port int) []ResolvedRu
 		// CIDR+L7 rules use a catch-all domain ("*") with HTTP
 		// restrictions. The Envoy listener receives CIDR traffic
 		// via nftables REDIRECT and applies the L7 filter.
+		// On a port other than 80, validation allows such rules
+		// only when another rule allows every connection to the
+		// port. The "*" domain then has no HTTP rules there.
 		if hasCIDR && len(httpRules) > 0 {
 			addDomain("*")
 		}

@@ -218,8 +218,8 @@ func (m *Tests) TestEgressFqdnWildcardDepth(ctx context.Context) error {
 
 // TestEgressFqdnWildcardMultiLabel verifies that **.target-zone matches
 // subdomains at arbitrary depth. Both single-label (one.target-zone) and
-// multi-label (two.one.target-zone) subdomains are allowed, exercising the
-// distinct RBAC regex path in Envoy.
+// multi-label (two.one.target-zone) subdomains are allowed, so the test
+// covers the server name regex that Envoy matches for a "**" pattern.
 //
 //	dagger call -m ci/tests test-egress-fqdn-wildcard-multi-label
 func (m *Tests) TestEgressFqdnWildcardMultiLabel(ctx context.Context) error {

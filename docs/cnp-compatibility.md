@@ -248,6 +248,33 @@ rules without any L3 selector (they apply to all destinations). Terrarium
 needs L3 context because L7 inspection requires either FQDN-based MITM or
 CIDR-scoped HTTP filtering.
 
+A rule with toCIDR, toCIDRSet, or toEntities can carry L7 HTTP rules on a port
+other than 80 only when another rule allows every connection to that port.
+Cilium allows them on every TCP port. Terrarium reads plain HTTP only on port 80
+and handles every other port with a TLS listener. That listener terminates TLS
+only for a server name of a toFQDNs rule, so it cannot apply the HTTP rules of a
+CIDR rule. Two kinds of rules allow every connection to a port in both modes:
+
+- A rule with toPorts and no L3 selector that lists the port as `port`, with
+  protocol TCP or ANY and without `endPort`.
+- A toFQDNs rule with `matchPattern: "*"` that has no HTTP rules on the port.
+
+Such a rule overrides the HTTP rules of the CIDR rule on its ports. Terrarium
+then accepts the policy and does not apply those HTTP rules.
+
+The modes differ for the other toPorts entries of a rule without an L3 selector.
+This table lists the ports that each entry opens for the HTTP rules of a CIDR
+rule:
+
+| Entry of the toPorts-only rule | Container mode | Proxy mode |
+| ------------------------------ | -------------- | ---------- |
+| Protocol UDP                   | The port       | None       |
+| A port with `endPort`          | The first port | None       |
+| No ports                       | None           | Every port |
+
+When no rule opens the port in the mode that runs the policy, `terrarium proxy`
+and `terrarium generate` reject the policy.
+
 matchPattern selectors with wildcards in non-leading positions (e.g.,
 `api.*.example.com`, `*.ci*.io`, bare `*`) are rejected when L7 HTTP rules
 are present. Cilium allows any valid pattern with L7. MITM certificate

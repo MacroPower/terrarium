@@ -11,7 +11,8 @@ import (
 const labelCharClass = `[-a-zA-Z0-9_]`
 
 // WildcardToSNIRegex converts a Cilium-style wildcard pattern into a
-// regex for RBAC SNI matching. It supports wildcards in any position:
+// regex that matches the SNI of a TLS connection. It supports
+// wildcards in any position:
 //
 //   - "*." prefix (single-label): matches exactly one DNS label.
 //     Example: "*.example.com" -> "^[-a-zA-Z0-9_]+\.example\.com$"
@@ -105,19 +106,21 @@ func convertSuffix(suffix string) string {
 	return strings.Join(labels, `\.`)
 }
 
-// WildcardServerName converts a domain pattern to an Envoy server_names
-// entry. For patterns with only a leading wildcard prefix ("*.suffix"
-// or "**.suffix" where suffix is wildcard-free), the "**." is
-// normalized to "*.". For patterns with non-leading wildcards, the
-// longest wildcard-free suffix is extracted and prepended with "*.":
+// WildcardServerName converts a domain pattern to an Envoy suffix
+// wildcard, which is the form of a virtual host domain. For patterns
+// with only a leading wildcard prefix ("*.suffix" or "**.suffix" where
+// suffix is wildcard-free), the "**." is normalized to "*.". For
+// patterns with non-leading wildcards, the longest wildcard-free
+// suffix is extracted and prepended with "*.":
 //
 //   - "api.*.example.com" -> "*.example.com"
 //   - "*.ci*.io" -> "*.io"
 //   - "*.*.cilium.io" -> "*.cilium.io"
 //
-// The RBAC filter (via [WildcardToSNIRegex]) provides the correct
-// pattern-level restriction; server_names is intentionally broad for
-// Envoy's suffix-based filter chain matching.
+// A suffix wildcard matches every name that ends with the suffix, at
+// any label depth, so it matches more names than the pattern. Each
+// caller therefore also checks a name against the regular expression
+// of the pattern, see [WildcardToSNIRegex] and [WildcardToHostRegex].
 func WildcardServerName(domain string) string {
 	if strings.HasPrefix(domain, "**.") {
 		suffix := domain[3:]

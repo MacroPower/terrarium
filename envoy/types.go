@@ -49,8 +49,15 @@ type StaticResources struct {
 // logs each connection of the listener to them when the connection
 // closes. The access loggers of the filters of a chain log on their
 // own.
+//
+// FilterChainMatcher selects the chain of FilterChains for each
+// connection by the name of the chain. A connection that the matcher
+// gives no chain uses DefaultFilterChain. When FilterChainMatcher is
+// set, each chain of FilterChains has a name that no other chain of
+// the listener has, and no chain sets a filter_chain_match.
 type Listener struct {
 	DefaultFilterChain  *filterChain          `yaml:"default_filter_chain,omitempty"`
+	FilterChainMatcher  *matcher              `yaml:"filter_chain_matcher,omitempty"`
 	UDPListenerConfig   *udpListenerConfig    `yaml:"udp_listener_config,omitempty"`
 	InternalListener    *internalListenerOpts `yaml:"internal_listener,omitempty"`
 	Address             *address              `yaml:"address,omitempty"`
@@ -104,10 +111,9 @@ type NamedTyped struct {
 }
 
 type filterChain struct {
-	FilterChainMatch *filterChainMatch `yaml:"filter_chain_match,omitempty"`
-	TransportSocket  *transportSocket  `yaml:"transport_socket,omitempty"`
-	Name             string            `yaml:"name,omitempty"`
-	Filters          []filter          `yaml:"filters"`
+	TransportSocket *transportSocket `yaml:"transport_socket,omitempty"`
+	Name            string           `yaml:"name,omitempty"`
+	Filters         []filter         `yaml:"filters"`
 }
 
 type transportSocket struct {
@@ -155,9 +161,82 @@ type validationContext struct {
 	TrustedCA dataSource `yaml:"trusted_ca"`
 }
 
-type filterChainMatch struct {
-	TransportProtocol string   `yaml:"transport_protocol,omitempty"`
-	ServerNames       []string `yaml:"server_names,omitempty"`
+// matcher models the xds.type.matcher.v3.Matcher message. It sets
+// MatcherList or MatcherTree. OnNoMatch holds the result for an input
+// that MatcherList or MatcherTree does not match. A nil OnNoMatch
+// gives such an input no result.
+type matcher struct {
+	MatcherList *matcherList `yaml:"matcher_list,omitempty"`
+	MatcherTree *matcherTree `yaml:"matcher_tree,omitempty"`
+	OnNoMatch   *onMatch     `yaml:"on_no_match,omitempty"`
+}
+
+// matcherList models the MatcherList message of [matcher]. The result
+// is the OnMatch of the first entry of Matchers whose predicate
+// matches.
+type matcherList struct {
+	Matchers []fieldMatcher `yaml:"matchers"`
+}
+
+// fieldMatcher models one entry of a [matcherList].
+type fieldMatcher struct {
+	OnMatch   onMatch          `yaml:"on_match"`
+	Predicate matcherPredicate `yaml:"predicate"`
+}
+
+// matcherPredicate models the Predicate message of a [fieldMatcher].
+type matcherPredicate struct {
+	SinglePredicate singlePredicate `yaml:"single_predicate"`
+}
+
+// singlePredicate matches the value that Input reads from a connection
+// against ValueMatch. A connection without a value for Input does not
+// match.
+type singlePredicate struct {
+	Input      typedExtensionConfig `yaml:"input"`
+	ValueMatch xdsStringMatch       `yaml:"value_match"`
+}
+
+// xdsStringMatch models the xds.type.matcher.v3.StringMatcher message.
+// It sets Exact or SafeRegex.
+type xdsStringMatch struct {
+	SafeRegex *xdsSafeRegex `yaml:"safe_regex,omitempty"`
+	Exact     string        `yaml:"exact,omitempty"`
+}
+
+// xdsSafeRegex models the xds.type.matcher.v3.RegexMatcher message.
+// Envoy rejects the message without the regular expression engine, so
+// the google_re2 field is always present.
+type xdsSafeRegex struct {
+	GoogleRE2 struct{} `yaml:"google_re2"`
+	Regex     string   `yaml:"regex"`
+}
+
+// matcherTree models the MatcherTree message of [matcher]. The result
+// is the entry of ExactMatchMap whose key equals the value that Input
+// reads from a connection.
+type matcherTree struct {
+	ExactMatchMap matchMap             `yaml:"exact_match_map"`
+	Input         typedExtensionConfig `yaml:"input"`
+}
+
+// matchMap models the MatchMap message of a [matcherTree].
+type matchMap struct {
+	Map map[string]onMatch `yaml:"map"`
+}
+
+// onMatch models the OnMatch message of [matcher]. It sets Matcher,
+// which continues the match with a nested matcher, or Action, which
+// ends the match with a result.
+type onMatch struct {
+	Matcher *matcher              `yaml:"matcher,omitempty"`
+	Action  *typedExtensionConfig `yaml:"action,omitempty"`
+}
+
+// stringValue models the google.protobuf.StringValue message.
+type stringValue struct {
+	AtType string `yaml:"@type"`
+	Value  string `yaml:"value"`
 }
 
 type filter struct {
@@ -491,9 +570,8 @@ type safeRegex struct {
 }
 
 type rbacConfig struct {
-	StatPrefix string    `yaml:"stat_prefix,omitempty"`
-	Rules      rbacRules `yaml:"rules"`
-	AtType     string    `yaml:"@type"`
+	Rules  rbacRules `yaml:"rules"`
+	AtType string    `yaml:"@type"`
 }
 
 type rbacRules struct {
@@ -507,10 +585,8 @@ type rbacPolicy struct {
 }
 
 // rbacPermission represents a single RBAC permission check.
-// Fields are mutually exclusive (Envoy oneof).
 type rbacPermission struct {
-	RequestedServerName *stringMatch   `yaml:"requested_server_name,omitempty"`
-	Header              *headerMatcher `yaml:"header,omitempty"`
+	Header *headerMatcher `yaml:"header,omitempty"`
 }
 
 type rbacPrincipal struct {

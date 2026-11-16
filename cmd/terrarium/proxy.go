@@ -592,9 +592,19 @@ func GenerateProxyEnvoyFromConfig(
 		params.Mode = envoy.ProxyModeOpen
 
 	default:
+		openTCP := openTCPPorts(openPortRules)
+
+		// Proxy mode opens only the single TCP ports of toPorts-only
+		// rules. A UDP entry or a port range keeps the HTTP rules of
+		// a CIDR rule on its port.
+		err = checkCatchAllL7Ports(ctx, cfg, openTCP)
+		if err != nil {
+			return "", err
+		}
+
 		params.Mode = envoy.ProxyModeFiltered
 		listeners, allRules, tlsPorts = assembleFilteredProxy(
-			ctx, cfg, als, certsDir, resolvers, openTCPPorts(openPortRules), &params)
+			ctx, cfg, als, certsDir, resolvers, openTCP, &params)
 	}
 
 	front := envoy.BuildProxyListener(params)

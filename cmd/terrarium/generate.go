@@ -104,7 +104,7 @@ func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Confi
 		return nil, fmt.Errorf("creating envoy config directory: %w", err)
 	}
 
-	err = os.WriteFile(usr.EnvoyConfigPath, []byte(envoyConf), 0o644)
+	err = os.WriteFile(usr.EnvoyConfigPath, []byte(envoyConf), 0o644) //nolint:gosec // G703: path from config.User.
 	if err != nil {
 		return nil, fmt.Errorf("writing envoy config: %w", err)
 	}
@@ -134,6 +134,34 @@ func collectMITMRules(ctx context.Context, cfg *config.Config) []config.Resolved
 	}
 
 	return rules
+}
+
+// checkCatchAllL7Ports returns [config.ErrCIDRL7RequiresHTTPPort] for
+// the first TLS policy port where the domain "*" keeps HTTP rules. A
+// rule with toCIDR, toCIDRSet, or toEntities gives its HTTP rules the
+// domain "*". A TLS listener cannot terminate TLS for a server name
+// that the policy does not name, so it cannot apply those rules.
+// Config validation accepts such a rule on a port that either mode
+// opens. The open argument holds the ports that the caller's mode
+// opens, where the generator drops the HTTP rules. So the check
+// rejects a policy that the caller's mode cannot enforce.
+func checkCatchAllL7Ports(ctx context.Context, cfg *config.Config, open map[int]bool) error {
+	tlsPorts := []int{443}
+	tlsPorts = append(tlsPorts, cfg.ExtraPorts(ctx)...)
+
+	for _, p := range tlsPorts {
+		if open[p] {
+			continue
+		}
+
+		for _, r := range cfg.ResolveRulesForPort(ctx, p) {
+			if r.Domain == "*" && r.IsRestricted() {
+				return fmt.Errorf("%w: port %d", config.ErrCIDRL7RequiresHTTPPort, p)
+			}
+		}
+	}
+
+	return nil
 }
 
 // alsConfig captures the shared gRPC ALS config used by every
@@ -227,6 +255,13 @@ func GenerateEnvoyFromConfig(
 	openPortSet := make(map[int]bool, len(openPorts))
 	for _, p := range openPorts {
 		openPortSet[p] = true
+	}
+
+	if !cfg.IsEgressBlocked() {
+		err := checkCatchAllL7Ports(ctx, cfg, openPortSet)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	var listeners []envoy.Listener

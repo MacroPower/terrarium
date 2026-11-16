@@ -766,6 +766,146 @@ func TestValidate(t *testing.T) {
 				}),
 			},
 		},
+		"L7 with toCIDR on TLS port rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"203.0.113.0/24"},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+					}},
+				}),
+			},
+			err: config.ErrCIDRL7RequiresHTTPPort,
+		},
+		"L7 with toCIDRSet on extra port rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDRSet: []config.CIDRRule{{CIDR: "10.0.0.0/8"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "80"}, {Port: "8080"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+					}},
+				}),
+			},
+			err: config.ErrCIDRL7RequiresHTTPPort,
+		},
+		"L7 with toCIDR on port range past 80 rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToCIDR: []string{"10.0.0.0/8"},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "80", EndPort: 81}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+					}},
+				}),
+			},
+			err: config.ErrCIDRL7RequiresHTTPPort,
+		},
+		"L7 with toEntities world on TLS port rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToEntities: []string{"world"},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+					}},
+				}),
+			},
+			err: config.ErrCIDRL7RequiresHTTPPort,
+		},
+		"L7 with toCIDR on TLS port opened by toPorts rule valid": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "443"}},
+						}},
+					},
+					config.EgressRule{
+						ToCIDR: []string{"10.0.0.0/8"},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "443"}},
+							Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+						}},
+					},
+				),
+			},
+		},
+		"L7 with toCIDR on TLS port opened by matchPattern star valid": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "443"}},
+						}},
+					},
+					config.EgressRule{
+						ToCIDR: []string{"10.0.0.0/8"},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "443"}},
+							Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+						}},
+					},
+				),
+			},
+		},
+		"L7 with toCIDR on extra port with all ports open valid": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToPorts: []config.PortRule{{}},
+					},
+					config.EgressRule{
+						ToCIDR: []string{"10.0.0.0/8"},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "8443"}},
+							Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+						}},
+					},
+				),
+			},
+		},
+		"L7 with toCIDR on TLS port beside another open port rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "8443"}},
+						}},
+					},
+					config.EgressRule{
+						ToCIDR: []string{"10.0.0.0/8"},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "443"}},
+							Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+						}},
+					},
+				),
+			},
+			err: config.ErrCIDRL7RequiresHTTPPort,
+		},
+		"L7 with toCIDR on TLS port beside matchPattern star on another port rejected": {
+			cfg: &config.Config{
+				Egress: egressRules(
+					config.EgressRule{
+						ToFQDNs: []config.FQDNSelector{{MatchPattern: "*"}},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "8443"}},
+						}},
+					},
+					config.EgressRule{
+						ToCIDR: []string{"10.0.0.0/8"},
+						ToPorts: []config.PortRule{{
+							Ports: []config.Port{{Port: "443"}},
+							Rules: &config.L7Rules{HTTP: []config.HTTPRule{{Method: "GET"}}},
+						}},
+					},
+				),
+			},
+			err: config.ErrCIDRL7RequiresHTTPPort,
+		},
 		"L7 with toCIDR and serverNames rejected": {
 			cfg: &config.Config{
 				Egress: egressRules(config.EgressRule{

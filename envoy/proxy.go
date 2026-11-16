@@ -74,8 +74,9 @@ type ProxyListenerParams struct {
 	// ConnectTLS maps each TLS policy port to the rule domains whose
 	// CONNECT requests are tunneled into that port's internal TLS
 	// listener. Domains may be exact names or wildcard patterns
-	// ("*.example.com", "**.example.com"); depth enforcement happens
-	// in the internal listener's RBAC chains.
+	// ("*.example.com", "**.example.com"). The filter chain matcher
+	// of the internal listener enforces the label depth of a
+	// pattern.
 	ConnectTLS map[int][]string
 
 	// BindAddress is the IP address the listener binds.
@@ -570,14 +571,23 @@ func connectAuthorities(domains []string, port int) []string {
 
 // BuildInternalTLSListener creates the proxy-mode internal listener
 // that enforces TLS policy for one port. It receives decapsulated
-// CONNECT payloads from the front listener and applies the same SNI
-// passthrough, wildcard RBAC, and MITM filter chains as the
-// container-mode [BuildTLSListener]; upstream resolution uses the
-// SNI, so the CONNECT authority cannot redirect allowed traffic.
+// CONNECT payloads from the front listener. It has the same filter
+// chain matcher and the same passthrough and MITM filter chains as the
+// container-mode [BuildTLSListener]. Upstream resolution uses the SNI,
+// so the CONNECT authority cannot redirect allowed traffic.
 //
-// Every chain connects to port of its upstream host, which is the port
-// of the CONNECT authority that the front listener matched. A MITM
-// chain takes the host from the Host header of each decrypted request.
+// The front listener tunnels a CONNECT request for each authority
+// that ends with the suffix of a wildcard domain, at any label depth.
+// The matcher of this listener then applies the label depth of the
+// pattern to the SNI. A tunnel whose SNI no domain of rules matches
+// uses the default chain, unless open is true. The default chain
+// closes the tunnel before Envoy resolves the SNI or connects to an
+// upstream.
+//
+// The passthrough chains and the MITM chains connect to port of their
+// upstream host, which is the port of the CONNECT authority that the
+// front listener matched. A MITM chain takes the host from the Host
+// header of each decrypted request.
 //
 // The listener logs each connection of a MITM chain to tcpAL when the
 // connection closes, see [mitmTunnelAccessLog].
@@ -591,7 +601,7 @@ func BuildInternalTLSListener(
 ) Listener {
 	name := internalTLSName(port)
 
-	chains, defaultChain := buildTLSFilterChains(
+	chains, defaultChain, chainMatcher := buildTLSFilterChains(
 		port, name, rules, open, tcpAL, httpAL, certsDir, systemDNSCacheConfig(resolvers),
 	)
 
@@ -599,6 +609,7 @@ func BuildInternalTLSListener(
 		Name:               name,
 		InternalListener:   &internalListenerOpts{},
 		DefaultFilterChain: &defaultChain,
+		FilterChainMatcher: chainMatcher,
 		ListenerFilters:    []NamedTyped{tlsInspectorListenerFilter()},
 		FilterChains:       chains,
 		AccessLog:          mitmTunnelAccessLog(tcpAL, chains),

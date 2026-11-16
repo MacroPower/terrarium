@@ -160,6 +160,16 @@ var (
 	// filtering). A toPorts-only rule with L7 has no routing context.
 	ErrL7RequiresL3 = errors.New("L7 rules require toFQDNs or toCIDR/toCIDRSet selectors")
 
+	// ErrCIDRL7RequiresHTTPPort is returned when a rule without
+	// toFQDNs has L7 HTTP rules on a port other than 80, and no other
+	// rule allows every connection to that port. Envoy handles each
+	// such port with a TLS listener, which terminates TLS only for a
+	// server name of the policy. A rule without toFQDNs names no
+	// server, so the listener cannot apply its HTTP rules.
+	ErrCIDRL7RequiresHTTPPort = errors.New(
+		"L7 HTTP rules without toFQDNs can only apply to port 80 or to an open port",
+	)
+
 	// ErrFQDNPortRangeTooLarge is returned when a toFQDNs rule has a
 	// port range (endPort) that would create too many Envoy listeners.
 	// Each port in the range requires a separate listener, and large

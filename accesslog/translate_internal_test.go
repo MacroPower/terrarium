@@ -459,14 +459,6 @@ func TestTCPEntryToEvent(t *testing.T) {
 			},
 			wantDecision: eventstore.DecisionError,
 		},
-		"network-rbac termination details is deny": {
-			entry: &alsdata.TCPAccessLogEntry{
-				CommonProperties: &alsdata.AccessLogCommon{
-					ConnectionTerminationDetails: "network_rbac_access_denied",
-				},
-			},
-			wantDecision: eventstore.DecisionDeny,
-		},
 		"sni populated takes priority over upstream cluster": {
 			entry: &alsdata.TCPAccessLogEntry{
 				CommonProperties: &alsdata.AccessLogCommon{

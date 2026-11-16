@@ -16,6 +16,10 @@ const maxFQDNLength = 255
 // on PortRule.Ports.
 const maxPorts = 40
 
+// plainHTTPPort is the only port on which Envoy reads plain HTTP. It
+// handles every other port with a TLS listener.
+const plainHTTPPort = 80
+
 // maxFQDNEndPortRange is the maximum number of ports in an endPort
 // range for toFQDNs rules. Each port requires a separate Envoy
 // listener, and large ranges risk exhausting the proxy port space.
@@ -169,8 +173,15 @@ func (c *Config) Validate(ctx context.Context) error {
 		}
 	}
 
+	// The check of the ports of CIDR HTTP rules merges the rules of
+	// each port, so it runs after every rule is normalized.
+	err := c.validateCIDRL7Ports(ctx)
+	if err != nil {
+		return err
+	}
+
 	// Validate egressDeny rules.
-	err := c.validateEgressDenyRules(ctx)
+	err = c.validateEgressDenyRules(ctx)
 	if err != nil {
 		return err
 	}
@@ -994,7 +1005,8 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 //   - toFQDNs: MITM-based HTTP inspection (existing behavior).
 //   - toCIDR/toCIDRSet: plain HTTP filtering via catch-all Envoy
 //     virtual hosts. ServerNames must not be present (implies TLS,
-//     and MITM without known domains is not feasible).
+//     and MITM without known domains is not feasible). See
+//     [Config.validateCIDRL7Ports] for the ports of the HTTP rules.
 func validateL7Rules(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 	hasCIDR := len(rule.ToCIDR) > 0 || len(rule.ToCIDRSet) > 0
 	hasL7 := false
@@ -1036,6 +1048,75 @@ func validateL7Rules(rule EgressRule, ruleIdx int, hasFQDNs bool) error {
 			if fqdn.MatchPattern != "" && isL7IncompatibleWildcard(fqdn.MatchPattern) {
 				return fmt.Errorf("%w: rule %d selector %d pattern %q",
 					ErrPartialWildcardWithL7, ruleIdx, j, fqdn.MatchPattern)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateCIDRL7Ports checks the ports of the L7 HTTP rules of each
+// rule with toCIDR or toCIDRSet. [Config.ResolveRulesForPort] gives
+// such HTTP rules the domain "*". Envoy reads plain HTTP only on port
+// 80 and handles every other port with a TLS listener. That listener
+// terminates TLS only for a server name of the policy, so it cannot
+// apply HTTP rules with the domain "*".
+//
+// It returns [ErrCIDRL7RequiresHTTPPort] for the first port other than 80
+// where the domain "*" keeps its HTTP rules. A port keeps them unless
+// another rule allows every connection to it. A rule with toPorts and
+// no L3 selector opens the port, and terrarium then drops the HTTP
+// rules of the port. A toFQDNs rule with matchPattern "*" and without
+// HTTP rules on the port also allows every connection.
+func (c *Config) validateCIDRL7Ports(ctx context.Context) error {
+	if c.HasUnrestrictedOpenPorts(ctx) {
+		return nil
+	}
+
+	open := make(map[int]bool)
+	for _, p := range c.ResolveOpenPorts(ctx) {
+		open[p] = true
+	}
+
+	keepsHTTPRules := func(port int) bool {
+		if port == plainHTTPPort || open[port] {
+			return false
+		}
+
+		for _, r := range c.ResolveRulesForPort(ctx, port) {
+			if r.Domain == "*" {
+				return r.IsRestricted()
+			}
+		}
+
+		return false
+	}
+
+	rules := c.EgressRules()
+	for i := range rules {
+		if len(rules[i].ToFQDNs) > 0 || (len(rules[i].ToCIDR) == 0 && len(rules[i].ToCIDRSet) == 0) {
+			continue
+		}
+
+		for _, pr := range rules[i].ToPorts {
+			if pr.Rules == nil || len(pr.Rules.HTTP) == 0 {
+				continue
+			}
+
+			for _, p := range pr.Ports {
+				// The rule check rejects a port that does not
+				// resolve, and the HTTP rules of port 0.
+				n, err := ResolvePort(ctx, p.Port)
+				if err != nil {
+					continue
+				}
+
+				for port := int(n); port <= max(int(n), p.EndPort); port++ {
+					if keepsHTTPRules(port) {
+						return fmt.Errorf("%w: rule %d port %d",
+							ErrCIDRL7RequiresHTTPPort, i, port)
+					}
+				}
 			}
 		}
 	}
@@ -1252,9 +1333,10 @@ func validateServerNames(pr PortRule, rule EgressRule, ruleIdx int) error {
 	// Validate hostname length and characters. The Cilium CRD enforces
 	// a 255-character maximum and the pattern ^([-a-zA-Z0-9_*]+[.]?)+$,
 	// which disallows leading and consecutive dots. All wildcard
-	// positions are valid; the RBAC regex approach handles arbitrary
-	// positions for SNI matching. Bare wildcards are already filtered
-	// during normalization (treated as omitting serverNames).
+	// positions are valid, because the TLS listeners match a server
+	// name against a regex that handles a wildcard in each position.
+	// Bare wildcards are already filtered during normalization
+	// (treated as omitting serverNames).
 	for _, name := range pr.ServerNames {
 		if len(name) > maxFQDNLength {
 			return fmt.Errorf("%w: rule %d name %q (%d chars)",
