@@ -2332,10 +2332,16 @@ func ruleIsBareVerdict(r *nftables.Rule) bool {
 	return ok
 }
 
-func TestApplyRules_NeighborDiscovery(t *testing.T) {
-	t.Parallel()
+// policyModeCase holds one policy and the UIDs of one mode.
+type policyModeCase struct {
+	cfg  *config.Config
+	uids firewall.UIDs
+}
 
-	// The subtests run in parallel, so each case gets its own config.
+// policyModeCases returns one case for each pair of a policy
+// (unrestricted, blocked, filtered) and a mode (container, VM). Each
+// call builds new configs, so that parallel tests do not share one.
+func policyModeCases() map[string]policyModeCase {
 	filtered := func() *config.Config {
 		return &config.Config{
 			Egress: egressRules(
@@ -2350,10 +2356,7 @@ func TestApplyRules_NeighborDiscovery(t *testing.T) {
 		return &config.Config{Egress: egressRules(config.EgressRule{})}
 	}
 
-	tests := map[string]struct {
-		cfg  *config.Config
-		uids firewall.UIDs
-	}{
+	return map[string]policyModeCase{
 		"container unrestricted": {cfg: &config.Config{}, uids: testUIDs},
 		"container blocked":      {cfg: blocked(), uids: testUIDs},
 		"container filtered":     {cfg: filtered(), uids: testUIDs},
@@ -2361,8 +2364,12 @@ func TestApplyRules_NeighborDiscovery(t *testing.T) {
 		"vm blocked":             {cfg: blocked(), uids: testVMUIDs},
 		"vm filtered":            {cfg: filtered(), uids: testVMUIDs},
 	}
+}
 
-	for name, tc := range tests {
+func TestApplyRules_NeighborDiscovery(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range policyModeCases() {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2409,6 +2416,82 @@ func TestApplyRules_NeighborDiscovery(t *testing.T) {
 				})
 				require.NotEqual(t, -1, idx,
 					"output chain must accept ICMPv6 type %d for every sender", icmpType)
+				assert.Less(t, idx, terminal,
+					"ACCEPT for ICMPv6 type %d must come before the rule that ends the chain", icmpType)
+			}
+		})
+	}
+}
+
+func TestApplyRules_MulticastListenerDiscovery(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range policyModeCases() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tc.cfg, tc.uids)
+			require.NoError(t, err)
+
+			rules := rec.rulesForChain("output")
+
+			// The first rule without a match is the terminal verdict
+			// of the chain, or the jump that sends every packet into
+			// policy evaluation. No later rule sees a packet.
+			terminal := slices.IndexFunc(rules, ruleIsBareVerdict)
+			require.NotEqual(t, -1, terminal, "output chain must end in a rule without a match")
+
+			// MLDv1 listener report, MLDv1 listener done, and MLDv2
+			// listener report.
+			for _, icmpType := range []byte{131, 132, 143} {
+				// The rule matches no UID and no CT state. The kernel
+				// sends these messages without a socket owner, and
+				// conntrack does not track them.
+				want := []expr.Any{
+					// meta nfproto ipv6
+					&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
+					// ip6 daddr ff00::/8
+					&expr.Payload{
+						DestRegister: 1,
+						Base:         expr.PayloadBaseNetworkHeader,
+						Offset:       24,
+						Len:          16,
+					},
+					&expr.Bitwise{
+						SourceRegister: 1,
+						DestRegister:   1,
+						Len:            16,
+						Mask:           append([]byte{0xff}, make([]byte, 15)...),
+						Xor:            make([]byte, 16),
+					},
+					&expr.Cmp{
+						Op:       expr.CmpOpEq,
+						Register: 1,
+						Data:     append([]byte{0xff}, make([]byte, 15)...),
+					},
+					// meta l4proto icmpv6
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
+					// icmpv6 type
+					&expr.Payload{
+						DestRegister: 1,
+						Base:         expr.PayloadBaseTransportHeader,
+						Offset:       0,
+						Len:          1,
+					},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{icmpType}},
+					// accept
+					&expr.Verdict{Kind: expr.VerdictAccept},
+				}
+
+				idx := slices.IndexFunc(rules, func(r *nftables.Rule) bool {
+					return assert.ObjectsAreEqual(want, r.Exprs)
+				})
+				require.NotEqual(t, -1, idx,
+					"output chain must accept ICMPv6 type %d to multicast for every sender", icmpType)
 				assert.Less(t, idx, terminal,
 					"ACCEPT for ICMPv6 type %d must come before the rule that ends the chain", icmpType)
 			}

@@ -1534,9 +1534,20 @@ Under every policy, the `output` chain accepts the ICMPv6 neighbor discovery
 messages that the kernel sends: router solicitations, neighbor solicitations,
 and neighbor advertisements. The kernel resolves the link-layer address of each
 IPv6 next hop with these messages, and it answers the solicitations of its
-neighbors with them. IPv6 on a link fails without them. The `egress` and
-`egressDeny` rules with `icmps` do not apply to these messages. In daemon mode,
-those rules apply to the ICMPv6 that containers send through the VM.
+neighbors with them. IPv6 on a link fails without them.
+
+Under every policy, the `output` chain also accepts the Multicast Listener
+Discovery (MLD) messages that the kernel sends to multicast destinations: MLDv1
+listener reports, MLDv1 listener done messages, and MLDv2 listener reports. The
+kernel reports each multicast group that it joins with these messages, such as
+the solicited-node group of each IPv6 address. Switches that do MLD snooping
+forward the neighbor solicitations for an address only to the hosts that
+reported its solicited-node group, so IPv6 on their links fails without the
+reports.
+
+The `egress` and `egressDeny` rules with `icmps` do not apply to the neighbor
+discovery messages and the MLD messages of the kernel. In daemon mode, those
+rules apply to the ICMPv6 that containers send through the VM.
 
 At startup, init checks whether IPv6 is actually available via
 `net.ipv6.conf.all.disable_ipv6`. If the stack appears disabled, IPv6 is
