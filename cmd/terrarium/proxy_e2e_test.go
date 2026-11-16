@@ -141,10 +141,24 @@ func startTLSHandlerServer(t *testing.T, addr string, cfg *tls.Config, handler h
 // startProxy writes the policy, runs [Proxy] in the background on a
 // fresh port, waits for readiness, and returns the proxy URL and the
 // user state (for the generated MITM CA). Each setOpts function edits
-// the proxy options before the proxy starts.
+// the proxy options before the proxy starts. The proxy stops when the
+// test ends.
 func startProxy(
 	t *testing.T, policy, resolverAddr string, setOpts ...func(*proxyOptions),
 ) (*url.URL, *config.User) {
+	t.Helper()
+
+	proxyURL, usr, _ := startStoppableProxy(t, policy, resolverAddr, setOpts...)
+
+	return proxyURL, usr
+}
+
+// startStoppableProxy starts a proxy as [startProxy] does. It also
+// returns a function that stops the proxy and waits until [Proxy] has
+// returned. The test fails when [Proxy] returns an error.
+func startStoppableProxy(
+	t *testing.T, policy, resolverAddr string, setOpts ...func(*proxyOptions),
+) (*url.URL, *config.User, func()) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -181,9 +195,12 @@ func startProxy(
 	//nolint:usetesting // see comment above.
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
+	returned := make(chan struct{})
 
 	go func() {
 		errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
+
+		close(returned)
 	}()
 
 	t.Cleanup(func() {
@@ -197,6 +214,20 @@ func startProxy(
 		}
 	})
 
+	// The cleanup of the test reads the result of the proxy, so stop
+	// only waits for the proxy to return.
+	stop := func() {
+		t.Helper()
+
+		cancel()
+
+		select {
+		case <-returned:
+		case <-time.After(15 * time.Second):
+			t.Fatal("proxy did not shut down")
+		}
+	}
+
 	// The proxy creates the ready file after its own Envoy answers on
 	// the listen address and after it opens the access log socket.
 	requireReadyFile(t, usr.ReadyFile)
@@ -209,7 +240,7 @@ func startProxy(
 	// that the tests do not race the workers.
 	waitProxyReady(t, proxyURL)
 
-	return proxyURL, usr
+	return proxyURL, usr, stop
 }
 
 // waitProxyReady polls the proxy with a plain HTTP request until Envoy
@@ -3354,6 +3385,98 @@ func TestProxyE2EStatsEventsUnrestricted(t *testing.T) {
 	time.Sleep(time.Second)
 
 	assert.ElementsMatch(t, want, envoyEvents(t, dbPath))
+}
+
+// TestProxyE2EStatsEventsAtShutdown checks that a proxy that stops
+// records the events of the requests that it served immediately before
+// the stop. Envoy sends its events once in each flush interval, so the
+// proxy must keep Envoy running until that flush.
+//
+//nolint:paralleltest // e2e tests set env and run envoy subprocesses.
+func TestProxyE2EStatsEventsAtShutdown(t *testing.T) {
+	requireEnvoy(t)
+
+	port := freePort(t)
+	upstreamPort := strconv.Itoa(port)
+	startHTTPServer(t, "127.0.0.1:"+upstreamPort, fixedBodyHandler(t, "plain upstream"))
+
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
+
+	dbPath := filepath.Join(t.TempDir(), "stats.db")
+
+	// The policy keeps the default flush interval of one second. The
+	// test stops the proxy a few milliseconds after the last response,
+	// so Envoy still holds the events at that moment.
+	policy := "stats:\n" +
+		"  enabled: true\n" +
+		"  path: " + dbPath + "\n"
+
+	proxyURL, _, stop := startStoppableProxy(t, policy, "")
+	client := proxyClient(t, proxyURL, x509.NewCertPool())
+
+	paths := []string{"/last-1", "/last-2", "/last-3"}
+	want := make([]proxyEvent, 0, len(paths))
+
+	// The requests name their upstream by address, so the test does
+	// not depend on the resolver of the host.
+	for _, path := range paths {
+		assert.Equal(t, http.StatusOK,
+			getStatus(t, client, "http://127.0.0.1:"+upstreamPort+path))
+
+		want = append(want, proxyEvent{
+			Decision: eventstore.DecisionAllow,
+			Protocol: eventstore.ProtocolHTTP,
+			Domain:   "127.0.0.1",
+			Method:   "GET",
+			Path:     path,
+			Status:   http.StatusOK,
+			Port:     port,
+			Upstream: true,
+		})
+	}
+
+	stop()
+
+	assert.ElementsMatch(t, want, envoyEvents(t, dbPath))
+	requireHeartbeatAfterEvents(t, dbPath)
+}
+
+// requireHeartbeatAfterEvents checks that the latest heartbeat of the
+// only instance of the store at dbPath holds the time of a write that
+// is no earlier than the newest event. A heartbeat from before the
+// write of the last events holds an older time or none.
+func requireHeartbeatAfterEvents(t *testing.T, dbPath string) {
+	t.Helper()
+
+	r, err := eventstore.OpenReader(t.Context(), dbPath)
+	require.NoError(t, err)
+
+	defer func() { assert.NoError(t, r.Close()) }()
+
+	instances, err := r.Instances(t.Context())
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+
+	page, err := r.Events(t.Context(), eventstore.EventsQuery{Limit: -1})
+	require.NoError(t, err)
+	require.NotEmpty(t, page.Events)
+
+	var newest time.Time
+
+	for i := range page.Events {
+		if page.Events[i].Time.After(newest) {
+			newest = page.Events[i].Time
+		}
+	}
+
+	hb, ok, err := r.LatestHeartbeat(t.Context(), instances[0].ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.False(t, hb.EventStoreLastWrite.IsZero(),
+		"latest heartbeat holds no write")
+	assert.False(t, hb.EventStoreLastWrite.Before(newest),
+		"latest heartbeat holds the write %s, before the newest event %s",
+		hb.EventStoreLastWrite, newest)
 }
 
 // TestProxyE2EPolicySnapshot checks that a proxy with stats enabled

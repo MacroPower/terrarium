@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"go.jacobcolvin.com/niceyaml"
@@ -805,6 +807,18 @@ func openTCPPorts(openPortRules []config.ResolvedOpenPort) map[int]bool {
 	return out
 }
 
+// proxyShutdownSignals returns the signals that shut [Proxy] down.
+// SIGHUP is one of them unless the process started with SIGHUP
+// ignored, because a handler for SIGHUP ends that ignore.
+func proxyShutdownSignals() []os.Signal {
+	sigs := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		sigs = append(sigs, syscall.SIGHUP)
+	}
+
+	return sigs
+}
+
 // newProbeToken returns a random token that identifies the bootstrap
 // and the Envoy of one proxy run. See [waitForProxyListener] for its
 // use.
@@ -895,6 +909,25 @@ func newProbeToken() (string, error) {
 // the access log, and it drops them when the socket does not exist at
 // that flush.
 //
+// A proxy that records stats keeps Envoy running for a short time
+// after a signal or a cancellation of ctx. Envoy sends its buffered
+// events only at the next flush of the access log, and it drops them
+// when it stops before that flush. See [accessLogFlushWait] for the
+// length of the wait. Envoy still serves requests during the wait, and
+// the store might not hold the events of those requests.
+//
+// Envoy runs in a process group of its own. The signals that a
+// terminal sends to its foreground group, such as the SIGINT of a
+// Ctrl-C, therefore reach the proxy and not Envoy. On Linux, the kernel
+// kills Envoy when the proxy dies. On other systems, Envoy keeps
+// running when a signal kills the proxy without a shutdown, such as a
+// SIGKILL or a SIGQUIT that reaches the process group of the proxy.
+//
+// SIGINT, SIGTERM, and SIGHUP shut the proxy down. A hangup of the
+// terminal sends SIGHUP to the proxy and not to Envoy, so the proxy
+// stops Envoy after a hangup as well. A proxy that starts with SIGHUP
+// ignored, such as under nohup, keeps ignoring it.
+//
 // A signal or a cancellation of ctx stops Envoy and makes Proxy return
 // nil. Proxy also returns nil when either arrives before Envoy starts,
 // which includes the install of the managed build, or before Envoy
@@ -904,7 +937,7 @@ func newProbeToken() (string, error) {
 // without a wait for the startup timeout, and the error also wraps
 // [ErrEnvoyExited] and gives the exit status of Envoy.
 func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts proxyOptions) error {
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, proxyShutdownSignals()...)
 	defer stop()
 
 	if usr.ReadyFile != "" {
@@ -971,21 +1004,35 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 
 	envoyArgs := proxyEnvoyArgs(runtime.GOOS, bootstrapPath, cfg.EnvoyLogLevel(), envoyLogPath)
 
+	// Envoy runs until envoyCtx ends, so that it can outlive ctx by
+	// the wait for its last events. Proxy ends envoyCtx after ctx
+	// ends, and when it returns.
+	envoyCtx, cancelEnvoy := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelEnvoy()
+
 	newCmd := func() *exec.Cmd {
-		cmd := envoyBin.command(ctx, envoyArgs...)
+		cmd := envoyBin.command(envoyCtx, envoyArgs...)
 
 		// Envoy writes here what it does not send to its log file,
-		// such as a command line that it rejects.
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		// such as a command line that it rejects and the lines of its
+		// stderr access logs. Envoy runs in a background process
+		// group, and a terminal with tostop stops a background
+		// process that writes to it. The writers are therefore not
+		// files, so that os/exec gives Envoy pipes and the proxy, in
+		// the foreground group, copies the output to the terminal.
+		// WaitDelay bounds the copy after Envoy exits.
+		cmd.Stdout = struct{ io.Writer }{os.Stdout}
+		cmd.Stderr = struct{ io.Writer }{os.Stderr}
 
 		// The probe answer of Envoy holds the value of this variable,
 		// so the answer names the Envoy of this proxy, whichever
 		// bootstrap that Envoy loaded.
 		cmd.Env = append(os.Environ(), envoy.ProxyProbeTokenEnv+"="+probeToken)
 
-		// On ctx cancellation (signal), drain gracefully: SIGTERM
-		// first, SIGKILL after the drain timeout.
+		cmd.SysProcAttr = proxyEnvoyProcAttr()
+
+		// When envoyCtx ends, drain gracefully: SIGTERM first,
+		// SIGKILL after the drain timeout.
 		cmd.Cancel = func() error {
 			return cmd.Process.Signal(syscall.SIGTERM)
 		}
@@ -999,9 +1046,10 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 	proc, err := startEnvoyWhenFree(ctx, newCmd)
 	if err != nil {
 		if ctx.Err() != nil {
-			// The shutdown arrived before Envoy started. Start does
-			// not run the process after ctx ends, so Proxy has no
-			// process to reap.
+			// The shutdown arrived before Envoy started. After ctx
+			// ends, startEnvoyWhenFree starts no command, and a
+			// start that returns an error leaves no process, so
+			// Proxy has no process to reap.
 			slog.InfoContext(ctx, "proxy: shut down")
 
 			return nil
@@ -1014,6 +1062,11 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 	// the check, so wait for the probe answer of this Envoy.
 	err = waitForProxyListener(ctx, addr, probeToken, proc.exited,
 		envoySettings.StartupTimeout.Duration)
+
+	// The time that Envoy keeps running after ctx ends. It stays zero
+	// for a proxy without an access log server, which has no events to
+	// wait for.
+	var flushWait time.Duration
 
 	switch {
 	case err == nil:
@@ -1034,7 +1087,16 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 		// end. The heartbeat is then the only sign in the store that
 		// the proxy stopped. The store closes after the last
 		// heartbeat, because the deferred calls run in reverse order.
-		stopHeartbeat := startHeartbeat(ctx, store, nil)
+		//
+		// Envoy sends its last events after ctx ends, so the
+		// heartbeat runs on a context that outlives ctx. The deferred
+		// stop runs after Envoy has exited and after the access log
+		// server has shut down, so the store has received those
+		// events. The store can commit the last of them after the
+		// final heartbeat, at a tick of its writer or at Close. Close
+		// then raises the last write and the drop count of the final
+		// heartbeat to the values after its last commit.
+		stopHeartbeat := startHeartbeat(context.WithoutCancel(ctx), store, nil)
 		defer stopHeartbeat()
 
 		// Envoy serves the policy, so record it as the policy in
@@ -1045,6 +1107,8 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 		accessLogSrv := openProxyAccessLog(ctx, cfg, store, opts)
 		if accessLogSrv != nil {
 			defer accessLogSrv.Shutdown(context.WithoutCancel(ctx))
+
+			flushWait = accessLogFlushWait(cfg, envoySettings.DrainTimeout.Duration)
 		}
 
 		if usr.ReadyFile != "" {
@@ -1092,9 +1156,19 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 		return fmt.Errorf("%w: %w", ErrEnvoyNotRunning, err)
 	}
 
+	select {
+	case <-proc.exited:
+	case <-ctx.Done():
+		// Envoy drops the events that it still holds when it stops,
+		// so it keeps running until it has sent them.
+		waitForAccessLogFlush(ctx, flushWait, proc.exited)
+		cancelEnvoy()
+	}
+
 	err = proc.wait()
 	if ctx.Err() != nil {
-		// Signal-initiated shutdown: Envoy was SIGTERM'd by Cancel.
+		// Signal-initiated shutdown: the end of envoyCtx sent
+		// SIGTERM to Envoy.
 		slog.InfoContext(ctx, "proxy: shut down")
 
 		return nil

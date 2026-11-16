@@ -217,9 +217,13 @@ func TestDaemonReloadStalePID(t *testing.T) {
 //
 // The test process stands for the daemon. It records its own PID,
 // and it handles the SIGHUP of the command as the daemon does.
+//
+// The SIGHUP reaches every handler of the test process, and [Proxy]
+// shuts down on SIGHUP. The test therefore runs before the parallel
+// tests, so that no proxy of another test runs at the signal.
+//
+//nolint:paralleltest // see comment above.
 func TestDaemonReloadEndsDaemon(t *testing.T) {
-	t.Parallel()
-
 	if os.Getuid() != 0 {
 		t.Skip("test requires root")
 	}

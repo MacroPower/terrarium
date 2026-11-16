@@ -826,15 +826,25 @@ func requireStubStarted(t *testing.T, started string) {
 func requireStubStopped(t *testing.T, started string) {
 	t.Helper()
 
+	pid := stubPID(t, started)
+
+	// Signal 0 finds a process that runs, and one that exited but
+	// that the proxy did not reap.
+	require.ErrorIs(t, syscall.Kill(pid, 0), syscall.ESRCH, "stub envoy must not outlive the proxy")
+}
+
+// stubPID returns the process ID of the stub envoy, which the started
+// file holds.
+func stubPID(t *testing.T, started string) int {
+	t.Helper()
+
 	data, err := os.ReadFile(started) //nolint:gosec // test fixture path.
 	require.NoError(t, err)
 
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	require.NoError(t, err)
 
-	// Signal 0 finds a process that runs, and one that exited but
-	// that the proxy did not reap.
-	require.ErrorIs(t, syscall.Kill(pid, 0), syscall.ESRCH, "stub envoy must not outlive the proxy")
+	return pid
 }
 
 // listenProxyPort opens the proxy listener, which the stub envoy
@@ -1124,6 +1134,108 @@ func TestProxyReadyFile(t *testing.T) {
 	}
 }
 
+// TestProxyShutdownFlushWait checks how long [Proxy] keeps Envoy
+// running after its context ends. A proxy that records stats waits for
+// the last flush of the access log, and at most for the drain timeout.
+// A proxy without stats stops Envoy immediately. The stub envoy never
+// listens, so the test answers the probe itself.
+//
+// The test replaces the default logger and sets PATH for the whole
+// process, which is incompatible with t.Parallel().
+//
+//nolint:paralleltest,tparallel // see comment above.
+func TestProxyShutdownFlushWait(t *testing.T) {
+	tests := map[string]struct {
+		// stats is true when the policy enables stats.
+		stats bool
+		// policy holds the lines of the policy after the paths of
+		// the stats section.
+		policy string
+		// want is the wait that the proxy must log and keep. Zero
+		// means that the proxy must not wait.
+		want time.Duration
+	}{
+		"stats disabled": {
+			policy: "egress: []\n",
+		},
+		"flush interval": {
+			stats:  true,
+			policy: "  flushIntervalMs: 200\negress: []\n",
+			want:   200*time.Millisecond + accessLogFlushMargin,
+		},
+		"flush interval longer than the drain timeout": {
+			stats: true,
+			policy: "  flushIntervalMs: 600000\n" +
+				"envoy:\n" +
+				"  drainTimeout: 300ms\n" +
+				"egress: []\n",
+			want: 300 * time.Millisecond,
+		},
+	}
+
+	const waitLog = "waiting for the last stats events"
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			logs := captureLogs(t)
+			started, _ := stubEnvoy(t)
+
+			dir := t.TempDir()
+
+			policy := tt.policy
+			if tt.stats {
+				policy = "stats:\n" +
+					"  enabled: true\n" +
+					"  path: " + filepath.Join(dir, "stats.db") + "\n" +
+					"  socket: " + filepath.Join(shortTempDir(t), "accesslog.sock") + "\n" +
+					policy
+			}
+
+			usr := stubProxyUser(t, dir, policy)
+			usr.ReadyFile = filepath.Join(dir, "ready")
+
+			opts := proxyOptions{
+				envoyPath:   envoyCommand,
+				bindAddress: loopbackIPv4,
+				httpPort:    freePort(t),
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			errCh := make(chan error, 1)
+
+			go func() {
+				errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
+			}()
+
+			requireStubStarted(t, started)
+			serveProxyProbe(t, started, usr, opts)
+			requireReadyFile(t, usr.ReadyFile)
+
+			start := time.Now()
+
+			cancel()
+			requireProxyShutDown(t, errCh)
+
+			elapsed := time.Since(start)
+
+			requireStubStopped(t, started)
+
+			if tt.want == 0 {
+				assert.NotContains(t, logs.String(), waitLog)
+
+				return
+			}
+
+			assert.GreaterOrEqual(t, elapsed, tt.want,
+				"envoy must keep running until its last flush")
+			assert.Contains(t, logs.String(), waitLog)
+			assert.Contains(t, logs.String(), "wait="+tt.want.String())
+		})
+	}
+}
+
 // TestProxyListenAddressInUse checks that [Proxy] returns
 // [ErrListenAddressUnavailable] when another process holds the listen
 // address. The proxy must not take the listener of that process for
@@ -1389,6 +1501,48 @@ func TestProxyProbeToken(t *testing.T) {
 
 	cancel()
 	requireProxyShutDown(t, errCh)
+}
+
+// TestProxyEnvoyProcessGroup checks that [Proxy] starts Envoy in a
+// process group of its own. The signals that a terminal sends to the
+// group of the proxy, such as the SIGINT of a Ctrl-C, then do not
+// reach Envoy. The proxy can therefore keep Envoy running until its
+// last flush of the access log.
+//
+//nolint:paralleltest // sets PATH for the whole process.
+func TestProxyEnvoyProcessGroup(t *testing.T) {
+	started, _ := stubEnvoy(t)
+
+	usr := stubProxyUser(t, t.TempDir(), "egress: []\n")
+
+	opts := proxyOptions{
+		envoyPath:   envoyCommand,
+		bindAddress: loopbackIPv4,
+		httpPort:    freePort(t),
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- Proxy(ctx, usr, noManagedEnvoy(), opts)
+	}()
+
+	requireStubStarted(t, started)
+
+	pid := stubPID(t, started)
+
+	pgid, err := syscall.Getpgid(pid)
+	require.NoError(t, err)
+
+	assert.Equal(t, pid, pgid, "envoy must lead a process group of its own")
+	assert.NotEqual(t, syscall.Getpgrp(), pgid, "envoy must not run in the process group of the proxy")
+
+	cancel()
+	requireProxyShutDown(t, errCh)
+	requireStubStopped(t, started)
 }
 
 // TestProxyReadyFileError checks that [Proxy] stops Envoy and returns

@@ -773,8 +773,10 @@ func (s *Store) Emit(e Event) {
 }
 
 // Close stops the writer goroutine, flushes outstanding events, marks
-// this instance row as ended, and closes the underlying database. A
-// nil receiver is a no-op. Calling Close more than once is safe; only
+// this instance row as ended, and closes the underlying database. The
+// last heartbeat that the instance recorded then holds the last write
+// and the drop count of the store after that flush. A nil receiver is
+// a no-op. Calling Close more than once is safe; only
 // the first call closes the channel.
 func (s *Store) Close() error {
 	if s == nil {
@@ -836,6 +838,10 @@ func (s *Store) run() {
 
 	batch := make([]Event, 0, s.opts.batchSize)
 
+	// The heartbeat that the writer upserted last, which the close
+	// path updates with the counters of the final flush.
+	var lastHeartbeat *Heartbeat
+
 	flush := func() {
 		if len(batch) == 0 {
 			return
@@ -860,7 +866,7 @@ func (s *Store) run() {
 		case e, ok := <-s.ch:
 			if !ok {
 				flush()
-				s.drainHeartbeats()
+				s.drainHeartbeats(lastHeartbeat)
 				s.drainPolicies()
 
 				return
@@ -882,25 +888,58 @@ func (s *Store) run() {
 		case h := <-s.heartbeatCh:
 			s.upsertHeartbeat(h)
 
+			lastHeartbeat = &h
+
 		case p := <-s.policyCh:
 			s.insertPolicy(p)
 		}
 	}
 }
 
-// drainHeartbeats consumes any pending heartbeat snapshot before
-// the writer goroutine returns. The channel is buffer-1, so this
-// loop runs at most once per close. Exists so a final shutdown
-// snapshot lands in the database before the connection closes.
-func (s *Store) drainHeartbeats() {
-	for {
-		select {
-		case h := <-s.heartbeatCh:
-			s.upsertHeartbeat(h)
-		default:
+// drainHeartbeats writes the final heartbeat before the writer
+// goroutine returns. The final heartbeat is the pending snapshot, or
+// last when no snapshot is pending. The channel is buffer-1, so at
+// most one snapshot is pending.
+//
+// A snapshot holds the counters of the store at the time that the
+// instance took it. The writer can commit a batch after that time, at
+// a tick or at the final flush. DrainHeartbeats therefore raises the
+// last write and the drop count of the final heartbeat to the values
+// of the store, so that the final heartbeat holds the commit of the
+// last events. It writes nothing when the writer upserted no
+// heartbeat and none is pending.
+func (s *Store) drainHeartbeats(last *Heartbeat) {
+	var h Heartbeat
+
+	select {
+	case h = <-s.heartbeatCh:
+	default:
+		if last == nil {
+			return
+		}
+
+		h = *last
+		changed := s.LastWriteTime().After(h.EventStoreLastWrite) ||
+			s.dropCount.Load() > h.EventStoreDropCount
+
+		if !changed {
 			return
 		}
 	}
+
+	h.EventStoreLastWrite = laterTime(h.EventStoreLastWrite, s.LastWriteTime())
+	h.EventStoreDropCount = max(h.EventStoreDropCount, s.dropCount.Load())
+
+	s.upsertHeartbeat(h)
+}
+
+// laterTime returns the later of a and b.
+func laterTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+
+	return a
 }
 
 // upsertHeartbeat writes h into the `instance_metrics` table using

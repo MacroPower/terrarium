@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -61,6 +62,11 @@ const (
 	// again for the first time. Each later pause is twice as long as
 	// the pause before it.
 	busyStartPause = 10 * time.Millisecond
+
+	// The time that [accessLogFlushWait] adds to the flush interval.
+	// It covers a flush timer that fires late and the transfer of the
+	// events to the access log server.
+	accessLogFlushMargin = 250 * time.Millisecond
 
 	// The name of the ready socket inside its directory.
 	readySocketName = "ready.sock"
@@ -215,15 +221,32 @@ type envoyProcess struct {
 // startEnvoyProcess starts cmd and returns its [*envoyProcess]. The
 // caller must not call [exec.Cmd.Wait] on cmd, because the returned
 // process holds the one wait that cmd allows.
+//
+// The goroutine that waits for the process also starts it, and it
+// stays on its OS thread until the process has exited. On Linux, the
+// kernel sends the parent-death signal of a process (Pdeathsig in
+// [syscall.SysProcAttr]) when the thread that started the process
+// exits. The Go runtime ends a thread when a goroutine returns that
+// holds the thread with [runtime.LockOSThread]. Without the lock of
+// startEnvoyProcess, another goroutine might take the thread of the
+// start in that way and end it while the process runs.
 func startEnvoyProcess(ctx context.Context, cmd *exec.Cmd) (*envoyProcess, error) {
-	err := cmd.Start()
-	if err != nil {
-		return nil, err //nolint:wrapcheck // the callers name the command.
-	}
-
 	proc := &envoyProcess{cmd: cmd, exited: make(chan struct{})}
+	started := make(chan error, 1)
 
 	go func() {
+		runtime.LockOSThread()
+
+		defer runtime.UnlockOSThread()
+
+		err := cmd.Start()
+
+		started <- err
+
+		if err != nil {
+			return
+		}
+
 		proc.waitErr = cmd.Wait()
 		if proc.waitErr != nil {
 			slog.DebugContext(ctx, "envoy exited", slog.Any("err", proc.waitErr))
@@ -231,6 +254,11 @@ func startEnvoyProcess(ctx context.Context, cmd *exec.Cmd) (*envoyProcess, error
 
 		close(proc.exited)
 	}()
+
+	err := <-started
+	if err != nil {
+		return nil, err //nolint:wrapcheck // the callers name the command.
+	}
 
 	return proc, nil
 }
@@ -254,7 +282,17 @@ func startEnvoyProcess(ctx context.Context, cmd *exec.Cmd) (*envoyProcess, error
 // startEnvoyWhenFree returns the [syscall.ETXTBSY] error of the last
 // start. It returns every other error of a start without a second
 // start. When ctx ends during a pause, it returns the error of ctx.
+//
+// When ctx has ended before the first start, startEnvoyWhenFree starts
+// no command and returns the error of ctx. The context of a command
+// can outlive ctx, so the start of the command does not make this
+// check.
 func startEnvoyWhenFree(ctx context.Context, newCmd func() *exec.Cmd) (*envoyProcess, error) {
+	err := ctx.Err()
+	if err != nil {
+		return nil, err //nolint:wrapcheck // the callers name the command.
+	}
+
 	pause := busyStartPause
 
 	for range busyStartRetries {
@@ -548,6 +586,51 @@ func probeProxyListener(ctx context.Context, client *http.Client, addr, token st
 	}
 
 	return resp.StatusCode == http.StatusOK && string(body) == token, nil
+}
+
+// accessLogFlushWait returns the time that a proxy with the policy cfg
+// keeps Envoy running after the proxy begins to shut down. Within that
+// time, Envoy sends the events of the requests that it completed
+// before the shutdown began.
+//
+// Envoy buffers the events of each worker and sends them when a timer
+// fires, once in each stats.flushIntervalMs of the policy. Envoy does
+// not send the buffered events when it stops, and it has no command
+// that sends them early. The wait is therefore the flush interval plus
+// a fixed margin for a late timer and for the transfer of the events.
+//
+// The wait is at most drainTimeout, so a long flush interval does not
+// hold up the shutdown. With a flush interval that is longer than
+// drainTimeout minus the margin, the store can still miss the events of
+// the last flush interval.
+func accessLogFlushWait(cfg *config.Config, drainTimeout time.Duration) time.Duration {
+	wait := time.Duration(cfg.StatsFlushIntervalMs())*time.Millisecond + accessLogFlushMargin
+
+	return min(wait, drainTimeout)
+}
+
+// waitForAccessLogFlush blocks for the time wait, which
+// [accessLogFlushWait] returns, so that the Envoy of the caller sends
+// its buffered events before the caller stops it.
+//
+// The channel exited closes when the process of that Envoy has exited.
+// A process that has exited sends no events, so the wait ends at that
+// point. A wait of zero or less returns immediately.
+func waitForAccessLogFlush(ctx context.Context, wait time.Duration, exited <-chan struct{}) {
+	if wait <= 0 {
+		return
+	}
+
+	slog.InfoContext(ctx, "proxy: waiting for the last stats events of envoy",
+		slog.Duration("wait", wait))
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-exited:
+	}
 }
 
 // stopEnvoy stops the Envoy process proc and waits for it, so the

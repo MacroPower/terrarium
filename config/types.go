@@ -798,7 +798,9 @@ type Stats struct {
 	// [DefaultStatsBufferBytes] when zero.
 	BufferBytes uint32 `yaml:"bufferBytes,omitempty"`
 	// FlushIntervalMs is the Envoy gRPC ALS flush interval. Defaults
-	// to [DefaultStatsFlushIntervalMs] when zero.
+	// to [DefaultStatsFlushIntervalMs] when zero. When `terrarium
+	// proxy` stops, it keeps Envoy running for this interval and a
+	// short margin, so that Envoy sends its last events.
 	FlushIntervalMs uint32 `yaml:"flushIntervalMs,omitempty"`
 	// Enabled gates DNS emission and the Envoy gRPC ALS bootstrap.
 	// When false, no access events are recorded.
@@ -1060,7 +1062,9 @@ type EnvoySettings struct {
 	Path string `yaml:"path,omitempty"`
 	// DrainTimeout is the maximum duration to wait for Envoy to exit
 	// after SIGTERM. Terrarium kills an Envoy that still runs after
-	// that duration.
+	// that duration. DrainTimeout is also the longest time that
+	// `terrarium proxy` keeps Envoy running for its last stats
+	// events before it sends SIGTERM.
 	DrainTimeout Duration `yaml:"drainTimeout,omitempty"`
 	// StartupTimeout is the maximum duration to wait for Envoy to
 	// begin accepting connections after launch.

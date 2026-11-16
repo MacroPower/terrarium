@@ -1239,6 +1239,68 @@ func TestRecordHeartbeat_RoundTrip(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// TestClose_FinalHeartbeatHoldsLastWrite checks that the last heartbeat
+// holds the commit of the events that the store commits at Close. The
+// batch interval is long, so the store commits the event only at Close,
+// after the instance took the snapshot of the heartbeat.
+func TestClose_FinalHeartbeatHoldsLastWrite(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		// upserted makes the test wait until the writer has upserted
+		// the heartbeat, so that no heartbeat is pending at Close.
+		// Without the wait, the idle writer still takes the heartbeat
+		// from its channel before Close in most runs. Neither case
+		// therefore tests a heartbeat that is pending at Close.
+		upserted bool
+	}{
+		"heartbeat upserted before close": {upserted: true},
+		"close without waiting":           {upserted: false},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			store, err := eventstore.Open(t.Context(), path,
+				eventstore.WithBatchInterval(time.Hour))
+			require.NoError(t, err)
+
+			store.Emit(eventstore.Event{
+				Source:   eventstore.SourceDNS,
+				Decision: eventstore.DecisionAllow,
+			})
+
+			require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
+				RecordedAt:          time.Now(),
+				EventStoreDropCount: store.DropCount(),
+				EventStoreLastWrite: store.LastWriteTime(),
+				DNSCacheSize:        3,
+			}))
+
+			r := openReader(t, path)
+
+			if tc.upserted {
+				require.Eventually(t, func() bool {
+					_, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
+
+					return err == nil && ok
+				}, 2*time.Second, 10*time.Millisecond)
+			}
+
+			require.NoError(t, store.Close())
+
+			hb, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
+			require.NoError(t, err)
+			require.True(t, ok)
+			assert.False(t, hb.EventStoreLastWrite.IsZero(), "final heartbeat holds no write")
+			assert.Equal(t, int64(3), hb.DNSCacheSize)
+		})
+	}
+}
+
 func TestRecordHeartbeat_NilStoreNoop(t *testing.T) {
 	t.Parallel()
 

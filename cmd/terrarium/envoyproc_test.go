@@ -778,6 +778,116 @@ func TestStopEnvoyNotRunning(t *testing.T) {
 	}
 }
 
+// TestStartEnvoyWhenFreeContextEnded checks that [startEnvoyWhenFree]
+// starts no command when its context has ended. The context of the
+// command still runs, so the start of the command does not refuse it.
+func TestStartEnvoyWhenFreeContextEnded(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var starts int
+
+	proc, err := startEnvoyWhenFree(ctx, func() *exec.Cmd {
+		starts++
+
+		return exec.CommandContext(t.Context(), "true")
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, proc)
+	assert.Zero(t, starts, "no command must start after the context ended")
+}
+
+func TestAccessLogFlushWait(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		stats        *config.Stats
+		drainTimeout time.Duration
+		want         time.Duration
+	}{
+		"default flush interval": {
+			drainTimeout: 5 * time.Second,
+			want:         time.Second + accessLogFlushMargin,
+		},
+		"flush interval of the policy": {
+			stats:        &config.Stats{Enabled: true, FlushIntervalMs: 100},
+			drainTimeout: 5 * time.Second,
+			want:         100*time.Millisecond + accessLogFlushMargin,
+		},
+		"flush interval longer than the drain timeout": {
+			stats:        &config.Stats{Enabled: true, FlushIntervalMs: 60_000},
+			drainTimeout: 5 * time.Second,
+			want:         5 * time.Second,
+		},
+		"margin reaches past the drain timeout": {
+			stats:        &config.Stats{Enabled: true, FlushIntervalMs: 900},
+			drainTimeout: time.Second,
+			want:         time.Second,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &config.Config{Stats: tt.stats}
+
+			assert.Equal(t, tt.want, accessLogFlushWait(cfg, tt.drainTimeout))
+		})
+	}
+}
+
+// TestWaitForAccessLogFlush checks that the wait lasts for its
+// duration, and that it ends early only when the process has exited.
+func TestWaitForAccessLogFlush(t *testing.T) {
+	t.Parallel()
+
+	exited := make(chan struct{})
+	close(exited)
+
+	tests := map[string]struct {
+		// exited is the channel of the process. A nil channel stands
+		// for a process that runs.
+		exited <-chan struct{}
+		wait   time.Duration
+		// full is true when the wait must last for its duration.
+		full bool
+	}{
+		"process runs": {
+			wait: 200 * time.Millisecond,
+			full: true,
+		},
+		"process has exited": {
+			exited: exited,
+			wait:   30 * time.Second,
+		},
+		"no wait": {},
+		"negative wait": {
+			wait: -time.Second,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			start := time.Now()
+
+			waitForAccessLogFlush(t.Context(), tt.wait, tt.exited)
+
+			elapsed := time.Since(start)
+
+			if tt.full {
+				assert.GreaterOrEqual(t, elapsed, tt.wait)
+			} else {
+				assert.Less(t, elapsed, 15*time.Second)
+			}
+		})
+	}
+}
+
 // TestEnvoyProcessWait checks that wait returns the result of the
 // process, and that a second wait returns the same result.
 func TestEnvoyProcessWait(t *testing.T) {

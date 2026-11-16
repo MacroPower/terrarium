@@ -367,6 +367,29 @@ With `stats.enabled: true`, the proxy records Envoy events from the
 moment it creates the ready file. Envoy can answer a request earlier,
 and the proxy might not record that request.
 
+After SIGINT, SIGTERM, or SIGHUP, a proxy with `stats.enabled: true` keeps Envoy
+running until Envoy has sent the events of the requests that it completed
+before the signal. Envoy sends its events one time in each
+`stats.flushIntervalMs`. The proxy therefore waits for that interval plus
+250 milliseconds before it stops Envoy, which is 1.25 seconds with the
+default interval. Envoy still answers requests during the wait, and the
+proxy might not record those requests. Envoy runs in a process group of
+its own, so a Ctrl-C at the terminal reaches only the proxy. The proxy
+then waits as it does for a SIGINT from `kill`.
+
+A hangup of the terminal sends SIGHUP to the proxy and not to Envoy, and
+the proxy then stops Envoy as it does after SIGTERM. Proxies that start
+with SIGHUP ignored, such as under `nohup`, keep ignoring it.
+
+On Linux, the kernel kills Envoy when the proxy dies. On macOS, Envoy
+keeps running when a signal kills the proxy without the shutdown, such
+as a SIGKILL or a SIGQUIT (`Ctrl-\`) that reaches the process group of the
+proxy. That Envoy holds the listen address until you stop it.
+
+The wait is at most `envoy.drainTimeout`, which defaults to 5 seconds. With
+a longer flush interval, the proxy might not record the requests of the last
+interval before the signal.
+
 The Envoy events of a request depend on the
 [security mode](#security-modes) of the policy and on the kind of the
 request. The following table lists the events of each kind.
