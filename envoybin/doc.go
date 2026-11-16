@@ -44,4 +44,9 @@
 // verify command compares the pinned hashes with the checksums that the
 // publisher of each build signs or attests. A workflow runs the verify
 // command on every pull request that changes the pin.
+//
+// A build with the right origin can still lack an Envoy extension that
+// terrarium configures, and Envoy rejects a bootstrap that names such an
+// extension. The same workflow therefore loads the proxy bootstraps of
+// terrarium with the build of each platform.
 package envoybin

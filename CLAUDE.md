@@ -40,6 +40,30 @@ the version and the hashes change in one commit. Renovate runs `update` when it
 bumps the pin, and the `envoy` workflow runs `verify` on one runner for each
 platform of the manifest.
 
+On each of those runners, the `envoy` workflow then runs
+`TestPinnedEnvoyLoadsProxyBootstraps` in `cmd/terrarium`. The test runs the
+pinned build with `--mode validate` on proxy bootstraps that together name
+every Envoy extension type and every format command of a proxy bootstrap. One
+bootstrap names the resolver of the `--resolver` flag. The others leave the
+resolver out, so Envoy also loads the default DNS resolver of its platform. The
+test skips unless `TERRARIUM_TEST_ENVOY_DIR` names a directory for the managed build,
+and it downloads the build when the directory does not hold it. The workflow
+runs these jobs for a change to the pin and for a change to the code that
+generates the bootstraps: `cmd/terrarium`, `envoy`, `config`, `certs`, `go.mod`,
+and `go.sum`.
+
+```bash
+TERRARIUM_TEST_ENVOY_DIR="$(mktemp -d)" go test -count=1 -run '^TestPinnedEnvoyLoadsProxyBootstraps$' ./cmd/terrarium
+```
+
+`task test` runs `TestProxyCoverageBootstraps`, which loads the same bootstraps
+with the `envoy` on PATH. It fails when the generator names an extension type
+or a format command, such as `%CEL(`, that no bootstrap of
+`proxyCoverageBootstraps` names. The test finds both in the Go source of
+`envoy` and `cmd/terrarium`. When you add an Envoy extension or a format command
+to the generator, add a policy that uses it to that function. Add an extension
+type to `containerOnlyExtensionTypes` instead when only container mode names it.
+
 The `cmd/vendorhash` tool maintains the `vendorHash` in `lima/flake.nix`, which
 is the hash of the vendor tree of the root Go module. Run its commands from the
 root of the repository. They need each dependency of the root module in the

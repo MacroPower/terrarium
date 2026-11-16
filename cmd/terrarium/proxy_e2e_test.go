@@ -3250,25 +3250,17 @@ func TestProxyBootstrapReservedHeaderMatches(t *testing.T) {
 	}
 }
 
-// requireEnvoyLoadsProxyBootstrap fails the test when Envoy rejects
-// the proxy bootstrap of cfg. The bootstrap verifies upstream
+// requireEnvoyLoadsProxyBootstrap fails the test when the envoy on PATH
+// rejects the proxy bootstrap of cfg. The bootstrap verifies upstream
 // certificates against the CA bundle at caBundlePath.
 func requireEnvoyLoadsProxyBootstrap(t *testing.T, cfg *config.Config, caBundlePath string) {
 	t.Helper()
 
 	bootstrap, err := GenerateProxyEnvoyFromConfig(
-		t.Context(), cfg, "", caBundlePath, "127.0.0.1", 8080, nil, "0123456789abcdef")
+		t.Context(), cfg, "", caBundlePath, "127.0.0.1", 8080, nil, loadProbeToken)
 	require.NoError(t, err)
 
-	path := filepath.Join(t.TempDir(), "envoy-proxy.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(bootstrap), 0o644))
-
-	cmd := exec.CommandContext(t.Context(), "envoy",
-		"--mode", "validate", "-c", path, "--disable-hot-restart")
-
-	// Envoy rejects the bootstrap without the probe token variable.
-	cmd.Env = append(os.Environ(), envoy.ProxyProbeTokenEnv+"=0123456789abcdef")
-
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
+	requireEnvoyLoadsBootstrap(t, bootstrap, func(args ...string) *exec.Cmd {
+		return exec.CommandContext(t.Context(), envoyCommand, args...)
+	})
 }

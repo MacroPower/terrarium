@@ -106,13 +106,19 @@ the next start of the proxy, and the changed Envoy does not run. Inspect
 the file that the error names, remove it, and run
 `terrarium envoy install`.
 
-Terrarium pins one build for each platform in the following table. The
-[`envoy` workflow](.github/workflows/envoy.yaml) checks each build on
-every pull request that changes the pinned version. For every build, the
+The [`envoy` workflow](.github/workflows/envoy.yaml) checks each pinned
+build on every pull request that changes the pinned version or the code
+that generates the Envoy configuration of the proxy. For every build, the
 workflow confirms that the download and the binary have the pinned
 hashes. It then runs the binary and confirms that the binary reports the
-commit of the Envoy release tag. The table names the source of each
-build and the check that applies only to that source.
+commit of the Envoy release tag. The workflow also confirms that the
+binary accepts Envoy configurations of the proxy. Together, those
+configurations name every Envoy extension type and every format command
+that the proxy configures.
+
+Terrarium pins one build for each platform in the following table. The
+table names the source of each build and the check that applies only to
+that source.
 
 | Platform                              | Source                                                                     | Check of the source                                                                                                      |
 | ------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |

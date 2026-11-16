@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,9 +31,20 @@ const (
 	jobVerify  = "verify"
 	jobResult  = "result"
 
-	stepDiff   = "Find changes to the pin"
+	stepDiff   = "Find changes that the verify jobs check"
 	stepVerify = "Verify the pinned Envoy build"
+	stepLoad   = "Load the proxy bootstraps with the pinned Envoy build"
 	stepResult = "Check the results of the other jobs"
+)
+
+// The test that the load step of the envoy workflow runs, and the
+// variable that turns the test on. The test is in the terrarium command,
+// and loadTestPath is the path of its file. The path is relative to the
+// directory of this package.
+const (
+	loadTestPath = "../cmd/terrarium/proxy_bootstrap_test.go"
+	loadTestName = "TestPinnedEnvoyLoadsProxyBootstraps"
+	loadTestEnv  = "TERRARIUM_TEST_ENVOY_DIR"
 )
 
 // workflow holds the fields of a GitHub Actions workflow that the tests
@@ -199,7 +211,7 @@ func TestWorkflowReportsOneResult(t *testing.T) {
 
 	assert.Empty(t, changes.If)
 	assert.Empty(t, changes.Needs)
-	assert.Equal(t, map[string]string{"pin": "${{ steps.diff.outputs.pin }}"}, changes.Outputs)
+	assert.Equal(t, map[string]string{"verify": "${{ steps.diff.outputs.verify }}"}, changes.Outputs)
 
 	// The diff step reads the commit before a push, so the checkout must
 	// fetch the history.
@@ -217,7 +229,7 @@ func TestWorkflowReportsOneResult(t *testing.T) {
 	verify := wf.Jobs[jobVerify]
 
 	assert.Equal(t, []string{jobChanges}, verify.Needs)
-	assert.Equal(t, "${{ needs.changes.outputs.pin == 'true' }}", verify.If)
+	assert.Equal(t, "${{ needs.changes.outputs.verify == 'true' }}", verify.If)
 
 	result := wf.Jobs[jobResult]
 
@@ -230,7 +242,7 @@ func TestWorkflowReportsOneResult(t *testing.T) {
 	assert.ElementsMatch(t, []string{jobChanges, jobVerify}, result.Needs)
 	assert.Equal(t, map[string]string{
 		"CHANGES_RESULT": "${{ needs.changes.result }}",
-		"PIN_CHANGED":    "${{ needs.changes.outputs.pin }}",
+		"VERIFY_NEEDED":  "${{ needs.changes.outputs.verify }}",
 		"VERIFY_RESULT":  "${{ needs.verify.result }}",
 	}, result.step(t, stepResult).Env)
 }
@@ -265,10 +277,50 @@ func TestWorkflowCoversManifestPlatforms(t *testing.T) {
 	assert.ElementsMatch(t, want, jobs)
 }
 
-// TestWorkflowFindsPinChanges runs the diff step of the envoy workflow in
-// a repository that holds one change. The pin output of the step decides
-// whether the verify jobs run.
-func TestWorkflowFindsPinChanges(t *testing.T) {
+// TestWorkflowLoadsProxyBootstraps checks that each verify job of the
+// envoy workflow runs the test that loads the proxy bootstraps with the
+// pinned Envoy build. That test skips without its variable, and the go
+// command passes when a pattern matches no test. A step with a stale name
+// therefore passes and checks nothing. This test compares the names of
+// the step with the names in the file of the test.
+func TestWorkflowLoadsProxyBootstraps(t *testing.T) {
+	t.Parallel()
+
+	verify := readEnvoyWorkflow(t).Jobs[jobVerify]
+
+	step := verify.step(t, stepLoad)
+
+	// The -count flag turns off the test cache, and the pattern matches
+	// exactly one test.
+	assert.Equal(t, "go test -count=1 -run '^"+loadTestName+"$' ./cmd/terrarium", step.Run)
+
+	// The test installs the build into the directory of the variable. A
+	// directory of the runner keeps the build out of the checkout.
+	assert.Equal(t, map[string]string{loadTestEnv: "${{ runner.temp }}/envoy"}, step.Env)
+
+	// The step must run a build only after the provenance checks of that
+	// build passed.
+	names := make([]string, 0, len(verify.Steps))
+
+	for _, s := range verify.Steps {
+		names = append(names, s.Name)
+	}
+
+	assert.Less(t, slices.Index(names, stepVerify), slices.Index(names, stepLoad))
+
+	src, err := os.ReadFile(filepath.FromSlash(loadTestPath))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(src), "\nfunc "+loadTestName+"(t *testing.T) {\n")
+	assert.Contains(t, string(src), "\nconst pinnedEnvoyDirEnv = \""+loadTestEnv+"\"\n")
+}
+
+// TestWorkflowFindsChanges runs the diff step of the envoy workflow in a
+// repository that holds one change. The verify output of the step decides
+// whether the verify jobs run. The verify jobs check the pin, and they
+// load the proxy bootstraps with the pinned builds. A change to the pin
+// or to the code that generates the bootstraps must therefore start them.
+func TestWorkflowFindsChanges(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -280,19 +332,21 @@ func TestWorkflowFindsPinChanges(t *testing.T) {
 		manifest = "envoybin/manifest.go"
 	)
 
-	tests := map[string]struct {
+	type changeTest struct {
 		// event is the name of the event that starts the workflow.
 		event string
 		// before replaces the commit before a push when it is not empty.
 		before string
-		// want is the value of the pin output.
+		// want is the value of the verify output.
 		want string
 		// commits holds the paths that each commit of the change touches.
 		commits [][]string
 		// base holds the paths that the base branch of a pull request
 		// touches after the change forks from it.
 		base []string
-	}{
+	}
+
+	tests := map[string]changeTest{
 		"pull request changes the manifest": {
 			event:   eventPullRequest,
 			commits: [][]string{{manifest}},
@@ -323,9 +377,34 @@ func TestWorkflowFindsPinChanges(t *testing.T) {
 			commits: [][]string{{".github/workflows/envoy.yaml"}},
 			want:    "true",
 		},
+		"pull request changes the bootstrap generator": {
+			event:   eventPullRequest,
+			commits: [][]string{{"envoy/route.go"}},
+			want:    "true",
+		},
+		"pull request changes the proxy command": {
+			event:   eventPullRequest,
+			commits: [][]string{{"cmd/terrarium/proxy.go"}},
+			want:    "true",
+		},
+		"pull request changes the tests of the proxy bootstraps": {
+			event:   eventPullRequest,
+			commits: [][]string{{"cmd/terrarium/proxy_bootstrap_test.go"}},
+			want:    "true",
+		},
+		"pull request changes the module requirements": {
+			event:   eventPullRequest,
+			commits: [][]string{{"go.mod"}},
+			want:    "true",
+		},
+		"pull request changes the module sums": {
+			event:   eventPullRequest,
+			commits: [][]string{{"go.sum"}},
+			want:    "true",
+		},
 		"pull request changes other files": {
 			event:   eventPullRequest,
-			commits: [][]string{{readme}, {"envoy/bootstrap.go", ".github/workflows/validate.yaml"}},
+			commits: [][]string{{readme}, {"firewall/rules.go", ".github/workflows/validate.yaml"}},
 			want:    "false",
 		},
 		"base branch changes the manifest after the fork": {
@@ -344,9 +423,14 @@ func TestWorkflowFindsPinChanges(t *testing.T) {
 			commits: [][]string{{manifest}, {readme}},
 			want:    "true",
 		},
+		"push changes the bootstrap generator": {
+			event:   eventPush,
+			commits: [][]string{{"envoy/route.go"}, {readme}},
+			want:    "true",
+		},
 		"push changes other files": {
 			event:   eventPush,
-			commits: [][]string{{readme}, {"envoy/bootstrap.go"}},
+			commits: [][]string{{readme}, {"dnsproxy/proxy.go"}},
 			want:    "false",
 		},
 		"push creates the branch": {
@@ -366,6 +450,16 @@ func TestWorkflowFindsPinChanges(t *testing.T) {
 			commits: [][]string{{readme}},
 			want:    "true",
 		},
+	}
+
+	// A package that the generator of the proxy bootstraps imports can
+	// change the bootstraps, so a change to it must start the verify jobs.
+	for _, dir := range bootstrapPackageDirs(t) {
+		tests["pull request changes the package in "+dir] = changeTest{
+			event:   eventPullRequest,
+			commits: [][]string{{dir + "/change.go"}},
+			want:    "true",
+		}
 	}
 
 	step := readEnvoyWorkflow(t).Jobs[jobChanges].step(t, stepDiff)
@@ -418,15 +512,55 @@ func TestWorkflowFindsPinChanges(t *testing.T) {
 			got, err := os.ReadFile(vars["GITHUB_OUTPUT"])
 			require.NoError(t, err)
 
-			assert.Equal(t, "pin="+tt.want+"\n", string(got))
+			assert.Equal(t, "verify="+tt.want+"\n", string(got))
 		})
 	}
+}
+
+// bootstrapPackageDirs returns the directory of each package of the
+// repository that the envoy and certs packages import, with those two
+// packages. The directories are relative to the root of the repository,
+// with forward slashes. The proxy command generates its bootstraps with
+// the envoy package and creates their certificates with the certs
+// package.
+func bootstrapPackageDirs(t *testing.T) []string {
+	t.Helper()
+
+	root, err := filepath.Abs("..")
+	require.NoError(t, err)
+
+	cmd := exec.CommandContext(t.Context(), "go", "list", "-deps",
+		"-f", "{{if .Module}}{{if .Module.Main}}{{.Dir}}{{end}}{{end}}",
+		"./envoy", "./certs")
+	cmd.Dir = root
+
+	out, err := cmd.Output()
+	require.NoError(t, err)
+
+	var dirs []string
+
+	for line := range strings.Lines(string(out)) {
+		dir := strings.TrimSpace(line)
+		if dir == "" {
+			continue
+		}
+
+		rel, err := filepath.Rel(root, dir)
+		require.NoError(t, err)
+
+		dirs = append(dirs, filepath.ToSlash(rel))
+	}
+
+	require.Contains(t, dirs, "envoy")
+	require.Contains(t, dirs, "certs")
+
+	return dirs
 }
 
 // TestWorkflowResult runs the step of the result job of the envoy workflow
 // with the results that GitHub can report for the other jobs. The step
 // must fail for every combination in which a verify job did not pass for
-// a change to the pin.
+// a change to a file that the verify jobs check.
 func TestWorkflowResult(t *testing.T) {
 	t.Parallel()
 
@@ -441,45 +575,45 @@ func TestWorkflowResult(t *testing.T) {
 	tests := map[string]struct {
 		// changes is the result of the changes job.
 		changes string
-		// pin is the pin output of the changes job.
-		pin string
+		// needed is the verify output of the changes job.
+		needed string
 		// verify is the result of the verify jobs.
 		verify string
 		// pass says whether the step succeeds.
 		pass bool
 	}{
-		"pin changed and every verify job passed": {
-			changes: success, pin: "true", verify: success, pass: true,
+		"verify needed and every verify job passed": {
+			changes: success, needed: "true", verify: success, pass: true,
 		},
-		"pin unchanged and no verify job ran": {
-			changes: success, pin: "false", verify: skipped, pass: true,
+		"verify not needed and no verify job ran": {
+			changes: success, needed: "false", verify: skipped, pass: true,
 		},
-		"pin changed and a verify job failed": {
-			changes: success, pin: "true", verify: failure,
+		"verify needed and a verify job failed": {
+			changes: success, needed: "true", verify: failure,
 		},
-		"pin changed and a verify job was canceled": {
-			changes: success, pin: "true", verify: canceled,
+		"verify needed and a verify job was canceled": {
+			changes: success, needed: "true", verify: canceled,
 		},
-		"pin changed and no verify job ran": {
-			changes: success, pin: "true", verify: skipped,
+		"verify needed and no verify job ran": {
+			changes: success, needed: "true", verify: skipped,
 		},
 		"changes job set no output": {
-			changes: success, pin: "", verify: skipped,
+			changes: success, needed: "", verify: skipped,
 		},
 		"changes job failed": {
-			changes: failure, pin: "", verify: skipped,
+			changes: failure, needed: "", verify: skipped,
 		},
 		"changes job was canceled": {
-			changes: canceled, pin: "", verify: skipped,
+			changes: canceled, needed: "", verify: skipped,
 		},
 		"changes job was skipped": {
-			changes: skipped, pin: "", verify: skipped,
+			changes: skipped, needed: "", verify: skipped,
 		},
 		"changes job was canceled after it set the output": {
-			changes: canceled, pin: "false", verify: skipped,
+			changes: canceled, needed: "false", verify: skipped,
 		},
 		"no result": {
-			changes: "", pin: "", verify: "",
+			changes: "", needed: "", verify: "",
 		},
 	}
 
@@ -491,7 +625,7 @@ func TestWorkflowResult(t *testing.T) {
 
 			out, err := runStep(t, step, t.TempDir(), map[string]string{
 				"CHANGES_RESULT": tt.changes,
-				"PIN_CHANGED":    tt.pin,
+				"VERIFY_NEEDED":  tt.needed,
 				"VERIFY_RESULT":  tt.verify,
 			})
 

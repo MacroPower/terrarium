@@ -1,11 +1,16 @@
 name: envoy
 
-# Checks the provenance of the Envoy builds that envoybin/manifest.go pins.
-# A verify job fails when a hash, a signature, an attestation, or the version
-# commit of its build does not match. A verify job also fails when its build
-# of the pinned version does not exist. Tetrate publishes the macOS build
-# after the Envoy release, so a bump waits with failed jobs until that build
-# exists.
+# Checks the Envoy builds that envoybin/manifest.go pins. A verify job checks
+# the provenance of its build. It fails when a hash, a signature, an
+# attestation, or the version commit of the build does not match. A verify job
+# also fails when its build of the pinned version does not exist. Tetrate
+# publishes the macOS build after the Envoy release, so a bump waits with
+# failed jobs until that build exists.
+#
+# A verify job then loads the proxy bootstraps of terrarium with its build. It
+# fails when the build rejects a bootstrap, for example because the build
+# lacks an Envoy extension that the bootstrap names. The verify jobs therefore
+# also run for a change to the code that generates the bootstraps.
 #
 # The workflow runs for every pull request, and the envoy-pin job reports its
 # result under one fixed name. Two rules keep a pin that fails a check out of
@@ -20,9 +25,9 @@ name: envoy
 #   GitHub, and no file in the repository holds them. Without that setting, a
 #   person can merge a pull request whose pin fails a check.
 #
-# Do not require a verify job. The verify jobs run only for a change to the
-# pin, and GitHub holds a pull request until every required check reports a
-# result.
+# Do not require a verify job. The verify jobs run only for a change to a file
+# that they check, and GitHub holds a pull request until every required check
+# reports a result.
 on:
   push:
     branches:
@@ -45,7 +50,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      pin: ${{ steps.diff.outputs.pin }}
+      verify: ${{ steps.diff.outputs.verify }}
     steps:
       # A push can hold any number of commits, so the commit before the push
       # can sit at any depth of the history.
@@ -55,13 +60,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The pin output is "true" when the change touches a file that the
-      # verify jobs depend on. For a pull request, the checkout is the merge
-      # commit, and its first parent is the base branch. For a push, the base
-      # is the commit before the push. A manual run has no base, and the
-      # history does not hold the base of every push. The output is "true"
-      # in both cases, so the verify jobs run whenever the diff is unknown.
-      - name: Find changes to the pin
+      # The verify output is "true" when the change touches a file that the
+      # verify jobs check. The first group of paths holds the pin, the tool
+      # that checks it, the Go workspace, and this workflow. The second
+      # group holds the code that generates the proxy bootstraps and the
+      # dependencies of that code. For a pull request, the checkout is the
+      # merge commit, and its first parent is the base branch. For a push,
+      # the base is the commit before the push. A manual run has no base, and
+      # the history does not hold the base of every push. The output is
+      # "true" in both cases, so the verify jobs run whenever the diff is
+      # unknown.
+      - name: Find changes that the verify jobs check
         id: diff
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -73,24 +82,30 @@ jobs:
             *) base='' ;;
           esac
 
-          pin=true
+          verify=true
           if [ -n "$base" ] && git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
             if git diff --quiet "$base" HEAD -- \
               envoybin \
               cmd/envoymanifest \
               go.work \
               go.work.sum \
-              .github/workflows/envoy.yaml; then
-              pin=false
+              .github/workflows/envoy.yaml \
+              cmd/terrarium \
+              envoy \
+              config \
+              certs \
+              go.mod \
+              go.sum; then
+              verify=false
             fi
           fi
 
-          echo "pin=$pin" >>"$GITHUB_OUTPUT"
+          echo "verify=$verify" >>"$GITHUB_OUTPUT"
 
   verify:
     name: verify (${{ matrix.platform }})
     needs: [changes]
-    if: ${{ needs.changes.outputs.pin == 'true' }}
+    if: ${{ needs.changes.outputs.verify == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
@@ -128,11 +143,23 @@ jobs:
           # command sends it with its request to the GitHub API.
           GH_TOKEN: ${{ github.token }}
 
+      # The test generates a proxy bootstrap for each kind of policy. The
+      # bootstraps together name every Envoy extension type and every format
+      # command that a proxy bootstrap can name. The test installs the pinned
+      # build into the directory of the variable, the way that `terrarium
+      # proxy` installs it, and runs the build with `--mode validate` on each
+      # bootstrap. Without the variable, the test skips. The step runs after
+      # the provenance checks, so it runs only a build that passed them.
+      - name: Load the proxy bootstraps with the pinned Envoy build
+        run: go test -count=1 -run '^TestPinnedEnvoyLoadsProxyBootstraps$' ./cmd/terrarium
+        env:
+          TERRARIUM_TEST_ENVOY_DIR: ${{ runner.temp }}/envoy
+
   # This job is the check to require for a merge. It runs for every change,
   # and it passes only when every verify job passed or the change does not
-  # touch the pin. The always() condition is necessary. Without it, GitHub
-  # skips this job when a verify job fails, and a skipped job satisfies a
-  # required check.
+  # touch a file that the verify jobs check. The always() condition is
+  # necessary. Without it, GitHub skips this job when a verify job fails, and
+  # a skipped job satisfies a required check.
   result:
     name: envoy-pin
     needs: [changes, verify]
@@ -143,13 +170,13 @@ jobs:
       - name: Check the results of the other jobs
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
-          PIN_CHANGED: ${{ needs.changes.outputs.pin }}
+          VERIFY_NEEDED: ${{ needs.changes.outputs.verify }}
           VERIFY_RESULT: ${{ needs.verify.result }}
         run: |
-          echo "changes: $CHANGES_RESULT, pin changed: $PIN_CHANGED, verify: $VERIFY_RESULT"
+          echo "changes: $CHANGES_RESULT, verify needed: $VERIFY_NEEDED, verify: $VERIFY_RESULT"
 
           if [ "$CHANGES_RESULT" != success ]; then
-            echo "::error::The changes job did not succeed, so the state of the pin is unknown."
+            echo "::error::The changes job did not succeed, so the files of the change are unknown."
             exit 1
           fi
 
@@ -158,12 +185,12 @@ jobs:
               echo "Every verify job passed."
               ;;
             skipped)
-              if [ "$PIN_CHANGED" != false ]; then
-                echo "::error::The verify jobs did not run for a change to the pin."
+              if [ "$VERIFY_NEEDED" != false ]; then
+                echo "::error::The verify jobs did not run for a change to a file that they check."
                 exit 1
               fi
 
-              echo "The change does not touch the pin, so no verify job ran."
+              echo "The change does not touch a file that the verify jobs check, so no verify job ran."
               ;;
             *)
               echo "::error::A verify job did not pass."
