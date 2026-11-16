@@ -70,11 +70,12 @@ func listenAdditionalAddrs(transparent bool, port int) []additionalAddr {
 // passthrough chain takes the host from the SNI, and a MITM chain
 // takes the host from the Host header of each decrypted request.
 //
-// The tcpAL is the access log slice for the TCP-level chains
-// (passthrough and wildcard passthrough); httpAL is the access log
-// slice for the
-// HCM-based MITM chain. Pass distinct slices when stats is enabled
-// so receivers can tell passthrough events from MITM events.
+// The tcpAL is the access log slice for the TCP-level chains. These
+// are the passthrough chains, the wildcard passthrough chain, and the
+// default chain, which rejects each connection without an allowed SNI.
+// The httpAL is the access log slice for the HCM-based MITM chain.
+// Pass distinct slices when stats is enabled so receivers can tell
+// passthrough events from MITM events.
 func BuildTLSListener(
 	name string,
 	listenPort, upstreamPort int,
@@ -194,12 +195,14 @@ func buildTLSFilterChains(
 	}
 
 	// Default filter chain catches connections without SNI (e.g., TLS
-	// by IP address). Without this, Envoy silently drops the connection
-	// with no log entry, making diagnosis difficult (ISSUE-34). The
-	// access log always fires (regardless of the logging flag) since
+	// by IP address) and connections whose SNI matches no chain.
+	// Without this, Envoy silently drops the connection with no log
+	// entry, making diagnosis difficult (ISSUE-34). The stderr access
+	// log always fires (regardless of the logging flag) since
 	// missing-SNI connections indicate a configuration or client issue
-	// that should be visible.
-	return chains, buildDefaultRejectFilterChain(statPrefix)
+	// that should be visible. The tcpAL loggers record the connection
+	// as a TCP deny.
+	return chains, buildDefaultRejectFilterChain(statPrefix, tcpAL)
 }
 
 // tlsInspectorListenerFilter returns the tls_inspector listener

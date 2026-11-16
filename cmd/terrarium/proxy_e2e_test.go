@@ -2930,6 +2930,409 @@ func TestProxyE2EStatsDefaultSocket(t *testing.T) {
 	}, 15*time.Second, 250*time.Millisecond)
 }
 
+// proxyEvent holds the fields of an Envoy event that
+// [TestProxyE2EStatsEvents] compares.
+type proxyEvent struct {
+	Decision eventstore.Decision
+	Protocol eventstore.Protocol
+	Domain   string
+	Method   string
+	Path     string
+	Status   int
+
+	// Upstream is true when an allow event holds the address of an
+	// upstream. It is false for every other event, because a deny
+	// event holds an address only when Envoy chose the upstream before
+	// it denied the connection.
+	Upstream bool
+}
+
+// envoyEvents returns the Envoy events in the stats DB at dbPath,
+// without the events of the requests that [waitProxyReady] sent.
+func envoyEvents(t *testing.T, dbPath string) []proxyEvent {
+	t.Helper()
+
+	r, err := eventstore.OpenReader(t.Context(), dbPath)
+	require.NoError(t, err)
+
+	defer func() { assert.NoError(t, r.Close()) }()
+
+	page, err := r.Events(t.Context(), eventstore.EventsQuery{
+		Filter: eventstore.Filter{Source: eventstore.SourceEnvoy},
+		Limit:  -1,
+	})
+	require.NoError(t, err)
+
+	var events []proxyEvent
+
+	for i := range page.Events {
+		ev := &page.Events[i]
+		if ev.Domain == "proxy-readiness.invalid" {
+			continue
+		}
+
+		events = append(events, proxyEvent{
+			Decision: ev.Decision,
+			Protocol: ev.Protocol,
+			Domain:   ev.Domain,
+			Method:   ev.HTTPMethod,
+			Path:     ev.HTTPPath,
+			Status:   ev.HTTPStatus,
+			Upstream: ev.Decision == eventstore.DecisionAllow && ev.DstIP.IsValid(),
+		})
+	}
+
+	return events
+}
+
+// TestProxyE2EStatsEvents checks that a proxy with a filtered policy
+// records one event for each decision. The front listener sends plain
+// HTTP requests and the payload of tunnels to internal listeners, which
+// apply the policy. The internal listener records such a request, and
+// the front listener records only the requests that it answers itself.
+//
+//nolint:paralleltest // e2e tests set env and run envoy subprocesses.
+func TestProxyE2EStatsEvents(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	caPath, tlsCfg := e2eCerts(t, "tunnel.example", "l7.example")
+
+	ports := freePorts(t, 2)
+	tunnelPort, l7Port := strconv.Itoa(ports[0]), strconv.Itoa(ports[1])
+
+	startTLSServer(t, "127.0.0.1:"+tunnelPort, tlsCfg, "tunneled upstream")
+	startTLSServer(t, "127.0.0.1:"+l7Port, tlsCfg, "mitm upstream")
+
+	// The proxy connects to the HTTP default port of the upstream of
+	// an allowed plain HTTP request. Not every host lets the test bind
+	// port 80, and the test then sends no such request.
+	lc := net.ListenConfig{}
+
+	ln80, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:80")
+	port80 := err == nil
+
+	if port80 {
+		require.NoError(t, ln80.Close())
+		startHTTPServer(t, "127.0.0.1:80", fixedBodyHandler(t, "plain upstream"))
+	}
+
+	// The proxy validates its re-encrypted upstream connection against
+	// the system bundle, so point the bundle at the test CA.
+	t.Setenv("SSL_CERT_FILE", caPath)
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
+
+	dbPath := filepath.Join(t.TempDir(), "stats.db")
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	policy := "stats:\n" +
+		"  enabled: true\n" +
+		"  path: " + dbPath + "\n" +
+		"  flushIntervalMs: 100\n" +
+		"egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: plain.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /allowed.*\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: tunnel.example\n" +
+		"      - matchPattern: '*.wild.example'\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"" + tunnelPort + "\"\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: l7.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"" + l7Port + "\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /allowed.*\n"
+
+	proxyURL, usr := startProxy(t, policy, dnsAddr)
+
+	// The client of the tunneled host sees the certificate of the
+	// upstream. The client of the host with L7 rules sees the MITM
+	// leaf of the proxy.
+	tunnelClient := proxyClient(t, proxyURL, loadPool(t, caPath))
+	mitmPool := loadPool(t, filepath.Join(usr.CADir, "ca.pem"))
+
+	httpEvent := func(
+		decision eventstore.Decision, domain, method, path string, status int, upstream bool,
+	) proxyEvent {
+		return proxyEvent{
+			Decision: decision,
+			Protocol: eventstore.ProtocolHTTP,
+			Domain:   domain,
+			Method:   method,
+			Path:     path,
+			Status:   status,
+			Upstream: upstream,
+		}
+	}
+
+	var want []proxyEvent
+
+	// The internal HTTP listener denies these plain HTTP requests.
+	assert.Equal(t, http.StatusForbidden,
+		getStatus(t, tunnelClient, "http://denied.example/"))
+	assert.Equal(t, http.StatusForbidden,
+		getStatus(t, tunnelClient, "http://plain.example/forbidden"))
+
+	want = append(want,
+		httpEvent(eventstore.DecisionDeny, "denied.example", "GET", "/", http.StatusForbidden, false),
+		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/forbidden", http.StatusForbidden, false),
+	)
+
+	// The front listener denies a plain HTTP request for another port
+	// than 80, and a CONNECT request for an authority outside the
+	// policy.
+	assert.Equal(t, http.StatusForbidden,
+		getStatus(t, tunnelClient, "http://plain.example:8080/"))
+	assert.Equal(t, http.StatusForbidden, rawRequestStatus(t, proxyURL,
+		"CONNECT denied.example:443 HTTP/1.1\r\nHost: denied.example:443\r\n\r\n"))
+
+	want = append(want,
+		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/", http.StatusForbidden, false),
+		httpEvent(eventstore.DecisionDeny, "denied.example", "CONNECT", "", http.StatusForbidden, false),
+	)
+
+	// The front listener also answers a request that matches no route,
+	// such as a request without a Host header.
+	assert.Equal(t, http.StatusBadRequest,
+		rawRequestStatus(t, proxyURL, "GET / HTTP/1.1\r\n\r\n"))
+
+	want = append(want,
+		httpEvent(eventstore.DecisionError, "", "GET", "/", http.StatusBadRequest, false))
+
+	if port80 {
+		assert.Equal(t, http.StatusOK,
+			getStatus(t, tunnelClient, "http://plain.example/allowed"))
+
+		want = append(want,
+			httpEvent(eventstore.DecisionAllow, "plain.example", "GET", "/allowed", http.StatusOK, true))
+	}
+
+	// Envoy records the connection of a tunneled host when the
+	// connection closes.
+	assert.Equal(t, http.StatusOK,
+		getStatus(t, tunnelClient, "https://tunnel.example:"+tunnelPort+"/"))
+	tunnelClient.CloseIdleConnections()
+
+	want = append(want, proxyEvent{
+		Decision: eventstore.DecisionAllow,
+		Protocol: eventstore.ProtocolTCP,
+		Domain:   "tunnel.example",
+		Upstream: true,
+	})
+
+	// The front listener opens a tunnel for an authority that matches
+	// the wildcard. The internal TLS listener then denies the
+	// connection, because its server name has one label too many.
+	deep := tls.Client(connectHTTP10(t, proxyURL, "a.b.wild.example:"+tunnelPort), &tls.Config{
+		ServerName: "a.b.wild.example",
+		RootCAs:    loadPool(t, caPath),
+		MinVersion: tls.VersionTLS12,
+	})
+	require.Error(t, deep.HandshakeContext(t.Context()))
+
+	want = append(want, proxyEvent{
+		Decision: eventstore.DecisionDeny,
+		Protocol: eventstore.ProtocolTCP,
+		Domain:   "a.b.wild.example",
+	})
+
+	// The internal TLS listener denies a tunnel whose server name the
+	// policy does not allow on the port. It also denies a tunnel
+	// without a server name, and the client sends no server name for
+	// an IP address.
+	for _, serverName := range []string{"other.example", "127.0.0.1"} {
+		conn := tls.Client(connectHTTP10(t, proxyURL, "tunnel.example:"+tunnelPort), &tls.Config{
+			ServerName: serverName,
+			RootCAs:    loadPool(t, caPath),
+			MinVersion: tls.VersionTLS12,
+		})
+		require.Error(t, conn.HandshakeContext(t.Context()))
+	}
+
+	// The event of a tunnel without a server name has no domain.
+	want = append(want,
+		proxyEvent{
+			Decision: eventstore.DecisionDeny,
+			Protocol: eventstore.ProtocolTCP,
+			Domain:   "other.example",
+		},
+		proxyEvent{
+			Decision: eventstore.DecisionDeny,
+			Protocol: eventstore.ProtocolTCP,
+		},
+	)
+
+	// The front listener tunnels a CONNECT request for port 80 into the
+	// internal HTTP listener, which records each request inside the
+	// tunnel.
+	plainTunnel := connectHTTP10(t, proxyURL, "plain.example:80")
+	status, _ := rawRoundTrip(t, plainTunnel,
+		"GET /forbidden HTTP/1.1\r\nHost: plain.example\r\n\r\n")
+	assert.Equal(t, http.StatusForbidden, status)
+
+	want = append(want,
+		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/forbidden", http.StatusForbidden, false))
+
+	// Envoy records each request inside the tunnel to a host with L7
+	// rules, and it records the tunnel when the tunnel closes. Each
+	// request gets its own client, so each request opens one tunnel.
+	l7Tunnel := proxyEvent{
+		Decision: eventstore.DecisionAllow,
+		Protocol: eventstore.ProtocolTCP,
+		Domain:   "l7.example",
+	}
+
+	for _, req := range []struct {
+		path   string
+		status int
+		event  proxyEvent
+	}{
+		{
+			path:   "/allowed",
+			status: http.StatusOK,
+			event:  httpEvent(eventstore.DecisionAllow, "l7.example", "GET", "/allowed", http.StatusOK, true),
+		},
+		{
+			path:   "/forbidden",
+			status: http.StatusForbidden,
+			event: httpEvent(
+				eventstore.DecisionDeny, "l7.example", "GET", "/forbidden", http.StatusForbidden, false),
+		},
+	} {
+		l7Client := proxyClient(t, proxyURL, mitmPool)
+		assert.Equal(t, req.status, getStatus(t, l7Client, "https://l7.example:"+l7Port+req.path))
+		l7Client.CloseIdleConnections()
+
+		want = append(want, req.event, l7Tunnel)
+	}
+
+	// A tunnel to a host with L7 rules can carry no request, such as
+	// the tunnel of a client that does not trust the MITM CA of the
+	// proxy. Envoy closes the tunnel after the handshake fails, and it
+	// records the tunnel as an error, because no data passed.
+	untrusting := tls.Client(connectHTTP10(t, proxyURL, "l7.example:"+l7Port), &tls.Config{
+		ServerName: "l7.example",
+		RootCAs:    loadPool(t, caPath),
+		MinVersion: tls.VersionTLS12,
+	})
+	require.Error(t, untrusting.HandshakeContext(t.Context()))
+
+	want = append(want, proxyEvent{
+		Decision: eventstore.DecisionError,
+		Protocol: eventstore.ProtocolTCP,
+		Domain:   "l7.example",
+	})
+
+	// A tunnel that the client closes before it starts the TLS
+	// handshake records no event. The internal TLS listener reads no
+	// server name, so it applies no filter chain to the connection.
+	for _, authority := range []string{"tunnel.example:" + tunnelPort, "l7.example:" + l7Port} {
+		assert.Equal(t, http.StatusOK, rawRequestStatus(t, proxyURL,
+			"CONNECT "+authority+" HTTP/1.1\r\nHost: "+authority+"\r\n\r\n"))
+	}
+
+	require.Eventually(t, func() bool {
+		return len(envoyEvents(t, dbPath)) >= len(want)
+	}, 15*time.Second, 100*time.Millisecond)
+
+	// Envoy sends its events every 100 milliseconds, so an event that
+	// the proxy must not record arrives within this second.
+	time.Sleep(time.Second)
+
+	assert.ElementsMatch(t, want, envoyEvents(t, dbPath))
+}
+
+// TestProxyE2EStatsEventsUnrestricted checks the events of a proxy
+// with an unrestricted policy. Such a proxy has no internal listener,
+// so the front listener records each request, and a tunnel is one
+// CONNECT request.
+//
+//nolint:paralleltest // e2e tests set env and run envoy subprocesses.
+func TestProxyE2EStatsEventsUnrestricted(t *testing.T) {
+	requireEnvoy(t)
+
+	caPath, tlsCfg := e2eCerts(t, "tunnel.example")
+
+	ports := freePorts(t, 2)
+	httpPort, tlsPort := strconv.Itoa(ports[0]), strconv.Itoa(ports[1])
+
+	startHTTPServer(t, "127.0.0.1:"+httpPort, fixedBodyHandler(t, "plain upstream"))
+	startTLSServer(t, "127.0.0.1:"+tlsPort, tlsCfg, "tunneled upstream")
+
+	t.Setenv("XDG_RUNTIME_DIR", shortTempDir(t))
+
+	dbPath := filepath.Join(t.TempDir(), "stats.db")
+
+	policy := "stats:\n" +
+		"  enabled: true\n" +
+		"  path: " + dbPath + "\n" +
+		"  flushIntervalMs: 100\n"
+
+	proxyURL, _ := startProxy(t, policy, "")
+	// The requests name their upstream by address, so the test does
+	// not depend on the resolver of the host. The client checks the
+	// certificate of the upstream against the name of the leaf.
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{
+				ServerName: "tunnel.example",
+				RootCAs:    loadPool(t, caPath),
+				MinVersion: tls.VersionTLS12,
+			},
+		},
+	}
+
+	assert.Equal(t, http.StatusOK,
+		getStatus(t, client, "http://127.0.0.1:"+httpPort+"/plain"))
+
+	// Envoy records the CONNECT request when the tunnel closes.
+	assert.Equal(t, http.StatusOK,
+		getStatus(t, client, "https://127.0.0.1:"+tlsPort+"/"))
+	client.CloseIdleConnections()
+
+	want := []proxyEvent{
+		{
+			Decision: eventstore.DecisionAllow,
+			Protocol: eventstore.ProtocolHTTP,
+			Domain:   "127.0.0.1",
+			Method:   "GET",
+			Path:     "/plain",
+			Status:   http.StatusOK,
+			Upstream: true,
+		},
+		{
+			Decision: eventstore.DecisionAllow,
+			Protocol: eventstore.ProtocolHTTP,
+			Domain:   "127.0.0.1",
+			Method:   "CONNECT",
+			Status:   http.StatusOK,
+			Upstream: true,
+		},
+	}
+
+	require.Eventually(t, func() bool {
+		return len(envoyEvents(t, dbPath)) >= len(want)
+	}, 15*time.Second, 100*time.Millisecond)
+
+	// Envoy sends its events every 100 milliseconds, so an event that
+	// the proxy must not record arrives within this second.
+	time.Sleep(time.Second)
+
+	assert.ElementsMatch(t, want, envoyEvents(t, dbPath))
+}
+
 // TestProxyE2EPolicySnapshot checks that a proxy with stats enabled
 // records the policy that it serves. The store holds one snapshot of
 // the proxy, and the instance row names the listen address and the

@@ -19,6 +19,7 @@ import (
 	"maps"
 	"net/netip"
 	"slices"
+	"strings"
 
 	"go.jacobcolvin.com/terrarium/config"
 )
@@ -104,7 +105,8 @@ type ProxyListenerParams struct {
 	// requests are decapsulated into the internal HTTP listener.
 	HTTPDomains []string
 
-	// AccessLog is the HCM access log configuration.
+	// AccessLog is the HCM access log configuration. The listener
+	// adds a filter to each access logger, see [BuildProxyListener].
 	AccessLog []AccessLog
 
 	// Resolvers are explicit DNS resolver addresses for the dynamic
@@ -134,6 +136,18 @@ type ProxyListenerParams struct {
 // names are always fully qualified, so both forms name one host. The
 // access loggers record the authority without the dot.
 //
+// In [ProxyModeFiltered], the listener sends each plain HTTP request
+// and each tunnel that it does not deny to an internal listener. The
+// access loggers skip each of these requests that the listener passes
+// to the internal listener over a connection. The internal listener
+// applies the policy to the request and logs the decision, so each
+// decision gives one log entry. The access loggers log the requests
+// that the listener answers itself, such as a request that it denies
+// with status 403, or a request that it cannot pass to the internal
+// listener. In the other modes, the listener sends no request to an
+// internal listener, and the access loggers log every request except
+// the probe request.
+//
 // The listener serves HTTP/1.0 requests, because some clients send
 // their CONNECT request in HTTP/1.0, such as `openssl s_client -proxy`.
 // The routes apply the same policy to the requests of every HTTP
@@ -150,13 +164,14 @@ type ProxyListenerParams struct {
 // before the first Envoy listens there keeps running without the
 // listener. The ProbeToken field of p lets a caller find that Envoy.
 func BuildProxyListener(p ProxyListenerParams) Listener {
-	var vhosts []virtualHost
-
-	accessLog := p.AccessLog
+	var (
+		vhosts     []virtualHost
+		logFilters []accessLogFilter
+	)
 
 	if p.ProbeToken != "" {
 		vhosts = append(vhosts, buildProbeProxyVhost(p.ProbeToken))
-		accessLog = skipProbeAccessLog(accessLog)
+		logFilters = append(logFilters, skipProbeFilter())
 	}
 
 	switch p.Mode {
@@ -167,9 +182,15 @@ func BuildProxyListener(p ProxyListenerParams) Listener {
 		vhosts = append(vhosts, buildFilteredProxyVhosts(p)...)
 		vhosts = append(vhosts, buildDenyProxyVhost(len(p.HTTPDomains) > 0))
 
+		if internal := internalListenerClusters(p); len(internal) > 0 {
+			logFilters = append(logFilters, skipClustersFilter(internal))
+		}
+
 	case ProxyModeBlocked:
 		vhosts = append(vhosts, buildDenyProxyVhost(false))
 	}
+
+	accessLog := filterAccessLog(p.AccessLog, logFilters)
 
 	httpFilters := []filter{{
 		Name: httpRouterFilterName,
@@ -250,29 +271,119 @@ func buildProbeProxyVhost(token string) virtualHost {
 	}
 }
 
-// skipProbeAccessLog returns a copy of logs in which every access
-// logger skips the requests for [ProxyProbeHost]. The probe is not
+// skipProbeFilter returns the access log filter that matches every
+// request except the requests for [ProxyProbeHost]. The probe is not
 // traffic of a client, so it stays out of the recorded events.
 //
-// The access loggers still write a request that has no authority, such
-// as an HTTP/1.0 request without a Host header or a request that Envoy
+// The filter matches a request that has no authority, such as an
+// HTTP/1.0 request without a Host header or a request that Envoy
 // cannot parse. The matcher handles the missing header like an empty
 // one, which is not the probe host.
-func skipProbeAccessLog(logs []AccessLog) []AccessLog {
+func skipProbeFilter() accessLogFilter {
+	return accessLogFilter{
+		HeaderFilter: &accessLogHeaderFilter{
+			Header: headerMatcher{
+				Name:                      authorityHeader,
+				StringMatch:               &stringMatch{Exact: ProxyProbeHost},
+				InvertMatch:               true,
+				TreatMissingHeaderAsEmpty: true,
+			},
+		},
+	}
+}
+
+// internalListenerClusters returns the names of the clusters through
+// which the routes of [buildFilteredProxyVhosts] and
+// [buildDenyProxyVhost] reach the internal listeners of p, in sorted
+// order.
+func internalListenerClusters(p ProxyListenerParams) []string {
+	var names []string
+
+	if len(p.HTTPDomains) > 0 {
+		names = append(names, internalHTTPName)
+	}
+
+	for port, domains := range p.ConnectTLS {
+		if len(domains) > 0 {
+			names = append(names, internalTLSName(port))
+		}
+	}
+
+	slices.Sort(names)
+
+	return names
+}
+
+// skipClustersFilter returns the access log filter that matches every
+// request except the requests that the listener passed to one of
+// clusters over an upstream connection. The cluster names must not
+// hold a single quote or a backslash.
+//
+// The filter matches a request that the listener answered without an
+// upstream, such as a request that a direct response denied or a
+// request that matched no route. Such a request has no cluster name.
+// The filter also matches a request that the listener routed to one
+// of clusters and then answered without an upstream connection, such
+// as a 503 when the listener cannot connect to the cluster or when a
+// circuit breaker of the cluster overflows. That request never reached
+// the listener behind the cluster, so only this listener logs it.
+// Envoy records the local address of the upstream connection only for
+// a request that got a connection. The response code details do not
+// tell the two cases apart, because Envoy replaces the details of a
+// tunnel when the tunnel closes.
+//
+// The expression tests for each attribute before it reads the
+// attribute. A read of a missing attribute is an error, and Envoy does
+// not log a request for which the expression gives an error.
+func skipClustersFilter(clusters []string) accessLogFilter {
+	return celFilter("!(has(xds.cluster_name) && xds.cluster_name in " +
+		celStringList(clusters) + " && has(upstream.local_address))")
+}
+
+// celFilter returns the access log filter that matches each request
+// for which the CEL expression is true.
+func celFilter(expression string) accessLogFilter {
+	return accessLogFilter{
+		ExtensionFilter: &typedExtensionConfig{
+			Name: celAccessLogFilterName,
+			TypedConfig: celAccessLogFilterConfig{
+				AtType:     celAccessLogFilterTypeURL,
+				Expression: expression,
+			},
+		},
+	}
+}
+
+// celStringList returns a CEL list literal of the strings of values.
+// The values must not hold a single quote or a backslash.
+func celStringList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, v := range values {
+		quoted = append(quoted, "'"+v+"'")
+	}
+
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// filterAccessLog returns a copy of logs in which every access logger
+// writes only the requests that each filter of filters matches. It
+// returns logs unchanged when filters is empty.
+func filterAccessLog(logs []AccessLog, filters []accessLogFilter) []AccessLog {
+	var filter *accessLogFilter
+
+	switch len(filters) {
+	case 0:
+		return logs
+	case 1:
+		filter = &filters[0]
+	default:
+		filter = &accessLogFilter{AndFilter: &accessLogAndFilter{Filters: filters}}
+	}
+
 	out := make([]AccessLog, 0, len(logs))
 
 	for _, l := range logs {
-		l.Filter = &accessLogFilter{
-			HeaderFilter: &accessLogHeaderFilter{
-				Header: headerMatcher{
-					Name:                      authorityHeader,
-					StringMatch:               &stringMatch{Exact: ProxyProbeHost},
-					InvertMatch:               true,
-					TreatMissingHeaderAsEmpty: true,
-				},
-			},
-		}
-
+		l.Filter = filter
 		out = append(out, l)
 	}
 
@@ -467,6 +578,9 @@ func connectAuthorities(domains []string, port int) []string {
 // Every chain connects to port of its upstream host, which is the port
 // of the CONNECT authority that the front listener matched. A MITM
 // chain takes the host from the Host header of each decrypted request.
+//
+// The listener logs each connection of a MITM chain to tcpAL when the
+// connection closes, see [mitmTunnelAccessLog].
 func BuildInternalTLSListener(
 	port int,
 	rules []config.ResolvedRule,
@@ -487,7 +601,41 @@ func BuildInternalTLSListener(
 		DefaultFilterChain: &defaultChain,
 		ListenerFilters:    []NamedTyped{tlsInspectorListenerFilter()},
 		FilterChains:       chains,
+		AccessLog:          mitmTunnelAccessLog(tcpAL, chains),
 	}
+}
+
+// mitmTunnelAccessLog returns the listener access loggers of an
+// internal TLS listener with chains. They are tcpAL, with a filter
+// that matches each connection of a MITM chain.
+//
+// A tunnel ends in a MITM chain when the front listener tunnels a
+// CONNECT request for a host with L7 rules. The connection manager of
+// the chain logs each request inside the tunnel, but a tunnel can
+// carry no request. For example, the TLS handshake fails when the
+// client does not trust the MITM CA. The front listener skips the
+// CONNECT request, see [BuildProxyListener], so the listener access
+// loggers record the tunnel itself. The filter skips the connections
+// of the other chains, because their TCP proxies log them.
+//
+// It returns nil when tcpAL is empty or when chains holds no MITM
+// chain.
+func mitmTunnelAccessLog(tcpAL []AccessLog, chains []filterChain) []AccessLog {
+	var names []string
+
+	for _, c := range chains {
+		if strings.HasPrefix(c.Name, mitmFilterChainPrefix) {
+			names = append(names, c.Name)
+		}
+	}
+
+	if len(tcpAL) == 0 || len(names) == 0 {
+		return nil
+	}
+
+	return filterAccessLog(tcpAL, []accessLogFilter{celFilter(
+		"has(xds.filter_chain_name) && xds.filter_chain_name in " + celStringList(names),
+	)})
 }
 
 // BuildInternalHTTPListener creates the proxy-mode internal listener

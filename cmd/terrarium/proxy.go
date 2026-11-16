@@ -534,7 +534,11 @@ func writeFileAtomic(path string, data []byte) error {
 // rules are rejected with [ErrDenyRulesUnsupported].
 //
 // When stats is enabled, the access loggers send to the socket that
-// [proxyStatsSocket] returns for bindAddress and httpPort.
+// [proxyStatsSocket] returns for bindAddress and httpPort. Each
+// decision gives one log entry. The access loggers of the front
+// listener skip each request that the listener passes to an internal
+// listener, because the access loggers of the internal listener log
+// the decision for that request.
 //
 // When probeToken is not empty, the front listener answers the probe
 // request of [waitForProxyListener] for that token. Envoy then loads

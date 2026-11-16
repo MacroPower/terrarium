@@ -2,6 +2,7 @@ package envoy_test
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/goccy/go-yaml"
@@ -304,6 +305,204 @@ func TestBuildProxyListener_Probe(t *testing.T) {
 	}
 }
 
+// frontLogFilter is the filter of an access logger of the front
+// listener. Envoy logs a request when the filter matches it.
+type frontLogFilter struct {
+	// SkipAuthority is the authority that the filter does not match.
+	SkipAuthority string
+
+	// Expression is the CEL expression that the filter evaluates.
+	Expression string
+
+	// And holds the filters that the filter combines. The filter
+	// matches a request that each of them matches.
+	And []frontLogFilter
+}
+
+// frontLogFilterDoc decodes the filter of an access logger.
+type frontLogFilterDoc struct {
+	HeaderFilter *struct {
+		Header struct {
+			Name        string `yaml:"name"`
+			StringMatch struct {
+				Exact string `yaml:"exact"`
+			} `yaml:"string_match"`
+			InvertMatch bool `yaml:"invert_match"`
+		} `yaml:"header"`
+	} `yaml:"header_filter"`
+	AndFilter *struct {
+		Filters []frontLogFilterDoc `yaml:"filters"`
+	} `yaml:"and_filter"`
+	ExtensionFilter *struct {
+		Name        string `yaml:"name"`
+		TypedConfig struct {
+			Expression string `yaml:"expression"`
+		} `yaml:"typed_config"`
+	} `yaml:"extension_filter"`
+}
+
+// filter returns the [frontLogFilter] that d describes.
+func (d frontLogFilterDoc) filter(t *testing.T) frontLogFilter {
+	t.Helper()
+
+	var f frontLogFilter
+
+	if d.HeaderFilter != nil {
+		require.Equal(t, ":authority", d.HeaderFilter.Header.Name)
+		require.True(t, d.HeaderFilter.Header.InvertMatch)
+
+		f.SkipAuthority = d.HeaderFilter.Header.StringMatch.Exact
+	}
+
+	if d.ExtensionFilter != nil {
+		require.Equal(t, "envoy.access_loggers.extension_filters.cel", d.ExtensionFilter.Name)
+
+		f.Expression = d.ExtensionFilter.TypedConfig.Expression
+	}
+
+	if d.AndFilter != nil {
+		for _, sub := range d.AndFilter.Filters {
+			f.And = append(f.And, sub.filter(t))
+		}
+	}
+
+	return f
+}
+
+// frontLogFilters returns the filter of each access logger of the
+// front listener that p describes. An access logger without a filter
+// gives nil.
+func frontLogFilters(t *testing.T, p envoy.ProxyListenerParams) []*frontLogFilter {
+	t.Helper()
+
+	var doc struct {
+		FilterChains []struct {
+			Filters []struct {
+				TypedConfig struct {
+					AccessLog []struct {
+						Filter *frontLogFilterDoc `yaml:"filter"`
+					} `yaml:"access_log"`
+				} `yaml:"typed_config"`
+			} `yaml:"filters"`
+		} `yaml:"filter_chains"`
+	}
+
+	require.NoError(t, yaml.Unmarshal([]byte(marshalYAML(t, envoy.BuildProxyListener(p))), &doc))
+	require.Len(t, doc.FilterChains, 1)
+	require.Len(t, doc.FilterChains[0].Filters, 1)
+
+	var got []*frontLogFilter
+
+	for _, al := range doc.FilterChains[0].Filters[0].TypedConfig.AccessLog {
+		if al.Filter == nil {
+			got = append(got, nil)
+
+			continue
+		}
+
+		got = append(got, new(al.Filter.filter(t)))
+	}
+
+	return got
+}
+
+// TestBuildProxyListener_SkipInternalListenerRequests checks that the
+// access loggers of the front listener skip each request that the
+// listener sends to an internal listener. The internal listener
+// applies the policy to that request and logs it, so a second entry
+// from the front listener records the request twice.
+func TestBuildProxyListener_SkipInternalListenerRequests(t *testing.T) {
+	t.Parallel()
+
+	skipProbe := frontLogFilter{SkipAuthority: envoy.ProxyProbeHost}
+
+	skipClusters := func(list string) frontLogFilter {
+		return frontLogFilter{
+			Expression: "!(has(xds.cluster_name) && xds.cluster_name in [" + list + "] && " +
+				"has(upstream.local_address))",
+		}
+	}
+
+	tests := map[string]struct {
+		connectTLS  map[int][]string
+		httpDomains []string
+		probeToken  string
+		mode        envoy.ProxyMode
+		want        *frontLogFilter
+	}{
+		"filtered, TLS and HTTP rules": {
+			mode:        envoy.ProxyModeFiltered,
+			connectTLS:  map[int][]string{8443: {"alt.example.com"}, 443: {"api.example.com"}},
+			httpDomains: []string{"plain.example.com"},
+			want:        new(skipClusters("'http_internal', 'tls_internal_443', 'tls_internal_8443'")),
+		},
+		"filtered, TLS rules": {
+			mode:       envoy.ProxyModeFiltered,
+			connectTLS: map[int][]string{443: {"api.example.com"}},
+			want:       new(skipClusters("'tls_internal_443'")),
+		},
+		"filtered, HTTP rules": {
+			mode:        envoy.ProxyModeFiltered,
+			httpDomains: []string{"plain.example.com"},
+			want:        new(skipClusters("'http_internal'")),
+		},
+		"filtered, probe": {
+			mode:        envoy.ProxyModeFiltered,
+			connectTLS:  map[int][]string{443: {"api.example.com"}},
+			httpDomains: []string{"plain.example.com"},
+			probeToken:  "probe-token",
+			want: &frontLogFilter{And: []frontLogFilter{
+				skipProbe,
+				skipClusters("'http_internal', 'tls_internal_443'"),
+			}},
+		},
+		"filtered, no internal listener": {
+			mode: envoy.ProxyModeFiltered,
+		},
+		"filtered, port without domains": {
+			mode:       envoy.ProxyModeFiltered,
+			connectTLS: map[int][]string{443: nil},
+		},
+		"open": {
+			mode: envoy.ProxyModeOpen,
+		},
+		"open, probe": {
+			mode:       envoy.ProxyModeOpen,
+			probeToken: "probe-token",
+			want:       &skipProbe,
+		},
+		"blocked": {
+			mode: envoy.ProxyModeBlocked,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			params := envoy.ProxyListenerParams{
+				BindAddress: "127.0.0.1",
+				Port:        8080,
+				Mode:        tt.mode,
+				ConnectTLS:  tt.connectTLS,
+				HTTPDomains: tt.httpDomains,
+				ProbeToken:  tt.probeToken,
+				AccessLog: append(
+					envoy.BuildHTTPGrpcAccessLog("proxy", 0, 0),
+					envoy.BuildHTTPGrpcAccessLog("second", 0, 0)...,
+				),
+			}
+
+			// Each access logger gets the filter.
+			assert.Equal(t, []*frontLogFilter{tt.want, tt.want}, frontLogFilters(t, params))
+
+			// The filter must not reach the access loggers of the
+			// caller, which other listeners can share.
+			assert.NotContains(t, marshalYAML(t, params.AccessLog), "filter:")
+		})
+	}
+}
+
 func TestBuildProxyListener_BareWildcard(t *testing.T) {
 	t.Parallel()
 
@@ -372,6 +571,178 @@ func TestBuildInternalTLSListener_Resolvers(t *testing.T) {
 	assert.Contains(t, y, "typed_dns_resolver_config")
 	assert.Contains(t, y, "address: 10.0.0.2")
 	assert.Contains(t, y, "port_value: 5353")
+}
+
+// TestTLSListeners_DefaultChainAccessLog checks that the default
+// filter chain of a TLS listener logs to the TCP access loggers of the
+// listener. That chain closes each connection without an allowed SNI,
+// and the stats store records the closed connection as a deny.
+func TestTLSListeners_DefaultChainAccessLog(t *testing.T) {
+	t.Parallel()
+
+	rules := []config.ResolvedRule{{Domain: "example.com"}}
+	tcpAL := envoy.BuildTCPGrpcAccessLog("tcp", 0, 0)
+	httpAL := envoy.BuildHTTPGrpcAccessLog("mitm", 0, 0)
+
+	tests := map[string]struct {
+		listener envoy.Listener
+	}{
+		"container": {
+			listener: envoy.BuildTLSListener(
+				"tls_passthrough", 15443, 443, "tls_passthrough",
+				rules, false, tcpAL, httpAL, "", false,
+			),
+		},
+		"proxy internal": {
+			listener: envoy.BuildInternalTLSListener(443, rules, false, tcpAL, httpAL, "", nil),
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var doc struct {
+				DefaultFilterChain struct {
+					Filters []struct {
+						TypedConfig struct {
+							Cluster   string `yaml:"cluster"`
+							AccessLog []struct {
+								Name        string `yaml:"name"`
+								TypedConfig struct {
+									CommonConfig struct {
+										CustomTags []struct {
+											Tag     string `yaml:"tag"`
+											Literal struct {
+												Value string `yaml:"value"`
+											} `yaml:"literal"`
+										} `yaml:"custom_tags"`
+									} `yaml:"common_config"`
+								} `yaml:"typed_config"`
+							} `yaml:"access_log"`
+						} `yaml:"typed_config"`
+					} `yaml:"filters"`
+				} `yaml:"default_filter_chain"`
+			}
+
+			require.NoError(t, yaml.Unmarshal([]byte(marshalYAML(t, tt.listener)), &doc))
+			require.Len(t, doc.DefaultFilterChain.Filters, 1)
+
+			cfg := doc.DefaultFilterChain.Filters[0].TypedConfig
+			assert.Equal(t, envoy.MissingSNIBlackholeCluster, cfg.Cluster)
+
+			var names []string
+
+			for _, al := range cfg.AccessLog {
+				names = append(names, al.Name)
+			}
+
+			require.Equal(t, []string{
+				"envoy.access_loggers.stderr",
+				"envoy.access_loggers.tcp_grpc",
+			}, names)
+
+			// The gRPC logger marks each entry as a denial.
+			tags := cfg.AccessLog[1].TypedConfig.CommonConfig.CustomTags
+			require.Len(t, tags, 1)
+			assert.Equal(t, envoy.SNIRejectTag, tags[0].Tag)
+			assert.Equal(t, "true", tags[0].Literal.Value)
+
+			// The tag must not reach the access loggers of the
+			// passthrough chains, which log allowed connections.
+			assert.NotContains(t, marshalYAML(t, tcpAL), "custom_tags")
+			assert.Equal(t, 1, strings.Count(marshalYAML(t, tt.listener), envoy.SNIRejectTag))
+		})
+	}
+}
+
+// TestBuildInternalTLSListener_MITMTunnelAccessLog checks that an
+// internal TLS listener with MITM chains logs each connection of those
+// chains to its TCP access loggers. The front listener skips the
+// CONNECT request of such a tunnel, and the connection manager of the
+// chain logs only the requests inside it, so these loggers record a
+// tunnel that carries no request.
+func TestBuildInternalTLSListener_MITMTunnelAccessLog(t *testing.T) {
+	t.Parallel()
+
+	tcpAL := envoy.BuildTCPGrpcAccessLog("tcp", 0, 0)
+	httpAL := envoy.BuildHTTPGrpcAccessLog("mitm", 0, 0)
+
+	restricted := func(domain string) config.ResolvedRule {
+		return config.ResolvedRule{
+			Domain:    domain,
+			HTTPRules: []config.ResolvedHTTPRule{{Path: "/allowed"}},
+		}
+	}
+
+	tests := map[string]struct {
+		rules    []config.ResolvedRule
+		tcpAL    []envoy.AccessLog
+		certsDir string
+		want     string
+	}{
+		"MITM chains": {
+			rules: []config.ResolvedRule{
+				{Domain: "passthrough.example.com"},
+				restricted("b.example.com"),
+				restricted("*.wild.example.com"),
+			},
+			tcpAL:    tcpAL,
+			certsDir: "/certs",
+			want: "has(xds.filter_chain_name) && xds.filter_chain_name in " +
+				"['mitm_b.example.com', 'mitm_*.wild.example.com']",
+		},
+		"no MITM chain": {
+			rules:    []config.ResolvedRule{{Domain: "passthrough.example.com"}},
+			tcpAL:    tcpAL,
+			certsDir: "/certs",
+		},
+		"no certs dir": {
+			rules: []config.ResolvedRule{restricted("b.example.com")},
+			tcpAL: tcpAL,
+		},
+		"stats disabled": {
+			rules:    []config.ResolvedRule{restricted("b.example.com")},
+			certsDir: "/certs",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			l := envoy.BuildInternalTLSListener(443, tt.rules, false, tt.tcpAL, httpAL, tt.certsDir, nil)
+
+			var doc struct {
+				FilterChains []struct {
+					Name string `yaml:"name"`
+				} `yaml:"filter_chains"`
+				AccessLog []struct {
+					Name   string            `yaml:"name"`
+					Filter frontLogFilterDoc `yaml:"filter"`
+				} `yaml:"access_log"`
+			}
+
+			require.NoError(t, yaml.Unmarshal([]byte(marshalYAML(t, l)), &doc))
+
+			if tt.want == "" {
+				assert.Empty(t, doc.AccessLog)
+
+				return
+			}
+
+			require.Len(t, doc.AccessLog, 1)
+			assert.Equal(t, "envoy.access_loggers.tcp_grpc", doc.AccessLog[0].Name)
+			assert.Equal(t, frontLogFilter{Expression: tt.want}, doc.AccessLog[0].Filter.filter(t))
+
+			// The expression names each MITM chain of the listener.
+			for _, c := range doc.FilterChains {
+				if strings.HasPrefix(c.Name, "mitm_") {
+					assert.Contains(t, tt.want, "'"+c.Name+"'")
+				}
+			}
+		})
+	}
 }
 
 func TestBuildInternalHTTPListener(t *testing.T) {

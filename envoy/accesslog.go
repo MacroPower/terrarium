@@ -2,6 +2,7 @@ package envoy
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -10,6 +11,35 @@ import (
 // reference it via [BuildHTTPGrpcAccessLog] or [BuildTCPGrpcAccessLog].
 // Bootstrap config registers it via [BuildAccessLogCluster].
 const AccessLogClusterName = "terrarium_accesslog"
+
+// SNIRejectTag is the custom tag that the gRPC access loggers of the
+// default filter chain of a TLS listener add to each entry. That chain
+// closes each connection whose SNI no rule of the port allows, so the
+// tag marks the entry as a policy denial. Envoy records no upstream
+// cluster for such a connection, so the entry does not name
+// [MissingSNIBlackholeCluster].
+const SNIRejectTag = "terrarium.sni_reject"
+
+// withSNIRejectTag returns a copy of logs in which every TCP gRPC
+// access logger adds [SNIRejectTag] to its entries. It returns the
+// other access loggers unchanged.
+func withSNIRejectTag(logs []AccessLog) []AccessLog {
+	out := make([]AccessLog, 0, len(logs))
+
+	for _, l := range logs {
+		if cfg, ok := l.TypedConfig.(tcpGrpcAccessLogConfig); ok {
+			cfg.CommonConfig.CustomTags = append(slices.Clone(cfg.CommonConfig.CustomTags), customTag{
+				Tag:     SNIRejectTag,
+				Literal: customTagLiteral{Value: "true"},
+			})
+			l.TypedConfig = cfg
+		}
+
+		out = append(out, l)
+	}
+
+	return out
+}
 
 // commonGrpcConfig builds the shared CommonGrpcAccessLogConfig used by
 // the HTTP and TCP gRPC access loggers. The logName identifies the

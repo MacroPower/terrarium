@@ -174,6 +174,17 @@ func buildPassthroughFilterChain(
 	return fc
 }
 
+// mitmFilterChainPrefix is the prefix of the name of each MITM filter
+// chain, see [mitmFilterChainName].
+const mitmFilterChainPrefix = "mitm_"
+
+// mitmFilterChainName returns the name of the MITM filter chain for
+// the server name sn. The server names of the chains of a listener
+// differ, so the names differ too.
+func mitmFilterChainName(sn string) string {
+	return mitmFilterChainPrefix + sn
+}
+
 // buildMITMFilterChain builds the filter chain that terminates TLS for
 // the domain of rule and matches each decrypted request against the
 // HTTP rules of rule.
@@ -220,6 +231,9 @@ func buildPassthroughFilterChain(
 // The access loggers of the connection manager are accessLog and, when
 // a headerMatches entry of rule has the LOG mismatch action, the logger
 // of [withMismatchAccessLog].
+//
+// The chain has the name that [mitmFilterChainName] returns for the
+// domain of rule.
 func buildMITMFilterChain(
 	rule config.ResolvedRule,
 	upstreamPort int,
@@ -278,6 +292,7 @@ func buildMITMFilterChain(
 	)
 
 	return filterChain{
+		Name:             mitmFilterChainName(sn),
 		FilterChainMatch: &filterChainMatch{TransportProtocol: "tls", ServerNames: []string{sn}},
 		TransportSocket: &transportSocket{
 			Name: "envoy.transport_sockets.tls",
@@ -353,9 +368,13 @@ func appendHostPort(vhosts []virtualHost, port int) {
 
 // buildDefaultRejectFilterChain creates a filter chain that logs and
 // immediately closes connections. Used as the default filter chain on
-// TLS listeners to provide diagnostic output for connections without
-// SNI instead of silently dropping them.
-func buildDefaultRejectFilterChain(statPrefix string) filterChain {
+// TLS listeners, which handles each connection without SNI and each
+// connection whose SNI matches no other chain. The chain always writes
+// a diagnostic line to stderr instead of silently dropping the
+// connection. It also logs the connection to each access logger of
+// accessLog. Each TCP gRPC access logger adds [SNIRejectTag], so the
+// stats store records the connection as a denial.
+func buildDefaultRejectFilterChain(statPrefix string, accessLog []AccessLog) filterChain {
 	return filterChain{
 		Filters: []filter{{
 			Name: tcpProxyFilterName,
@@ -363,7 +382,7 @@ func buildDefaultRejectFilterChain(statPrefix string) filterChain {
 				AtType:     tcpProxyTypeURL,
 				StatPrefix: statPrefix + "_no_sni",
 				Cluster:    MissingSNIBlackholeCluster,
-				AccessLog: []AccessLog{{
+				AccessLog: append([]AccessLog{{
 					Name: "envoy.access_loggers.stderr",
 					TypedConfig: stderrAccessLogConfig{
 						AtType: "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StderrAccessLog",
@@ -373,7 +392,7 @@ func buildDefaultRejectFilterChain(statPrefix string) filterChain {
 							},
 						},
 					},
-				}},
+				}}, withSNIRejectTag(accessLog)...),
 			},
 		}},
 	}

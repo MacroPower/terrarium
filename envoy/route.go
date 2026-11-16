@@ -652,16 +652,8 @@ func withMismatchAccessLog(accessLog []AccessLog, vhosts []virtualHost, stored b
 		" %REQ(:METHOD)% %REQ(:AUTHORITY)%%REQ(:PATH)% %RESPONSE_CODE%\n"
 
 	return append(slices.Clone(accessLog), AccessLog{
-		Name: "envoy.access_loggers.stderr",
-		Filter: &accessLogFilter{
-			ExtensionFilter: &typedExtensionConfig{
-				Name: "envoy.access_loggers.extension_filters.cel",
-				TypedConfig: celAccessLogFilterConfig{
-					AtType:     "type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter",
-					Expression: expression,
-				},
-			},
-		},
+		Name:   "envoy.access_loggers.stderr",
+		Filter: new(celFilter(expression)),
 		TypedConfig: stderrAccessLogConfig{
 			AtType: "type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StderrAccessLog",
 			LogFormat: &substitutionFormatString{

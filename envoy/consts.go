@@ -53,6 +53,14 @@ const (
 	// header values the filter state holds.
 	headerValuesStoredStateKey = "terrarium.header_values_stored"
 
+	// The Envoy access log filter that matches each request for which
+	// a Common Expression Language (CEL) expression is true.
+	celAccessLogFilterName = "envoy.access_loggers.extension_filters.cel"
+
+	// The Any type URL for the configuration of the CEL access log
+	// filter.
+	celAccessLogFilterTypeURL = "type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter"
+
 	// The Envoy object factory that creates a filter state object that
 	// holds a string.
 	stringFilterStateFactory = "envoy.string"

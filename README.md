@@ -367,6 +367,25 @@ With `stats.enabled: true`, the proxy records Envoy events from the
 moment it creates the ready file. Envoy can answer a request earlier,
 and the proxy might not record that request.
 
+The Envoy events of a request depend on the
+[security mode](#security-modes) of the policy and on the kind of the
+request. The following table lists the events of each kind.
+
+| Security mode | Request                                                                                                                       | Events                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Filtered      | A plain HTTP request                                                                                                          | One HTTP event.                                                                                                       |
+| Filtered      | A `CONNECT` request that the proxy denies                                                                                     | One HTTP `deny` event that has the method `CONNECT`.                                                                  |
+| Filtered      | A `CONNECT` request for port 80                                                                                               | One HTTP event for each request inside the tunnel, and no event for the `CONNECT` request.                            |
+| Filtered      | A `CONNECT` request for another port, to a host without L7 rules                                                              | One TCP event, which the proxy records when the tunnel closes.                                                        |
+| Filtered      | A `CONNECT` request for another port, to a host with L7 rules                                                                 | One TCP event, which the proxy records when the tunnel closes, and one HTTP event for each request inside the tunnel. |
+| Filtered      | A tunnel to a host with L7 rules whose TLS handshake fails, for example because the client does not trust the CA of the proxy | One TCP `error` event.                                                                                                |
+| Filtered      | A tunnel that the client closes before it starts the TLS handshake                                                            | No event.                                                                                                             |
+| Filtered      | A tunnel whose TLS server name the policy does not allow on the port                                                          | One TCP `deny` event that names the server name.                                                                      |
+| Filtered      | A tunnel without a TLS server name                                                                                            | One TCP `deny` event without a domain.                                                                                |
+| Unrestricted  | A plain HTTP request                                                                                                          | One HTTP event.                                                                                                       |
+| Unrestricted  | A `CONNECT` request                                                                                                           | One HTTP event that has the method `CONNECT`, which the proxy records when the tunnel closes.                         |
+| Blocked       | A plain HTTP request or a `CONNECT` request                                                                                   | One HTTP `deny` event.                                                                                                |
+
 A proxy that cannot bind its address still removes the file that
 `--ready-file` names. It cannot tell a stale file from the file of a
 running proxy. Give each proxy its own ready file. When two proxies

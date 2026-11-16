@@ -44,6 +44,11 @@ type StaticResources struct {
 // which sets the option on Linux. With the option, a second process
 // that also sets it can bind the same address, and the kernel shares
 // the incoming connections between the processes.
+//
+// AccessLog holds the access loggers of the listener itself. Envoy
+// logs each connection of the listener to them when the connection
+// closes. The access loggers of the filters of a chain log on their
+// own.
 type Listener struct {
 	DefaultFilterChain  *filterChain          `yaml:"default_filter_chain,omitempty"`
 	UDPListenerConfig   *udpListenerConfig    `yaml:"udp_listener_config,omitempty"`
@@ -53,6 +58,7 @@ type Listener struct {
 	Name                string                `yaml:"name"`
 	ListenerFilters     []NamedTyped          `yaml:"listener_filters,omitempty"`
 	FilterChains        []filterChain         `yaml:"filter_chains,omitempty"`
+	AccessLog           []AccessLog           `yaml:"access_log,omitempty"`
 	AdditionalAddresses []additionalAddr      `yaml:"additional_addresses,omitempty"`
 	Transparent         bool                  `yaml:"transparent,omitempty"`
 }
@@ -100,6 +106,7 @@ type NamedTyped struct {
 type filterChain struct {
 	FilterChainMatch *filterChainMatch `yaml:"filter_chain_match,omitempty"`
 	TransportSocket  *transportSocket  `yaml:"transport_socket,omitempty"`
+	Name             string            `yaml:"name,omitempty"`
 	Filters          []filter          `yaml:"filters"`
 }
 
@@ -221,7 +228,15 @@ type AccessLog struct {
 // accepts one field of the filter.
 type accessLogFilter struct {
 	HeaderFilter    *accessLogHeaderFilter `yaml:"header_filter,omitempty"`
+	AndFilter       *accessLogAndFilter    `yaml:"and_filter,omitempty"`
 	ExtensionFilter *typedExtensionConfig  `yaml:"extension_filter,omitempty"`
+}
+
+// accessLogAndFilter models Envoy's AndFilter message, which matches
+// the requests that every filter of Filters matches. Envoy requires at
+// least two filters.
+type accessLogAndFilter struct {
+	Filters []accessLogFilter `yaml:"filters"`
 }
 
 // accessLogHeaderFilter models Envoy's HeaderFilter message, which
@@ -268,7 +283,21 @@ type commonGrpcAccessLogConfig struct {
 	LogName             string            `yaml:"log_name"`
 	GrpcService         grpcServiceConfig `yaml:"grpc_service"`
 	BufferFlushInterval string            `yaml:"buffer_flush_interval,omitempty"`
+	CustomTags          []customTag       `yaml:"custom_tags,omitempty"`
 	BufferSizeBytes     uint32            `yaml:"buffer_size_bytes,omitempty"`
+}
+
+// customTag models Envoy's tracing CustomTag message with a literal
+// value. A gRPC access logger adds the tag to each entry that it
+// sends.
+type customTag struct {
+	Literal customTagLiteral `yaml:"literal"`
+	Tag     string           `yaml:"tag"`
+}
+
+// customTagLiteral models Envoy's CustomTag.Literal message.
+type customTagLiteral struct {
+	Value string `yaml:"value"`
 }
 
 // grpcServiceConfig models Envoy's core.GrpcService message. The

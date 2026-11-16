@@ -241,6 +241,31 @@ func TestTCPEntryToEvent(t *testing.T) {
 			},
 			wantDecision: eventstore.DecisionDeny,
 		},
+		"sni reject tag is deny": {
+			entry: &alsdata.TCPAccessLogEntry{
+				CommonProperties: &alsdata.AccessLogCommon{
+					ResponseFlags: &alsdata.ResponseFlags{
+						NoHealthyUpstream: true,
+					},
+					TlsProperties: &alsdata.TLSProperties{
+						TlsSniHostname: "denied.example",
+					},
+					CustomTags: map[string]string{envoy.SNIRejectTag: "true"},
+				},
+			},
+			wantDecision: eventstore.DecisionDeny,
+			wantDomain:   "denied.example",
+		},
+		"no healthy upstream without the sni reject tag is error": {
+			entry: &alsdata.TCPAccessLogEntry{
+				CommonProperties: &alsdata.AccessLogCommon{
+					ResponseFlags: &alsdata.ResponseFlags{
+						NoHealthyUpstream: true,
+					},
+				},
+			},
+			wantDecision: eventstore.DecisionError,
+		},
 		"network-rbac termination details is deny": {
 			entry: &alsdata.TCPAccessLogEntry{
 				CommonProperties: &alsdata.AccessLogCommon{
