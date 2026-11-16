@@ -79,6 +79,17 @@ var (
 		"headerMatch mismatch must not change the Host header or a header that starts with \":\" (terrarium constraint: an Envoy route cannot add or remove these headers)",
 	)
 
+	// ErrHeaderMatchMismatchAfterChange is returned when a
+	// [HeaderMatch] logs or changes a header that an earlier entry of
+	// the same [HTTPRule] changes. The actions that change the header
+	// are [MismatchADD], [MismatchREPLACE], and [MismatchDELETE] with a
+	// value, and [MismatchLOG] logs it. Cilium compares the later entry
+	// with the header as the earlier entry left it. Terrarium compares
+	// every entry with the request that the client sent.
+	ErrHeaderMatchMismatchAfterChange = errors.New(
+		"headerMatch mismatch must not log or change a header that an earlier headerMatch of the http rule changes (terrarium constraint: every headerMatch sees the request that the client sent)",
+	)
+
 	// ErrHeaderMatchSecret is returned when a [HeaderMatch] sets
 	// a Secret field. Cilium uses this to reference Kubernetes
 	// Secrets for populating header values. Terrarium does not run

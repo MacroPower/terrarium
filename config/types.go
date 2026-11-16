@@ -536,6 +536,14 @@ type HTTPRule struct {
 // starts with ":", such as ":authority" or ":path". Validation returns
 // [ErrHeaderMatchMismatchReservedHeader] when such an entry uses ADD,
 // REPLACE, or DELETE with a Value.
+//
+// Each entry compares the request that the client sent, whatever the
+// entries before it change. Cilium applies the entries that have a
+// Mismatch action in their order, so an entry compares the header as
+// the entries before it left it. Validation therefore returns
+// [ErrHeaderMatchMismatchAfterChange] for an entry that logs or changes
+// a header that an earlier entry of the same [HTTPRule] changes. ADD,
+// REPLACE, and DELETE with a Value change the header, and LOG logs it.
 type HeaderMatch struct {
 	// Secret is a Cilium field for referencing Kubernetes Secrets
 	// to populate the header value. Terrarium does not run inside

@@ -63,6 +63,9 @@ egress:
                   # or DELETE with a value, counted together.
                   # ADD, REPLACE, and DELETE with a value are rejected for the
                   # Host header and for a header whose name starts with ":".
+                  # LOG, ADD, REPLACE, and DELETE with a value are rejected
+                  # for a header that an earlier entry of the HTTP rule
+                  # changes.
                   mismatch: ADD
                   value: "injected"
                 - name: "X-Strip"
@@ -335,6 +338,39 @@ removes one of these headers, so Terrarium cannot apply the action. An entry
 for one of these headers is valid without a `mismatch` action, with
 `mismatch: LOG`, and with `mismatch: DELETE` and no `value`, because these
 entries change no request.
+
+Terrarium rejects an HTTP rule in which one `headerMatches` entry changes a
+header and a later entry logs or changes the same header. For example,
+Terrarium rejects a rule with the following entries, whatever their values.
+
+```yaml
+headerMatches:
+  - name: X-Val
+    value: one
+    mismatch: REPLACE
+  - name: x-val
+    value: one
+    mismatch: LOG
+```
+
+`ADD` and `REPLACE` change the header, and so does `DELETE` with a `value`.
+`LOG` logs the header. Header names do not depend on case, so `X-Val` and
+`x-val` name one header.
+
+Cilium accepts such a rule. Cilium applies the entries that have a `mismatch`
+action in the order of the rule. The later entry therefore compares the header
+as the earlier entry left it. Terrarium compares every entry with the request
+that the client sent. For many such rules, its result therefore differs from the
+result of Cilium, as for the rule above. Terrarium rejects every such rule, including
+the rules whose order changes no result, such as two `REPLACE` entries for one
+header.
+
+Terrarium accepts every other rule that names one header in more than one
+entry. The order of the entries changes no result of such a rule. An entry
+without a `mismatch` action is valid after an entry that changes its header.
+Cilium compares that entry with the request before it applies an action of the
+rule. An entry with `mismatch: DELETE` and no `value` is valid there too,
+because it changes no request and logs none.
 
 ### Proxy port and range limits
 

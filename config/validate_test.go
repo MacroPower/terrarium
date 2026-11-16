@@ -2249,6 +2249,172 @@ func TestValidateHeaderMatchReservedHeader(t *testing.T) {
 	}
 }
 
+// TestValidateHeaderMatchAfterChange checks which headerMatches entries
+// the validation rejects because an earlier entry of the same HTTP rule
+// changes their header. Cilium compares such an entry with the changed
+// header, and the Envoy routes compare it with the request that the
+// client sent.
+func TestValidateHeaderMatchAfterChange(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		matches []config.HeaderMatch
+		err     error
+		want    string
+	}{
+		"REPLACE after REPLACE rejected": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchREPLACE},
+				{Name: "X-A", Value: "two", Mismatch: config.MismatchREPLACE},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[1] name "X-A" mismatch "REPLACE" follows headerMatches[0] mismatch "REPLACE"`,
+		},
+		"LOG after REPLACE rejected": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchREPLACE},
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchLOG},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[1] name "X-A" mismatch "LOG" follows headerMatches[0] mismatch "REPLACE"`,
+		},
+		"ADD after ADD rejected": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchADD},
+				{Name: "X-A", Value: "two", Mismatch: config.MismatchADD},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[1] name "X-A" mismatch "ADD" follows headerMatches[0] mismatch "ADD"`,
+		},
+		"DELETE with value after ADD rejected": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchADD},
+				{Name: "X-A", Value: "two", Mismatch: config.MismatchDELETE},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[1] name "X-A" mismatch "DELETE" follows headerMatches[0] mismatch "ADD"`,
+		},
+		"ADD after DELETE with value rejected": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchDELETE},
+				{Name: "X-A", Value: "two", Mismatch: config.MismatchADD},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[1] name "X-A" mismatch "ADD" follows headerMatches[0] mismatch "DELETE"`,
+		},
+		"LOG after ADD without value rejected": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Mismatch: config.MismatchADD},
+				{Name: "X-A", Mismatch: config.MismatchLOG},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[1] name "X-A" mismatch "LOG" follows headerMatches[0] mismatch "ADD"`,
+		},
+		"name in another case rejected": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchREPLACE},
+				{Name: "x-a", Value: "two", Mismatch: config.MismatchADD},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[1] name "x-a" mismatch "ADD" follows headerMatches[0] mismatch "REPLACE"`,
+		},
+		"entries of other headers between the two rejected": {
+			matches: []config.HeaderMatch{
+				{Name: "X-Token", Value: "secret"},
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchREPLACE},
+				{Name: "X-B", Value: "one", Mismatch: config.MismatchREPLACE},
+				{Name: "X-A", Value: "two", Mismatch: config.MismatchLOG},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[3] name "X-A" mismatch "LOG" follows headerMatches[1] mismatch "REPLACE"`,
+		},
+		"first of two earlier changes named": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchLOG},
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchADD},
+				{Name: "X-A", Value: "two", Mismatch: config.MismatchREPLACE},
+			},
+			err:  config.ErrHeaderMatchMismatchAfterChange,
+			want: `rule 0 headerMatches[2] name "X-A" mismatch "REPLACE" follows headerMatches[1] mismatch "ADD"`,
+		},
+		"entry without mismatch after REPLACE accepted": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchREPLACE},
+				{Name: "X-A", Value: "one"},
+			},
+		},
+		"DELETE without value after REPLACE accepted": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchREPLACE},
+				{Name: "X-A", Mismatch: config.MismatchDELETE},
+			},
+		},
+		"REPLACE after LOG accepted": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchLOG},
+				{Name: "X-A", Value: "two", Mismatch: config.MismatchREPLACE},
+			},
+		},
+		"LOG after LOG accepted": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchLOG},
+				{Name: "X-A", Value: "two", Mismatch: config.MismatchLOG},
+			},
+		},
+		"ADD after DELETE without value accepted": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Mismatch: config.MismatchDELETE},
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchADD},
+			},
+		},
+		"REPLACE after entry without mismatch accepted": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A"},
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchREPLACE},
+			},
+		},
+		"changes to two headers accepted": {
+			matches: []config.HeaderMatch{
+				{Name: "X-A", Value: "one", Mismatch: config.MismatchREPLACE},
+				{Name: "X-B", Value: "one", Mismatch: config.MismatchREPLACE},
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &config.Config{
+				Egress: egressRules(config.EgressRule{
+					ToFQDNs: []config.FQDNSelector{{MatchName: "api.example.com"}},
+					ToPorts: []config.PortRule{{
+						Ports: []config.Port{{Port: "443"}},
+						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
+							// An entry of another HTTP rule does not
+							// count as an earlier entry.
+							{HeaderMatches: []config.HeaderMatch{
+								{Name: "X-A", Value: "zero", Mismatch: config.MismatchREPLACE},
+							}},
+							{HeaderMatches: tt.matches},
+						}},
+					}},
+				}),
+			}
+
+			err := cfg.Validate(t.Context())
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+				assert.ErrorContains(t, err, tt.want)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestNamedPortValidation(t *testing.T) {
 	t.Parallel()
 

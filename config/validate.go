@@ -773,29 +773,66 @@ func combinesMismatchRoutes(hm HeaderMatch) bool {
 	}
 }
 
-// changesReservedHeader reports whether hm asks for a change to a
-// header that an Envoy route cannot change. Envoy does not load a
-// route that adds or removes the Host header or a header whose name
-// starts with ":", such as ":authority" and ":path".
-//
-// The [MismatchADD] and [MismatchREPLACE] actions add the header, and
-// the [MismatchDELETE] action with a value removes it. A
-// [MismatchDELETE] entry without a value and a [MismatchLOG] entry
+// changesHeader reports whether the mismatch action of hm changes the
+// header of a request that mismatches. The [MismatchADD] and
+// [MismatchREPLACE] actions add the header, and the [MismatchDELETE]
+// action with a value removes it. A [MismatchDELETE] entry without a
+// value, a [MismatchLOG] entry, and an entry without a mismatch action
 // change no request.
-func changesReservedHeader(hm HeaderMatch) bool {
+func changesHeader(hm HeaderMatch) bool {
 	switch hm.Mismatch {
 	case MismatchADD, MismatchREPLACE:
+		return true
 	case MismatchDELETE:
-		if hm.Value == "" {
-			return false
-		}
-
+		return hm.Value != ""
 	default:
+		return false
+	}
+}
+
+// changesReservedHeader reports whether hm asks for a change to a
+// header that an Envoy route cannot change, see [changesHeader]. Envoy
+// does not load a route that adds or removes the Host header or a
+// header whose name starts with ":", such as ":authority" and ":path".
+func changesReservedHeader(hm HeaderMatch) bool {
+	if !changesHeader(hm) {
 		return false
 	}
 
 	// Envoy compares the name with "host" without regard to case.
 	return strings.HasPrefix(hm.Name, ":") || strings.EqualFold(hm.Name, "host")
+}
+
+// headerChangedBefore returns the index of the first entry of matches
+// that changes the header of matches[i] and comes before matches[i],
+// see [changesHeader]. The result is false when no earlier entry
+// changes that header, and when the outcome of matches[i] does not
+// depend on such a change.
+//
+// Cilium applies the entries that have a mismatch action in their
+// order, so each one compares the header as the entries before it left
+// it. The Envoy routes of terrarium compare every entry with the
+// request that the client sent. The two results can differ only for an
+// entry that logs or changes a header that an earlier entry changes.
+//
+// An entry without a mismatch action does not depend on the order.
+// Cilium compares it with the request before it applies an action of
+// the rule. A [MismatchDELETE] entry without a value does not depend
+// on the order either, because it changes no request and logs none.
+// Header names do not depend on case.
+func headerChangedBefore(matches []HeaderMatch, i int) (int, bool) {
+	hm := matches[i]
+	if hm.Mismatch != MismatchLOG && !changesHeader(hm) {
+		return 0, false
+	}
+
+	for j, earlier := range matches[:i] {
+		if changesHeader(earlier) && strings.EqualFold(earlier.Name, hm.Name) {
+			return j, true
+		}
+	}
+
+	return 0, false
 }
 
 // validateHTTPRules checks that HTTP rule path and method patterns are
@@ -839,6 +876,14 @@ func validateHTTPRules(pr PortRule, ruleIdx int) error {
 				return fmt.Errorf(
 					"%w: rule %d headerMatches[%d]",
 					ErrHeaderMatchSecret, ruleIdx, i,
+				)
+			}
+
+			if j, ok := headerChangedBefore(h.HeaderMatches, i); ok {
+				return fmt.Errorf(
+					"%w: rule %d headerMatches[%d] name %q mismatch %q follows headerMatches[%d] mismatch %q",
+					ErrHeaderMatchMismatchAfterChange, ruleIdx, i, hm.Name, hm.Mismatch,
+					j, h.HeaderMatches[j].Mismatch,
 				)
 			}
 		}

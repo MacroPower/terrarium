@@ -271,6 +271,14 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // Envoy does not load a route that adds or removes the Host header or
 // a header whose name starts with ":". [config.Config.Validate] rejects
 // each entry that asks for such a change, so matches must not hold one.
+//
+// Every route compares each header with the request that the client
+// sent, and it applies its actions together. Cilium applies the
+// entries in their order, so an entry compares the header as the
+// entries before it left it. [config.Config.Validate] rejects each HTTP
+// rule for which the two orders give different results. The matches
+// must therefore not hold an entry that logs or changes a header that
+// an earlier entry changes.
 func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluster string) []route {
 	forward := func(matched, apply []config.HeaderMatch) []route {
 		m := match
