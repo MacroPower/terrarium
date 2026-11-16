@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1573,11 +1574,14 @@ func TestProxyProbeToken(t *testing.T) {
 	requireProxyShutDown(t, errCh)
 }
 
-// TestProxyEnvoyProcessGroup checks that [Proxy] starts Envoy in a
-// process group of its own. The signals that a terminal sends to the
-// group of the proxy, such as the SIGINT of a Ctrl-C, then do not
+// TestProxyEnvoyProcessGroup checks that [Proxy] starts Envoy outside
+// the process group of the proxy. The signals that a terminal sends to
+// the group of the proxy, such as the SIGINT of a Ctrl-C, then do not
 // reach Envoy. The proxy can therefore keep Envoy running until its
 // last flush of the access log.
+//
+// With a guard, Envoy runs in the group that the guard process leads.
+// Without one, Envoy leads its group. See [envoyGuard] for the guard.
 //
 //nolint:paralleltest // sets PATH for the whole process.
 func TestProxyEnvoyProcessGroup(t *testing.T) {
@@ -1607,8 +1611,13 @@ func TestProxyEnvoyProcessGroup(t *testing.T) {
 	pgid, err := syscall.Getpgid(pid)
 	require.NoError(t, err)
 
-	assert.Equal(t, pid, pgid, "envoy must lead a process group of its own")
 	assert.NotEqual(t, syscall.Getpgrp(), pgid, "envoy must not run in the process group of the proxy")
+
+	if proxyEnvoyGuarded {
+		assert.NotEqual(t, pid, pgid, "envoy must run in the process group of its guard")
+	} else {
+		assert.Equal(t, pid, pgid, "envoy must lead a process group of its own")
+	}
 
 	cancel()
 	requireProxyShutDown(t, errCh)
@@ -2335,4 +2344,77 @@ func TestPrepareProxyEnvoyLogError(t *testing.T) {
 			require.ErrorContains(t, prepareProxyEnvoyLog(path), tt.err)
 		})
 	}
+}
+
+// proxyHelperDirEnv names the variable that makes [TestProxyHelper]
+// run [Proxy]. Its value is the directory of the policy of that proxy.
+const proxyHelperDirEnv = "TERRARIUM_TEST_PROXY_HELPER_DIR"
+
+// TestProxyEnvoyParentDeath checks that Envoy does not outlive a proxy
+// that a signal kills without a shutdown. Envoy runs outside the
+// process group of the proxy, so a signal to the group of the proxy
+// does not reach it. A helper process runs [Proxy] with the stub envoy,
+// and the test kills the helper with SIGKILL.
+func TestProxyEnvoyParentDeath(t *testing.T) {
+	t.Parallel()
+
+	binDir := t.TempDir()
+	stub, started, _ := stubEnvoyScript(binDir)
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, envoyCommand), []byte(stub), 0o755))
+
+	helper := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProxyHelper$")
+	helper.Env = append(os.Environ(),
+		proxyHelperDirEnv+"="+t.TempDir(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+
+	require.NoError(t, helper.Start())
+
+	requireStubStarted(t, started)
+
+	pid := stubPID(t, started)
+
+	// A stub that the death of the helper does not kill runs on
+	// after the test. The error is ESRCH when the stub has exited.
+	t.Cleanup(func() {
+		syscall.Kill(pid, syscall.SIGKILL) //nolint:errcheck,gosec // see comment above.
+	})
+
+	require.NoError(t, helper.Process.Signal(syscall.SIGKILL))
+
+	err := helper.Wait()
+
+	var exitErr *exec.ExitError
+
+	require.ErrorAs(t, err, &exitErr)
+
+	assert.Eventually(t, func() bool {
+		return processEnded(pid)
+	}, 5*time.Second, 10*time.Millisecond, "envoy must not outlive the proxy")
+}
+
+// TestProxyHelper runs [Proxy] with the envoy on PATH until a signal
+// stops or kills its process. [TestProxyEnvoyParentDeath],
+// [TestProxyEnvoyOutputPipes], and [TestProxyHangup] start it in a
+// process of their own. It skips in every other run of the tests.
+func TestProxyHelper(t *testing.T) {
+	t.Parallel()
+
+	dir := os.Getenv(proxyHelperDirEnv)
+	if dir == "" {
+		t.Skip("runs only in the helper process of another test")
+	}
+
+	usr := stubProxyUser(t, dir, "egress: []\n")
+
+	opts := proxyOptions{
+		envoyPath:   envoyCommand,
+		bindAddress: loopbackIPv4,
+		httpPort:    freePort(t),
+	}
+
+	// The stub never listens, so Proxy waits for the listener until
+	// a signal reaches this process.
+	err := Proxy(t.Context(), usr, noManagedEnvoy(), opts)
+	require.NoError(t, err)
 }

@@ -926,12 +926,17 @@ func newProbeToken() (string, error) {
 // length of the wait. Envoy still serves requests during the wait, and
 // the store might not hold the events of those requests.
 //
-// Envoy runs in a process group of its own. The signals that a
-// terminal sends to its foreground group, such as the SIGINT of a
-// Ctrl-C, therefore reach the proxy and not Envoy. On Linux, the kernel
-// kills Envoy when the proxy dies. On other systems, Envoy keeps
-// running when a signal kills the proxy without a shutdown, such as a
-// SIGKILL or a SIGQUIT that reaches the process group of the proxy.
+// Envoy runs outside the process group of the proxy. The signals that
+// a terminal sends to its foreground group, such as the SIGINT of a
+// Ctrl-C, therefore reach the proxy and not Envoy.
+//
+// Envoy does not outlive a proxy that dies without a shutdown, for
+// example after a SIGKILL or a SIGQUIT that reaches the process group
+// of the proxy. On Linux, the kernel kills Envoy when the proxy dies.
+// On every other system, Proxy starts a guard process before Envoy,
+// and the guard process kills Envoy when the proxy dies. See
+// [envoyGuard] for the guard. When the guard process does not start,
+// Proxy returns an error and does not start Envoy.
 //
 // SIGINT, SIGTERM, and SIGHUP shut the proxy down. A hangup of the
 // terminal sends SIGHUP to the proxy and not to Envoy, so the proxy
@@ -1020,6 +1025,25 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 	envoyCtx, cancelEnvoy := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelEnvoy()
 
+	// Where the kernel does not kill Envoy when the proxy dies, a
+	// guard process does. The guard starts before Envoy, so a proxy
+	// that dies at any moment leaves no Envoy behind. A guard that a
+	// SIGKILL ends before Envoy starts leaves Envoy without a guard,
+	// as it does after Envoy starts.
+	var guard *envoyGuard
+
+	if proxyEnvoyGuarded {
+		guard, err = startEnvoyGuard(ctx)
+		if err != nil {
+			return err
+		}
+
+		// Envoy has exited when Proxy returns, unless a stop of
+		// Envoy returned early with an error. The stop of the guard
+		// kills that Envoy.
+		defer guard.stop(ctx)
+	}
+
 	newCmd := func() *exec.Cmd {
 		cmd := envoyBin.command(envoyCtx, envoyArgs...)
 
@@ -1039,7 +1063,7 @@ func Proxy(ctx context.Context, usr *config.User, inst *envoybin.Installer, opts
 		// bootstrap that Envoy loaded.
 		cmd.Env = append(os.Environ(), envoy.ProxyProbeTokenEnv+"="+probeToken)
 
-		cmd.SysProcAttr = proxyEnvoyProcAttr()
+		cmd.SysProcAttr = proxyEnvoyProcAttr(guard)
 
 		// When envoyCtx ends, drain gracefully: SIGTERM first,
 		// SIGKILL after the drain timeout.
