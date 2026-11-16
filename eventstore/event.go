@@ -110,7 +110,9 @@ type Event struct {
 	DstIP netip.Addr
 
 	// Domain is the qname (DNS), :authority header (HTTP), or
-	// SNI (TCP/TLS) value used for grouping in `stats top`.
+	// SNI (TCP/TLS) value used for grouping in `stats top`. An HTTP
+	// event holds the host of the authority, without the port and
+	// without the brackets of an IPv6 literal.
 	Domain string
 
 	// Source is the subsystem that produced this event.

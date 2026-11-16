@@ -122,10 +122,11 @@ func tcpEntryToEvent(entry *alsdata.TCPAccessLogEntry) eventstore.Event {
 	return ev
 }
 
-// httpDomain selects the canonical domain for an HTTP entry. The
-// :authority header is preferred. The upstream cluster is the
-// fallback when authority is empty (e.g. requests rejected before
-// the HTTP filter chain consumes the headers).
+// httpDomain selects the canonical domain for an HTTP entry. For an
+// entry with an :authority header, the domain is the host of the
+// authority in the form that [stripPort] returns. The upstream cluster
+// is the fallback when authority is empty, such as for requests
+// rejected before the HTTP filter chain consumes the headers.
 func httpDomain(req *alsdata.HTTPRequestProperties, common *alsdata.AccessLogCommon) string {
 	if a := req.GetAuthority(); a != "" {
 		return stripPort(a)
@@ -335,11 +336,25 @@ func flagsString(common *alsdata.AccessLogCommon) string {
 	return strings.Join(parts, ",")
 }
 
-// stripPort drops any :port suffix from a Host/authority value. The
-// stats CLI groups by hostname, so port noise would blow out
-// cardinality.
+// stripPort returns the host of a Host or authority value, without the
+// port and without the brackets of an IPv6 literal. The stats CLI groups
+// events by domain, so every form of one host must give one domain. For
+// example, "[::1]", "[::1]:" and "[::1]:8080" all give "::1".
+//
+// It checks only the syntax that [net.SplitHostPort] checks. It returns
+// the value unchanged when [net.SplitHostPort] rejects it both as given
+// and with an empty port, such as an IPv6 literal without brackets.
 func stripPort(host string) string {
 	h, _, err := net.SplitHostPort(host)
+	if err == nil {
+		return h
+	}
+
+	// [net.SplitHostPort] does not split a value without a port. With
+	// an empty port, it accepts that value and removes the brackets of
+	// an IPv6 literal. Both forms of one host therefore go through one
+	// parser.
+	h, _, err = net.SplitHostPort(host + ":")
 	if err != nil {
 		return host
 	}

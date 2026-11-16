@@ -318,6 +318,38 @@ func TestHTTPEntryToEvent(t *testing.T) {
 			wantDomain:   "host.example",
 			wantPort:     8080,
 		},
+		"IPv6 authority without a port loses its brackets": {
+			entry: &alsdata.HTTPAccessLogEntry{
+				CommonProperties: &alsdata.AccessLogCommon{},
+				Request: &alsdata.HTTPRequestProperties{
+					Authority: "[2001:db8::7]",
+				},
+				Response: &alsdata.HTTPResponseProperties{
+					ResponseCode:        wrapperspb.UInt32(403),
+					ResponseCodeDetails: "direct_response",
+				},
+			},
+			wantDecision: eventstore.DecisionDeny,
+			wantDomain:   "2001:db8::7",
+			wantPort:     80,
+			wantStatus:   403,
+		},
+		"IPv6 authority with a port loses its brackets": {
+			entry: &alsdata.HTTPAccessLogEntry{
+				CommonProperties: &alsdata.AccessLogCommon{},
+				Request: &alsdata.HTTPRequestProperties{
+					Authority: "[2001:db8::7]:8080",
+				},
+				Response: &alsdata.HTTPResponseProperties{
+					ResponseCode:        wrapperspb.UInt32(403),
+					ResponseCodeDetails: "direct_response",
+				},
+			},
+			wantDecision: eventstore.DecisionDeny,
+			wantDomain:   "2001:db8::7",
+			wantPort:     8080,
+			wantStatus:   403,
+		},
 		"denied CONNECT holds the port of its authority": {
 			entry: &alsdata.HTTPAccessLogEntry{
 				CommonProperties: &alsdata.AccessLogCommon{},
@@ -511,10 +543,18 @@ func TestStripPort(t *testing.T) {
 		"host:80":        "host",
 		"host.tld":       "host.tld",
 		"host.tld:443":   "host.tld",
-		"[::1]":          "[::1]",
+		"host:":          "host",
+		"[::1]":          "::1",
+		"[::1]:":         "::1",
 		"[::1]:80":       "::1",
+		"[fd00::1]":      "fd00::1",
 		"[fd00::1]:443":  "fd00::1",
+		"[fe80::1%eth0]": "fe80::1%eth0",
 		"v6:literal:foo": "v6:literal:foo",
+		"::1":            "::1",
+		"[::1":           "[::1",
+		"::1]":           "::1]",
+		"[::1]x":         "[::1]x",
 	}
 
 	for in, want := range tests {
