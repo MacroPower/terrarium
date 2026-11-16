@@ -60,13 +60,16 @@ var (
 		"headerMatch mismatch must be one of LOG, ADD, DELETE, REPLACE",
 	)
 
-	// ErrHeaderMatchMismatchTooMany is returned when one [HTTPRule]
-	// holds more than 8 [HeaderMatch] entries with the [MismatchADD],
-	// [MismatchDELETE], or [MismatchLOG] action. A [MismatchDELETE]
-	// entry without a value does not count. The number of Envoy routes
-	// for the rule doubles with each entry that counts.
+	// ErrHeaderMatchMismatchTooMany is returned when the HTTP rules
+	// that one request can match hold more than 8 [HeaderMatch] entries
+	// with the [MismatchADD], [MismatchDELETE], or [MismatchLOG]
+	// action. One [HTTPRule] with more than 8 of these entries gives
+	// the same error. A [MismatchDELETE] entry without a value does not
+	// count. The number of Envoy routes for the rules doubles with each
+	// entry that counts. See [MismatchRuleSets] for the rules that one
+	// request can match.
 	ErrHeaderMatchMismatchTooMany = errors.New(
-		"too many headerMatches with mismatch ADD, DELETE, or LOG in one http rule: the maximum is 8 (terrarium constraint: each one doubles the Envoy routes of the rule)",
+		"too many headerMatches with mismatch ADD, DELETE, or LOG in the http rules that one request can match: the maximum is 8 (terrarium constraint: each one doubles the Envoy routes of the rules)",
 	)
 
 	// ErrHeaderMatchMismatchReservedHeader is returned when a
@@ -88,6 +91,53 @@ var (
 	// every entry with the request that the client sent.
 	ErrHeaderMatchMismatchAfterChange = errors.New(
 		"headerMatch mismatch must not log or change a header that an earlier headerMatch of the http rule changes (terrarium constraint: every headerMatch sees the request that the client sent)",
+	)
+
+	// ErrHeaderMatchMismatchAcrossRules is returned when a
+	// [HeaderMatch] changes a header that another [HTTPRule] reads, and
+	// one request can match both rules. Both rules have a Mismatch
+	// action. The other rule reads each header that it requires. It
+	// also reads each header that one of its [HeaderMatch] entries
+	// compares to deny, log, or change the request. Cilium runs the
+	// rules one after the other, so the later rule compares the header
+	// as the earlier rule left it. Terrarium compares every rule with
+	// the request that the client sent. Two [MismatchREPLACE] entries
+	// with one name and one value give the same result in both, so
+	// they pass.
+	ErrHeaderMatchMismatchAcrossRules = errors.New(
+		"headerMatch mismatch must not change a header that another http rule with a mismatch action reads when one request can match both rules (terrarium constraint: every http rule sees the request that the client sent)",
+	)
+
+	// ErrHTTPRuleMismatchPaths is returned when two [HTTPRule] entries
+	// with a Mismatch action have different Path patterns, and one
+	// request can match both rules. Cilium applies the actions of both
+	// rules to such a request. One Envoy route applies the actions of a
+	// request, and a route matches one path pattern. Two rules count as
+	// rules that one request can match unless terrarium proves
+	// otherwise. See [MismatchRuleSets] for the proof.
+	ErrHTTPRuleMismatchPaths = errors.New(
+		"http rules with a headerMatch mismatch action must not match one request through different path patterns (terrarium constraint: an Envoy route matches one path pattern, and two rules count as rules that one request can match unless terrarium proves otherwise)",
+	)
+
+	// ErrHTTPRuleMismatchTooMany is returned when one request can match
+	// more than 4 [HTTPRule] entries with a Mismatch action. Terrarium
+	// builds Envoy routes for each combination of these rules. See
+	// [MismatchRuleSets] for the rules that one request can match.
+	ErrHTTPRuleMismatchTooMany = errors.New(
+		"too many http rules with a headerMatch mismatch action that one request can match: the maximum is 4 (terrarium constraint: each one doubles the Envoy route sets of the others)",
+	)
+
+	// ErrHTTPRuleMismatchRoutesTooMany is returned when the [HTTPRule]
+	// entries with a Mismatch action for one domain and one port need
+	// more than 1024 route combinations for the requests that match two
+	// or more of them. Terrarium counts 2^n combinations for each set of
+	// two or more of these rules that one request can match, where n is
+	// the number of [HeaderMatch] entries of the set with the
+	// [MismatchADD] or [MismatchLOG] action, or with the
+	// [MismatchDELETE] action and a value. See [MismatchRuleSets] for
+	// the sets.
+	ErrHTTPRuleMismatchRoutesTooMany = errors.New(
+		"too many Envoy routes for the requests that match two or more http rules with a headerMatch mismatch action: the maximum is 1024 route combinations for one domain and one port (terrarium constraint: each set of rules that one request can match gets routes of its own)",
 	)
 
 	// ErrHeaderMatchSecret is returned when a [HeaderMatch] sets

@@ -47,71 +47,12 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 
 	var vhosts []virtualHost
 
-	// One virtual host per restricted domain. Each HTTPRule is an
-	// independent match (OR'd), not a cross-product.
+	// One virtual host per restricted domain. A request that matches
+	// any HTTP rule passes. The rules with a mismatch action get
+	// combined routes for each set of rules that one request can
+	// match, see [httpRuleRoutes].
 	for _, r := range restricted {
-		var routes []route
-
-		for _, hr := range r.HTTPRules {
-			match := routeMatch{Prefix: "/"}
-			if hr.Path != "" {
-				// The path value from the CiliumNetworkPolicy HTTPRule
-				// becomes a safe_regex path_specifier on the Envoy
-				// RouteMatch. This uses RE2::FullMatch semantics (see
-				// the routeMatch doc comment), so the regex must
-				// match the entire path. A path like "/v1/" only
-				// matches the literal string "/v1/", not "/v1/foo".
-				match = routeMatch{SafeRegex: &safeRegex{Regex: hr.Path}}
-			}
-
-			if hr.Method != "" {
-				match.Headers = buildMethodHeaderMatcher([]string{hr.Method})
-			}
-
-			if hr.Host != "" {
-				match.Headers = append(match.Headers, buildHostHeaderMatcher(hr.Host)...)
-			}
-
-			for _, hdr := range hr.Headers {
-				match.Headers = append(match.Headers, headerMatcher{
-					Name:         hdr,
-					PresentMatch: boolPtr(true),
-				})
-			}
-
-			// Split headerMatches into deny-semantics (no mismatch
-			// action) and mismatch-action groups.
-			var actionMatches []config.HeaderMatch
-
-			for _, hm := range hr.HeaderMatches {
-				switch {
-				case hm.Mismatch == "":
-					match = withHeaderMatch(match, hm)
-
-				case hm.Mismatch == config.MismatchDELETE && hm.Value == "":
-					// The entry matches each request that holds the
-					// header, and a request that mismatches has no
-					// header to remove. The entry therefore changes
-					// no request, as in Cilium.
-
-				default:
-					actionMatches = append(actionMatches, hm)
-				}
-			}
-
-			if len(actionMatches) > 0 {
-				routes = append(routes, headerMismatchRoutes(match, actionMatches, cluster)...)
-			} else {
-				httpRoute := route{
-					Match: match,
-					Route: &routeAction{
-						Cluster: cluster,
-						Timeout: routeTimeout1h,
-					},
-				}
-				routes = append(routes, grpcRouteVariant(httpRoute), httpRoute)
-			}
-		}
+		routes := httpRuleRoutes(r.HTTPRules, cluster)
 
 		// Catch-all denies everything else.
 		routes = append(routes, route{
@@ -145,6 +86,134 @@ func buildHTTPVirtualHosts(rules []config.ResolvedRule, cluster string) ([]virtu
 	}
 
 	return vhosts, wildcardDomains, exactDomains
+}
+
+// httpRuleRoutes builds the forwarding routes of the HTTP rules of one
+// virtual host. Each route forwards to cluster. A request that takes
+// none of the routes matches no rule.
+//
+// Envoy takes the first route that matches a request, and it applies
+// the header changes of that route only. Cilium applies the mismatch
+// actions of every HTTP rule that a request matches. The routes of the
+// rules that have a mismatch action therefore come first, with one
+// group of routes for each set of [config.MismatchRuleSets]. The routes
+// of a group match the requests that match every rule of the set. They
+// apply the mismatch actions of those rules together, see
+// [headerMismatchRoutes]. The groups of the larger sets come first, so
+// a request takes the group of exactly the rules that it matches.
+//
+// The routes of the rules without a mismatch action come last. A
+// request that also matches such a rule therefore still gets the
+// actions of the other rules that it matches.
+//
+// A route applies the actions of all rules of a set to the request that
+// the client sent. Cilium applies the rules one after the other, so a
+// rule compares the request as the rules before it left it.
+// [config.Config.Validate] rejects each config for which the two give
+// different results, and each config whose sets have rules with
+// different paths. The rules must therefore come from a config that
+// passed that check.
+func httpRuleRoutes(rules []config.ResolvedHTTPRule, cluster string) []route {
+	var routes []route
+
+	for _, set := range config.MismatchRuleSets(rules) {
+		var (
+			match   routeMatch
+			actions []config.HeaderMatch
+		)
+
+		for n, i := range set {
+			ruleMatch := httpRuleMatch(rules[i])
+			if n == 0 {
+				match = ruleMatch
+			} else {
+				match = withRouteMatch(match, ruleMatch)
+			}
+
+			actions = append(actions, rules[i].MismatchActions()...)
+		}
+
+		routes = append(routes, headerMismatchRoutes(match, actions, cluster)...)
+	}
+
+	for _, hr := range rules {
+		if len(hr.MismatchActions()) > 0 {
+			continue
+		}
+
+		httpRoute := route{
+			Match: httpRuleMatch(hr),
+			Route: &routeAction{
+				Cluster: cluster,
+				Timeout: routeTimeout1h,
+			},
+		}
+		routes = append(routes, grpcRouteVariant(httpRoute), httpRoute)
+	}
+
+	return routes
+}
+
+// httpRuleMatch builds the route match of the conditions that allow or
+// deny a request under hr. These conditions are the Path, the Method,
+// the Host, the Headers, and each HeaderMatches entry without a
+// mismatch action. The entries with a mismatch action deny no request,
+// see [config.ResolvedHTTPRule.MismatchActions].
+func httpRuleMatch(hr config.ResolvedHTTPRule) routeMatch {
+	match := routeMatch{Prefix: "/"}
+	if hr.Path != "" {
+		// The path value from the CiliumNetworkPolicy HTTPRule
+		// becomes a safe_regex path_specifier on the Envoy
+		// RouteMatch. This uses RE2::FullMatch semantics (see
+		// the routeMatch doc comment), so the regex must
+		// match the entire path. A path like "/v1/" only
+		// matches the literal string "/v1/", not "/v1/foo".
+		match = routeMatch{SafeRegex: &safeRegex{Regex: hr.Path}}
+	}
+
+	if hr.Method != "" {
+		match.Headers = buildMethodHeaderMatcher([]string{hr.Method})
+	}
+
+	if hr.Host != "" {
+		match.Headers = append(match.Headers, buildHostHeaderMatcher(hr.Host)...)
+	}
+
+	for _, hdr := range hr.Headers {
+		match.Headers = append(match.Headers, headerMatcher{
+			Name:         hdr,
+			PresentMatch: boolPtr(true),
+		})
+	}
+
+	for _, hm := range hr.HeaderMatches {
+		// An entry with a mismatch action denies no request. A
+		// DELETE entry without a value also changes no request. The
+		// entry matches each request that holds the header, and a
+		// request that mismatches has no header to remove.
+		if hm.Mismatch == "" {
+			match = withHeaderMatch(match, hm)
+		}
+	}
+
+	return match
+}
+
+// withRouteMatch returns a route match that passes when both match and
+// other pass. The two must be results of [httpRuleMatch] for rules of
+// one set of [config.MismatchRuleSets]. The rules of such a set have
+// one path pattern, or none, so the result takes the path pattern of
+// the one that has it. The result shares no slice with match or other.
+func withRouteMatch(match, other routeMatch) routeMatch {
+	if other.SafeRegex != nil {
+		match.SafeRegex = other.SafeRegex
+		match.Prefix = ""
+	}
+
+	match.Headers = slices.Concat(match.Headers, other.Headers)
+	match.FilterState = slices.Concat(match.FilterState, other.FilterState)
+
+	return match
 }
 
 // grpcRouteVariant creates a gRPC-specific copy of a forwarding route.
@@ -239,9 +308,10 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 	}}
 }
 
-// headerMismatchRoutes builds the routes of an HTTP rule whose
-// headerMatches carry a mismatch action. The base match holds every
-// other condition of the rule, and each route forwards to cluster.
+// headerMismatchRoutes builds the routes of the HTTP rules of one set
+// of [config.MismatchRuleSets]. The matches are the headerMatches of
+// those rules that carry a mismatch action. The base match holds every
+// other condition of the rules, and each route forwards to cluster.
 //
 // Envoy takes the first route that matches a request, and it applies
 // the header changes of that route to the request. The first route
@@ -265,8 +335,8 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // [mismatchLogMetadata].
 //
 // The number of these routes doubles with each ADD, DELETE, and LOG
-// header. [config.Config.Validate] limits these headers of one HTTP
-// rule for that reason.
+// header. [config.Config.Validate] limits these headers of one set of
+// HTTP rules for that reason.
 //
 // Envoy does not load a route that adds or removes the Host header or
 // a header whose name starts with ":". [config.Config.Validate] rejects
@@ -276,9 +346,11 @@ func buildHostHeaderMatcher(host string) []headerMatcher {
 // sent, and it applies its actions together. Cilium applies the
 // entries in their order, so an entry compares the header as the
 // entries before it left it. [config.Config.Validate] rejects each HTTP
-// rule for which the two orders give different results. The matches
-// must therefore not hold an entry that logs or changes a header that
-// an earlier entry changes.
+// rule, and each set of HTTP rules, for which the two orders give
+// different results. The matches must therefore not hold an entry that
+// logs or changes a header that an earlier entry changes. Two REPLACE
+// entries of different rules with one name and one value are the
+// exception, because the second one changes nothing.
 func headerMismatchRoutes(match routeMatch, matches []config.HeaderMatch, cluster string) []route {
 	forward := func(matched, apply []config.HeaderMatch) []route {
 		m := match

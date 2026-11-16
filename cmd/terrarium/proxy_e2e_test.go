@@ -1365,6 +1365,205 @@ func TestProxyE2EHeaderMismatchDelete(t *testing.T) {
 	}
 }
 
+// TestProxyE2EHeaderMismatchRules checks the request headers that
+// reach the upstream when a request matches more than one HTTP rule.
+// The proxy must apply the mismatch actions of every rule that the
+// request matches, as Cilium does. It must not apply the actions of a
+// rule that the request does not match.
+//
+//nolint:paralleltest // e2e tests bind fixed ports and run envoy subprocesses.
+func TestProxyE2EHeaderMismatchRules(t *testing.T) {
+	requireEnvoy(t)
+	requireUDPLoopback(t)
+
+	// The proxy forwards plain HTTP to port 80 only. Binding port 80
+	// needs CAP_NET_BIND_SERVICE or a permissive
+	// ip_unprivileged_port_start.
+	lc := net.ListenConfig{}
+
+	probe, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:80")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.1:80: %v", err)
+	}
+
+	require.NoError(t, probe.Close())
+
+	startHTTPServer(t, "127.0.0.1:80", headerEchoHandler(t, "X-One", "X-Two", "X-Rep"))
+
+	dnsAddr := dnstest.StartServer(t, "127.0.0.1")
+
+	// Each rule of rules.example has a mismatch action. The domain
+	// plain.example has a rule without a mismatch action that matches
+	// each GET request, and a rule with one for the path. Both rules
+	// of same.example replace one header with one value.
+	policy := "egress:\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: rules.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /a/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-One\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: one\n" +
+		"            - headerMatches:\n" +
+		"                - name: X-Two\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: two\n" +
+		"            - method: GET\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Rep\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: rep\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: plain.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - method: GET\n" +
+		"            - path: /a/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-One\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: one\n" +
+		"  - toFQDNs:\n" +
+		"      - matchName: same.example\n" +
+		"    toPorts:\n" +
+		"      - ports:\n" +
+		"          - port: \"80\"\n" +
+		"        rules:\n" +
+		"          http:\n" +
+		"            - path: /a/.*\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Rep\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: rep\n" +
+		"            - method: GET\n" +
+		"              headerMatches:\n" +
+		"                - name: X-Rep\n" +
+		"                  mismatch: REPLACE\n" +
+		"                  value: rep\n" +
+		"                - name: X-One\n" +
+		"                  mismatch: ADD\n" +
+		"                  value: one\n"
+
+	proxyURL, _ := startProxy(t, policy, dnsAddr)
+	client := proxyClient(t, proxyURL, x509.NewCertPool())
+
+	tests := map[string]struct {
+		headers map[string]string
+		host    string
+		method  string
+		path    string
+		want    string
+	}{
+		"request that matches three rules gets the actions of all": {
+			host:   "rules.example",
+			method: http.MethodGet,
+			path:   "/a/x",
+			want:   "X-One=one\nX-Two=two\nX-Rep=rep\n",
+		},
+		"each rule changes only the header that mismatches": {
+			host:    "rules.example",
+			method:  http.MethodGet,
+			path:    "/a/x",
+			headers: map[string]string{"X-One": "one", "X-Two": "user", "X-Rep": "user"},
+			want:    "X-One=one\nX-Two=user,two\nX-Rep=rep\n",
+		},
+		"request that holds every value stays unchanged": {
+			host:    "rules.example",
+			method:  http.MethodGet,
+			path:    "/a/x",
+			headers: map[string]string{"X-One": "one", "X-Two": "two", "X-Rep": "rep"},
+			want:    "X-One=one\nX-Two=two\nX-Rep=rep\n",
+		},
+		"request with another method gets the actions of two rules": {
+			host:    "rules.example",
+			method:  http.MethodPost,
+			path:    "/a/x",
+			headers: map[string]string{"X-Rep": "user"},
+			want:    "X-One=one\nX-Two=two\nX-Rep=user\n",
+		},
+		"request with another path gets the actions of two rules": {
+			host:    "rules.example",
+			method:  http.MethodGet,
+			path:    "/other",
+			headers: map[string]string{"X-One": "user"},
+			want:    "X-One=user\nX-Two=two\nX-Rep=rep\n",
+		},
+		"request that matches one rule gets its action": {
+			host:   "rules.example",
+			method: http.MethodPost,
+			path:   "/other",
+			want:   "X-One=\nX-Two=two\nX-Rep=\n",
+		},
+		"rule without an action does not hide the action of another rule": {
+			host:   "plain.example",
+			method: http.MethodGet,
+			path:   "/a/x",
+			want:   "X-One=one\nX-Two=\nX-Rep=\n",
+		},
+		"rule without an action allows a request that matches no other rule": {
+			host:    "plain.example",
+			method:  http.MethodGet,
+			path:    "/other",
+			headers: map[string]string{"X-Two": "user"},
+			want:    "X-One=\nX-Two=user\nX-Rep=\n",
+		},
+		"rule with an action allows a request that matches no other rule": {
+			host:   "plain.example",
+			method: http.MethodPost,
+			path:   "/a/x",
+			want:   "X-One=one\nX-Two=\nX-Rep=\n",
+		},
+		"two rules that replace one header give it one value": {
+			host:    "same.example",
+			method:  http.MethodGet,
+			path:    "/a/x",
+			headers: map[string]string{"X-Rep": "user"},
+			want:    "X-One=one\nX-Two=\nX-Rep=rep\n",
+		},
+		"one of two rules replaces the header": {
+			host:    "same.example",
+			method:  http.MethodPost,
+			path:    "/a/x",
+			headers: map[string]string{"X-Rep": "user"},
+			want:    "X-One=\nX-Two=\nX-Rep=rep\n",
+		},
+	}
+
+	//nolint:paralleltest // The subtests share the proxy of the parent test.
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(
+				t.Context(), tt.method, "http://"+tt.host+tt.path, http.NoBody)
+			require.NoError(t, err)
+
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+
+			defer func() {
+				assert.NoError(t, resp.Body.Close())
+			}()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+			assert.Equal(t, tt.want, string(body))
+		})
+	}
+}
+
 // envoyStderrWrapper writes a script that runs the Envoy of the host
 // and appends the stderr of Envoy to a file. It returns the path of
 // the script and the path of the file. The proxy gives its own stderr

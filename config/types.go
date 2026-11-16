@@ -559,6 +559,14 @@ type HTTPRule struct {
 // [ErrHeaderMatchMismatchAfterChange] for an entry that logs or changes
 // a header that an earlier entry of the same [HTTPRule] changes. ADD,
 // REPLACE, and DELETE with a Value change the header, and LOG logs it.
+//
+// A request gets the Mismatch actions of every [HTTPRule] that it
+// matches, as in Cilium. Each rule compares the request that the client
+// sent, whatever the other rules change. Validation therefore returns
+// [ErrHeaderMatchMismatchAcrossRules] when one rule changes a header
+// that another rule with a Mismatch action reads, and one request can
+// match both rules. [MismatchRuleSets] describes the rules that one
+// request can match.
 type HeaderMatch struct {
 	// Secret is a Cilium field for referencing Kubernetes Secrets
 	// to populate the header value. Terrarium does not run inside
@@ -612,9 +620,10 @@ type TCPForward struct {
 }
 
 // ResolvedHTTPRule is a single HTTP match pattern with an optional
-// method and path. Under CiliumNetworkPolicy semantics, multiple HTTP
-// rules within a toPorts entry are OR'd -- each is an independent
-// match, not a cross-product.
+// method and path. Under CiliumNetworkPolicy semantics, a request that
+// matches any HTTP rule of a toPorts entry passes. It gets the
+// mismatch actions of every rule that it matches. See
+// [MismatchRuleSets] for the sets of rules that one request can match.
 type ResolvedHTTPRule struct {
 	Method        string        // empty = any method
 	Path          string        // empty = any path

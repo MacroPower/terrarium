@@ -1346,8 +1346,8 @@ func TestValidate(t *testing.T) {
 					ToPorts: []config.PortRule{{
 						Ports: []config.Port{{Port: "443"}},
 						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
-							{HeaderMatches: addHeaderMatches(8)},
-							{HeaderMatches: addHeaderMatches(8)},
+							{Path: "/a", HeaderMatches: addHeaderMatches(8)},
+							{Path: "/b", HeaderMatches: addHeaderMatches(8)},
 						}},
 					}},
 				}),
@@ -2638,11 +2638,13 @@ func TestValidateHeaderMatchAfterChange(t *testing.T) {
 						Ports: []config.Port{{Port: "443"}},
 						Rules: &config.L7Rules{HTTP: []config.HTTPRule{
 							// An entry of another HTTP rule does not
-							// count as an earlier entry.
-							{HeaderMatches: []config.HeaderMatch{
+							// count as an earlier entry. The two rules
+							// have different literal paths, so no
+							// request matches both.
+							{Path: "/zero", HeaderMatches: []config.HeaderMatch{
 								{Name: "X-A", Value: "zero", Mismatch: config.MismatchREPLACE},
 							}},
-							{HeaderMatches: tt.matches},
+							{Path: "/one", HeaderMatches: tt.matches},
 						}},
 					}},
 				}),

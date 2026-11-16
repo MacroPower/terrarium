@@ -31,10 +31,10 @@ const maxFQDNEndPortRange = 100
 // fail in RE2.
 const maxRegexLen = 1000
 
-// maxMismatchCombinedHeaders is the maximum number of headerMatches in
-// a single [HTTPRule] that the Envoy routes of the rule combine, see
-// [combinesMismatchRoutes]. The number of Envoy routes for the rule
-// doubles with each of these headerMatches.
+// maxMismatchCombinedHeaders is the maximum number of headerMatches
+// that the Envoy routes of one set of HTTP rules combine, see
+// [combinesMismatchRoutes] and [MismatchRuleSets]. The number of Envoy
+// routes for the set doubles with each of these headerMatches.
 const maxMismatchCombinedHeaders = 8
 
 // cidrAllIPv4 and cidrAllIPv6 are the default routes matching every
@@ -201,6 +201,11 @@ func (c *Config) Validate(ctx context.Context) error {
 		}
 
 		portsSet[p] = true
+	}
+
+	err = c.validateMismatchRuleSets(ctx, resolvedPorts)
+	if err != nil {
+		return err
 	}
 
 	seen := make(map[int]bool)
@@ -822,8 +827,9 @@ func validateEndPort(p Port, portNum, ruleIdx int) error {
 // its [HTTPRule]. An entry with the [MismatchADD] or [MismatchLOG]
 // action does, and so does an entry with the [MismatchDELETE] action
 // and a value. Envoy must apply each of these actions only to a
-// request whose header mismatches. The rule therefore gets one route
-// for each combination of these headers that hold their value.
+// request whose header mismatches. The rules that one request can
+// match therefore get one route for each combination of these headers
+// that hold their value, see [MismatchRuleSets].
 //
 // A [MismatchDELETE] entry without a value changes no request. A
 // [MismatchREPLACE] entry leaves a header that holds its value as it

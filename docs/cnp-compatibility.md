@@ -59,13 +59,17 @@ egress:
                   value: "expected-value"
                 - name: "X-Trace"
                   # ADD keeps the values that the client sent and adds the value.
-                  # At most 8 headerMatches of one HTTP rule can use ADD, LOG,
-                  # or DELETE with a value, counted together.
+                  # At most 8 headerMatches can use ADD, LOG, or DELETE with a
+                  # value in the HTTP rules that one request can match,
+                  # counted together.
                   # ADD, REPLACE, and DELETE with a value are rejected for the
                   # Host header and for a header whose name starts with ":".
                   # LOG, ADD, REPLACE, and DELETE with a value are rejected
                   # for a header that an earlier entry of the HTTP rule
                   # changes.
+                  # ADD, REPLACE, and DELETE with a value are rejected for a
+                  # header that another HTTP rule with a mismatch action
+                  # reads, when one request can match both rules.
                   mismatch: ADD
                   value: "injected"
                 - name: "X-Strip"
@@ -347,15 +351,18 @@ with the `value` of the entry. A request that holds `X-Val: one` and
 `X-Val: two` therefore matches the value `one,two`, and it mismatches the value
 `one`.
 
-Each HTTP rule can hold at most 8 `headerMatches` entries that use `ADD`,
-`LOG`, or `DELETE` with a `value` as the `mismatch` action, counted together.
-Cilium has no limit. Envoy applies the header changes and the logging of a
-route to every request that the route takes. Terrarium therefore generates one
-route for each combination of these headers that already hold their value, so
-each action applies only to a header that mismatches. The number of routes
-doubles with each entry, and the limit bounds the route table. An entry with
-`mismatch: REPLACE` does not count, and an entry with `mismatch: DELETE` and no
-`value` does not count either.
+The HTTP rules that one request can match can hold at most 8 `headerMatches`
+entries that use `ADD`, `LOG`, or `DELETE` with a `value` as the `mismatch`
+action, counted together. One HTTP rule can therefore hold at most 8 of them.
+Cilium has no limit. An entry with `mismatch: REPLACE` does not count, and an
+entry with `mismatch: DELETE` and no `value` does not count either.
+
+Envoy applies the header changes and the logging of a route to every request
+that the route takes. Terrarium therefore generates one route for each
+combination of these headers that already hold their value, so each action
+applies only to a header that mismatches. The number of routes doubles with
+each entry, and the limit bounds the routes of each HTTP rule and of each set
+of HTTP rules that one request can match.
 
 Terrarium rejects a `headerMatches` entry whose `mismatch` action changes the
 `Host` header or a header whose name starts with `:`, such as `:authority` or
@@ -398,6 +405,88 @@ without a `mismatch` action is valid after an entry that changes its header.
 Cilium compares that entry with the request before it applies an action of the
 rule. An entry with `mismatch: DELETE` and no `value` is valid there too,
 because it changes no request and logs none.
+
+A request that matches more than one HTTP rule gets the `mismatch` actions of
+every rule that it matches, as in Cilium. For example, the following rules give
+both headers to a request for `/a/x`, and they give only `X-B` to a request for
+`/b`.
+
+```yaml
+http:
+  - path: "/a/.*"
+    headerMatches:
+      - name: X-A
+        value: one
+        mismatch: ADD
+  - headerMatches:
+      - name: X-B
+        value: two
+        mismatch: ADD
+```
+
+Envoy applies the actions of one route to a request, and that route compares
+the request that the client sent. Terrarium therefore generates routes for each
+set of HTTP rules that one request can match. Those routes apply the actions of
+every rule of the set. Cilium runs the rules one after the other, so each rule
+compares the request as the rules before it left it. Terrarium rejects the
+rules for which the routes cannot give the result of Cilium. Cilium accepts
+them.
+
+The checks compare each two HTTP rules that have a `mismatch` action and that
+allow one domain on one port, including the rules of two egress rules. Every
+rule with an entry that uses `ADD`, `REPLACE`, `LOG`, or `DELETE` with a
+`value` has a `mismatch` action. Terrarium rejects two such rules in the
+following cases.
+
+- **Different paths:** The two rules have different `path` patterns. Each Envoy
+  route matches one path pattern, so no route matches the requests that match
+  both rules. Two rules with one `path` are valid, and so is a rule without a
+  `path` beside any other rule.
+- **Shared header:** One rule changes a header that the other rule reads. Each
+  rule reads every header of its `headers` list and every header of its
+  `headerMatches` entries, except for an entry with `mismatch: DELETE` and no
+  `value`. The result of Cilium then depends on the order of the two rules. Two
+  `REPLACE` entries with one name and one `value` are valid, because the header
+  holds that value after either rule.
+- **Limits:** One request can match more than 4 rules with a `mismatch` action,
+  or the rules that one request can match hold more than 8 entries that use
+  `ADD`, `LOG`, or `DELETE` with a `value`. The number of routes doubles with
+  each of these rules and with each of these entries.
+- **Shared routes:** The sets of two or more rules that one request can match
+  need more than 1024 route combinations for one domain and one port. Each set
+  counts 2 to the power of n, where n is the number of its entries that use
+  `ADD`, `LOG`, or `DELETE` with a `value`. The number of sets grows with the
+  product of the rule counts. For example, 5 rules that differ by `path`, 5
+  that differ by `method`, and 5 that differ by `host` form 75 pairs and 125
+  sets of three. A rule without a `path`, a `method`, or a `host` joins every
+  set.
+
+Terrarium skips the checks for two rules when it proves that no request matches
+both. The proof holds in either of two cases.
+
+- **Patterns:** The `path`, the `method`, or the `host` patterns of the two
+  rules match no common text, such as `/v[12]/a/.*` and `/v[12]/b/.*`, or
+  `.*\.json` and `.*\.xml`. Terrarium compares the `host` patterns in the form
+  of the Envoy route, which accepts a port after the host.
+- **Header values:** Each rule has a `headerMatches` entry without a `mismatch`
+  action for one header, and the two entries require different `value`s. No
+  rule for the domain and port changes that header with a `mismatch` action. A
+  rule that changes the header can make a request match the other `value`.
+
+Two patterns that start with different literal text, such as `/items/1` and
+`/items/2`, or `/a/.*` and `/b/.*`, share no text. Terrarium proves that case for
+any number of rules. For the other patterns, it walks the compiled programs. The
+walk treats every anchor and word boundary in a pattern as passed, so it might
+find a common text where none exists.
+
+Terrarium treats two patterns as sharing a text when their compiled programs are
+too large to compare. Long repetitions, such as `(.*/){200}a`, make the compiled
+programs large. The walks for the patterns of one domain and port also
+share a fixed amount of work. After that work runs out, the patterns of the
+remaining rules count as sharing a text.
+
+Terrarium runs the checks for every other two rules. For example, it runs the
+checks for `/(a|b)/.*` and `/b/.*`, because both patterns match `/b/x`.
 
 ### Proxy port and range limits
 
