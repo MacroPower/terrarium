@@ -875,12 +875,13 @@ To read another run, pass its ID with `--instance`. For example, pass the ID
 of a proxy that writes to the database of a daemon, or the ID of an earlier
 run that is still running.
 
-Each event of `terrarium stats list` holds two fields that say where the
+Each event of `terrarium stats list` holds these fields that say where the
 flow went and which rule decided it:
 
 | Field        | Value                                                                              |
 | ------------ | ---------------------------------------------------------------------------------- |
 | `dst_ip`     | The destination address of the flow.                                               |
+| `port`       | The destination port of the flow.                                                  |
 | `rule_index` | The index of the `egress` rule that decided the event. The first rule has index 0. |
 
 Firewall events hold the destination address of their packet in `dst_ip`, so
@@ -888,6 +889,25 @@ a firewall event without a `domain` still names its destination. Envoy
 events hold the address of the upstream that Envoy connected to. DNS events
 have no `dst_ip`, and neither do the Envoy events of requests that Envoy
 denied before it chose an upstream.
+
+Firewall events of TCP and UDP packets hold the destination port of their
+packet in `port`. DNS events and the other firewall events, such as ICMP
+events, have no `port`. Envoy events with an upstream hold the port of that
+upstream. Envoy chooses no upstream for a request that it answers itself,
+such as a request that it denies with status 403. The following table lists
+the `port` of each Envoy event without an upstream.
+
+| Request or connection without an upstream                                          | `port`                                      |
+| ---------------------------------------------------------------------------------- | ------------------------------------------- |
+| A `CONNECT` request, such as a request for `example.com:8443`                      | The port of the authority.                  |
+| A plain HTTP request whose authority names a port                                  | The port of the authority.                  |
+| A plain HTTP request whose authority names no port                                 | Port 80, which is the default port of HTTP. |
+| An HTTP request inside a TLS tunnel                                                | No port.                                    |
+| An HTTP request without an authority                                               | No port.                                    |
+| A TCP connection, such as a tunnel whose TLS server name the policy does not allow | No port.                                    |
+
+The authority of a `CONNECT` request always names a port. The `deny` event
+of a `CONNECT` request therefore holds the port that the client asked for.
 
 `rule_index` counts the rules of `egress` in the policy snapshot that the
 event maps to. Read the rule from that snapshot, which you find by the
@@ -940,7 +960,8 @@ DNS events and Envoy events hold no `rule_index` either.
 
 Events without a `dst_ip` or a `rule_index` have an empty cell in the table
 and in the CSV. In JSON, their `dst_ip` is the empty string and their
-`rule_index` is `null`.
+`rule_index` is `null`. Events without a `port` hold port `0` in every
+format.
 
 ### MCP server
 

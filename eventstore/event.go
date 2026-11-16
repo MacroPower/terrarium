@@ -143,7 +143,23 @@ type Event struct {
 	// index 0.
 	Reason Reason
 
-	// Port is the destination port when known. Zero means unset.
+	// Port is the destination port of the flow. A firewall event of
+	// a TCP or UDP packet holds the destination port of the packet.
+	// An Envoy event holds the port of the upstream that Envoy chose.
+	//
+	// An Envoy event of an HTTP request without an upstream holds
+	// the port that the authority of the request names. When the
+	// authority of a plain HTTP request names no port, the event
+	// holds port 80.
+	//
+	// The zero value means unset. A DNS event and a firewall event
+	// of another protocol, such as ICMP, leave it unset. An Envoy
+	// event without an upstream leaves it unset in these cases:
+	//
+	//   - The event is a TCP event.
+	//   - The HTTP request has no authority.
+	//   - The HTTP request arrived inside a TLS tunnel, and its
+	//     authority names no port.
 	Port int
 
 	// RuleIndex is the index of the rule that decided the event, in

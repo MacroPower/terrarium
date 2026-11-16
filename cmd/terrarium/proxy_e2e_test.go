@@ -2939,6 +2939,7 @@ type proxyEvent struct {
 	Method   string
 	Path     string
 	Status   int
+	Port     int
 
 	// Upstream is true when an allow event holds the address of an
 	// upstream. It is false for every other event, because a deny
@@ -2978,6 +2979,7 @@ func envoyEvents(t *testing.T, dbPath string) []proxyEvent {
 			Method:   ev.HTTPMethod,
 			Path:     ev.HTTPPath,
 			Status:   ev.HTTPStatus,
+			Port:     ev.Port,
 			Upstream: ev.Decision == eventstore.DecisionAllow && ev.DstIP.IsValid(),
 		})
 	}
@@ -3062,7 +3064,7 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 	mitmPool := loadPool(t, filepath.Join(usr.CADir, "ca.pem"))
 
 	httpEvent := func(
-		decision eventstore.Decision, domain, method, path string, status int, upstream bool,
+		decision eventstore.Decision, domain, method, path string, status, port int, upstream bool,
 	) proxyEvent {
 		return proxyEvent{
 			Decision: decision,
@@ -3071,6 +3073,7 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 			Method:   method,
 			Path:     path,
 			Status:   status,
+			Port:     port,
 			Upstream: upstream,
 		}
 	}
@@ -3078,43 +3081,53 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 	var want []proxyEvent
 
 	// The internal HTTP listener denies these plain HTTP requests.
+	// Envoy chose no upstream for them, and their authority names no
+	// port, so their events hold the default port of HTTP.
 	assert.Equal(t, http.StatusForbidden,
 		getStatus(t, tunnelClient, "http://denied.example/"))
 	assert.Equal(t, http.StatusForbidden,
 		getStatus(t, tunnelClient, "http://plain.example/forbidden"))
 
 	want = append(want,
-		httpEvent(eventstore.DecisionDeny, "denied.example", "GET", "/", http.StatusForbidden, false),
-		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/forbidden", http.StatusForbidden, false),
+		httpEvent(eventstore.DecisionDeny, "denied.example", "GET", "/", http.StatusForbidden, 80, false),
+		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/forbidden", http.StatusForbidden, 80, false),
 	)
 
 	// The front listener denies a plain HTTP request for another port
-	// than 80, and a CONNECT request for an authority outside the
-	// policy.
+	// than 80, a CONNECT request for an authority outside the policy,
+	// and a CONNECT request for a host of the policy on a port that
+	// the policy does not allow. Each event holds the port of the
+	// authority, so the last event differs from an event of the port
+	// that the policy allows.
 	assert.Equal(t, http.StatusForbidden,
 		getStatus(t, tunnelClient, "http://plain.example:8080/"))
-	assert.Equal(t, http.StatusForbidden, rawRequestStatus(t, proxyURL,
-		"CONNECT denied.example:443 HTTP/1.1\r\nHost: denied.example:443\r\n\r\n"))
+
+	for _, authority := range []string{"denied.example:443", "tunnel.example:8443"} {
+		assert.Equal(t, http.StatusForbidden, rawRequestStatus(t, proxyURL,
+			"CONNECT "+authority+" HTTP/1.1\r\nHost: "+authority+"\r\n\r\n"))
+	}
 
 	want = append(want,
-		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/", http.StatusForbidden, false),
-		httpEvent(eventstore.DecisionDeny, "denied.example", "CONNECT", "", http.StatusForbidden, false),
+		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/", http.StatusForbidden, 8080, false),
+		httpEvent(eventstore.DecisionDeny, "denied.example", "CONNECT", "", http.StatusForbidden, 443, false),
+		httpEvent(eventstore.DecisionDeny, "tunnel.example", "CONNECT", "", http.StatusForbidden, 8443, false),
 	)
 
 	// The front listener also answers a request that matches no route,
-	// such as a request without a Host header.
+	// such as a request without a Host header. The request names no
+	// authority, so its event holds no port.
 	assert.Equal(t, http.StatusBadRequest,
 		rawRequestStatus(t, proxyURL, "GET / HTTP/1.1\r\n\r\n"))
 
 	want = append(want,
-		httpEvent(eventstore.DecisionError, "", "GET", "/", http.StatusBadRequest, false))
+		httpEvent(eventstore.DecisionError, "", "GET", "/", http.StatusBadRequest, 0, false))
 
 	if port80 {
 		assert.Equal(t, http.StatusOK,
 			getStatus(t, tunnelClient, "http://plain.example/allowed"))
 
 		want = append(want,
-			httpEvent(eventstore.DecisionAllow, "plain.example", "GET", "/allowed", http.StatusOK, true))
+			httpEvent(eventstore.DecisionAllow, "plain.example", "GET", "/allowed", http.StatusOK, 80, true))
 	}
 
 	// Envoy records the connection of a tunneled host when the
@@ -3127,12 +3140,15 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 		Decision: eventstore.DecisionAllow,
 		Protocol: eventstore.ProtocolTCP,
 		Domain:   "tunnel.example",
+		Port:     ports[0],
 		Upstream: true,
 	})
 
 	// The front listener opens a tunnel for an authority that matches
 	// the wildcard. The internal TLS listener then denies the
 	// connection, because its server name has one label too many.
+	// Envoy chose the upstream before it denied the connection, so the
+	// event holds the port of the upstream.
 	deep := tls.Client(connectHTTP10(t, proxyURL, "a.b.wild.example:"+tunnelPort), &tls.Config{
 		ServerName: "a.b.wild.example",
 		RootCAs:    loadPool(t, caPath),
@@ -3144,6 +3160,7 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 		Decision: eventstore.DecisionDeny,
 		Protocol: eventstore.ProtocolTCP,
 		Domain:   "a.b.wild.example",
+		Port:     ports[0],
 	})
 
 	// The internal TLS listener denies a tunnel whose server name the
@@ -3181,11 +3198,14 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status)
 
 	want = append(want,
-		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/forbidden", http.StatusForbidden, false))
+		httpEvent(eventstore.DecisionDeny, "plain.example", "GET", "/forbidden", http.StatusForbidden, 80, false))
 
 	// Envoy records each request inside the tunnel to a host with L7
 	// rules, and it records the tunnel when the tunnel closes. Each
 	// request gets its own client, so each request opens one tunnel.
+	// The event of the denied request holds no port, because Envoy
+	// chose no upstream and the authority of a request inside a TLS
+	// tunnel names no port.
 	l7Tunnel := proxyEvent{
 		Decision: eventstore.DecisionAllow,
 		Protocol: eventstore.ProtocolTCP,
@@ -3200,13 +3220,14 @@ func TestProxyE2EStatsEvents(t *testing.T) {
 		{
 			path:   "/allowed",
 			status: http.StatusOK,
-			event:  httpEvent(eventstore.DecisionAllow, "l7.example", "GET", "/allowed", http.StatusOK, true),
+			event: httpEvent(
+				eventstore.DecisionAllow, "l7.example", "GET", "/allowed", http.StatusOK, ports[1], true),
 		},
 		{
 			path:   "/forbidden",
 			status: http.StatusForbidden,
 			event: httpEvent(
-				eventstore.DecisionDeny, "l7.example", "GET", "/forbidden", http.StatusForbidden, false),
+				eventstore.DecisionDeny, "l7.example", "GET", "/forbidden", http.StatusForbidden, 0, false),
 		},
 	} {
 		l7Client := proxyClient(t, proxyURL, mitmPool)
@@ -3310,6 +3331,7 @@ func TestProxyE2EStatsEventsUnrestricted(t *testing.T) {
 			Method:   "GET",
 			Path:     "/plain",
 			Status:   http.StatusOK,
+			Port:     ports[0],
 			Upstream: true,
 		},
 		{
@@ -3318,6 +3340,7 @@ func TestProxyE2EStatsEventsUnrestricted(t *testing.T) {
 			Domain:   "127.0.0.1",
 			Method:   "CONNECT",
 			Status:   http.StatusOK,
+			Port:     ports[1],
 			Upstream: true,
 		},
 	}

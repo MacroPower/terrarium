@@ -74,6 +74,146 @@ func TestCommonDstIP(t *testing.T) {
 	}
 }
 
+func TestHTTPPort(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		req    *alsdata.HTTPRequestProperties
+		common *alsdata.AccessLogCommon
+		want   int
+	}{
+		"nil entry": {},
+		"no authority": {
+			req: &alsdata.HTTPRequestProperties{RequestMethod: corev3.RequestMethod_GET},
+		},
+		"upstream port": {
+			req:    &alsdata.HTTPRequestProperties{Authority: "example.com"},
+			common: &alsdata.AccessLogCommon{UpstreamRemoteAddress: socketAddress("192.0.2.7", 8080)},
+			want:   8080,
+		},
+		"upstream port takes precedence over the authority": {
+			req:    &alsdata.HTTPRequestProperties{Authority: "example.com:9090"},
+			common: &alsdata.AccessLogCommon{UpstreamRemoteAddress: socketAddress("192.0.2.7", 8080)},
+			want:   8080,
+		},
+		"upstream without a port": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com:8443",
+				RequestMethod: corev3.RequestMethod_CONNECT,
+			},
+			common: &alsdata.AccessLogCommon{
+				UpstreamRemoteAddress: &corev3.Address{
+					Address: &corev3.Address_EnvoyInternalAddress{
+						EnvoyInternalAddress: &corev3.EnvoyInternalAddress{
+							AddressNameSpecifier: &corev3.EnvoyInternalAddress_ServerListenerName{
+								ServerListenerName: "tls_internal_8443",
+							},
+						},
+					},
+				},
+			},
+			want: 8443,
+		},
+		"CONNECT authority": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com:8443",
+				RequestMethod: corev3.RequestMethod_CONNECT,
+			},
+			want: 8443,
+		},
+		"CONNECT authority with an IPv6 address": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "[2001:db8::7]:8443",
+				RequestMethod: corev3.RequestMethod_CONNECT,
+			},
+			want: 8443,
+		},
+		"CONNECT authority without a port": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com",
+				RequestMethod: corev3.RequestMethod_CONNECT,
+			},
+		},
+		"plain HTTP authority with a port": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com:8080",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+			want: 8080,
+		},
+		"plain HTTP authority without a port": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+			want: 80,
+		},
+		"plaintext request with the https scheme": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com",
+				Scheme:        "https",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+			want: 80,
+		},
+		"plain HTTP authority with an empty port": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com:",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+			want: 80,
+		},
+		"plain HTTP authority with an IPv6 address": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "[2001:db8::7]",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+			want: 80,
+		},
+		"TLS authority with a port": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com:8443",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+			common: &alsdata.AccessLogCommon{TlsProperties: &alsdata.TLSProperties{}},
+			want:   8443,
+		},
+		"TLS authority without a port": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+			common: &alsdata.AccessLogCommon{TlsProperties: &alsdata.TLSProperties{}},
+		},
+		"port that is not a number": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com:http",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+		},
+		"port greater than 65535": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com:65536",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+		},
+		"negative port": {
+			req: &alsdata.HTTPRequestProperties{
+				Authority:     "example.com:-1",
+				RequestMethod: corev3.RequestMethod_GET,
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, httpPort(tt.req, tt.common))
+		})
+	}
+}
+
 func TestHTTPEntryToEvent(t *testing.T) {
 	t.Parallel()
 
@@ -120,6 +260,7 @@ func TestHTTPEntryToEvent(t *testing.T) {
 			},
 			wantDecision: eventstore.DecisionDeny,
 			wantDomain:   "blocked.example",
+			wantPort:     80,
 			wantStatus:   403,
 		},
 		"403 direct_response is deny": {
@@ -134,6 +275,7 @@ func TestHTTPEntryToEvent(t *testing.T) {
 				},
 			},
 			wantDecision: eventstore.DecisionDeny,
+			wantPort:     80,
 		},
 		"5xx is error": {
 			entry: &alsdata.HTTPAccessLogEntry{
@@ -146,6 +288,7 @@ func TestHTTPEntryToEvent(t *testing.T) {
 				},
 			},
 			wantDecision: eventstore.DecisionError,
+			wantPort:     80,
 		},
 		"authority empty falls back to upstream cluster": {
 			entry: &alsdata.HTTPAccessLogEntry{
@@ -173,6 +316,24 @@ func TestHTTPEntryToEvent(t *testing.T) {
 			},
 			wantDecision: eventstore.DecisionAllow,
 			wantDomain:   "host.example",
+			wantPort:     8080,
+		},
+		"denied CONNECT holds the port of its authority": {
+			entry: &alsdata.HTTPAccessLogEntry{
+				CommonProperties: &alsdata.AccessLogCommon{},
+				Request: &alsdata.HTTPRequestProperties{
+					Authority:     "blocked.example:8443",
+					RequestMethod: corev3.RequestMethod_CONNECT,
+				},
+				Response: &alsdata.HTTPResponseProperties{
+					ResponseCode:        wrapperspb.UInt32(403),
+					ResponseCodeDetails: "direct_response",
+				},
+			},
+			wantDecision: eventstore.DecisionDeny,
+			wantDomain:   "blocked.example",
+			wantPort:     8443,
+			wantStatus:   403,
 		},
 	}
 

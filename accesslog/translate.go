@@ -4,6 +4,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,10 +36,15 @@ const (
 	httpResponseDetailDirect = "direct_response"
 )
 
+// defaultHTTPPort is the default port of the "http" URI scheme. A plain
+// HTTP request whose authority names no port targets this port.
+const defaultHTTPPort = 80
+
 // httpEntryToEvent converts an Envoy HTTPAccessLogEntry into an
 // [eventstore.Event]. The response_code and response_code_details
 // mapping is in [httpDecision]. The destination address of the event
-// is the result of [commonDstIP].
+// is the result of [commonDstIP], and the destination port is the
+// result of [httpPort].
 func httpEntryToEvent(entry *alsdata.HTTPAccessLogEntry) eventstore.Event {
 	common := entry.GetCommonProperties()
 	req := entry.GetRequest()
@@ -50,7 +56,7 @@ func httpEntryToEvent(entry *alsdata.HTTPAccessLogEntry) eventstore.Event {
 		Time:     extractTime(common),
 		Domain:   httpDomain(req, common),
 		DstIP:    commonDstIP(common),
-		Port:     commonPort(common),
+		Port:     httpPort(req, common),
 		Protocol: eventstore.ProtocolHTTP,
 	}
 
@@ -126,6 +132,62 @@ func httpDomain(req *alsdata.HTTPRequestProperties, common *alsdata.AccessLogCom
 	}
 
 	return common.GetUpstreamCluster()
+}
+
+// httpPort returns the destination port of an HTTP entry. For an
+// entry whose upstream address holds a port, it is the result of
+// [commonPort].
+//
+// Envoy writes an entry without an upstream address for a request that
+// it answered itself, such as a request that it denied. For that entry,
+// httpPort returns the port that the authority of the request names.
+// The authority of a CONNECT request always names its port. For every
+// other request that arrived without TLS, an authority without a port
+// names [defaultHTTPPort].
+//
+// The scheme of a request without TLS does not change its port. The
+// plaintext listeners set use_remote_address, so Envoy rejects an
+// HTTP/1 request for an https:// absolute URL before routing. The
+// entry of that request holds no authority. Envoy accepts an HTTP/2
+// request with the https scheme over plaintext, and it forwards that
+// request to port 80 when the authority names no port.
+//
+// It returns 0 in these cases:
+//
+//   - The request has no authority.
+//   - The authority of a CONNECT request names no port.
+//   - The request arrived over TLS, and its authority names no port. A
+//     MITM filter chain removes the port from the authority, so the
+//     authority does not tell which port the client connected to.
+//   - The port of the authority is not a number from 1 to 65535.
+func httpPort(req *alsdata.HTTPRequestProperties, common *alsdata.AccessLogCommon) int {
+	if port := commonPort(common); port != 0 {
+		return port
+	}
+
+	authority := req.GetAuthority()
+	if authority == "" {
+		return 0
+	}
+
+	// An authority that does not split names no port, as in
+	// [stripPort]. An empty port after the colon also names the
+	// default port of the scheme.
+	_, port, err := net.SplitHostPort(authority)
+	if err != nil || port == "" {
+		if req.GetRequestMethod() == corev3.RequestMethod_CONNECT || common.GetTlsProperties() != nil {
+			return 0
+		}
+
+		return defaultHTTPPort
+	}
+
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return 0
+	}
+
+	return int(n)
 }
 
 // commonPort returns the destination port from the upstream remote
