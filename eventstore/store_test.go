@@ -1243,19 +1243,193 @@ func TestRecordHeartbeat_RoundTrip(t *testing.T) {
 // holds the commit of the events that the store commits at Close. The
 // batch interval is long, so the store commits the event only at Close,
 // after the instance took the snapshot of the heartbeat.
+//
+// The test waits until the writer has upserted the heartbeat, so no
+// heartbeat is pending at Close. [TestDrainHeartbeats] covers a pending
+// heartbeat, which this test cannot hold back from the writer.
 func TestClose_FinalHeartbeatHoldsLastWrite(t *testing.T) {
 	t.Parallel()
 
+	path := filepath.Join(t.TempDir(), "stats.db")
+
+	store, err := eventstore.Open(t.Context(), path,
+		eventstore.WithBatchInterval(time.Hour))
+	require.NoError(t, err)
+
+	store.Emit(eventstore.Event{
+		Source:   eventstore.SourceDNS,
+		Decision: eventstore.DecisionAllow,
+	})
+
+	require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
+		RecordedAt:          time.Now(),
+		EventStoreDropCount: store.DropCount(),
+		EventStoreLastWrite: store.LastWriteTime(),
+		DNSCacheSize:        3,
+	}))
+
+	r := openReader(t, path)
+
+	require.Eventually(t, func() bool {
+		_, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
+
+		return err == nil && ok
+	}, 2*time.Second, 10*time.Millisecond)
+
+	require.NoError(t, store.Close())
+
+	hb, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.False(t, hb.EventStoreLastWrite.IsZero(), "final heartbeat holds no write")
+	assert.Equal(t, int64(3), hb.DNSCacheSize)
+}
+
+// TestDrainHeartbeats checks the heartbeat that the writer goroutine
+// writes on its way out of [eventstore.Store.Close]. The store has no
+// running writer, so each case decides which heartbeat is pending and
+// which heartbeat the writer upserted last. No case upserts a
+// heartbeat before the drain, so a stored heartbeat is one that the
+// drain wrote.
+func TestDrainHeartbeats(t *testing.T) {
+	t.Parallel()
+
+	var (
+		recordedAt = time.UnixMicro(1_700_000_000_000_000)
+		oldWrite   = recordedAt.Add(-time.Minute)
+		newWrite   = recordedAt.Add(time.Second)
+	)
+
 	tcs := map[string]struct {
-		// upserted makes the test wait until the writer has upserted
-		// the heartbeat, so that no heartbeat is pending at Close.
-		// Without the wait, the idle writer still takes the heartbeat
-		// from its channel before Close in most runs. Neither case
-		// therefore tests a heartbeat that is pending at Close.
-		upserted bool
+		// pending is the heartbeat that waits in the channel of the
+		// store at the drain.
+		pending *eventstore.Heartbeat
+		// last is the heartbeat that the writer upserted last.
+		last *eventstore.Heartbeat
+		// lastWrite and drops are the counters of the store at the
+		// drain.
+		lastWrite time.Time
+		// want is the stored heartbeat after the drain. Nil means that
+		// the drain wrote nothing.
+		want  *eventstore.Heartbeat
+		drops int64
 	}{
-		"heartbeat upserted before close": {upserted: true},
-		"close without waiting":           {upserted: false},
+		"pending heartbeat takes the first write": {
+			pending: &eventstore.Heartbeat{
+				RecordedAt:   recordedAt,
+				DNSCacheSize: 3,
+			},
+			lastWrite: newWrite,
+			want: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+			},
+		},
+		"pending heartbeat takes the later write and the higher drop count": {
+			pending: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: oldWrite,
+				EventStoreDropCount: 2,
+			},
+			lastWrite: newWrite,
+			drops:     5,
+			want: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 5,
+			},
+		},
+		"pending heartbeat with the counters of the store": {
+			pending: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 5,
+			},
+			lastWrite: newWrite,
+			drops:     5,
+			want: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 5,
+			},
+		},
+		"pending heartbeat replaces the last heartbeat": {
+			pending: &eventstore.Heartbeat{
+				RecordedAt:   recordedAt,
+				DNSCacheSize: 3,
+			},
+			last: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt.Add(-time.Hour),
+				DNSCacheSize:        1,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 5,
+			},
+			lastWrite: newWrite,
+			drops:     5,
+			want: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 5,
+			},
+		},
+		"last heartbeat takes the later write": {
+			last: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: oldWrite,
+				EventStoreDropCount: 5,
+			},
+			lastWrite: newWrite,
+			drops:     5,
+			want: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 5,
+			},
+		},
+		"last heartbeat takes the higher drop count": {
+			last: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 2,
+			},
+			lastWrite: newWrite,
+			drops:     5,
+			want: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 5,
+			},
+		},
+		"last heartbeat with the counters of the store": {
+			last: &eventstore.Heartbeat{
+				RecordedAt:          recordedAt,
+				DNSCacheSize:        3,
+				EventStoreLastWrite: newWrite,
+				EventStoreDropCount: 5,
+			},
+			lastWrite: newWrite,
+			drops:     5,
+		},
+		"last heartbeat of a store without a commit": {
+			last: &eventstore.Heartbeat{
+				RecordedAt:   recordedAt,
+				DNSCacheSize: 3,
+			},
+		},
+		"no heartbeat": {
+			lastWrite: newWrite,
+			drops:     5,
+		},
 	}
 
 	for name, tc := range tcs {
@@ -1264,39 +1438,32 @@ func TestClose_FinalHeartbeatHoldsLastWrite(t *testing.T) {
 
 			path := filepath.Join(t.TempDir(), "stats.db")
 
-			store, err := eventstore.Open(t.Context(), path,
-				eventstore.WithBatchInterval(time.Hour))
+			store, err := eventstore.OpenWithoutWriter(t.Context(), path)
 			require.NoError(t, err)
 
-			store.Emit(eventstore.Event{
-				Source:   eventstore.SourceDNS,
-				Decision: eventstore.DecisionAllow,
+			t.Cleanup(func() {
+				store.StartWriter()
+				assert.NoError(t, store.Close())
 			})
 
-			require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{
-				RecordedAt:          time.Now(),
-				EventStoreDropCount: store.DropCount(),
-				EventStoreLastWrite: store.LastWriteTime(),
-				DNSCacheSize:        3,
-			}))
-
-			r := openReader(t, path)
-
-			if tc.upserted {
-				require.Eventually(t, func() bool {
-					_, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
-
-					return err == nil && ok
-				}, 2*time.Second, 10*time.Millisecond)
+			if tc.pending != nil {
+				require.NoError(t, store.RecordHeartbeat(t.Context(), *tc.pending))
 			}
 
-			require.NoError(t, store.Close())
+			store.SetCounters(tc.lastWrite, tc.drops)
+			store.DrainHeartbeats(tc.last)
 
-			hb, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
+			got, ok, err := openReader(t, path).LatestHeartbeat(t.Context(), store.InstanceID())
 			require.NoError(t, err)
-			require.True(t, ok)
-			assert.False(t, hb.EventStoreLastWrite.IsZero(), "final heartbeat holds no write")
-			assert.Equal(t, int64(3), hb.DNSCacheSize)
+
+			if tc.want == nil {
+				assert.False(t, ok, "drain wrote the heartbeat %+v", got)
+
+				return
+			}
+
+			require.True(t, ok, "drain wrote no heartbeat")
+			assert.Equal(t, *tc.want, got)
 		})
 	}
 }

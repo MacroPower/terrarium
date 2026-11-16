@@ -292,6 +292,23 @@ type Store struct {
 // that stopped more than MaxAge ago and holds no events. See
 // [Retention] for the instances that it removes.
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
+	s, err := open(ctx, path, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	// The writer goroutine outlives Open's caller context, so it
+	// derives its own per-operation timeouts from context.Background()
+	// rather than inheriting ctx.
+	go s.run() //nolint:contextcheck // writer goroutine owns its lifetime, see insertBatch.
+
+	return s, nil
+}
+
+// open opens the store as [Open] documents, but it does not start the
+// writer goroutine. [Store.Close] waits for that goroutine, so the
+// caller starts [Store.run] before a Close.
+func open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	o := defaultStoreOptions()
 	for _, opt := range opts {
 		opt(&o)
@@ -375,11 +392,6 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 			s.logger.WarnContext(ctx, "chowning db files", slog.Any("err", err))
 		}
 	}
-
-	// The writer goroutine outlives Open's caller context, so it
-	// derives its own per-operation timeouts from context.Background()
-	// rather than inheriting ctx.
-	go s.run() //nolint:contextcheck // writer goroutine owns its lifetime, see insertBatch.
 
 	return s, nil
 }
