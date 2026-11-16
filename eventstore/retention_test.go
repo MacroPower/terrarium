@@ -1,7 +1,11 @@
 package eventstore_test
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -264,4 +268,509 @@ func TestStore_LastWriteTimeUpdates(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return !store.LastWriteTime().IsZero()
 	}, 2*time.Second, 20*time.Millisecond)
+}
+
+// execRaw runs one statement on the database at path through its own
+// connection, as another process does. The connection waits for the
+// write lock of a store that has the database open.
+func execRaw(t *testing.T, path, query string, args ...any) {
+	t.Helper()
+
+	raw, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(2000)")
+	require.NoError(t, err)
+
+	_, err = raw.ExecContext(t.Context(), query, args...)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+}
+
+// setInstanceTimes replaces the start and the end of the instance
+// with the given ID in the database at path. The zero ended leaves
+// the instance without an end, as a process does that stops without
+// a [eventstore.Store.Close].
+func setInstanceTimes(t *testing.T, path, id string, started, ended time.Time) {
+	t.Helper()
+
+	var end sql.NullInt64
+
+	if !ended.IsZero() {
+		end = sql.NullInt64{Int64: ended.UnixMicro(), Valid: true}
+	}
+
+	execRaw(t, path, `UPDATE instances SET started_at = ?, ended_at = ? WHERE id = ?`,
+		started.UnixMicro(), end, id)
+}
+
+// stoppedInstance adds an instance to the database at path that
+// started three hours ago and ended two hours ago. It holds no
+// events, no heartbeat, and no policy snapshot. It returns the ID of
+// the instance.
+func stoppedInstance(t *testing.T, path string) string {
+	t.Helper()
+
+	id := writeStore(t, path, nil)
+	setInstanceTimes(t, path, id, time.Now().Add(-3*time.Hour), time.Now().Add(-2*time.Hour))
+
+	return id
+}
+
+// instanceIDs returns the ID of each instance that r reads. It
+// returns the error of the read, so that a polling closure can call
+// it.
+func instanceIDs(ctx context.Context, r *eventstore.Reader) ([]string, error) {
+	instances, err := r.Instances(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading instances: %w", err)
+	}
+
+	ids := make([]string, 0, len(instances))
+	for _, in := range instances {
+		ids = append(ids, in.ID)
+	}
+
+	return ids, nil
+}
+
+// requireInstanceRemoved waits until r reads no instance with the
+// given ID.
+func requireInstanceRemoved(t *testing.T, r *eventstore.Reader, id string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		ids, err := instanceIDs(t.Context(), r)
+
+		return err == nil && !slices.Contains(ids, id)
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+// TestRetention_Instances runs the age pruner of one store against
+// an instance of another store that stopped.
+func TestRetention_Instances(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	maxAge := eventstore.Retention{MaxAge: time.Hour}
+
+	tcs := map[string]struct {
+		// The times of the instance. The zero time leaves the
+		// instance without that row.
+		started   time.Time
+		ended     time.Time
+		heartbeat time.Time
+		event     time.Time
+		policies  []time.Time
+		retention eventstore.Retention
+		// Whether the pruner removes the instance.
+		removed bool
+	}{
+		"ended before the cutoff": {
+			retention: maxAge,
+			started:   ago(3 * time.Hour),
+			ended:     ago(2 * time.Hour),
+			heartbeat: ago(2 * time.Hour),
+			policies:  []time.Time{ago(3 * time.Hour), ago(150 * time.Minute)},
+			removed:   true,
+		},
+		"ended within max age": {
+			retention: maxAge,
+			started:   ago(3 * time.Hour),
+			ended:     ago(30 * time.Minute),
+			heartbeat: ago(30 * time.Minute),
+			policies:  []time.Time{ago(3 * time.Hour)},
+		},
+		"holds an event": {
+			retention: maxAge,
+			started:   ago(3 * time.Hour),
+			ended:     ago(2 * time.Hour),
+			event:     ago(30 * time.Minute),
+		},
+		"holds a heartbeat within max age": {
+			retention: maxAge,
+			started:   ago(3 * time.Hour),
+			ended:     ago(2 * time.Hour),
+			heartbeat: ago(30 * time.Minute),
+		},
+		"holds a snapshot within max age": {
+			retention: maxAge,
+			started:   ago(3 * time.Hour),
+			ended:     ago(2 * time.Hour),
+			policies:  []time.Time{ago(3 * time.Hour), ago(30 * time.Minute)},
+		},
+		"no end and an old heartbeat": {
+			retention: maxAge,
+			started:   ago(3 * time.Hour),
+			heartbeat: ago(2 * time.Hour),
+			policies:  []time.Time{ago(3 * time.Hour)},
+			removed:   true,
+		},
+		"no end and a heartbeat within max age": {
+			retention: maxAge,
+			started:   ago(3 * time.Hour),
+			heartbeat: ago(time.Minute),
+		},
+		"no end and no heartbeat": {
+			retention: maxAge,
+			started:   ago(3 * time.Hour),
+			removed:   true,
+		},
+		"no end and a start within max age": {
+			retention: maxAge,
+			started:   ago(30 * time.Minute),
+		},
+		// The heartbeat is older than the max age, but a running
+		// instance records one heartbeat in each interval.
+		"short max age, no end and a heartbeat of the last interval": {
+			retention: eventstore.Retention{MaxAge: time.Second},
+			started:   ago(3 * time.Hour),
+			heartbeat: ago(eventstore.HeartbeatInterval),
+		},
+		"short max age, no end and an old heartbeat": {
+			retention: eventstore.Retention{MaxAge: time.Second},
+			started:   ago(3 * time.Hour),
+			heartbeat: ago(3 * eventstore.HeartbeatInterval),
+			removed:   true,
+		},
+		"short max age and an end": {
+			retention: eventstore.Retention{MaxAge: time.Second},
+			started:   ago(3 * time.Hour),
+			ended:     ago(eventstore.HeartbeatInterval),
+			heartbeat: ago(eventstore.HeartbeatInterval),
+			removed:   true,
+		},
+		"no max age": {
+			retention: eventstore.Retention{MaxRows: 10},
+			started:   ago(3 * time.Hour),
+			ended:     ago(2 * time.Hour),
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			other, err := eventstore.Open(t.Context(), path)
+			require.NoError(t, err)
+
+			if !tc.heartbeat.IsZero() {
+				require.NoError(t, other.RecordHeartbeat(t.Context(),
+					eventstore.Heartbeat{RecordedAt: tc.heartbeat}))
+			}
+
+			for i, at := range tc.policies {
+				other.RecordPolicy(eventstore.PolicySnapshot{
+					AppliedAt: at, Mode: eventstore.SecurityFiltered, YAML: string(rune('a' + i)),
+				})
+			}
+
+			if !tc.event.IsZero() {
+				other.Emit(eventstore.Event{
+					Time: tc.event, Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow,
+				})
+			}
+
+			require.NoError(t, other.Close())
+			setInstanceTimes(t, path, other.InstanceID(), tc.started, tc.ended)
+
+			// The pruner selects every removable instance in one
+			// query. After it removed this instance, it has also
+			// decided on the instance of the test case.
+			stopped := stoppedInstance(t, path)
+
+			store, err := eventstore.Open(t.Context(), path,
+				eventstore.WithRetention(tc.retention),
+				eventstore.WithPruneInterval(10*time.Millisecond))
+			require.NoError(t, err)
+
+			t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+			r := openReader(t, path)
+
+			want := []string{store.InstanceID()}
+
+			if tc.retention.MaxAge > 0 {
+				requireInstanceRemoved(t, r, stopped)
+			} else {
+				want = append(want, stopped)
+			}
+
+			if !tc.removed {
+				want = append(want, other.InstanceID())
+			}
+
+			got, err := instanceIDs(t.Context(), r)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, want, got)
+
+			// The pruner keeps running. It must remove nothing more.
+			assert.Never(t, func() bool {
+				ids, err := instanceIDs(t.Context(), r)
+
+				return err == nil && len(ids) != len(want)
+			}, 200*time.Millisecond, 20*time.Millisecond)
+
+			_, hasHeartbeat, err := r.LatestHeartbeat(t.Context(), other.InstanceID())
+			require.NoError(t, err)
+			assert.Equal(t, !tc.removed && !tc.heartbeat.IsZero(), hasHeartbeat)
+
+			infos, err := r.Policies(t.Context(), other.InstanceID())
+			require.NoError(t, err)
+
+			if tc.removed {
+				assert.Empty(t, infos)
+			} else {
+				assert.Len(t, infos, len(tc.policies))
+			}
+		})
+	}
+}
+
+// TestRetention_KeepsOwnInstance runs the age pruner of a store whose
+// own instance holds no events and no heartbeat, and whose start is
+// older than the max age.
+func TestRetention_KeepsOwnInstance(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+
+	store, err := eventstore.Open(t.Context(), path,
+		eventstore.WithRetention(eventstore.Retention{MaxAge: time.Hour}),
+		eventstore.WithPruneInterval(10*time.Millisecond))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+	setInstanceTimes(t, path, store.InstanceID(), time.Now().Add(-3*time.Hour), time.Time{})
+
+	// The pruner removes this instance in a run that follows the
+	// change of the start, so that run has also decided on the
+	// instance of the store.
+	stopped := stoppedInstance(t, path)
+
+	r := openReader(t, path)
+	requireInstanceRemoved(t, r, stopped)
+
+	got, err := instanceIDs(t.Context(), r)
+	require.NoError(t, err)
+	assert.Equal(t, []string{store.InstanceID()}, got)
+}
+
+// TestRetention_RemovedInstanceIsNotDefault runs the age pruner of a
+// proxy against a daemon run that stopped and holds no events. The
+// daemon run is the default instance until the pruner removes it.
+func TestRetention_RemovedInstanceIsNotDefault(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+
+	daemon := writeStore(t, path, nil, eventstore.WithMode(eventstore.ModeDaemon))
+	setInstanceTimes(t, path, daemon, time.Now().Add(-3*time.Hour), time.Now().Add(-2*time.Hour))
+
+	r := openReader(t, path)
+
+	got, ok, err := r.DefaultInstanceID(t.Context())
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, daemon, got)
+
+	proxy, err := eventstore.Open(t.Context(), path,
+		eventstore.WithMode(eventstore.ModeProxy),
+		eventstore.WithRetention(eventstore.Retention{MaxAge: time.Hour}),
+		eventstore.WithPruneInterval(10*time.Millisecond))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, proxy.Close()) })
+
+	requireInstanceRemoved(t, r, daemon)
+
+	got, ok, err = r.DefaultInstanceID(t.Context())
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, proxy.InstanceID(), got)
+}
+
+// TestRetention_RunningInstanceKeepsPolicy runs the age pruner of a
+// daemon against a proxy that is running but looks stopped, as after
+// a suspension of the proxy for longer than the max age. The next
+// heartbeat of the proxy must bring back its instance and its policy
+// snapshot.
+func TestRetention_RunningInstanceKeepsPolicy(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "stats.db")
+	applied := time.Now().Add(-3 * time.Hour).Truncate(time.Microsecond)
+
+	proxy, err := eventstore.Open(t.Context(), path,
+		eventstore.WithMode(eventstore.ModeProxy))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, proxy.Close()) })
+
+	proxy.RecordPolicy(eventstore.PolicySnapshot{
+		AppliedAt: applied,
+		Mode:      eventstore.SecurityFiltered,
+		YAML:      "egress: []\n",
+	})
+
+	r := openReader(t, path)
+
+	require.Eventually(t, func() bool {
+		_, ok, err := r.LatestPolicy(t.Context(), proxy.InstanceID())
+
+		return err == nil && ok
+	}, 5*time.Second, 10*time.Millisecond)
+
+	setInstanceTimes(t, path, proxy.InstanceID(), applied, time.Time{})
+
+	daemon, err := eventstore.Open(t.Context(), path,
+		eventstore.WithMode(eventstore.ModeDaemon),
+		eventstore.WithRetention(eventstore.Retention{MaxAge: time.Hour}),
+		eventstore.WithPruneInterval(10*time.Millisecond))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { assert.NoError(t, daemon.Close()) })
+
+	requireInstanceRemoved(t, r, proxy.InstanceID())
+
+	_, ok, err := r.LatestPolicy(t.Context(), proxy.InstanceID())
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	require.NoError(t, proxy.RecordHeartbeat(t.Context(), eventstore.Heartbeat{}))
+
+	require.Eventually(t, func() bool {
+		ids, err := instanceIDs(t.Context(), r)
+
+		return err == nil && slices.Contains(ids, proxy.InstanceID())
+	}, 5*time.Second, 10*time.Millisecond)
+
+	got, ok, err := r.LatestPolicy(t.Context(), proxy.InstanceID())
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.True(t, got.AppliedAt.Equal(applied))
+	assert.Equal(t, eventstore.SecurityFiltered, got.Mode)
+	assert.Equal(t, "egress: []\n", got.YAML)
+}
+
+// TestStore_WritesRemovedInstanceRowAgain removes the instance of a
+// running store, as the pruner of another store does for an instance
+// that looks stopped. Each write of the store must then bring the
+// instance row and the latest policy snapshot of the store back.
+func TestStore_WritesRemovedInstanceRowAgain(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		write func(t *testing.T, store *eventstore.Store)
+	}{
+		"event": {
+			write: func(_ *testing.T, store *eventstore.Store) {
+				store.Emit(eventstore.Event{
+					Source: eventstore.SourceDNS, Decision: eventstore.DecisionAllow,
+				})
+			},
+		},
+		"heartbeat": {
+			write: func(t *testing.T, store *eventstore.Store) {
+				t.Helper()
+
+				require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{}))
+			},
+		},
+		"policy snapshot": {
+			write: func(_ *testing.T, store *eventstore.Store) {
+				store.RecordPolicy(eventstore.PolicySnapshot{
+					Mode: eventstore.SecurityBlocked, YAML: "egress:\n- {}\n",
+				})
+			},
+		},
+	}
+
+	applied := time.Now().Add(-3 * time.Hour).Truncate(time.Microsecond)
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			store, err := eventstore.Open(t.Context(), path,
+				eventstore.WithMode(eventstore.ModeProxy),
+				eventstore.WithInstanceName("127.0.0.1-8080"),
+				eventstore.WithConfigPath("/etc/terrarium/config.yaml"),
+				eventstore.WithBatchSize(1),
+				eventstore.WithBatchInterval(10*time.Millisecond))
+			require.NoError(t, err)
+
+			t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+			r := openReader(t, path)
+
+			want, err := r.Instances(t.Context())
+			require.NoError(t, err)
+			require.Len(t, want, 1)
+
+			store.RecordPolicy(eventstore.PolicySnapshot{
+				AppliedAt:  applied,
+				ConfigPath: "/etc/terrarium/config.yaml",
+				Mode:       eventstore.SecurityFiltered,
+				YAML:       "egress: []\n",
+			})
+
+			var wantPolicy eventstore.StoredPolicy
+
+			require.Eventually(t, func() bool {
+				var ok bool
+
+				wantPolicy, ok, err = r.LatestPolicy(t.Context(), store.InstanceID())
+
+				return err == nil && ok
+			}, 5*time.Second, 10*time.Millisecond)
+
+			require.NoError(t, store.RecordHeartbeat(t.Context(), eventstore.Heartbeat{}))
+
+			// Wait until the writer stores the heartbeat. A heartbeat
+			// that it stores after the deletes below writes the rows
+			// again, and the subtest then does not test its own write.
+			require.Eventually(t, func() bool {
+				_, ok, err := r.LatestHeartbeat(t.Context(), store.InstanceID())
+
+				return err == nil && ok
+			}, 5*time.Second, 10*time.Millisecond)
+
+			id := store.InstanceID()
+			execRaw(t, path, `DELETE FROM instance_metrics WHERE instance_id = ?`, id)
+			execRaw(t, path, `DELETE FROM policies WHERE instance_id = ?`, id)
+			execRaw(t, path, `DELETE FROM instances WHERE id = ?`, id)
+
+			got, err := r.Instances(t.Context())
+			require.NoError(t, err)
+			require.Empty(t, got)
+
+			tc.write(t, store)
+
+			require.Eventually(t, func() bool {
+				ids, err := instanceIDs(t.Context(), r)
+
+				return err == nil && len(ids) == 1
+			}, 5*time.Second, 10*time.Millisecond)
+
+			got, err = r.Instances(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+
+			policies, err := r.Policies(t.Context(), id)
+			require.NoError(t, err)
+			require.NotEmpty(t, policies)
+
+			// The oldest snapshot is the one that the test removed.
+			// Its row ID changes when the store writes it again.
+			gotPolicy := policies[len(policies)-1]
+			wantInfo := wantPolicy.PolicyInfo
+			wantInfo.ID = gotPolicy.ID
+			assert.Equal(t, wantInfo, gotPolicy)
+			assert.True(t, gotPolicy.AppliedAt.Equal(applied))
+		})
+	}
 }

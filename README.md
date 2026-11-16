@@ -841,10 +841,22 @@ without one, so you can tell a redacted value from a value that the policy
 does not set.
 
 `retention.maxAge` bounds the snapshots too. Terrarium removes a snapshot
-only when the snapshot and a later snapshot of the same instance are both
-older than `maxAge`. The store therefore keeps the latest snapshot of every
-instance, and the policy of each instance at every time within `maxAge`.
-`retention.maxRows` and `retention.perSource` count events, not snapshots.
+when the snapshot and a later snapshot of the same instance are both older
+than `maxAge`. The store therefore keeps the latest snapshot of each instance
+that it holds, and the policy of each instance at every time within `maxAge`.
+
+`retention.maxAge` also bounds the instances. Terrarium removes an instance
+when the store holds no event of the instance and the instance stopped more
+than `maxAge` ago. It removes the heartbeat and the latest snapshot of the
+instance at the same time. `terrarium stats`, `terrarium status`, and the MCP
+tools then do not list the instance, and they do not read it as the default
+run. An instance whose process stopped without a clean exit has no recorded
+end. Terrarium removes such an instance when its latest heartbeat is older
+than `maxAge` and older than two minutes.
+
+`retention.maxRows` and `retention.perSource` count events, not snapshots or
+instances. When `maxAge` is `0`, the store keeps every instance and its
+latest snapshot.
 
 Read events with the CLI:
 
@@ -1075,6 +1087,8 @@ The store holds no snapshot in these cases:
 - The run recorded none, such as a run of a version of terrarium from before
   the policy snapshots.
 - The `at` of the call is before the first snapshot of the run.
+- The store removed the run, because the run holds no events and stopped more
+  than `retention.maxAge` ago.
 
 Each result has a bounded size. `list_instances`, `top_events`,
 `list_events`, and `list_policies` take `limit`, which is 50 when the call

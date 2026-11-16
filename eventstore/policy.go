@@ -3,7 +3,9 @@ package eventstore
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"time"
 )
@@ -62,8 +64,11 @@ type PolicySnapshot struct {
 //
 // The pruner of [Retention.MaxAge] removes a snapshot when a later
 // snapshot of the same instance is also older than MaxAge. It
-// therefore keeps the latest snapshot of every instance, and for each
-// time within MaxAge it keeps the snapshot that was in force.
+// therefore keeps the latest snapshot of every instance that the
+// store holds, and for each time within MaxAge it keeps the snapshot
+// that was in force. The pruner also removes an instance that holds
+// no events and stopped more than MaxAge ago, with each of its
+// snapshots. See [Retention].
 func (s *Store) RecordPolicy(p PolicySnapshot) {
 	if s == nil {
 		return
@@ -102,14 +107,31 @@ func (s *Store) drainPolicies() {
 }
 
 // insertPolicy writes p into the `policies` table through the
-// connection of the writer goroutine.
+// connection of the writer goroutine. After the write, the store
+// keeps p as its latest snapshot, which [Store.writeTx] writes again
+// when the pruner of another store removed the instance.
 func (s *Store) insertPolicy(p PolicySnapshot) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		return s.insertPolicyTx(ctx, tx, p)
+	})
+	if err != nil {
+		s.logger.Warn("eventstore policy snapshot insert", slog.Any("err", err))
+
+		return
+	}
+
+	s.lastPolicy = &p
+}
+
+// insertPolicyTx adds p to the `policies` table in tx, as a snapshot
+// of this instance.
+func (s *Store) insertPolicyTx(ctx context.Context, tx *sql.Tx, p PolicySnapshot) error {
 	sum := sha256.Sum256([]byte(p.YAML))
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 		INSERT INTO policies (
 			instance_id, applied_at, config_path, sha256, security_mode, yaml
 		) VALUES (?, ?, ?, ?, ?, ?)
@@ -122,14 +144,18 @@ func (s *Store) insertPolicy(p PolicySnapshot) {
 		p.YAML,
 	)
 	if err != nil {
-		s.logger.Warn("eventstore policy snapshot insert", slog.Any("err", err))
+		return fmt.Errorf("inserting policy snapshot: %w", err)
 	}
+
+	return nil
 }
 
 // prunePoliciesByAge runs on the ticker of [WithPruneInterval]. It
 // deletes one chunk of the snapshots that another snapshot of the
 // same instance replaced before the cutoff of [Retention.MaxAge]. See
 // [Store.RecordPolicy] for the snapshots that it keeps.
+// [Store.pruneInstancesByAge] removes the latest snapshot of an
+// instance together with the instance.
 //
 // The row comparison orders two snapshots of one instance by their
 // time and then by their row ID. Exactly one of two snapshots with

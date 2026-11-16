@@ -24,6 +24,13 @@
 // user of [WithUID] can read the database, so the caller removes each
 // secret from the document before the call.
 //
+// Each [Open] adds one instance to the store, and each event, each
+// heartbeat, and each policy snapshot belongs to one instance.
+// [Retention] bounds the events by their age and by their number. It
+// removes an instance after the store holds none of its events and
+// the instance stopped more than [Retention.MaxAge] ago. With a zero
+// MaxAge, the store keeps every instance.
+//
 // Open a reader with [OpenReader], usually in another process than the
 // one that writes. Each query of the store belongs in a [Reader]
 // method, so that every consumer counts and filters events the same

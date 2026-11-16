@@ -64,18 +64,41 @@ type storeOptions struct {
 	uid int
 }
 
-// Retention bounds the size of the events table and of the policies
-// table. MaxAge bounds both tables, and MaxRows and PerSource bound
-// only the events table. A zero MaxAge or MaxRows means that bound is
-// not enforced.
+// Retention bounds the size of the events table, of the policies
+// table, and of the instances table. MaxAge bounds the three tables,
+// and MaxRows and PerSource bound only the events table. A zero
+// MaxAge or MaxRows means that bound is not enforced.
+//
+// MaxAge removes an instance when the store holds no event of the
+// instance and the instance stopped before the cutoff, which is
+// [time.Now]-MaxAge. An instance stopped before the cutoff when its
+// start, its end, its latest heartbeat, and each of its policy
+// snapshots are older than the cutoff. The pruner removes the
+// `instances` row, the heartbeat, and the policy snapshots of the
+// instance, so a [Reader] returns nothing for its ID. The pruner of
+// a store never removes the instance of that store.
+//
+// An instance without an end is running, or its process stopped
+// without a [Store.Close]. The pruner takes such an instance for a
+// stopped one when its latest heartbeat is older than MaxAge and
+// older than two times [HeartbeatInterval]. The start of an instance
+// without a heartbeat takes the place of the heartbeat. A process
+// that shares a database with other stores should therefore record a
+// heartbeat in each [HeartbeatInterval]. When another store removes
+// the instance of a running store, the running store writes its
+// `instances` row and its latest policy snapshot again with its next
+// write. Its heartbeat returns with its next heartbeat, and the
+// snapshots that the latest snapshot replaced do not return.
 type Retention struct {
 	// MaxAge prunes events older than [time.Now]-MaxAge. It also
 	// prunes each policy snapshot that another snapshot of the same
 	// instance replaced before that time. See [Store.RecordPolicy].
+	// It also prunes each instance that holds no events and stopped
+	// before that time. See [Retention].
 	MaxAge time.Duration
 
 	// MaxRows caps the number of events after each batch insert. It
-	// does not count policy snapshots.
+	// does not count policy snapshots or instances.
 	MaxRows int64
 
 	// PerSource caps the number of events of each [Source] before

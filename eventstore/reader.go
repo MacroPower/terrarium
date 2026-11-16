@@ -546,8 +546,10 @@ func decodeCursor(c string) (int64, error) {
 	return id, nil
 }
 
-// Instance is one row of the `instances` table, which holds one row
-// for each [Open] of the store.
+// Instance is one row of the `instances` table. Each [Open] of the
+// store adds one row. The pruner of [Retention.MaxAge] removes the
+// row of an instance that holds no events and stopped more than
+// MaxAge ago.
 type Instance struct {
 	// StartedAt is the time of the [Open].
 	StartedAt time.Time
@@ -574,9 +576,11 @@ type Instance struct {
 	ConfigPath string
 }
 
-// Instances returns every instance, with the latest start first. On a
-// database of a schema version before 3, each [Instance] has an empty
-// Name and an empty ConfigPath.
+// Instances returns every instance that the store holds, with the
+// latest start first. The store does not hold an instance that the
+// pruner of [Retention.MaxAge] removed. On a database of a schema
+// version before 3, each [Instance] has an empty Name and an empty
+// ConfigPath.
 func (r *Reader) Instances(ctx context.Context) ([]Instance, error) {
 	if r.version < eventsSchemaVersion {
 		return nil, nil
@@ -650,6 +654,10 @@ func (r *Reader) Instances(ctx context.Context) ([]Instance, error) {
 // [Store.Close], and the store does not record which of the two
 // happened. A running daemon therefore does not win over an init or
 // daemon run that started later.
+//
+// The pruner of [Retention.MaxAge] removes an instance that holds no
+// events and stopped more than MaxAge ago. The default is then
+// another instance.
 func (r *Reader) DefaultInstanceID(ctx context.Context) (string, bool, error) {
 	if r.version < eventsSchemaVersion {
 		return "", false, nil

@@ -210,9 +210,11 @@ CREATE TABLE instances (
 //
 // Create instances with [Open].
 type Store struct {
-	// Read by the writer goroutine and replaced via SetRetention so
-	// reload can swap the policy without races.
-	retention atomic.Pointer[Retention]
+	// The latest snapshot that [Store.insertPolicy] committed.
+	// [Store.writeTx] writes it again when it writes a missing
+	// `instances` row again. Only the writer goroutine reads and
+	// writes it, so it has no lock.
+	lastPolicy *PolicySnapshot
 
 	db          *sql.DB
 	insertStmt  *sql.Stmt
@@ -221,8 +223,18 @@ type Store struct {
 	policyCh    chan PolicySnapshot
 	done        chan struct{}
 	logger      *slog.Logger
-	instanceID  string
-	opts        storeOptions
+
+	// Read by the writer goroutine and replaced via SetRetention so
+	// reload can swap the policy without races.
+	retention atomic.Pointer[Retention]
+
+	instanceID string
+	opts       storeOptions
+
+	// The start of this instance, in unix microseconds. [Open] sets
+	// it, and [Store.recordInstance] writes it each time it writes
+	// the `instances` row.
+	startedAt int64
 
 	// Counts events dropped because the channel was full.
 	dropCount atomic.Int64
@@ -275,6 +287,10 @@ type Store struct {
 // [WithMode], the name of [WithInstanceName], and the path of
 // [WithConfigPath]. The matching `ended_at` UPDATE runs during a
 // clean [Store.Close]; crashes leave `ended_at` NULL.
+//
+// The pruner of [Retention.MaxAge] removes the row of an instance
+// that stopped more than MaxAge ago and holds no events. See
+// [Retention] for the instances that it removes.
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	o := defaultStoreOptions()
 	for _, opt := range opts {
@@ -328,15 +344,13 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("minting instance id: %w", err)
 	}
 
-	_, err = db.ExecContext(ctx,
-		`INSERT INTO instances (id, started_at, mode, name, config_path) VALUES (?, ?, ?, ?, ?)`,
-		s.instanceID, time.Now().UnixMicro(), string(o.mode),
-		nullableString(o.instanceName), nullableString(o.configPath),
-	)
+	s.startedAt = time.Now().UnixMicro()
+
+	_, err = s.recordInstance(ctx, db)
 	if err != nil {
 		closeDBIgnoringErr(db)
 
-		return nil, fmt.Errorf("recording instance: %w", err)
+		return nil, err
 	}
 
 	s.insertStmt, err = db.PrepareContext(ctx, insertEventSQL)
@@ -368,6 +382,93 @@ func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	go s.run() //nolint:contextcheck // writer goroutine owns its lifetime, see insertBatch.
 
 	return s, nil
+}
+
+// execer runs one statement. [*sql.DB] and [*sql.Tx] both implement
+// it.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// recordInstance writes the `instances` row of this store through q,
+// unless the table holds the row. It reports whether it wrote the
+// row. [Open] writes the row first. [Store.writeTx] writes it again
+// after the pruner of another store removed it, with the start that
+// [Open] recorded.
+func (s *Store) recordInstance(ctx context.Context, q execer) (bool, error) {
+	res, err := q.ExecContext(ctx,
+		`INSERT INTO instances (id, started_at, mode, name, config_path) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO NOTHING`,
+		s.instanceID, s.startedAt, string(s.opts.mode),
+		nullableString(s.opts.instanceName), nullableString(s.opts.configPath),
+	)
+	if err != nil {
+		return false, fmt.Errorf("recording instance: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("recording instance: %w", err)
+	}
+
+	return n == 1, nil
+}
+
+// inTx runs fn in one transaction on the connection of the writer
+// goroutine. It commits the transaction when fn returns nil, and it
+// rolls the transaction back when fn returns an error. The
+// transaction holds the write lock from its start.
+func (s *Store) inTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning tx: %w", err)
+	}
+
+	err = fn(tx)
+	if err != nil {
+		_ = tx.Rollback() //nolint:errcheck // the error of fn is returned; rollback is best-effort.
+
+		return err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("committing tx: %w", err)
+	}
+
+	return nil
+}
+
+// writeTx runs fn with [Store.inTx]. The rows that fn writes hold the
+// ID of this instance. Before fn runs, writeTx writes the `instances`
+// row with [Store.recordInstance], so each row of fn belongs to an
+// instance that the store holds.
+//
+// The pruner of another store that writes the same database removes
+// the `instances` row of this store when this store looks stopped,
+// together with the policy snapshots of this store. See
+// [Store.pruneInstancesByAge]. When writeTx writes the row again, it
+// also writes the latest snapshot of this store again, with the time
+// at which the store applied it. A [Reader] then still finds the
+// policy of the instance. That pruner cannot remove the rows between
+// these writes and the writes of fn, because the transaction holds
+// the write lock.
+func (s *Store) writeTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		inserted, err := s.recordInstance(ctx, tx)
+		if err != nil {
+			return err
+		}
+
+		if inserted && s.lastPolicy != nil {
+			err = s.insertPolicyTx(ctx, tx, *s.lastPolicy)
+			if err != nil {
+				return err
+			}
+		}
+
+		return fn(tx)
+	})
 }
 
 // insertEventSQL is prepared once by [Open] and reused for every batch
@@ -556,7 +657,8 @@ func (s *Store) LastWriteTime() time.Time {
 //
 // An instance of each [Mode] records heartbeats. A reader therefore
 // takes an instance with an old heartbeat and without an end for an
-// instance whose process stopped without a [Store.Close]. A proxy has
+// instance whose process stopped without a [Store.Close]. The pruner
+// of [Retention.MaxAge] does the same. See [Retention]. A proxy has
 // no nflog reader and no DNS cache, so the counters of those two are
 // zero in its heartbeats.
 type Heartbeat struct {
@@ -775,6 +877,7 @@ func (s *Store) run() {
 		case <-pruneTicker.C:
 			s.pruneByAge()
 			s.prunePoliciesByAge()
+			s.pruneInstancesByAge()
 
 		case h := <-s.heartbeatCh:
 			s.upsertHeartbeat(h)
@@ -807,33 +910,40 @@ func (s *Store) upsertHeartbeat(h Heartbeat) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO instance_metrics (
-			instance_id, recorded_at,
-			nflog_kernel_drops, nflog_parse_errors, nflog_last_event_unix,
-			dnscache_size, dnscache_evictions,
-			eventstore_drop_count, eventstore_last_write_unix
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(instance_id) DO UPDATE SET
-			recorded_at               = excluded.recorded_at,
-			nflog_kernel_drops        = excluded.nflog_kernel_drops,
-			nflog_parse_errors        = excluded.nflog_parse_errors,
-			nflog_last_event_unix     = excluded.nflog_last_event_unix,
-			dnscache_size             = excluded.dnscache_size,
-			dnscache_evictions        = excluded.dnscache_evictions,
-			eventstore_drop_count     = excluded.eventstore_drop_count,
-			eventstore_last_write_unix = excluded.eventstore_last_write_unix
-	`,
-		s.instanceID,
-		h.RecordedAt.UnixMicro(),
-		int64(h.NFLogKernelDrops), //nolint:gosec // counters fit comfortably in int64.
-		int64(h.NFLogParseErrors), //nolint:gosec // counters fit comfortably in int64.
-		unixMicroOrZero(h.NFLogLastEvent),
-		h.DNSCacheSize,
-		int64(h.DNSCacheEvictions), //nolint:gosec // counters fit comfortably in int64.
-		h.EventStoreDropCount,
-		unixMicroOrZero(h.EventStoreLastWrite),
-	)
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO instance_metrics (
+				instance_id, recorded_at,
+				nflog_kernel_drops, nflog_parse_errors, nflog_last_event_unix,
+				dnscache_size, dnscache_evictions,
+				eventstore_drop_count, eventstore_last_write_unix
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(instance_id) DO UPDATE SET
+				recorded_at               = excluded.recorded_at,
+				nflog_kernel_drops        = excluded.nflog_kernel_drops,
+				nflog_parse_errors        = excluded.nflog_parse_errors,
+				nflog_last_event_unix     = excluded.nflog_last_event_unix,
+				dnscache_size             = excluded.dnscache_size,
+				dnscache_evictions        = excluded.dnscache_evictions,
+				eventstore_drop_count     = excluded.eventstore_drop_count,
+				eventstore_last_write_unix = excluded.eventstore_last_write_unix
+		`,
+			s.instanceID,
+			h.RecordedAt.UnixMicro(),
+			int64(h.NFLogKernelDrops), //nolint:gosec // counters fit comfortably in int64.
+			int64(h.NFLogParseErrors), //nolint:gosec // counters fit comfortably in int64.
+			unixMicroOrZero(h.NFLogLastEvent),
+			h.DNSCacheSize,
+			int64(h.DNSCacheEvictions), //nolint:gosec // counters fit comfortably in int64.
+			h.EventStoreDropCount,
+			unixMicroOrZero(h.EventStoreLastWrite),
+		)
+		if err != nil {
+			return fmt.Errorf("upserting heartbeat: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
 		s.logger.Warn("eventstore heartbeat upsert", slog.Any("err", err))
 	}
@@ -856,48 +966,38 @@ func (s *Store) insertBatch(batch []Event) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning tx: %w", err)
-	}
+	return s.writeTx(ctx, func(tx *sql.Tx) error {
+		stmt := tx.StmtContext(ctx, s.insertStmt)
 
-	stmt := tx.StmtContext(ctx, s.insertStmt)
+		for i := range batch {
+			e := &batch[i]
 
-	for i := range batch {
-		e := &batch[i]
-
-		_, err = stmt.ExecContext(ctx,
-			e.Time.UnixMicro(),
-			s.instanceID,
-			string(e.Source),
-			string(e.Decision),
-			nullableString(e.Domain),
-			nullableInt(int64(e.Port)),
-			nullableString(string(e.Protocol)),
-			nullableString(e.HTTPMethod),
-			nullableString(e.HTTPPath),
-			nullableInt(int64(e.HTTPStatus)),
-			nullableString(e.Flags),
-			nullableString(string(e.Reason)),
-			nullableInt(e.BytesRx),
-			nullableInt(e.BytesTx),
-			nullableInt(e.DurationMS),
-			nullableAddr(e.DstIP),
-			sql.NullInt64{Int64: int64(e.RuleIndex), Valid: e.HasRuleIndex},
-		)
-		if err != nil {
-			_ = tx.Rollback() //nolint:errcheck // commit path owns the error; rollback is best-effort.
-
-			return fmt.Errorf("inserting event: %w", err)
+			_, err := stmt.ExecContext(ctx,
+				e.Time.UnixMicro(),
+				s.instanceID,
+				string(e.Source),
+				string(e.Decision),
+				nullableString(e.Domain),
+				nullableInt(int64(e.Port)),
+				nullableString(string(e.Protocol)),
+				nullableString(e.HTTPMethod),
+				nullableString(e.HTTPPath),
+				nullableInt(int64(e.HTTPStatus)),
+				nullableString(e.Flags),
+				nullableString(string(e.Reason)),
+				nullableInt(e.BytesRx),
+				nullableInt(e.BytesTx),
+				nullableInt(e.DurationMS),
+				nullableAddr(e.DstIP),
+				sql.NullInt64{Int64: int64(e.RuleIndex), Valid: e.HasRuleIndex},
+			)
+			if err != nil {
+				return fmt.Errorf("inserting event: %w", err)
+			}
 		}
-	}
 
-	err = tx.Commit()
-	if err != nil {
-		return fmt.Errorf("committing batch: %w", err)
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // pruneByRowsAfterInsert runs on the writer goroutine after each
@@ -1002,6 +1102,151 @@ func (s *Store) pruneByAge() {
 	}
 
 	s.applyDeletedRows(rows)
+}
+
+// instanceStaleAfter is the age of the latest heartbeat at which
+// [Store.pruneInstancesByAge] takes an instance without an end for an
+// instance that stopped. A running instance records one heartbeat in
+// each [HeartbeatInterval], so its latest heartbeat stays below this
+// age.
+const instanceStaleAfter = 2 * HeartbeatInterval
+
+// removableInstancesSQL selects the IDs of the instances that
+// [Store.pruneInstancesByAge] removes. Its parameters are the ID of
+// the instance that prunes, the cutoff of an instance with an end,
+// the cutoff of an instance without an end, and the number of IDs.
+//
+// An instance is removable when it holds no events and each time
+// that the store holds for it is before its cutoff. Those times are
+// its start, its end, its heartbeat, and each of its policy
+// snapshots.
+const removableInstancesSQL = `
+	SELECT i.id FROM (
+		SELECT id, started_at, ended_at,
+		       CASE WHEN ended_at IS NULL THEN ?3 ELSE ?2 END AS cutoff
+		FROM instances
+		WHERE id <> ?1
+	) i
+	WHERE i.started_at < i.cutoff
+	  AND COALESCE(i.ended_at, i.started_at) < i.cutoff
+	  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.instance_id = i.id)
+	  AND NOT EXISTS (
+		SELECT 1 FROM instance_metrics m
+		WHERE m.instance_id = i.id AND m.recorded_at >= i.cutoff
+	  )
+	  AND NOT EXISTS (
+		SELECT 1 FROM policies p
+		WHERE p.instance_id = i.id AND p.applied_at >= i.cutoff
+	  )
+	LIMIT ?4`
+
+// pruneInstancesByAge runs on the ticker of [WithPruneInterval]. It
+// removes one chunk of the instances that stopped before the cutoff
+// of [Retention.MaxAge] and hold no events. It removes the
+// `instances` row, the heartbeat, and each policy snapshot of such an
+// instance. See [Retention] for the instances that it removes.
+//
+// The store does not record whether an instance without an end is
+// running. The pruner takes such an instance for a stopped one when
+// its latest heartbeat is older than MaxAge and older than
+// [instanceStaleAfter]. For an instance without a heartbeat, the
+// start takes the place of the heartbeat. A process that is
+// suspended for longer than both bounds therefore looks stopped. Its
+// store writes the `instances` row and its latest policy snapshot
+// again with its next write. See [Store.writeTx].
+//
+// The pruner never removes the instance of its own store. Like
+// [Store.pruneByAge], it first probes for a removable instance, so
+// that a tick without one starts no write transaction.
+func (s *Store) pruneInstancesByAge() {
+	r := s.retention.Load()
+	if r == nil || r.MaxAge <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	cutoff := now.Add(-r.MaxAge).UnixMicro()
+	staleCutoff := min(cutoff, now.Add(-instanceStaleAfter).UnixMicro())
+
+	var id string
+
+	err := s.db.QueryRowContext(ctx, removableInstancesSQL,
+		s.instanceID, cutoff, staleCutoff, 1,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return
+	}
+
+	if err != nil {
+		s.logger.Debug("retention: probing for stopped instances", slog.Any("err", err))
+
+		return
+	}
+
+	err = s.inTx(ctx, func(tx *sql.Tx) error {
+		return removeInstances(ctx, tx, s.instanceID, cutoff, staleCutoff)
+	})
+	if err != nil {
+		s.logger.Debug("retention: pruning instances", slog.Any("err", err))
+	}
+}
+
+// removeInstances removes at most [pruneChunkSize] of the instances
+// that [removableInstancesSQL] selects for self and the two cutoffs.
+// It selects and removes them in tx, so that no other store adds a
+// row to one of the instances between the two steps.
+func removeInstances(ctx context.Context, tx *sql.Tx, self string, cutoff, staleCutoff int64) error {
+	rows, err := tx.QueryContext(ctx, removableInstancesSQL, self, cutoff, staleCutoff, pruneChunkSize)
+	if err != nil {
+		return fmt.Errorf("selecting instances: %w", err)
+	}
+
+	var ids []string
+
+	for rows.Next() {
+		var id string
+
+		err = rows.Scan(&id)
+		if err != nil {
+			_ = rows.Close() //nolint:errcheck // the scan error is returned.
+
+			return fmt.Errorf("scanning instance id: %w", err)
+		}
+
+		ids = append(ids, id)
+	}
+
+	err = rows.Close()
+	if err != nil {
+		return fmt.Errorf("closing instance ids: %w", err)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return fmt.Errorf("iterating instance ids: %w", err)
+	}
+
+	// The rows that refer to the instance go first, so that no row
+	// refers to a missing instance at any step.
+	stmts := []string{
+		`DELETE FROM instance_metrics WHERE instance_id = ?`,
+		`DELETE FROM policies WHERE instance_id = ?`,
+		`DELETE FROM instances WHERE id = ?`,
+	}
+
+	for _, id := range ids {
+		for _, stmt := range stmts {
+			_, err = tx.ExecContext(ctx, stmt, id)
+			if err != nil {
+				return fmt.Errorf("removing instance %s: %w", id, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // deleteOldestGlobal deletes the chunk-many oldest rows across all

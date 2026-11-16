@@ -62,9 +62,11 @@
 // that marker and never the value.
 //
 // A database from before the policy snapshots holds none, and
-// neither does an instance that recorded none. The policy tools then
-// return a result without a snapshot and with a message that says
-// so, not a tool error.
+// neither does an instance that recorded none. The store also holds
+// none for an instance that its retention removed. See
+// [go.jacobcolvin.com/terrarium/eventstore.Retention]. The policy
+// tools then return a result without a snapshot and with a message
+// that says so, not a tool error.
 //
 // # Bounds
 //

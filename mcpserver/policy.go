@@ -30,7 +30,9 @@ const (
 
 	noSnapshotsMessage = "The event store holds no policy snapshot of this instance. " +
 		"An instance records one snapshot each time that it applies a policy. " +
-		"A version of terrarium from before the snapshots recorded none."
+		"A version of terrarium from before the snapshots recorded none. " +
+		"The store removes a stopped instance that holds no events, and the snapshots of that instance, " +
+		"when the retention age of the store has passed since the instance stopped."
 )
 
 // GetPolicyInput holds the arguments of the get_policy tool.
