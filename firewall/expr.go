@@ -596,6 +596,46 @@ func notMatchDstIPv6LinkLocal() []expr.Any {
 	}
 }
 
+// matchIPv4Unfragmented matches IPv4 packets that hold a whole
+// datagram, as "ip frag-off & 0x3fff == 0" does. A fragment has the
+// "more fragments" flag or a fragment offset that is not zero. The
+// caller must match the IPv4 EtherType or protocol first.
+func matchIPv4Unfragmented() []expr.Any {
+	return []expr.Any{
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseNetworkHeader,
+			Offset:       6, // flags and fragment offset
+			Len:          2,
+		},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            2,
+			Mask:           []byte{0x3f, 0xff},
+			Xor:            []byte{0x00, 0x00},
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x00, 0x00}},
+	}
+}
+
+// matchIPv6Unfragmented matches IPv6 packets without a Fragment
+// extension header, as "exthdr frag missing" does. Every fragment of
+// a datagram has that header. The caller must match the IPv6
+// EtherType or protocol first.
+func matchIPv6Unfragmented() []expr.Any {
+	return []expr.Any{
+		&expr.Exthdr{
+			DestRegister: 1,
+			Type:         unix.IPPROTO_FRAGMENT,
+			Len:          1,
+			Flags:        unix.NFT_EXTHDR_F_PRESENT,
+			Op:           expr.ExthdrOpIpv6,
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0}},
+	}
+}
+
 // setBroute sets the broute flag of a frame, as "meta broute set 1"
 // does. The bridge then does not handle the frame. The kernel passes
 // it to the network layer as a packet that the bridge port received,

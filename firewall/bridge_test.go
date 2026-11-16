@@ -120,13 +120,44 @@ func TestApplyRules_VMMode_BridgePreRouting(t *testing.T) {
 		},
 		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0xfe, 0x80}},
 	}
+	// An IPv4 fragment has the "more fragments" flag or a fragment
+	// offset that is not zero.
+	unfragmented4 := []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 6, Len: 2},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            2,
+			Mask:           []byte{0x3f, 0xff},
+			Xor:            []byte{0x00, 0x00},
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x00, 0x00}},
+	}
+	// An IPv6 fragment has a Fragment extension header.
+	unfragmented6 := []expr.Any{
+		&expr.Exthdr{
+			DestRegister: 1,
+			Type:         unix.IPPROTO_FRAGMENT,
+			Len:          1,
+			Flags:        unix.NFT_EXTHDR_F_PRESENT,
+			Op:           expr.ExthdrOpIpv6,
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0}},
+	}
 	setBroute := []expr.Any{
 		&expr.Immediate{Register: 1, Data: []byte{1}},
 		&expr.Meta{Key: metaKeyBridgeBroute, SourceRegister: true, Register: 1},
 	}
 
-	// DNS stays with the bridge.
-	dns := slices.Concat(udp, dstPort53, accept)
+	// DNS in one packet stays with the bridge. The rules do not
+	// match a fragment. Only the first fragment of a datagram holds
+	// the port. A rule that keeps that fragment with the bridge
+	// separates it from the later fragments, and those fragments
+	// leave the bridge.
+	dns := [][]expr.Any{
+		slices.Concat(etherType(0x08, 0x00), unfragmented4, udp, dstPort53, accept),
+		slices.Concat(etherType(0x86, 0xdd), unfragmented6, udp, dstPort53, accept),
+	}
 	// IPv4 and IPv6 UDP for the MAC address of the bridge, from a
 	// veth port and from a TAP port, whose link kind is "tun". The
 	// IPv6 rules leave UDP to a link-local address with the bridge.
@@ -136,10 +167,10 @@ func TestApplyRules_VMMode_BridgePreRouting(t *testing.T) {
 		slices.Concat(pktTypeHost, portKind("tun"), etherType(0x08, 0x00), udp, setBroute),
 		slices.Concat(pktTypeHost, portKind("tun"), etherType(0x86, 0xdd), notLinkLocal, udp, setBroute),
 	}
-	// withBroute returns rules followed by the rules that set the
-	// broute flag.
-	withBroute := func(rules ...[]expr.Any) [][]expr.Any {
-		return slices.Concat(rules, broute)
+	// withUplinks returns the rules of the chain: the DNS rules,
+	// then uplinks, then the rules that set the broute flag.
+	withUplinks := func(uplinks ...[]expr.Any) [][]expr.Any {
+		return slices.Concat(dns, uplinks, broute)
 	}
 
 	tests := map[string]struct {
@@ -148,25 +179,23 @@ func TestApplyRules_VMMode_BridgePreRouting(t *testing.T) {
 	}{
 		"unrestricted": {
 			cfg:  unrestrictedConfig(),
-			want: withBroute(dns),
+			want: withUplinks(),
 		},
 		"filtered": {
 			cfg:  filteredConfig(),
-			want: withBroute(dns),
+			want: withUplinks(),
 		},
 		// Every frame of a named uplink stays with the bridge. Its
 		// rule must come before the rules that set the broute flag.
 		"unrestricted with one uplink": {
 			cfg: withBridgeUplinks(unrestrictedConfig(), "veth-up"),
-			want: withBroute(
-				dns,
+			want: withUplinks(
 				slices.Concat(fromPort("veth-up"), accept),
 			),
 		},
 		"filtered with two uplinks": {
 			cfg: withBridgeUplinks(filteredConfig(), "veth-up", "tap-up"),
-			want: withBroute(
-				dns,
+			want: withUplinks(
 				slices.Concat(fromPort("veth-up"), accept),
 				slices.Concat(fromPort("tap-up"), accept),
 			),
@@ -174,8 +203,7 @@ func TestApplyRules_VMMode_BridgePreRouting(t *testing.T) {
 		// A name of 15 bytes fills the name but for its NUL byte.
 		"uplink with the longest name": {
 			cfg: withBridgeUplinks(unrestrictedConfig(), "abcdefghijklmno"),
-			want: withBroute(
-				dns,
+			want: withUplinks(
 				slices.Concat(fromPort("abcdefghijklmno"), accept),
 			),
 		},

@@ -1265,19 +1265,22 @@ ip -details -json link show dev veth-up | jq '.[0].linkinfo.info_kind'
 
 The `bridge_prerouting` chain leaves these frames with the bridge:
 
-- UDP to port 53. IPv4 DNS uses DNAT, and the DNS proxy receives IPv6 DNS on
-  the port that the container chose.
+- UDP to port 53 in a packet that holds the whole datagram. IPv4 DNS uses DNAT,
+  and the DNS proxy receives IPv6 DNS on the port that the container chose.
 - IPv6 UDP to a link-local address.
 - Frames for another container on the same bridge.
 - Frames from an uplink of the bridge.
 - Every protocol except UDP.
 
-The DNS proxy does not receive a fragmented UDP datagram to port 53. The first
-fragment stays with the bridge, and the chain takes the later fragments, which
-have no UDP header. DNS queries fit in one packet.
+The chain takes each fragment of a fragmented UDP datagram to port 53, as it
+takes the fragments of a datagram to another port. Only the first fragment has
+the UDP header, so the chain cannot keep the later fragments with the bridge.
+The kernel reassembles the fragments outside the bridge, and the DNS proxy
+receives the datagram.
 
-The chain also takes the UDP that a container sends to an address of the VM,
-on every port except 53. The input interface of that UDP at the INPUT hook is
+The chain also takes the UDP that a container sends to an address of the VM.
+It takes that UDP on every port except 53, and it takes each fragmented
+datagram to port 53. The input interface of that UDP at the INPUT hook is
 the bridge port, such as `veth0` or `tap0`, and not the bridge. The
 [host requirements](#host-requirements) list what the chain needs from the
 host.
@@ -1466,7 +1469,8 @@ external traffic cannot spoof the mark to bypass the firewall.
 Do not match the UDP of a container by the name of its bridge, such as
 `iifname "cni0"`. The [bridge table](#bridge-table) takes that UDP from the
 bridge, so its input interface is the bridge port of the container. Match it by
-its source address. UDP to port 53 keeps the bridge as its input interface.
+its source address. UDP to port 53 keeps the bridge as its input interface,
+except for a fragmented datagram.
 
 The NixOS firewall does not create a FORWARD chain by default
 (`networking.firewall.filterForward` is false), so there is no conflict with

@@ -1149,9 +1149,9 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 // reaches this chain as a packet that the bridge port received.
 // Under br_netfilter, a packet that this chain sees inside the bridge
 // loses the socket that TPROXY assigns to it. UDP to port 53 stays
-// with the bridge. TPROXY sends forwarded IPv6 DNS to the port that
-// the sender chose, so the kernel finds the DNS proxy without the
-// assigned socket.
+// with the bridge when one packet holds the whole datagram. TPROXY
+// sends forwarded IPv6 DNS to the port that the sender chose, so the
+// kernel finds the DNS proxy without the assigned socket.
 func addManglePreRoutingChain(
 	conn Conn, table *nftables.Table,
 	udpPort uint16,
@@ -1407,18 +1407,22 @@ const bridgeBroutePriority = -300
 //
 // These packets of a container stay with the bridge as well:
 //
-//   - UDP to port 53. Forwarded IPv4 DNS uses DNAT, and the DNS proxy
-//     receives forwarded IPv6 DNS on the port that the sender chose.
+//   - UDP to port 53 in a packet that holds the whole datagram.
+//     Forwarded IPv4 DNS uses DNAT, and the DNS proxy receives
+//     forwarded IPv6 DNS on the port that the sender chose.
 //   - IPv6 UDP to a link-local address. The kernel accepts a packet
 //     for a link-local address of the bridge only from the bridge
 //     device.
 //
-// A later fragment of a datagram has no UDP header, so the rule for
-// port 53 does not match it. The chain takes it from the bridge, as
-// it takes the first fragment of a datagram to another port. But the
-// first fragment of a datagram to port 53 stays with the bridge. So
-// the kernel never reassembles a fragmented datagram to port 53, and
-// the DNS proxy does not receive it. DNS queries fit in one packet.
+// The rules for port 53 do not match a fragment. Only the first
+// fragment of a datagram holds the UDP header, so a rule for the port
+// cannot keep the later fragments with the bridge. Each fragment of a
+// datagram to port 53 therefore continues to the rules that set the
+// broute flag, as each fragment of a datagram to another port does.
+// The kernel reassembles the fragments outside the bridge, before
+// PREROUTING, and the DNS proxy receives the datagram. An IPv6 packet
+// with a Fragment extension header is a fragment for these rules,
+// also when it holds the whole datagram.
 //
 // The bridge port has no IPv4 address, so the kernel accepts the IPv4
 // packets only when reverse path filtering is off for the port. See
@@ -1437,15 +1441,23 @@ func addBridgePreRoutingChain(conn Conn, uplinks []string) {
 		Priority: nftables.ChainPriorityRef(bridgeBroutePriority),
 	})
 
-	// DNS stays with the bridge.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			matchL4Proto(unix.IPPROTO_UDP),
-			matchDstPort(53),
-			verdictExprs(expr.VerdictAccept),
-		),
-	})
+	// DNS in one packet stays with the bridge. A fragment matches
+	// neither rule, so each fragment of a datagram continues to the
+	// rules that follow.
+	for _, unfragmented := range [][]expr.Any{
+		flatExprs(matchEtherType(unix.ETH_P_IP), matchIPv4Unfragmented()),
+		flatExprs(matchEtherType(unix.ETH_P_IPV6), matchIPv6Unfragmented()),
+	} {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				unfragmented,
+				matchL4Proto(unix.IPPROTO_UDP),
+				matchDstPort(53),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
 
 	// The frames of a named uplink stay with the bridge.
 	for _, uplink := range uplinks {
