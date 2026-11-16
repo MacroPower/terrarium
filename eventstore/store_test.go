@@ -129,20 +129,50 @@ func TestOpenReadOnly_RejectsWrites(t *testing.T) {
 func TestOpenReadOnly_CloseRemovesWALFiles(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "stats.db")
-	closedStore(t, path)
+	tcs := map[string]struct {
+		// open returns the path to open for the path of the closed
+		// database.
+		open func(t *testing.T, path string) string
+	}{
+		"database path": {
+			open: func(_ *testing.T, path string) string { return path },
+		},
+		// SQLite creates the -wal and -shm files beside the target of
+		// the link, so the close must remove them there.
+		"symbolic link": {
+			open: func(t *testing.T, path string) string {
+				t.Helper()
 
-	db, err := eventstore.OpenReadOnly(t.Context(), path)
-	require.NoError(t, err)
+				link := filepath.Join(t.TempDir(), "link.db")
+				require.NoError(t, os.Symlink(path, link))
 
-	assert.Equal(t, 1, countInstances(t, db))
-	assert.FileExists(t, path+"-wal")
-	assert.FileExists(t, path+"-shm")
+				return link
+			},
+		},
+	}
 
-	require.NoError(t, db.Close())
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	assert.NoFileExists(t, path+"-wal")
-	assert.NoFileExists(t, path+"-shm")
+			path := filepath.Join(t.TempDir(), "stats.db")
+			closedStore(t, path)
+
+			open := tc.open(t, path)
+
+			db, err := eventstore.OpenReadOnly(t.Context(), open)
+			require.NoError(t, err)
+
+			assert.Equal(t, 1, countInstances(t, db))
+			assert.FileExists(t, path+"-wal")
+			assert.FileExists(t, path+"-shm")
+
+			require.NoError(t, db.Close())
+
+			assertNoWALFiles(t, path)
+			assertNoWALFiles(t, open)
+		})
+	}
 }
 
 func TestOpenReadOnly_KeepsWALOfStoppedStore(t *testing.T) {
@@ -173,30 +203,11 @@ func TestOpenReadOnly_KeepsWALOfStoppedStore(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			// A copy of the files of an open store holds the
-			// write-ahead log that a store leaves when it stops
-			// without a clean close. No other connection opens the
-			// copy, so the reader is the last connection to close it.
-			live := filepath.Join(t.TempDir(), "live.db")
-
-			store, err := eventstore.Open(t.Context(), live)
-			require.NoError(t, err)
-
-			t.Cleanup(func() { assert.NoError(t, store.Close()) })
-
+			// No other connection opens the files of the stopped
+			// store, so the reader is the last connection to close
+			// them.
 			path := filepath.Join(t.TempDir(), "stats.db")
-
-			files := map[string][]byte{}
-
-			for _, suffix := range []string{"", "-wal", "-shm"} {
-				data, err := os.ReadFile(live + suffix)
-				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path+suffix, data, 0o600))
-
-				files[suffix] = data
-			}
-
-			require.NotEmpty(t, files["-wal"])
+			files := stoppedStore(t, path)
 
 			db, err := eventstore.OpenReadOnly(t.Context(), tc.open(t, path))
 			require.NoError(t, err)
@@ -208,11 +219,7 @@ func TestOpenReadOnly_KeepsWALOfStoppedStore(t *testing.T) {
 
 			require.NoError(t, db.Close())
 
-			for _, suffix := range []string{"", "-wal"} {
-				data, err := os.ReadFile(path + suffix)
-				require.NoError(t, err)
-				assert.Equal(t, files[suffix], data, "the reader changed the file %q", "stats.db"+suffix)
-			}
+			assertFilesEqual(t, files, path)
 		})
 	}
 }

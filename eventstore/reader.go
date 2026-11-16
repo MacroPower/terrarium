@@ -110,7 +110,9 @@ func OpenReader(ctx context.Context, path string) (*Reader, error) {
 	return &Reader{db: db, version: version}, nil
 }
 
-// Close closes the database. A nil receiver is a no-op.
+// Close closes the database. It removes the `-wal` and `-shm` files
+// that the queries created, in the cases that [OpenReadOnly] lists. A
+// nil receiver is a no-op.
 func (r *Reader) Close() error {
 	if r == nil {
 		return nil

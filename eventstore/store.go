@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net/netip"
 	"net/url"
@@ -39,7 +38,7 @@ const pruneChunkSize int64 = 1000
 
 // busyTimeout is how long a connection waits for the lock of another
 // connection before SQLite returns SQLITE_BUSY. [writerDSNQuery],
-// [readOnlyDSNQuery], and [walReadOnlyDSNQuery] set the same value in
+// [readOnlyDSNQuery], and [walCleanupDSNQuery] set the same value in
 // milliseconds.
 const busyTimeout = 2 * time.Second
 
@@ -53,42 +52,6 @@ const walRetryInterval = 10 * time.Millisecond
 // writer under the busy timeout, and it never reads a state that the
 // other writer is about to change.
 const writerDSNQuery = "?_pragma=busy_timeout(2000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
-
-// readOnlyDSNQuery is the query string that [OpenReadOnly] appends to
-// the URI of [fileURI] when the database has no `-wal` file. SQLite
-// reads `mode=rw`, so it opens an existing file and does not create a
-// missing one. The driver reads `_pragma`. It sets `query_only` on
-// each new connection, so each statement that changes a table, an
-// index, or the schema fails with `attempt to write a readonly
-// database` until a statement turns `query_only` off. The pragma does
-// not stop a change of `journal_mode`, a checkpoint, or an `ATTACH`,
-// and each of these still writes files.
-//
-// The query does not set `mode=ro`. The connection creates the `-wal`
-// and `-shm` files of the database, and a connection that SQLite opens
-// for reads only cannot remove them when it closes. The files then
-// stay after the last connection closes, and the next [Open] fails
-// when another user owns them. A connection that SQLite opens for
-// reads and writes removes them when it is the last connection. Its
-// `-wal` file holds no frame, so the checkpoint before the removal
-// does not change the database file.
-const readOnlyDSNQuery = "?mode=rw&_pragma=query_only(1)&_pragma=busy_timeout(2000)"
-
-// walReadOnlyDSNQuery is the query string that [OpenReadOnly] appends
-// to the URI of [fileURI] when the database has a `-wal` file. SQLite
-// reads `mode=ro`, so it opens the database file for reads only, and
-// each statement that writes fails with `attempt to write a readonly
-// database`.
-//
-// The `-wal` file belongs to a [Store] that is open, or to one that
-// stopped without a clean close. When the connection is the last one
-// to close, a connection that can write checkpoints the frames of the
-// `-wal` file into the database file and removes the `-wal` and `-shm`
-// files. A connection with `mode=ro` cannot checkpoint, so it leaves
-// the database file and the `-wal` file as it found them. The files
-// that it leaves are the files of the [Store], so they do not stop the
-// next [Open] of that store.
-const walReadOnlyDSNQuery = "?mode=ro&_pragma=busy_timeout(2000)"
 
 // fileURI returns the `file:` URI of the SQLite file at path, without
 // a query string. [Open] and [OpenReadOnly] append a query string and
@@ -115,89 +78,6 @@ func fileURI(path string) string {
 	}
 
 	return prefix + (&url.URL{Path: path}).EscapedPath()
-}
-
-// OpenReadOnly opens the SQLite event store at path for reads only.
-// No writer goroutine, no schema apply, no instance row. It gives raw
-// SQL access to a database written by a separate [*Store] in the
-// daemon. Use [OpenReader] for the typed queries. The caller owns
-// closing the returned [*sql.DB].
-//
-// A path that holds no file returns an error that wraps
-// [io/fs.ErrNotExist], and OpenReadOnly does not create the file. A
-// statement that changes a table, an index, or the schema through the
-// returned [*sql.DB] fails.
-//
-// The reads do not change the database file or its `-wal` file, and
-// they do not leave files that stop a later [Open]. OpenReadOnly picks
-// the mode of the connections from the `-wal` file at the time of the
-// call. SQLite follows the symbolic links in path and keeps the `-wal`
-// file beside their target, so the check looks for the `-wal` file
-// there:
-//
-//   - With a `-wal` file, SQLite opens the database file for reads
-//     only. The connections never checkpoint the `-wal` file into the
-//     database file, and they leave the `-wal` and `-shm` files of the
-//     [Store] in place.
-//   - Without a `-wal` file, SQLite opens the database file for reads
-//     and writes, and each connection sets the pragma `query_only`.
-//     Each statement that writes then fails until the caller turns the
-//     pragma off. The pragma does not stop `PRAGMA journal_mode`, a
-//     checkpoint, or `ATTACH`. A query creates an empty `-wal` file and
-//     a `-shm` file. When the returned [*sql.DB] closes the last
-//     connection to the database, SQLite removes both files, but only
-//     when the caller can write the database file. SQLite opens a file
-//     that the caller cannot write for reads only, and that connection
-//     leaves both files behind.
-//
-// A [Store] that opens or closes between the check of the `-wal` file
-// and the end of the reads can leave the connections in the other
-// mode. A [Store] that opens in that time and then stops without a
-// clean close leaves a `-wal` file that the last connection
-// checkpoints. A [Store] that closes in that time leaves the
-// connections to create the `-wal` and `-shm` files for reads only,
-// and they stay after the close.
-func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
-	// SQLite reports a missing file as SQLITE_CANTOPEN, which does not
-	// say that the file is missing, so the check runs first.
-	_, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening db: %w", err)
-	}
-
-	// SQLite follows symbolic links in the path and keeps the `-wal`
-	// file beside the target, so the check and the open use the
-	// target. The stat runs first because EvalSymlinks resolves the
-	// empty path to the current directory.
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening db: %w", err)
-	}
-
-	query := readOnlyDSNQuery
-
-	_, err = os.Stat(resolved + "-wal")
-
-	switch {
-	case err == nil:
-		query = walReadOnlyDSNQuery
-	case !errors.Is(err, fs.ErrNotExist):
-		return nil, fmt.Errorf("opening db: %w", err)
-	}
-
-	db, err := sql.Open("sqlite", fileURI(resolved)+query)
-	if err != nil {
-		return nil, fmt.Errorf("opening db: %w", err)
-	}
-
-	err = db.PingContext(ctx)
-	if err != nil {
-		closeDBIgnoringErr(db)
-
-		return nil, fmt.Errorf("opening db: %w", err)
-	}
-
-	return db, nil
 }
 
 // closeDBIgnoringErr closes db on an open/setup failure path where the
@@ -538,6 +418,15 @@ func isBusy(err error) bool {
 
 	// The low byte of an extended result code is the primary code.
 	return errors.As(err, &serr) && serr.Code()&0xff == sqlite3.SQLITE_BUSY
+}
+
+// isReadOnly reports whether err is the SQLITE_READONLY result of
+// SQLite or one of its extended codes.
+func isReadOnly(err error) bool {
+	var serr *sqlite.Error
+
+	// The low byte of an extended result code is the primary code.
+	return errors.As(err, &serr) && serr.Code()&0xff == sqlite3.SQLITE_READONLY
 }
 
 // applySchema reads the user_version pragma and applies any pending

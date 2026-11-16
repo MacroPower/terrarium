@@ -6,10 +6,14 @@
 // # Reads
 //
 // No tool writes. Each tool call opens the database with
-// [eventstore.OpenReader], which opens the file for reads only, and
-// closes it when the call returns. The reads leave the database file
-// and its `-wal` file as they found them. No tool takes SQL or a file path,
-// and each tool declares the read-only hint of the protocol.
+// [eventstore.OpenReader] and closes it when the call returns. The
+// queries open the file for reads only, so they leave the database
+// file and the frames of its `-wal` file as they found them. The close
+// of each call takes the write lock of the database for a moment and
+// removes the empty `-wal` and `-shm` files that the queries created,
+// in the cases that [eventstore.OpenReadOnly] lists. No tool takes SQL
+// or a file path, and each tool declares the read-only hint of the
+// protocol.
 //
 // A [Server] asks its [LocateFunc] for the path of the database at
 // each tool call. The server can therefore start before the process
