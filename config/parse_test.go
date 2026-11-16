@@ -287,6 +287,70 @@ egress:
 	}
 }
 
+func TestParseBridgeUplinks(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		err  error
+		yaml string
+		want []string
+	}{
+		"absent": {
+			yaml: `
+egress:
+  - toCIDR:
+      - 10.0.0.0/8
+`,
+		},
+		"one uplink": {
+			yaml: `
+bridgeUplinks:
+  - veth-up
+`,
+			want: []string{"veth-up"},
+		},
+		"several uplinks": {
+			yaml: `
+bridgeUplinks:
+  - bond0
+  - eth1.100
+`,
+			want: []string{"bond0", "eth1.100"},
+		},
+		"invalid name": {
+			yaml: `
+bridgeUplinks:
+  - "not a name"
+`,
+			err: config.ErrInvalidBridgeUplink,
+		},
+		"duplicate name": {
+			yaml: `
+bridgeUplinks:
+  - bond0
+  - bond0
+`,
+			err: config.ErrDuplicateBridgeUplink,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.BridgeUplinks)
+		})
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
 

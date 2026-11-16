@@ -1379,19 +1379,31 @@ const bridgeBroutePriority = -300
 // until the UDP layer delivers the datagram. The input interface of
 // the packet is the bridge port and not the bridge.
 //
-// The chain matches UDP in frames that arrive on a veth port of the
-// bridge and whose destination MAC address is the address of the
-// bridge device. Container runtimes attach each container to the
-// bridge with a veth device. Those frames hold the packets that the
-// VM routes or receives for the container. A frame for another
-// container of the same bridge stays with the bridge.
+// The chain matches UDP in frames that arrive on a container port of
+// the bridge and whose destination MAC address is the address of the
+// bridge device. Those frames hold the packets that the VM routes or
+// receives for the container. A frame for another container of the
+// same bridge stays with the bridge.
 //
-// Frames from a bridge port of another link kind also stay with the
-// bridge. Such a port can be a physical network interface or the TAP
-// device of a virtual machine. Its frames hold UDP that the VM itself
-// receives, such as the replies of upstream DNS servers and of DHCP
-// servers. A socket that is bound to the bridge receives such a
-// datagram only when its input interface is the bridge.
+// A container port is a bridge port whose name is not in uplinks and
+// whose device is a veth device or a TAP device. Container runtimes
+// attach a container to a bridge with a veth device. A runtime that
+// runs the container in a virtual machine, such as Kata Containers or
+// Firecracker, attaches the machine with a TAP device, whose link
+// kind is "tun".
+//
+// Frames from an uplink of the bridge stay with the bridge. An uplink
+// connects the bridge to the network of the VM. Its frames hold UDP
+// that the VM itself receives, such as the replies of upstream DNS
+// servers and of DHCP servers. A socket that is bound to the bridge
+// receives such a datagram only when its input interface is the
+// bridge. The chain keeps the frames of these ports with the bridge:
+//
+//   - Every port whose device has another link kind or none, such as
+//     a physical network interface, a bond, or a VLAN device.
+//   - Every port that uplinks names. The policy lists in
+//     [config.Config.BridgeUplinks] each uplink that is a veth or TAP
+//     device.
 //
 // These packets of a container stay with the bridge as well:
 //
@@ -1411,7 +1423,7 @@ const bridgeBroutePriority = -300
 // The bridge port has no IPv4 address, so the kernel accepts the IPv4
 // packets only when reverse path filtering is off for the port. See
 // [SetupForwardRouting].
-func addBridgePreRoutingChain(conn Conn) {
+func addBridgePreRoutingChain(conn Conn, uplinks []string) {
 	table := conn.AddTable(&nftables.Table{
 		Name:   TableName,
 		Family: nftables.TableFamilyBridge,
@@ -1435,30 +1447,44 @@ func addBridgePreRoutingChain(conn Conn) {
 		),
 	})
 
-	// IPv4 UDP of a container that the VM routes or receives.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			matchPktTypeHost(),
-			matchIIFKind("veth"),
-			matchEtherType(unix.ETH_P_IP),
-			matchL4Proto(unix.IPPROTO_UDP),
-			setBroute(),
-		),
-	})
+	// The frames of a named uplink stay with the bridge.
+	for _, uplink := range uplinks {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchIIFName(uplink),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
 
-	// IPv6 UDP of a container that the VM routes or receives.
-	conn.AddRule(&nftables.Rule{
-		Table: table, Chain: chain,
-		Exprs: flatExprs(
-			matchPktTypeHost(),
-			matchIIFKind("veth"),
-			matchEtherType(unix.ETH_P_IPV6),
-			notMatchDstIPv6LinkLocal(),
-			matchL4Proto(unix.IPPROTO_UDP),
-			setBroute(),
-		),
-	})
+	// The UDP of a container on a veth port or on a TAP port.
+	for _, kind := range []string{"veth", "tun"} {
+		// IPv4 UDP of a container that the VM routes or receives.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchPktTypeHost(),
+				matchIIFKind(kind),
+				matchEtherType(unix.ETH_P_IP),
+				matchL4Proto(unix.IPPROTO_UDP),
+				setBroute(),
+			),
+		})
+
+		// IPv6 UDP of a container that the VM routes or receives.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchPktTypeHost(),
+				matchIIFKind(kind),
+				matchEtherType(unix.ETH_P_IPV6),
+				notMatchDstIPv6LinkLocal(),
+				matchL4Proto(unix.IPPROTO_UDP),
+				setBroute(),
+			),
+		})
+	}
 }
 
 // addDenyICMPRules emits DROP rules for deny ICMP entries. When an

@@ -41,6 +41,13 @@ func filteredConfig() *config.Config {
 	}
 }
 
+// withBridgeUplinks returns cfg with the given bridge uplinks.
+func withBridgeUplinks(cfg *config.Config, uplinks ...string) *config.Config {
+	cfg.BridgeUplinks = uplinks
+
+	return cfg
+}
+
 // tableFamilies returns the family of each terrarium table in tables.
 func tableFamilies(t *testing.T, tables []*nftables.Table) []nftables.TableFamily {
 	t.Helper()
@@ -64,15 +71,30 @@ func TestApplyRules_VMMode_BridgePreRouting(t *testing.T) {
 		&expr.Meta{Key: expr.MetaKeyPKTTYPE, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.PACKET_HOST}},
 	}
-	// The kernel compares the link kind as a NUL-padded
-	// 16-byte interface name.
-	vethPort := []expr.Any{
-		&expr.Meta{Key: metaKeyIIFKind, Register: 1},
-		&expr.Cmp{
-			Op: expr.CmpOpEq, Register: 1,
-			Data: []byte{'v', 'e', 't', 'h', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-		},
+	// The kernel compares the link kind as a NUL-padded 16-byte
+	// name. Only the kinds of container ports match. A bond, a VLAN
+	// device, or a physical network interface stays with the bridge.
+	portKind := func(kind string) []expr.Any {
+		data := make([]byte, 16)
+		copy(data, kind)
+
+		return []expr.Any{
+			&expr.Meta{Key: metaKeyIIFKind, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: data},
+		}
 	}
+	// The kernel compares the interface name as a NUL-padded 16-byte
+	// name.
+	fromPort := func(name string) []expr.Any {
+		data := make([]byte, 16)
+		copy(data, name)
+
+		return []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: data},
+		}
+	}
+	accept := []expr.Any{&expr.Verdict{Kind: expr.VerdictAccept}}
 	etherType := func(hi, lo byte) []expr.Any {
 		return []expr.Any{
 			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseLLHeader, Offset: 12, Len: 2},
@@ -103,22 +125,60 @@ func TestApplyRules_VMMode_BridgePreRouting(t *testing.T) {
 		&expr.Meta{Key: metaKeyBridgeBroute, SourceRegister: true, Register: 1},
 	}
 
-	want := [][]expr.Any{
-		// DNS stays with the bridge.
-		slices.Concat(udp, dstPort53, []expr.Any{&expr.Verdict{Kind: expr.VerdictAccept}}),
-		// IPv4 UDP from a veth port for the MAC address of the
-		// bridge.
-		slices.Concat(pktTypeHost, vethPort, etherType(0x08, 0x00), udp, setBroute),
-		// IPv6 UDP from a veth port for the MAC address of the
-		// bridge, except UDP to a link-local address.
-		slices.Concat(pktTypeHost, vethPort, etherType(0x86, 0xdd), notLinkLocal, udp, setBroute),
+	// DNS stays with the bridge.
+	dns := slices.Concat(udp, dstPort53, accept)
+	// IPv4 and IPv6 UDP for the MAC address of the bridge, from a
+	// veth port and from a TAP port, whose link kind is "tun". The
+	// IPv6 rules leave UDP to a link-local address with the bridge.
+	broute := [][]expr.Any{
+		slices.Concat(pktTypeHost, portKind("veth"), etherType(0x08, 0x00), udp, setBroute),
+		slices.Concat(pktTypeHost, portKind("veth"), etherType(0x86, 0xdd), notLinkLocal, udp, setBroute),
+		slices.Concat(pktTypeHost, portKind("tun"), etherType(0x08, 0x00), udp, setBroute),
+		slices.Concat(pktTypeHost, portKind("tun"), etherType(0x86, 0xdd), notLinkLocal, udp, setBroute),
+	}
+	// withBroute returns rules followed by the rules that set the
+	// broute flag.
+	withBroute := func(rules ...[]expr.Any) [][]expr.Any {
+		return slices.Concat(rules, broute)
 	}
 
 	tests := map[string]struct {
-		cfg *config.Config
+		cfg  *config.Config
+		want [][]expr.Any
 	}{
-		"unrestricted": {cfg: unrestrictedConfig()},
-		"filtered":     {cfg: filteredConfig()},
+		"unrestricted": {
+			cfg:  unrestrictedConfig(),
+			want: withBroute(dns),
+		},
+		"filtered": {
+			cfg:  filteredConfig(),
+			want: withBroute(dns),
+		},
+		// Every frame of a named uplink stays with the bridge. Its
+		// rule must come before the rules that set the broute flag.
+		"unrestricted with one uplink": {
+			cfg: withBridgeUplinks(unrestrictedConfig(), "veth-up"),
+			want: withBroute(
+				dns,
+				slices.Concat(fromPort("veth-up"), accept),
+			),
+		},
+		"filtered with two uplinks": {
+			cfg: withBridgeUplinks(filteredConfig(), "veth-up", "tap-up"),
+			want: withBroute(
+				dns,
+				slices.Concat(fromPort("veth-up"), accept),
+				slices.Concat(fromPort("tap-up"), accept),
+			),
+		},
+		// A name of 15 bytes fills the name but for its NUL byte.
+		"uplink with the longest name": {
+			cfg: withBridgeUplinks(unrestrictedConfig(), "abcdefghijklmno"),
+			want: withBroute(
+				dns,
+				slices.Concat(fromPort("abcdefghijklmno"), accept),
+			),
+		},
 	}
 
 	for name, tc := range tests {
@@ -160,11 +220,11 @@ func TestApplyRules_VMMode_BridgePreRouting(t *testing.T) {
 			assert.Equal(t, nftables.ChainPriority(-300), *chain.Priority)
 
 			rules := rec.rulesForChain("bridge_prerouting")
-			require.Len(t, rules, len(want))
+			require.Len(t, rules, len(tc.want))
 
 			for i, r := range rules {
 				assert.Same(t, chain.Table, r.Table, "rule %d", i)
-				assert.Equal(t, want[i], r.Exprs, "rule %d", i)
+				assert.Equal(t, tc.want[i], r.Exprs, "rule %d", i)
 			}
 		})
 	}
@@ -183,6 +243,15 @@ func TestApplyRules_BridgePreRouting_Absent(t *testing.T) {
 		"container unrestricted": {cfg: unrestrictedConfig(), uids: testUIDs},
 		"container filtered":     {cfg: filteredConfig(), uids: testUIDs},
 		"container blocked":      {cfg: blockedConfig(), uids: testUIDs},
+		// Only VM mode reads the bridge uplinks.
+		"container with an uplink": {
+			cfg:  withBridgeUplinks(unrestrictedConfig(), "veth-up"),
+			uids: testUIDs,
+		},
+		"vm blocked with an uplink": {
+			cfg:  withBridgeUplinks(blockedConfig(), "veth-up"),
+			uids: testVMUIDs,
+		},
 	}
 
 	for name, tc := range tests {

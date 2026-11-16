@@ -136,7 +136,9 @@ func CheckBootTables(ctx context.Context, conn *nftables.Conn) {
 // iptables tables (nat/filter x IPv4/IPv6). In VM mode, when the
 // policy does not block all egress, a bridge-family table of the same
 // name holds the chain that takes forwarded UDP away from Linux
-// bridges. That chain needs a kernel of version 6.4 or later.
+// bridges. That chain needs a kernel of version 6.4 or later. It
+// leaves the frames of each port in [config.Config.BridgeUplinks] with
+// the bridge.
 func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) error {
 	deleteTables(ctx, conn)
 
@@ -285,7 +287,7 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	// VM mode: take forwarded UDP away from Linux bridges, so that
 	// the TPROXY rules of the mangle PREROUTING chain deliver it.
 	if uids.VMMode {
-		addBridgePreRoutingChain(conn)
+		addBridgePreRoutingChain(conn, cfg.BridgeUplinks)
 	}
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
@@ -603,7 +605,7 @@ func addFilterRules(
 	// VM mode: take forwarded UDP away from Linux bridges, so that
 	// the TPROXY rules of the mangle PREROUTING chain deliver it.
 	if uids.VMMode {
-		addBridgePreRoutingChain(conn)
+		addBridgePreRoutingChain(conn, cfg.BridgeUplinks)
 	}
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes

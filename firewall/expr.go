@@ -538,13 +538,23 @@ func matchPktTypeHost() []expr.Any {
 const metaKeyIIFKind expr.MetaKey = 26
 
 // matchIIFKind matches packets whose input interface has the given
-// link kind, as "meta iifkind" does. The link kind of a veth device
-// is "veth" and the link kind of a TAP device is "tun". A physical
-// network interface has no link kind and never matches.
+// link kind, as "meta iifkind" does. The kernel gives a link kind to
+// each device whose driver registers rtnl_link_ops, such as "veth"
+// for a veth device and "tun" for a TAP device. A physical network
+// interface has no link kind and never matches.
 func matchIIFKind(kind string) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: metaKeyIIFKind, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(kind)},
+	}
+}
+
+// matchIIFName matches packets whose input interface has the given
+// name.
+func matchIIFName(name string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(name)},
 	}
 }
 

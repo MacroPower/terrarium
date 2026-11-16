@@ -463,6 +463,32 @@ as FQDN-based egress rules since they lack TLS SNI for destination
 filtering. Ports are subject to the same proxy port ceiling (50535) as
 other Envoy-proxied rules.
 
+### bridgeUplinks
+
+bridgeUplinks is a Terrarium-only field with no CiliumNetworkPolicy
+equivalent. It lists the names of the Linux bridge ports that connect a
+bridge to the network of the VM. Only daemon mode reads the field. The
+other modes ignore it.
+
+```yaml
+bridgeUplinks:
+  - veth-up
+  - tap-up
+```
+
+The daemon takes the forwarded UDP of a container away from its bridge
+and sends it to Envoy. It treats a bridge port as the port of a
+container when the port is a veth or TAP device and bridgeUplinks does
+not name the port. You must name each uplink that is a veth or TAP
+device. Ports of every other device, such as a physical network
+interface, a bond, or a VLAN device, do not need an entry. The
+[bridge table](../README.md#bridge-table) section of the README
+describes the rules.
+
+Each entry must be a valid Linux interface name: 1 to 15 bytes, not `.`
+or `..`, and without a slash, a colon, whitespace, or a NUL byte.
+Terrarium rejects a policy that names the same interface two times.
+
 ## N/A (requires cluster infrastructure)
 
 These Cilium features are intentionally unsupported because they depend on

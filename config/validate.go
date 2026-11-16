@@ -212,6 +212,11 @@ func (c *Config) Validate(ctx context.Context) error {
 		}
 	}
 
+	err = validateBridgeUplinks(c.BridgeUplinks)
+	if err != nil {
+		return err
+	}
+
 	normalizeLogging(c)
 
 	err = validateLogging(c.Logging)
@@ -225,6 +230,56 @@ func (c *Config) Validate(ctx context.Context) error {
 	}
 
 	return c.validateEnvoySettings()
+}
+
+// maxInterfaceNameLen is the number of bytes in the longest name that
+// the kernel accepts for a network interface (IFNAMSIZ less the
+// terminating NUL byte).
+const maxInterfaceNameLen = 15
+
+// validateBridgeUplinks checks that each entry of
+// [Config.BridgeUplinks] is a name that the kernel accepts for a
+// network interface, and that no two entries are equal.
+func validateBridgeUplinks(uplinks []string) error {
+	seen := make(map[string]bool, len(uplinks))
+	for _, name := range uplinks {
+		if !validInterfaceName(name) {
+			return fmt.Errorf("%w: %q", ErrInvalidBridgeUplink, name)
+		}
+
+		if seen[name] {
+			return fmt.Errorf("%w: %q", ErrDuplicateBridgeUplink, name)
+		}
+
+		seen[name] = true
+	}
+
+	return nil
+}
+
+// interfaceNameBadBytes holds the bytes that the kernel rejects in
+// the name of a network interface. They are the slash, the colon, and
+// each byte that the isspace function of the kernel treats as
+// whitespace, which includes the byte 0xA0. The NUL byte ends the
+// name in the kernel, so a name that holds it never matches a device.
+const interfaceNameBadBytes = "/: \t\n\v\f\r\x00\xa0"
+
+// validInterfaceName reports whether name can name a network
+// interface. It rejects the empty name, a name of more than
+// [maxInterfaceNameLen] bytes, the names "." and "..", and a name
+// that holds a byte of [interfaceNameBadBytes].
+func validInterfaceName(name string) bool {
+	if name == "" || len(name) > maxInterfaceNameLen || name == "." || name == ".." {
+		return false
+	}
+
+	for i := range len(name) {
+		if strings.IndexByte(interfaceNameBadBytes, name[i]) >= 0 {
+			return false
+		}
+	}
+
+	return true
 }
 
 // validateStats checks that the stats block is internally consistent:

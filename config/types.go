@@ -72,6 +72,21 @@ type Config struct {
 	// TCPForwards lists non-TLS TCP port-to-host mappings. Each entry
 	// creates a plain TCP proxy listener forwarding to the specified host.
 	TCPForwards []TCPForward `yaml:"tcpForwards,omitempty"`
+	// BridgeUplinks names the ports of Linux bridges that connect a
+	// bridge to the network of the VM. Only daemon mode reads the
+	// field.
+	//
+	// The daemon sends the forwarded UDP of each container port of a
+	// bridge to Envoy. It treats a bridge port as a container port
+	// when the port is a veth or TAP device and the field does not
+	// name the port. Ports of every other device, such as a physical
+	// network interface, a bond, or a VLAN device, do not need an
+	// entry.
+	//
+	// Name each uplink that is a veth or TAP device. UDP for the VM
+	// that arrives on an unnamed uplink of that sort does not reach a
+	// socket that is bound to the bridge.
+	BridgeUplinks []string `yaml:"bridgeUplinks,omitempty"`
 }
 
 // EgressRules returns the egress rules slice, or nil when Egress is absent.

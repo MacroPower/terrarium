@@ -1219,15 +1219,49 @@ network layer. The datagram then never reaches Envoy.
 The `bridge_prerouting` chain is the only chain of a second `terrarium` table,
 in the `bridge` family, and it runs before `br_netfilter`. It sets the broute
 flag (`meta broute set 1`) on each UDP frame that a container sends to the MAC
-address of the bridge. It matches only frames that arrive on a `veth` port of
-the bridge, which is the device that container runtimes use to attach a
-container. The kernel then handles the frame as a packet that the bridge port
-of the container received. The bridge and `br_netfilter` never
+address of the bridge. The kernel then handles the frame as a packet that the
+bridge port of the container received. The bridge and `br_netfilter` never
 handle it, so the `mangle_prerouting` chain sees it one time, outside the
 bridge.
 
 A policy that blocks all egress has no TPROXY rules, so the daemon does not add
 the bridge table for it.
+
+The chain takes frames only from the bridge ports of containers. It leaves the
+frames of each uplink with the bridge. An uplink is a port that connects the
+bridge to the network of the VM. Its frames hold the UDP that the VM receives,
+such as the replies of upstream DNS servers and of DHCP servers. A socket that
+is bound to the bridge receives that UDP only when the frame stays with the
+bridge. The chain separates the two sorts of port by the link kind of the port
+device and by the `bridgeUplinks` field of the policy:
+
+- A port that `bridgeUplinks` names is an uplink, whatever its device.
+- Every other port of the link kind `veth` or `tun` is the port of a container.
+  Container runtimes attach a container with a `veth` device, or with a TAP
+  device when the container runs in a virtual machine. The link kind of a TAP
+  device is `tun`.
+- Every port of another link kind or of none is an uplink. Physical network
+  interfaces, bonds, and VLAN devices are uplinks of this sort.
+
+When an uplink of a bridge is a `veth` or TAP device, you must name the uplink
+in `bridgeUplinks`. Without the entry, the chain takes the UDP that arrives on
+the uplink for the VM. A socket that is bound to the bridge then does not
+receive that UDP.
+
+```yaml
+bridgeUplinks:
+  - veth-up
+```
+
+Do not name the bridge port of a container in `bridgeUplinks`. The forwarded
+UDP of that container then stays with the bridge and never reaches Envoy.
+
+This command prints the link kind of a port device, or `null` when the device
+has none:
+
+```bash
+ip -details -json link show dev veth-up | jq '.[0].linkinfo.info_kind'
+```
 
 The `bridge_prerouting` chain leaves these frames with the bridge:
 
@@ -1235,10 +1269,7 @@ The `bridge_prerouting` chain leaves these frames with the bridge:
   the port that the container chose.
 - IPv6 UDP to a link-local address.
 - Frames for another container on the same bridge.
-- Frames from a bridge port that is not a `veth` device, such as a physical
-  network interface or the TAP device of a virtual machine. Those frames hold
-  the UDP that the VM receives, such as the replies of upstream DNS servers and
-  of DHCP servers.
+- Frames from an uplink of the bridge.
 - Every protocol except UDP.
 
 The DNS proxy does not receive a fragmented UDP datagram to port 53. The first
@@ -1247,7 +1278,7 @@ have no UDP header. DNS queries fit in one packet.
 
 The chain also takes the UDP that a container sends to an address of the VM,
 on every port except 53. The input interface of that UDP at the INPUT hook is
-the bridge port, such as `veth0`, and not the bridge. The
+the bridge port, such as `veth0` or `tap0`, and not the bridge. The
 [host requirements](#host-requirements) list what the chain needs from the
 host.
 
@@ -1328,7 +1359,7 @@ sysctl net.ipv4.ip_forward=1
 sysctl net.ipv4.conf.default.route_localnet=1
 
 # Turn off the reverse path filter of the kernel for new interfaces,
-# so that the bridge ports of containers (veth*) inherit the value 0.
+# so that the bridge ports of containers (veth* and tap*) inherit the value 0.
 sysctl net.ipv4.conf.default.rp_filter=0
 ```
 

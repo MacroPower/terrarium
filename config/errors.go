@@ -112,6 +112,17 @@ var (
 	// specify the same port.
 	ErrDuplicateTCPForwardPort = errors.New("duplicate tcp forward port")
 
+	// ErrInvalidBridgeUplink is returned when an entry of
+	// [Config.BridgeUplinks] is not a valid Linux interface name.
+	ErrInvalidBridgeUplink = errors.New(
+		`invalid bridge uplink: name must have 1 to 15 bytes, must not be "." or "..", ` +
+			"and must not hold a slash, colon, whitespace, or NUL byte",
+	)
+
+	// ErrDuplicateBridgeUplink is returned when two entries of
+	// [Config.BridgeUplinks] name the same interface.
+	ErrDuplicateBridgeUplink = errors.New("duplicate bridge uplink")
+
 	// ErrFQDNRequiresPorts is returned when an [EgressRule] has toFQDNs
 	// with L7 HTTP rules but no toPorts with non-empty ports. L7
 	// inspection requires explicit ports because Envoy needs per-port

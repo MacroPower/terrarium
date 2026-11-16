@@ -2133,6 +2133,112 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestValidateBridgeUplinks checks which entries of bridgeUplinks the
+// validation accepts. Each entry must be a name that the kernel
+// accepts for a network interface. Where msg is set, the error text
+// must name the rule that the entry breaks.
+func TestValidateBridgeUplinks(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		err     error
+		msg     string
+		uplinks []string
+	}{
+		"no uplinks": {},
+		"one uplink": {
+			uplinks: []string{"eth1"},
+		},
+		"several uplinks": {
+			uplinks: []string{"bond0", "eth1.100", "veth-up"},
+		},
+		"name of 15 bytes": {
+			uplinks: []string{"abcdefghijklmno"},
+		},
+		"empty name": {
+			uplinks: []string{""},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		"name of 16 bytes": {
+			uplinks: []string{"abcdefghijklmnop"},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		"name with a slash": {
+			uplinks: []string{"eth/1"},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		"name with a colon": {
+			uplinks: []string{"eth0:1"},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		"name with a space": {
+			uplinks: []string{"eth 1"},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		"name with a tab": {
+			uplinks: []string{"eth\t1"},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		"name with a NUL byte": {
+			uplinks: []string{"eth0\x00"},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		// The kernel treats the byte 0xA0 as whitespace. The UTF-8
+		// form of U+00A0 holds it.
+		"name with a no-break space": {
+			uplinks: []string{"eth\u00a00"},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		"name with the byte 0xA0": {
+			uplinks: []string{"eth\xa00"},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		// The kernel accepts bytes outside ASCII other than 0xA0.
+		"name with a UTF-8 letter": {
+			uplinks: []string{"\u00e9th0"},
+		},
+		"dot": {
+			uplinks: []string{"."},
+			err:     config.ErrInvalidBridgeUplink,
+			msg:     `must not be "." or ".."`,
+		},
+		"two dots": {
+			uplinks: []string{".."},
+			err:     config.ErrInvalidBridgeUplink,
+			msg:     `must not be "." or ".."`,
+		},
+		"invalid name after a valid name": {
+			uplinks: []string{"eth1", ""},
+			err:     config.ErrInvalidBridgeUplink,
+		},
+		"duplicate name": {
+			uplinks: []string{"eth1", "bond0", "eth1"},
+			err:     config.ErrDuplicateBridgeUplink,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &config.Config{BridgeUplinks: tt.uplinks}
+
+			err := cfg.Validate(t.Context())
+			if tt.err != nil {
+				require.ErrorIs(t, err, tt.err)
+
+				if tt.msg != "" {
+					require.ErrorContains(t, err, tt.msg)
+				}
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 // TestValidateHeaderMatchReservedHeader checks which headerMatches
 // entries the validation rejects for the Host header and for a header
 // whose name starts with ":". Envoy does not load a route that adds or
