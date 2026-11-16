@@ -1,18 +1,28 @@
 name: envoy
 
 # Checks the provenance of the Envoy builds that envoybin/manifest.go pins.
-# Renovate merges a bump of the pin only after every job passes. A verify job
-# fails when a hash, a signature, an attestation, or the version commit of its
-# build does not match. A verify job also fails when its build of the pinned
-# version does not exist. Tetrate publishes the macOS build after the Envoy
-# release, so a bump waits with failed jobs until that build exists.
+# A verify job fails when a hash, a signature, an attestation, or the version
+# commit of its build does not match. A verify job also fails when its build
+# of the pinned version does not exist. Tetrate publishes the macOS build
+# after the Envoy release, so a bump waits with failed jobs until that build
+# exists.
 #
 # The workflow runs for every pull request, and the envoy-pin job reports its
-# result under one fixed name. To stop the merge of a pull request whose pin
-# fails a check, add envoy-pin to the required status checks of the main
-# branch. Do not require a verify job. The verify jobs run only for a change
-# to the pin, and GitHub holds a pull request until every required check
-# reports a result.
+# result under one fixed name. Two rules keep a pin that fails a check out of
+# the main branch:
+#
+# - Renovate merges its bump of the pin itself, and only after every check of
+#   the pull request passed. The package rule of the pin in
+#   .github/renovate.json5 sets platformAutomerge to false for that purpose.
+# - GitHub refuses the merge of every pull request with a failed envoy-pin
+#   check when the required status checks of the main branch include
+#   envoy-pin. The required status checks are a setting of the repository on
+#   GitHub, and no file in the repository holds them. Without that setting, a
+#   person can merge a pull request whose pin fails a check.
+#
+# Do not require a verify job. The verify jobs run only for a change to the
+# pin, and GitHub holds a pull request until every required check reports a
+# result.
 on:
   push:
     branches:

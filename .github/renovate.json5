@@ -23,16 +23,25 @@
     // command. The command fails when a build of the new version is missing,
     // which happens until Tetrate publishes the macOS build. The manifest
     // then keeps the hashes of the previous version, so the envoy workflow
-    // fails on the pull request and blocks the merge. Renovate runs the
-    // command again when it rebases or retries the branch.
+    // fails on the pull request. Renovate runs the command again when it
+    // rebases or retries the branch.
     //
     // The pin gets a branch of its own. The ci module pins the same
     // dependency, and without the prefix both updates share one branch.
+    //
+    // Renovate merges the bump itself, because platformAutomerge is false.
+    // Renovate merges a pull request only after every check of the pull
+    // request passed, so the merge waits for the envoy-pin check of the envoy
+    // workflow. With platformAutomerge, GitHub merges the pull request when
+    // the required status checks of the main branch pass. GitHub then does
+    // not wait for a check that the branch does not require. Do not set
+    // ignoreTests, because Renovate then merges without the checks.
     {
       matchFileNames: ["envoybin/manifest.go"],
       matchDepNames: ["envoyproxy/envoy"],
       additionalBranchPrefix: "envoybin-",
       commitMessageTopic: "pinned Envoy binary",
+      platformAutomerge: false,
       postUpgradeTasks: {
         commands: ["go run ./cmd/envoymanifest update"],
         fileFilters: ["envoybin/manifest.go"],

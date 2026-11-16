@@ -85,3 +85,36 @@ func TestRenovateRunsUpdate(t *testing.T) {
 
 	assert.Len(t, permits, 1, "want one pattern of %q that permits %q", allowed, updateCommand)
 }
+
+// TestRenovateMergesPinItself checks that Renovate merges a bump of the
+// pin itself, without the auto-merge of GitHub. Renovate merges a pull
+// request only after every check of the pull request passed, so its merge
+// waits for the envoy workflow. GitHub merges a pull request with
+// auto-merge when the required status checks of the base branch pass. It
+// does not wait for a check that the branch does not require.
+func TestRenovateMergesPinItself(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.FromSlash(renovateConfigPath))
+	require.NoError(t, err)
+
+	config := string(data)
+
+	// The package rule of the pin, from its first matcher to the brace
+	// that closes the rule.
+	rule := regexp.MustCompile(
+		`(?ms)^    \{\n      matchFileNames: \["` + regexp.QuoteMeta(manifestSource) + `"\],\n(.*?)^    \},$`,
+	).FindStringSubmatch(config)
+	require.NotNil(t, rule, "the Renovate configuration has no package rule for %s", manifestSource)
+
+	assert.Contains(t, rule[1], `commands: ["`+updateCommand+`"]`)
+	assert.Regexp(t, `(?m)^      platformAutomerge: false,$`, rule[1])
+
+	// A rule that sets platformAutomerge to true after the rule of the
+	// pin gives the merge of the pin back to GitHub.
+	assert.NotRegexp(t, `(?m)^\s*"?platformAutomerge"?: true\b`, config)
+
+	// With ignoreTests, Renovate merges a pull request without the
+	// results of its checks.
+	assert.NotRegexp(t, `(?m)^\s*"?ignoreTests"?:`, config)
+}
