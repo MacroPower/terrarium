@@ -1346,6 +1346,41 @@ egressDeny:
 		},
 	},
 
+	// Forwarded UDP policy test: verifies that the egress policy
+	// decides the UDP that the VM routes for a client on a bridge
+	// port. Forwarded UDP does not pass the FORWARD chain. The bridge
+	// prerouting chain takes it away from the bridge, TPROXY sends it
+	// to Envoy, and the INPUT chain applies the policy. The clients
+	// are network namespaces on a veth port and on a TAP port of a
+	// bridge that the verify hook builds. They send over IPv4 and
+	// over IPv6. The ports and the subnets of this policy match the
+	// ports and the subnets in udp_forward.sh. The egress rule allows
+	// port 7002, and the egressDeny rule denies it again. Keep 7002 in
+	// the egress rule, so that only the egressDeny rule can drop the
+	// datagrams of that port.
+	{
+		name: "vm-container-udp-policy",
+		config: `bridgeUplinks:
+  - tudp-up
+egress:
+  - toCIDR:
+      - "10.211.0.0/24"
+      - "fd00:d3::/64"
+    toPorts:
+      - ports:
+          - port: "7001"
+            protocol: UDP
+          - port: "7002"
+            protocol: UDP
+egressDeny:
+  - toPorts:
+      - ports:
+          - port: "7002"
+            protocol: UDP
+`,
+		verify: verifyForwardedUDPPolicy,
+	},
+
 	// Bridge-to-external FQDN test: same cross-bridge TPROXY path as
 	// vm-container-bridge-external, but with FQDN rules instead of CIDR.
 	// This exercises the socket transparent re-marking path: established
