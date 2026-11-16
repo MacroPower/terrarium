@@ -88,6 +88,32 @@ func matchL4Proto(proto byte) []expr.Any {
 	}
 }
 
+// notMatchL4Proto matches packets whose transport protocol is not the
+// given protocol.
+func notMatchL4Proto(proto byte) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{proto}},
+	}
+}
+
+// ctDirReply is the IP_CT_DIR_REPLY value of the kernel, which names
+// the reply direction of a conntrack flow. Neither the nftables
+// library nor golang.org/x/sys/unix defines it.
+const ctDirReply = 1
+
+// matchCtDirectionReply matches packets that travel in the reply
+// direction of their conntrack flow, as "ct direction reply" does.
+// The original direction of a flow is the direction of its first
+// packet, and the reply direction is the opposite one. A packet that
+// conntrack does not track never matches.
+func matchCtDirectionReply() []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{ctDirReply}},
+	}
+}
+
 // mustParseCIDR parses a CIDR string that is known at compile time.
 func mustParseCIDR(s string) *net.IPNet {
 	_, n, err := net.ParseCIDR(s)

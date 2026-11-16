@@ -1173,12 +1173,15 @@ applies to that query.
 
 Forwarded UDP to every port except IPv4 port 53 uses TPROXY. The
 `mangle_prerouting` chain marks that UDP, and policy routing delivers the
-marked packets to a local socket. The packets pass the INPUT hook and never
-reach the `forward` chain, so the `input` chain sends them through the policy
-rules that the `forward` chain uses. Those rules drop the UDP that an
-`egressDeny` rule denies and the UDP that no `egress` rule allows. UDP to a
-CIDR of an `egressDeny` rule skips TPROXY and keeps its mark, so the `input`
-chain drops it too.
+marked packets to a local socket. The chain marks every datagram that travels
+in the direction of the first datagram of its flow. So the datagrams after a
+reply take the same path as the first datagram.
+
+The marked packets pass the INPUT hook and never reach the `forward` chain, so
+the `input` chain sends them through the policy rules that the `forward` chain
+uses. Those rules drop the UDP that an `egressDeny` rule denies and the UDP
+that no `egress` rule allows. UDP to a CIDR of an `egressDeny` rule skips
+TPROXY and keeps its mark, so the `input` chain drops it too.
 
 The `input` chain exists only in filtered mode. It accepts these packets
 without a policy check:

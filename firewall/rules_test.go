@@ -3279,17 +3279,25 @@ func TestApplyRules_VMMode_MangleForwarded(t *testing.T) {
 	assert.True(t, ruleHasMark(rules[0]),
 		"first mangle_prerouting rule should set tproxy mark")
 
-	// Second rule should accept established/related forwarded traffic
-	// to prevent TPROXY from intercepting return traffic.
-	v, _ := ruleVerdict(rules[1])
-	assert.Equal(t, expr.VerdictAccept, v,
-		"second mangle_prerouting rule should accept established/related")
+	// The second and third rules accept established and related
+	// forwarded traffic, so that TPROXY does not intercept replies.
+	// [TestApplyRules_VMMode_MangleEstablishedAccept] checks their
+	// expressions.
+	require.Greater(t, len(rules), 3)
+
+	for _, r := range rules[1:3] {
+		v, _ := ruleVerdict(r)
+		assert.Equal(t, expr.VerdictAccept, v,
+			"mangle_prerouting rule should accept established/related")
+		assert.True(t, ruleHasCtState(r),
+			"mangle_prerouting rule should match the conntrack state")
+	}
 
 	// Should have marking rules (fwmark but no TPROXY) followed
 	// by TPROXY dispatch rules.
 	var hasMark, hasTProxy bool
 
-	for _, r := range rules[2:] {
+	for _, r := range rules[3:] {
 		if ruleHasMark(r) && !ruleHasTProxy(r) {
 			hasMark = true
 		}
@@ -3301,6 +3309,119 @@ func TestApplyRules_VMMode_MangleForwarded(t *testing.T) {
 
 	assert.True(t, hasMark, "should have forwarded marking rules")
 	assert.True(t, hasTProxy, "should have TPROXY rules after forwarded marking")
+}
+
+// TestApplyRules_VMMode_MangleEstablishedAccept checks the rules of
+// the mangle PREROUTING chain that accept established and related
+// forwarded traffic before the marking rules. No rule accepts UDP in
+// the original direction of its flow. So every datagram of a
+// forwarded UDP flow reaches the marking rules.
+func TestApplyRules_VMMode_MangleEstablishedAccept(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		egress *[]config.EgressRule
+	}{
+		"VM filtered": {
+			egress: egressRules(config.EgressRule{
+				ToFQDNs: []config.FQDNSelector{{MatchName: "example.com"}},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "443"}}}},
+			}),
+		},
+		"VM unrestricted": {},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+			cfg := &config.Config{Egress: tc.egress}
+
+			err := firewall.ApplyRules(t.Context(), rec, cfg, testVMUIDs)
+			require.NoError(t, err)
+
+			rules := rec.rulesForChain("mangle_prerouting")
+
+			lo := make([]byte, 16)
+			copy(lo, "lo")
+
+			// iifname != "lo" fib daddr type != local
+			forwarded := []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: lo},
+				&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
+				&expr.Cmp{
+					Op:       expr.CmpOpNeq,
+					Register: 1,
+					Data:     binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL),
+				},
+			}
+
+			// ct state established,related
+			ctState := []expr.Any{
+				&expr.Ct{Key: expr.CtKeySTATE, Register: 1},
+				&expr.Bitwise{
+					SourceRegister: 1,
+					DestRegister:   1,
+					Len:            4,
+					Mask: binaryutil.NativeEndian.PutUint32(
+						expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED,
+					),
+					Xor: make([]byte, 4),
+				},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: make([]byte, 4)},
+			}
+
+			accept := []expr.Any{&expr.Verdict{Kind: expr.VerdictAccept}}
+
+			// The first accept rule excludes UDP, so it accepts
+			// no datagram of a forwarded UDP flow.
+			wantNotUDP := slices.Concat(
+				forwarded,
+				[]expr.Any{
+					// meta l4proto != udp
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
+				},
+				ctState,
+				accept,
+			)
+
+			// The second accept rule matches only the reply
+			// direction, so it accepts the UDP replies of a
+			// forwarded flow.
+			wantReply := slices.Concat(
+				forwarded,
+				ctState,
+				[]expr.Any{
+					// ct direction reply
+					&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
+				},
+				accept,
+			)
+
+			// The accept rules come after the socket transparent
+			// rule and before the first marking rule.
+			require.Greater(t, len(rules), 3)
+			assert.Equal(t, wantNotUDP, rules[1].Exprs)
+			assert.Equal(t, wantReply, rules[2].Exprs)
+
+			// Each rule of the chain that matches the conntrack
+			// state and accepts is one of those two rules. Another
+			// such rule can accept UDP in the original direction.
+			for i, r := range rules {
+				v, _ := ruleVerdict(r)
+				if !ruleHasCtState(r) || v != expr.VerdictAccept {
+					continue
+				}
+
+				assert.Contains(t, []int{1, 2}, i,
+					"rule %d accepts by conntrack state", i)
+			}
+		})
+	}
 }
 
 // ruleHasNAT reports whether a rule contains a NAT expression.

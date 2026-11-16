@@ -1094,6 +1094,13 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 // INPUT chain ([addInputChain]) policy-evaluates it before Envoy
 // receives it.
 //
+// In VM mode the chain marks each forwarded UDP datagram that travels
+// in the original direction of its conntrack flow, in every conntrack
+// state. So each datagram of a flow passes the policy rules of the
+// INPUT chain and reaches Envoy, also after conntrack sees a reply.
+// The chain accepts the replies of forwarded flows without a mark,
+// and the kernel forwards them.
+//
 // Forwarded UDP to the CIDR of an allow rule also goes to Envoy. The
 // policy rules of the INPUT chain match it against the CIDR and the
 // ports of that rule.
@@ -1155,18 +1162,44 @@ func addManglePreRoutingChain(
 			),
 		})
 
-		// Accept established/related traffic before marking.
-		// Return traffic for forwarded connections (e.g.,
-		// SYN-ACK from a container on br-tproxy to a container
-		// on cni0) must not be marked for TPROXY, otherwise the
-		// catch-all TPROXY rule intercepts the reply and Envoy
-		// receives a SYN-ACK for a connection it never opened.
+		// Accept the forwarded packets of established and related
+		// flows before the marking rules, except UDP in the
+		// original direction of its flow. The accepted packets
+		// keep mark 0, so the kernel forwards them. They include
+		// the replies of forwarded flows, such as the UDP reply
+		// of a container to a client outside the VM. A mark on
+		// such a reply sends it to Envoy and not to the client.
+		//
+		// The original direction of a flow is the direction of
+		// its first packet. UDP in that direction passes on to
+		// the marking rules in every conntrack state. A UDP flow
+		// becomes established when conntrack sees a reply, such
+		// as the reply that a transparent proxy sends from the
+		// address of the destination. An accept for the later
+		// datagrams of that flow forwards them to the destination
+		// directly, past Envoy and past the policy rules of the
+		// INPUT chain.
+		//
+		// The first rule accepts every protocol except UDP, and
+		// the second rule accepts the replies of every protocol.
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNotIIFName("lo"),
+				matchNotLocalDst(),
+				notMatchL4Proto(unix.IPPROTO_UDP),
+				matchCtState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
 				matchNotIIFName("lo"),
 				matchNotLocalDst(),
 				matchCtState(expr.CtStateBitESTABLISHED|expr.CtStateBitRELATED),
+				matchCtDirectionReply(),
 				verdictExprs(expr.VerdictAccept),
 			),
 		})
