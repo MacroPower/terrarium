@@ -15,9 +15,14 @@ import (
 // renderer can still produce useful output.
 //
 // The heartbeat of the summary is the heartbeat of the latest
-// instance whose mode [hasFirewall] selects. A `terrarium proxy` run
-// can write to the same store, and its heartbeat does not describe
-// the daemon.
+// instance whose mode has a firewall (see
+// [eventstore.Mode.HasFirewall]). A `terrarium proxy` run can write
+// to the same store, and its heartbeat does not describe the daemon.
+// The instance is the instance of
+// [eventstore.Reader.DefaultInstanceID], except in a store that
+// holds only proxy runs. The summary then holds no heartbeat, because
+// a proxy has no firewall, no firewall log, and no DNS cache to
+// report on.
 func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 	if cfg == nil || !cfg.StatsEnabled() {
 		return StatsSection{}
@@ -62,7 +67,7 @@ func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 	var instanceID string
 
 	for _, in := range instances {
-		if hasFirewall(in.Mode) {
+		if in.Mode.HasFirewall() {
 			instanceID = in.ID
 
 			break
@@ -97,12 +102,4 @@ func collectStats(ctx context.Context, cfg *config.Config) StatsSection {
 	}
 
 	return s
-}
-
-// hasFirewall reports whether an instance of the given mode runs the
-// firewall, the firewall log, and the DNS cache that `terrarium
-// status` reports on. `terrarium daemon` and `terrarium init` run
-// them, and `terrarium proxy` does not.
-func hasFirewall(mode eventstore.Mode) bool {
-	return mode == eventstore.ModeDaemon || mode == eventstore.ModeInit
 }

@@ -2416,7 +2416,7 @@ func verifyVMHeartbeatOnShutdown(ctx context.Context, t *testing.T, d *driver) {
 		}
 	}()
 
-	instanceID, _, err := reader.LatestInstanceID(ctx)
+	instanceID, _, err := reader.DefaultInstanceID(ctx)
 	require.NoError(t, err, "resolving instance id")
 	require.NotEmpty(t, instanceID, "no instance row written; daemon never reached steady state")
 
@@ -2532,7 +2532,7 @@ func verifyVMPolicySnapshots(ctx context.Context, t *testing.T, d *driver) {
 		}
 	}()
 
-	instanceID, ok, err := reader.LatestInstanceID(ctx)
+	instanceID, ok, err := reader.DefaultInstanceID(ctx)
 	require.NoError(t, err, "resolving instance id")
 	require.True(t, ok, "no instance row written")
 

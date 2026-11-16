@@ -449,7 +449,7 @@ func TestToolsReadSeededStore(t *testing.T) {
 
 		got := call[mcpserver.InstancesResult](t, session, "list_instances", nil)
 
-		assert.Equal(t, s.daemon, got.Latest)
+		assert.Equal(t, s.daemon, got.Default)
 		assert.Equal(t, 2, got.Total)
 		require.Len(t, got.Instances, 2)
 
@@ -855,6 +855,83 @@ func TestUnknownInstance(t *testing.T) {
 	assert.Empty(t, got.Events)
 }
 
+// TestDefaultInstance checks the instance that each tool reads when a
+// call omits `instance`.
+func TestDefaultInstance(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		// modes lists the modes of the runs, with the earliest start
+		// first. Every run is in progress.
+		modes []eventstore.Mode
+		// want is the index in modes of the run that the tools read.
+		want int
+	}{
+		"proxy after daemon": {
+			modes: []eventstore.Mode{eventstore.ModeDaemon, eventstore.ModeProxy},
+			want:  0,
+		},
+		"proxy after init": {
+			modes: []eventstore.Mode{eventstore.ModeInit, eventstore.ModeProxy},
+			want:  0,
+		},
+		"daemon after proxy": {
+			modes: []eventstore.Mode{eventstore.ModeProxy, eventstore.ModeDaemon},
+			want:  1,
+		},
+		"latest daemon between proxies": {
+			modes: []eventstore.Mode{
+				eventstore.ModeDaemon, eventstore.ModeProxy,
+				eventstore.ModeDaemon, eventstore.ModeProxy,
+			},
+			want: 2,
+		},
+		// The store holds no init or daemon run.
+		"latest proxy": {
+			modes: []eventstore.Mode{eventstore.ModeProxy, eventstore.ModeProxy},
+			want:  1,
+		},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+			ids := make([]string, 0, len(tc.modes))
+
+			for _, mode := range tc.modes {
+				ids = append(ids, openStore(t, path, eventstore.WithMode(mode)).InstanceID())
+			}
+
+			session := connect(t, locateAt(path))
+			want := ids[tc.want]
+
+			instances := call[mcpserver.InstancesResult](t, session, "list_instances", nil)
+			assert.Equal(t, want, instances.Default)
+			assert.Len(t, instances.Instances, len(tc.modes))
+
+			summary := call[mcpserver.SummaryResult](t, session, "summarize_events", nil)
+			assert.Equal(t, want, summary.Instance)
+
+			top := call[mcpserver.TopResult](t, session, "top_events", nil)
+			assert.Equal(t, want, top.Instance)
+
+			events := call[mcpserver.EventsResult](t, session, "list_events", nil)
+			assert.Equal(t, want, events.Instance)
+
+			health := call[mcpserver.HealthResult](t, session, "get_health", nil)
+			assert.Equal(t, want, health.Instance)
+
+			policy := call[mcpserver.PolicyResult](t, session, "get_policy", nil)
+			assert.Equal(t, want, policy.Instance)
+
+			policies := call[mcpserver.PoliciesResult](t, session, "list_policies", nil)
+			assert.Equal(t, want, policies.Instance)
+		})
+	}
+}
+
 func TestEmptyStore(t *testing.T) {
 	t.Parallel()
 
@@ -864,7 +941,7 @@ func TestEmptyStore(t *testing.T) {
 
 	instances := call[mcpserver.InstancesResult](t, session, "list_instances", nil)
 	require.Len(t, instances.Instances, 1)
-	assert.Equal(t, store.InstanceID(), instances.Latest)
+	assert.Equal(t, store.InstanceID(), instances.Default)
 
 	summary := call[mcpserver.SummaryResult](t, session, "summarize_events", nil)
 	assert.Equal(t, store.InstanceID(), summary.Instance)

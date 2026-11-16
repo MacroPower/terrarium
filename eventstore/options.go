@@ -21,6 +21,16 @@ const (
 	ModeProxy Mode = "proxy"
 )
 
+// HasFirewall reports whether an instance of the mode runs the
+// firewall, the firewall log, and the DNS cache. `terrarium daemon`
+// and `terrarium init` run them, and `terrarium proxy` does not.
+//
+// `terrarium status` reports on an instance of such a mode, and
+// [Reader.DefaultInstanceID] prefers one.
+func (m Mode) HasFirewall() bool {
+	return m == ModeDaemon || m == ModeInit
+}
+
 // Option configures optional behavior of a [Store].
 //
 // The following options are available:

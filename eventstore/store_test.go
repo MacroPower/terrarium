@@ -1240,7 +1240,7 @@ func TestRecordHeartbeat_NilStoreNoop(t *testing.T) {
 	require.NoError(t, s.RecordHeartbeat(t.Context(), eventstore.Heartbeat{}))
 }
 
-func TestLatestInstanceID(t *testing.T) {
+func TestDefaultInstanceID(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -1252,7 +1252,7 @@ func TestLatestInstanceID(t *testing.T) {
 	id := store.InstanceID()
 	require.NoError(t, store.Close())
 
-	got, ok, err := openReader(t, path).LatestInstanceID(t.Context())
+	got, ok, err := openReader(t, path).DefaultInstanceID(t.Context())
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, id, got)

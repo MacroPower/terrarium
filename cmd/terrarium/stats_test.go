@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/netip"
 	"path/filepath"
@@ -302,6 +303,126 @@ func TestStatsListReadsLatestRun(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
 	require.Len(t, rows, 1)
 	assert.Equal(t, "later.example", rows[0]["domain"])
+}
+
+// TestStatsDefaultInstance checks the run that each `terrarium stats`
+// command reads without --instance.
+func TestStatsDefaultInstance(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		// modes lists the modes of the runs, with the earliest start
+		// first. Every run is in progress.
+		modes []eventstore.Mode
+		// want is the index in modes of the run that the commands
+		// read.
+		want int
+	}{
+		"proxy after daemon": {
+			modes: []eventstore.Mode{eventstore.ModeDaemon, eventstore.ModeProxy},
+			want:  0,
+		},
+		"proxy after init": {
+			modes: []eventstore.Mode{eventstore.ModeInit, eventstore.ModeProxy},
+			want:  0,
+		},
+		"daemon after proxy": {
+			modes: []eventstore.Mode{eventstore.ModeProxy, eventstore.ModeDaemon},
+			want:  1,
+		},
+		"latest daemon between proxies": {
+			modes: []eventstore.Mode{
+				eventstore.ModeDaemon, eventstore.ModeProxy,
+				eventstore.ModeDaemon, eventstore.ModeProxy,
+			},
+			want: 2,
+		},
+		// The store holds no init or daemon run.
+		"latest proxy": {
+			modes: []eventstore.Mode{eventstore.ModeProxy, eventstore.ModeProxy},
+			want:  1,
+		},
+	}
+
+	// domainOf returns the domain of the one event that run i
+	// records.
+	domainOf := func(i int) string {
+		return fmt.Sprintf("run-%d.example", i)
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Now()
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			for i, mode := range tc.modes {
+				store, err := eventstore.Open(t.Context(), path,
+					eventstore.WithBatchSize(1),
+					eventstore.WithBatchInterval(10*time.Millisecond),
+					eventstore.WithMode(mode))
+				require.NoError(t, err)
+
+				t.Cleanup(func() { assert.NoError(t, store.Close()) })
+
+				store.Emit(eventstore.Event{
+					Time:     now,
+					Source:   eventstore.SourceDNS,
+					Decision: eventstore.DecisionDeny,
+					Domain:   domainOf(i),
+				})
+			}
+
+			require.Eventually(t, func() bool {
+				r, err := eventstore.OpenReader(t.Context(), path)
+				if err != nil {
+					return false
+				}
+
+				defer r.Close() //nolint:errcheck // read-only handle in polling closure.
+
+				page, err := r.Events(t.Context(), eventstore.EventsQuery{Limit: len(tc.modes)})
+
+				return err == nil && len(page.Events) == len(tc.modes)
+			}, 5*time.Second, 20*time.Millisecond)
+
+			// run executes one `terrarium stats` command and returns
+			// the rows of its JSON output.
+			run := func(t *testing.T, args ...string) []map[string]any {
+				t.Helper()
+
+				cmd := statsCmd(config.NewUser())
+
+				buf := &bytes.Buffer{}
+				cmd.SetOut(buf)
+				cmd.SetArgs(append(args, "--db", path, "--format", "json"))
+
+				require.NoError(t, cmd.ExecuteContext(t.Context()))
+
+				var rows []map[string]any
+
+				require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
+
+				return rows
+			}
+
+			want := domainOf(tc.want)
+
+			list := run(t, "list")
+			require.Len(t, list, 1)
+			assert.Equal(t, want, list[0]["domain"])
+
+			top := run(t, "top")
+			require.Len(t, top, 1)
+			assert.Equal(t, want, top[0]["bucket"])
+
+			// The summary counts the one event of the default run.
+			summary := run(t)
+			require.Len(t, summary, 1)
+			assert.InDelta(t, 1, summary[0]["count"], 0)
+		})
+	}
 }
 
 func TestStatsTopCSV(t *testing.T) {

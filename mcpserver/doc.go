@@ -24,8 +24,10 @@
 // instance, which is one run of terrarium. The window bounds accept
 // the values of [eventstore.ParseSince] and [eventstore.ParseUntil].
 // A call that names no instance reads the instance of
-// [eventstore.Reader.LatestInstanceID], as the `terrarium stats`
-// commands do. Each result names the instance that it read.
+// [eventstore.Reader.DefaultInstanceID], as the `terrarium stats`
+// commands do. That instance is the latest init or daemon run, or
+// the latest proxy run of a store that holds no init or daemon run.
+// Each result names the instance that it read.
 //
 // # Policy snapshots
 //

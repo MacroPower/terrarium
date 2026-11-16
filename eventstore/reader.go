@@ -140,7 +140,8 @@ type Filter struct {
 	Decision Decision
 
 	// Instance selects the events of one instance ID. See
-	// [Reader.LatestInstanceID] for the ID of the latest run.
+	// [Reader.DefaultInstanceID] for the ID that the readers select
+	// when their caller names none.
 	Instance string
 
 	// Domain selects the events of one domain name and of its
@@ -626,26 +627,40 @@ func (r *Reader) Instances(ctx context.Context) ([]Instance, error) {
 	return out, nil
 }
 
-// LatestInstanceID returns the ID of the instance with the latest
-// start, which is the first instance of [Reader.Instances]. It
-// returns ok=false when the store holds no instance.
+// DefaultInstanceID returns the ID of the instance that the
+// `terrarium stats` commands and the tools of `terrarium mcp` read
+// when their caller names none. It returns ok=false when the store
+// holds no instance.
+//
+// The default is the init or daemon run with the latest start. Those
+// runs are the instances whose mode has a firewall (see
+// [Mode.HasFirewall]), and `terrarium status` reports the heartbeat
+// of the same instance. A `terrarium proxy` run can write to the
+// store of a daemon. A proxy that starts after the daemon does not
+// replace the daemon as the default. When the store holds only proxy
+// runs, the default is the proxy run with the latest start.
+//
+// Among instances with the same start, the later row wins, as in the
+// order of [Reader.Instances].
 //
 // The end of an instance does not change the result. An instance
 // without an end is running, or its process stopped without a
 // [Store.Close], and the store does not record which of the two
-// happened. A running instance therefore does not win over an
-// instance that started later.
-func (r *Reader) LatestInstanceID(ctx context.Context) (string, bool, error) {
+// happened. A running daemon therefore does not win over an init or
+// daemon run that started later.
+func (r *Reader) DefaultInstanceID(ctx context.Context) (string, bool, error) {
 	if r.version < eventsSchemaVersion {
 		return "", false, nil
 	}
 
 	var id string
 
+	// The two modes are the modes of [Mode.HasFirewall].
 	err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM instances
-		 ORDER BY started_at DESC, rowid DESC
+		 ORDER BY mode IN (?, ?) DESC, started_at DESC, rowid DESC
 		 LIMIT 1`,
+		string(ModeDaemon), string(ModeInit),
 	).Scan(&id)
 
 	switch {

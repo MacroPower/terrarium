@@ -25,8 +25,10 @@ const instructions = `Terrarium filters the outbound network traffic of a sandbo
 	`The store also holds one snapshot of the policy for each time that terrarium applied one. ` +
 	`No tool changes the policy or the store.
 
-Each run of terrarium is one instance. A tool call without "instance" reads the latest run, ` +
-	`and each result names the instance that it read. Use list_instances to find other runs. ` +
+Each run of terrarium is one instance. A tool call without "instance" reads the default run, ` +
+	`which is the latest daemon or init run, or the latest proxy run when the store holds no daemon or init run. ` +
+	`Each result names the instance that it read. Use list_instances to find other runs, ` +
+	`such as a proxy run that writes to the store of a daemon. ` +
 	`To find what the policy blocks, call top_events, then list_events with a "domain" filter. ` +
 	`Call get_health when events that you expect are missing.
 

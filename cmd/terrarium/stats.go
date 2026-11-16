@@ -85,7 +85,7 @@ func (f *statsFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.source, "source", "",
 		"filter by event source (dns, envoy, firewall)")
 	cmd.Flags().StringVar(&f.instance, "instance", "",
-		"filter by instance id (defaults to most-recent run)")
+		"filter by instance id (defaults to the latest daemon or init run, or else the latest run)")
 	cmd.Flags().StringVar(&f.format, "format", "table",
 		"output format: table, json, csv")
 	cmd.Flags().StringVar(&f.dbPath, "db", "",
@@ -223,17 +223,18 @@ func openStatsReader(ctx context.Context, path string) (*eventstore.Reader, erro
 }
 
 // resolveInstance returns the instance ID to filter on. The empty
-// explicit ID selects the run with the latest start, which is the
-// instance of [eventstore.Reader.LatestInstanceID]. The stats CLI
-// and the MCP tools therefore read the same instance by default.
-// The status report reads the heartbeat of the latest init or daemon
-// instance instead, because a proxy run can start later.
+// explicit ID selects the instance of
+// [eventstore.Reader.DefaultInstanceID]. That instance is the latest
+// init or daemon run, or the latest proxy run in a store that holds
+// only proxy runs. The MCP tools read the same instance by default.
+// The status report reads the heartbeat of the same init or daemon
+// run. It reads no heartbeat in a store that holds only proxy runs.
 func resolveInstance(ctx context.Context, r *eventstore.Reader, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
 
-	id, _, err := r.LatestInstanceID(ctx)
+	id, _, err := r.DefaultInstanceID(ctx)
 	if err != nil {
 		return "", err
 	}

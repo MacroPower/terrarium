@@ -835,9 +835,15 @@ Every `terrarium stats` command takes `--since`, `--until`,
 so it does not take `--limit`. The CLI opens the DB read-only, so it has no
 daemon dependency.
 
-Without `--instance`, each command reads the events of the run with the latest
-start. That run might have ended. To read an earlier run that is still running,
-pass its ID with `--instance`.
+Without `--instance`, each command reads the events of the `terrarium daemon`
+or `terrarium init` run with the latest start. `terrarium status` reports the
+heartbeat of the same run. When the database holds no such run, each command
+reads the `terrarium proxy` run with the latest start. The run that a command
+reads might have ended.
+
+To read another run, pass its ID with `--instance`. For example, pass the ID
+of a proxy that writes to the database of a daemon, or the ID of an earlier
+run that is still running.
 
 Each event of `terrarium stats list` holds two fields that say where the
 flow went and which rule decided it:
@@ -951,8 +957,9 @@ The server has these tools:
 The event tools take `since` and `until`, which accept the values of the
 `--since` and `--until` flags of `terrarium stats`. A call without `since`
 reads the last 24 hours. A call without `instance` reads the run that
-`terrarium stats` reads without `--instance`. Each result names the instance
-that the tool read.
+`terrarium stats` reads without `--instance`, and `list_instances` returns the
+ID of that run as `default`. Each result names the instance that the tool
+read.
 
 `get_policy` returns a policy snapshot of the store, which is the policy
 that the run enforced. The config file can hold another policy by now.
@@ -976,7 +983,7 @@ To find the rule that decided a firewall event, call `get_policy` with these
 arguments:
 
 - `instance`: the `instance` of the `list_events` result that holds the
-  event. A call without `instance` reads the latest run, and the latest run
+  event. A call without `instance` reads the default run, and the default run
   might not be the run of the event.
 - `at`: the `time` of the event, which selects the snapshot that the event
   maps to.

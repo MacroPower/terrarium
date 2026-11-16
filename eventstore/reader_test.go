@@ -812,7 +812,7 @@ func TestReader_Instances(t *testing.T) {
 	assert.False(t, got[0].StartedAt.Before(got[1].StartedAt))
 }
 
-func TestReader_LatestInstanceID(t *testing.T) {
+func TestReader_DefaultInstanceID(t *testing.T) {
 	t.Parallel()
 
 	const schema = v1SchemaSQL + `PRAGMA user_version = 1;`
@@ -853,6 +853,58 @@ func TestReader_LatestInstanceID(t *testing.T) {
 			want:   "a",
 			wantOK: true,
 		},
+		"a daemon wins over a later proxy": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('daemon', 100, NULL, 'daemon'), ('proxy', 200, NULL, 'proxy');`,
+			want:   "daemon",
+			wantOK: true,
+		},
+		"an init run wins over a later proxy": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('init', 100, NULL, 'init'), ('proxy', 200, NULL, 'proxy');`,
+			want:   "init",
+			wantOK: true,
+		},
+		"an ended daemon wins over a later proxy without an end": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('daemon', 100, 150, 'daemon'), ('proxy', 200, NULL, 'proxy');`,
+			want:   "daemon",
+			wantOK: true,
+		},
+		"a daemon wins over an earlier proxy": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('proxy', 100, NULL, 'proxy'), ('daemon', 200, NULL, 'daemon');`,
+			want:   "daemon",
+			wantOK: true,
+		},
+		"latest start wins among init and daemon runs between proxies": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('init', 100, 150, 'init'), ('proxy1', 200, 250, 'proxy'),
+				('daemon', 300, 350, 'daemon'), ('proxy2', 400, NULL, 'proxy');`,
+			want:   "daemon",
+			wantOK: true,
+		},
+		"a later init run wins over a daemon": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('daemon', 100, NULL, 'daemon'), ('init', 200, NULL, 'init'),
+				('proxy', 300, NULL, 'proxy');`,
+			want:   "init",
+			wantOK: true,
+		},
+		"the later row wins among init and daemon runs with the same start": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('daemon', 100, NULL, 'daemon'), ('proxy', 100, NULL, 'proxy'),
+				('init', 100, NULL, 'init'), ('proxy2', 100, NULL, 'proxy');`,
+			want:   "init",
+			wantOK: true,
+		},
+		// The store holds no init or daemon run.
+		"latest start wins among proxies": {
+			rows: `INSERT INTO instances (id, started_at, ended_at, mode) VALUES
+				('old', 100, NULL, 'proxy'), ('new', 200, 250, 'proxy');`,
+			want:   "new",
+			wantOK: true,
+		},
 	}
 
 	for name, tc := range tcs {
@@ -862,7 +914,7 @@ func TestReader_LatestInstanceID(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "stats.db")
 			rawDB(t, path, schema, tc.rows)
 
-			got, ok, err := openReader(t, path).LatestInstanceID(t.Context())
+			got, ok, err := openReader(t, path).DefaultInstanceID(t.Context())
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantOK, ok)
 			assert.Equal(t, tc.want, got)
@@ -870,7 +922,46 @@ func TestReader_LatestInstanceID(t *testing.T) {
 	}
 }
 
-func TestReader_LatestInstanceIDAfterRunWithoutEnd(t *testing.T) {
+// TestReader_DefaultInstanceIDByMode starts one run of each mode and
+// then a proxy. The earlier run stays the default when its mode has a
+// firewall.
+func TestReader_DefaultInstanceIDByMode(t *testing.T) {
+	t.Parallel()
+
+	tcs := map[string]struct {
+		mode eventstore.Mode
+		want bool
+	}{
+		"init":   {mode: eventstore.ModeInit, want: true},
+		"daemon": {mode: eventstore.ModeDaemon, want: true},
+		"proxy":  {mode: eventstore.ModeProxy, want: false},
+	}
+
+	for name, tc := range tcs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tc.want, tc.mode.HasFirewall())
+
+			path := filepath.Join(t.TempDir(), "stats.db")
+
+			earlier := writeStore(t, path, nil, eventstore.WithMode(tc.mode))
+			proxy := writeStore(t, path, nil, eventstore.WithMode(eventstore.ModeProxy))
+
+			want := proxy
+			if tc.want {
+				want = earlier
+			}
+
+			got, ok, err := openReader(t, path).DefaultInstanceID(t.Context())
+			require.NoError(t, err)
+			assert.True(t, ok)
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
+func TestReader_DefaultInstanceIDAfterRunWithoutEnd(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "stats.db")
@@ -884,7 +975,7 @@ func TestReader_LatestInstanceIDAfterRunWithoutEnd(t *testing.T) {
 
 	later := writeStore(t, path, nil)
 
-	got, ok, err := openReader(t, path).LatestInstanceID(t.Context())
+	got, ok, err := openReader(t, path).DefaultInstanceID(t.Context())
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, later, got)
@@ -1004,7 +1095,7 @@ func TestReader_SchemaVersion1(t *testing.T) {
 
 	r := openReader(t, path)
 
-	id, ok, err := r.LatestInstanceID(t.Context())
+	id, ok, err := r.DefaultInstanceID(t.Context())
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, "v1instance", id)
@@ -1081,7 +1172,7 @@ func TestReader_NoSchema(t *testing.T) {
 
 	r := openReader(t, path)
 
-	id, ok, err := r.LatestInstanceID(t.Context())
+	id, ok, err := r.DefaultInstanceID(t.Context())
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Empty(t, id)

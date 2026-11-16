@@ -45,14 +45,18 @@ const defaultSince = "24h"
 // so a stale heartbeat means that the instance missed two of them.
 const heartbeatStaleAfter = 2 * eventstore.HeartbeatInterval
 
+// defaultInstanceDesc states the instance that a tool reads when a
+// call omits `instance`, which is the instance of [resolveInstance].
+const defaultInstanceDesc = "Defaults to the daemon or init run with the latest start, " +
+	"or to the proxy run with the latest start when the store holds no daemon or init run."
+
 // The descriptions of the arguments that several tools share.
 const (
 	sinceDesc = "Start of the time window, inclusive. A Go duration before now, " +
 		"such as 30m or 24h, or an RFC 3339 time. Defaults to 24h."
 	untilDesc    = "End of the time window, inclusive, as an RFC 3339 time. Defaults to now."
-	instanceDesc = "ID of the instance to read, from list_instances. " +
-		"Defaults to the instance with the latest start."
-	limitDesc = "Maximum number of rows. Defaults to 50. A value greater than 200 returns 200 rows."
+	instanceDesc = "ID of the instance to read, from list_instances. " + defaultInstanceDesc
+	limitDesc    = "Maximum number of rows. Defaults to 50. A value greater than 200 returns 200 rows."
 )
 
 // The values that the tools accept for an argument with a fixed set
@@ -101,7 +105,7 @@ type InstanceInfo struct {
 
 // InstancesResult is the result of the list_instances tool.
 type InstancesResult struct {
-	Latest    string         `json:"latest"    jsonschema:"ID of the instance that the other tools read when a call omits instance. Empty when the store holds no instance"`
+	Default   string         `json:"default"   jsonschema:"ID of the instance that the other tools read when a call omits instance, which is the latest daemon or init run, or the latest proxy run when the store holds no daemon or init run. Empty when the store holds no instance"`
 	Instances []InstanceInfo `json:"instances" jsonschema:"the runs, latest start first"`
 	Total     int            `json:"total"     jsonschema:"number of runs in the store, which can be more than the number of returned runs"`
 }
@@ -242,7 +246,8 @@ func (s *Server) addTools() {
 		Title: "List terrarium runs",
 		Description: "Lists the runs of terrarium that the event store knows, latest start first. " +
 			"Each run is one instance, with its mode, its start, its end, and whether it is in progress. " +
-			"Pass the ID of a run as `instance` to another tool to read an earlier run.",
+			"The result names the run that the other tools read by default. " +
+			"Pass the ID of a run as `instance` to another tool to read another run.",
 		Annotations: readOnly("List terrarium runs"),
 		InputSchema: inputSchema[ListInstancesInput](func(p properties) {
 			p.describe("limit", limitDesc).minimum(1)
@@ -319,7 +324,7 @@ func (s *Server) addTools() {
 		Annotations: readOnly("Event store health"),
 		InputSchema: inputSchema[GetHealthInput](func(p properties) {
 			p.describe("instance", "ID of the instance whose heartbeat to read, from list_instances. "+
-				"Defaults to the instance with the latest start.")
+				defaultInstanceDesc)
 		}),
 	}, handler(s, getHealth))
 
@@ -443,13 +448,13 @@ func listInstances(ctx context.Context, db *database, in ListInstancesInput) (In
 		return InstancesResult{}, fmt.Errorf("listing the instances: %w", err)
 	}
 
-	latest, _, err := db.LatestInstanceID(ctx)
+	def, _, err := db.DefaultInstanceID(ctx)
 	if err != nil {
-		return InstancesResult{}, fmt.Errorf("finding the latest instance: %w", err)
+		return InstancesResult{}, fmt.Errorf("finding the default instance: %w", err)
 	}
 
 	out := InstancesResult{
-		Latest:    latest,
+		Default:   def,
 		Instances: make([]InstanceInfo, 0, min(len(instances), clampLimit(in.Limit))),
 		Total:     len(instances),
 	}
@@ -674,16 +679,16 @@ func selectEvents(ctx context.Context, db *database, since, until, instance stri
 
 // resolveInstance returns the ID of the instance that a tool call
 // reads. The empty explicit ID selects the instance of
-// [eventstore.Reader.LatestInstanceID], as the `terrarium stats`
+// [eventstore.Reader.DefaultInstanceID], as the `terrarium stats`
 // commands do. The result is empty when the store holds no instance.
 func resolveInstance(ctx context.Context, db *database, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
 
-	id, _, err := db.LatestInstanceID(ctx)
+	id, _, err := db.DefaultInstanceID(ctx)
 	if err != nil {
-		return "", fmt.Errorf("finding the latest instance: %w", err)
+		return "", fmt.Errorf("finding the default instance: %w", err)
 	}
 
 	return id, nil
