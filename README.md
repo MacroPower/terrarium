@@ -1617,6 +1617,21 @@ forward the neighbor solicitations for an address only to the hosts that
 reported its solicited-node group, so IPv6 on their links fails without the
 reports.
 
+The `output` chain accepts these messages only when the kernel sends them. The
+kernel sends them from its own sockets, which have no owner. It sets the hop
+limit of each neighbor discovery message to 255 and the hop limit of each MLD
+message to 1. The `kernel_icmpv6` chain accepts a message only when it has no
+socket owner and the hop limit of its protocol.
+
+A process that holds `CAP_NET_RAW` can send ICMPv6 of the same types through a
+raw socket. The `kernel_icmpv6` chain does not accept those packets, so the
+policy decides their verdict, like the verdict of every other ICMPv6 packet of
+the process. Under a blocked policy, the firewall drops them. Under a filtered
+policy, the firewall accepts them only when a rule of the policy allows them,
+such as an `egress` rule with `icmps`. For example, `systemd-networkd` sends
+its own router solicitations. In daemon mode, a filtered policy accepts them
+only when an `egress` rule allows the `RouterSolicitation` type.
+
 The `egress` and `egressDeny` rules with `icmps` do not apply to the neighbor
 discovery messages and the MLD messages of the kernel. In daemon mode, those
 rules apply to the ICMPv6 that containers send through the VM.

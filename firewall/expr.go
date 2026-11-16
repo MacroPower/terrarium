@@ -636,6 +636,21 @@ func matchIPv6Unfragmented() []expr.Any {
 	}
 }
 
+// matchIPv6HopLimit matches IPv6 packets with the given hop limit, as
+// "ip6 hoplimit" does. The caller must match the IPv6 EtherType or
+// protocol first.
+func matchIPv6HopLimit(hopLimit byte) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseNetworkHeader,
+			Offset:       7, // hop limit
+			Len:          1,
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{hopLimit}},
+	}
+}
+
 // setBroute sets the broute flag of a frame, as "meta broute set 1"
 // does. The bridge then does not handle the frame. The kernel passes
 // it to the network layer as a packet that the bridge port received,

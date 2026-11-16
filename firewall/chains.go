@@ -21,13 +21,15 @@ const (
 	chainForward          = "forward"
 	chainInput            = "input"
 	chainNATOutput        = "nat_output"
+	chainKernelICMPv6     = "kernel_icmpv6"
 	chainBridgePreRouting = "bridge_prerouting"
 
 	chainDenyPortNAT = "deny_port_nat"
 )
 
 // ICMPv6 types of the messages that the kernel sends without a socket
-// owner and that conntrack does not track.
+// owner and that conntrack does not track. The kernel_icmpv6 chain
+// accepts them. See [addKernelICMPv6Chain].
 var (
 	// The neighbor discovery messages (RFC 4861) that a host sends:
 	// router solicitation, neighbor solicitation, and neighbor
@@ -38,6 +40,21 @@ var (
 	// sends: the MLDv1 listener report and listener done (RFC 2710),
 	// and the MLDv2 listener report (RFC 3810).
 	multicastListenerTypes = []byte{131, 132, 143}
+)
+
+// Hop limits of the ICMPv6 messages that the kernel_icmpv6 chain
+// accepts.
+const (
+	// The hop limit of every neighbor discovery message (RFC 4861).
+	// A router decrements the hop limit of each packet that it
+	// forwards, so a receiver discards a message with a lower hop
+	// limit as a message from another link.
+	neighborDiscoveryHopLimit = 255
+
+	// The hop limit of every MLD message (RFC 2710 and RFC 3810). A
+	// router does not forward a packet with this hop limit, so the
+	// message stays on its link.
+	multicastListenerHopLimit = 1
 )
 
 // matchFilteredTraffic returns UID-match expressions that scope a
@@ -153,25 +170,10 @@ func addOutputBaseRules(conn Conn, table *nftables.Table, chain *nftables.Chain,
 // addOutputEstablishedAndICMP adds the OUTPUT rules that appear after
 // the UID 1000 dispatch (or in its place for unrestricted/blocked
 // modes). The rules accept CT state ESTABLISHED, per-type ICMP
-// RELATED, IPv6 neighbor discovery, IPv6 multicast listener
-// discovery, and root DNS.
-//
-// The neighbor discovery rules accept router solicitations, neighbor
-// solicitations, and neighbor advertisements under every policy. The
-// kernel sends those messages to resolve the link-layer address of
-// each IPv6 next hop and to answer the solicitations of its
-// neighbors. The messages have no socket owner and conntrack does not
-// track them, so no UID rule and no CT state rule accepts them.
-//
-// The multicast listener discovery rules accept MLDv1 listener
-// reports, MLDv1 listener done messages, and MLDv2 listener reports
-// to multicast destinations under every policy. The kernel sends
-// those messages when it joins or leaves a multicast group, such as
-// the solicited-node group of each IPv6 address. Switches that do MLD
-// snooping forward the traffic of a group only to the ports that
-// reported it. So a host that sends no reports does not receive the
-// neighbor solicitations for its addresses. The messages have no
-// socket owner and conntrack does not track them either.
+// RELATED, and root DNS. One rule sends ICMPv6 through the
+// kernel_icmpv6 chain, which accepts the neighbor discovery and the
+// multicast listener discovery of the kernel. The function creates
+// that chain with [addKernelICMPv6Chain].
 func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftables.Chain, uids UIDs) {
 	// CT state established -> accept (covers root, Envoy, and
 	// ownerless kernel packets).
@@ -216,40 +218,21 @@ func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftabl
 		})
 	}
 
-	// ICMPv6 neighbor discovery: router-solicitation(133),
-	// neighbor-solicitation(135), neighbor-advertisement(136). Not
-	// UID-scoped and not CT-scoped, because the kernel sends these
-	// without a socket owner and conntrack leaves them untracked.
-	for _, icmpType := range neighborDiscoveryTypes {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchNFProto(unix.NFPROTO_IPV6),
-				matchL4Proto(unix.IPPROTO_ICMPV6),
-				matchICMPType(icmpType),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
-	}
+	// The neighbor discovery and the multicast listener discovery
+	// of the kernel. Not UID-scoped and not CT-scoped, because the
+	// kernel sends these messages without a socket owner and
+	// conntrack leaves them untracked. The chain returns every
+	// other ICMPv6 packet, and the rules after this one evaluate it.
+	addKernelICMPv6Chain(conn, table)
 
-	// ICMPv6 multicast listener discovery: listener-report(131),
-	// listener-done(132), v2-listener-report(143). Not UID-scoped
-	// and not CT-scoped, for the same reason as neighbor discovery.
-	// The rules match every multicast destination, not only the
-	// link-local scope ff02::/16. The kernel sends an MLDv1 report
-	// to the group that it reports, and the scope of that group can
-	// be wider than the link.
-	for _, icmpType := range multicastListenerTypes {
-		conn.AddRule(&nftables.Rule{
-			Table: table, Chain: chain,
-			Exprs: flatExprs(
-				matchDstCIDR(mustParseCIDR("ff00::/8")),
-				matchL4Proto(unix.IPPROTO_ICMPV6),
-				matchICMPType(icmpType),
-				verdictExprs(expr.VerdictAccept),
-			),
-		})
-	}
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchNFProto(unix.NFPROTO_IPV6),
+			matchL4Proto(unix.IPPROTO_ICMPV6),
+			verdictExprs(expr.VerdictJump, chainKernelICMPv6),
+		),
+	})
 
 	// Root DNS queries (UDP + TCP port 53).
 	for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
@@ -280,6 +263,93 @@ func addOutputEstablishedAndICMP(conn Conn, table *nftables.Table, chain *nftabl
 				),
 			})
 		}
+	}
+}
+
+// addKernelICMPv6Chain creates the kernel_icmpv6 chain, which accepts
+// the ICMPv6 messages that the kernel sends for neighbor discovery
+// and for multicast listener discovery (MLD). The chain returns every
+// other packet. The output chain jumps to it under every policy.
+//
+// The neighbor discovery rules accept router solicitations, neighbor
+// solicitations, and neighbor advertisements. The kernel sends those
+// messages to resolve the link-layer address of each IPv6 next hop
+// and to answer the solicitations of its neighbors.
+//
+// The MLD rules accept MLDv1 listener reports, MLDv1 listener done
+// messages, and MLDv2 listener reports to multicast destinations. The
+// kernel sends those messages when it joins or leaves a multicast
+// group, such as the solicited-node group of each IPv6 address.
+// Switches that do MLD snooping forward the traffic of a group only
+// to the ports that reported it. So a host that sends no reports does
+// not receive the neighbor solicitations for its addresses.
+//
+// The kernel sends each of these messages from a socket of its own,
+// which has no owner. The first rule of the chain returns each packet
+// that has a socket owner. So the accept rules never see a packet
+// that a process sends through a raw socket. A process with
+// CAP_NET_RAW chooses the type, the hop limit, the destination, and
+// the payload of such a packet. The packet goes back to the output
+// chain, where the rules of the policy decide its verdict.
+//
+// The accept rules also match the hop limit that the kernel sets. The
+// neighbor discovery rules match [neighborDiscoveryHopLimit] and the
+// MLD rules match [multicastListenerHopLimit].
+//
+// The neighbor discovery rules match every destination. The kernel
+// sends a neighbor advertisement to the source address of the
+// solicitation that it answers. It probes a neighbor with a unicast
+// solicitation to the address of the neighbor. Both addresses can be
+// global addresses on the link.
+//
+// The MLD rules match every multicast destination, not only the
+// link-local scope ff02::/16. The kernel sends an MLDv1 report to the
+// group that it reports, and the scope of that group can be wider
+// than the link.
+func addKernelICMPv6Chain(conn Conn, table *nftables.Table) {
+	chain := conn.AddChain(&nftables.Chain{
+		Name:  chainKernelICMPv6,
+		Table: table,
+	})
+
+	// A packet with a socket owner comes from a process, not from
+	// the kernel. Return it to policy evaluation.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchHasSocketOwner(),
+			verdictExprs(expr.VerdictReturn),
+		),
+	})
+
+	// ICMPv6 neighbor discovery: router-solicitation(133),
+	// neighbor-solicitation(135), neighbor-advertisement(136).
+	for _, icmpType := range neighborDiscoveryTypes {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchNFProto(unix.NFPROTO_IPV6),
+				matchIPv6HopLimit(neighborDiscoveryHopLimit),
+				matchL4Proto(unix.IPPROTO_ICMPV6),
+				matchICMPType(icmpType),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
+	}
+
+	// ICMPv6 multicast listener discovery: listener-report(131),
+	// listener-done(132), v2-listener-report(143).
+	for _, icmpType := range multicastListenerTypes {
+		conn.AddRule(&nftables.Rule{
+			Table: table, Chain: chain,
+			Exprs: flatExprs(
+				matchDstCIDR(mustParseCIDR("ff00::/8")),
+				matchIPv6HopLimit(multicastListenerHopLimit),
+				matchL4Proto(unix.IPPROTO_ICMPV6),
+				matchICMPType(icmpType),
+				verdictExprs(expr.VerdictAccept),
+			),
+		})
 	}
 }
 

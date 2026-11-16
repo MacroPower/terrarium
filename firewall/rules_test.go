@@ -2366,8 +2366,37 @@ func policyModeCases() map[string]policyModeCase {
 	}
 }
 
-func TestApplyRules_NeighborDiscovery(t *testing.T) {
+// ruleMatchesICMPType reports whether a rule compares the ICMP type
+// field with the given type.
+func ruleMatchesICMPType(r *nftables.Rule, icmpType byte) bool {
+	for i, e := range r.Exprs {
+		p, ok := e.(*expr.Payload)
+		if !ok || p.Base != expr.PayloadBaseTransportHeader || p.Offset != 0 || p.Len != 1 {
+			continue
+		}
+
+		if i+1 >= len(r.Exprs) {
+			continue
+		}
+
+		c, ok := r.Exprs[i+1].(*expr.Cmp)
+		if ok && c.Op == expr.CmpOpEq && bytes.Equal(c.Data, []byte{icmpType}) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func TestApplyRules_KernelICMPv6Jump(t *testing.T) {
 	t.Parallel()
+
+	// The ICMPv6 types that the kernel_icmpv6 chain accepts. The
+	// first three are the router solicitation, the neighbor
+	// solicitation, and the neighbor advertisement. The last three
+	// are the MLDv1 listener report, the MLDv1 listener done message,
+	// and the MLDv2 listener report.
+	kernelICMPv6Types := []byte{133, 135, 136, 131, 132, 143}
 
 	for name, tc := range policyModeCases() {
 		t.Run(name, func(t *testing.T) {
@@ -2386,45 +2415,129 @@ func TestApplyRules_NeighborDiscovery(t *testing.T) {
 			terminal := slices.IndexFunc(rules, ruleIsBareVerdict)
 			require.NotEqual(t, -1, terminal, "output chain must end in a rule without a match")
 
-			// Router solicitation, neighbor solicitation, and
-			// neighbor advertisement.
-			for _, icmpType := range []byte{133, 135, 136} {
-				// The rule matches no UID and no CT state. The kernel
-				// sends these messages without a socket owner, and
-				// conntrack does not track them.
-				want := []expr.Any{
-					// meta nfproto ipv6
-					&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
-					// meta l4proto icmpv6
-					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
-					// icmpv6 type
-					&expr.Payload{
-						DestRegister: 1,
-						Base:         expr.PayloadBaseTransportHeader,
-						Offset:       0,
-						Len:          1,
-					},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{icmpType}},
-					// accept
-					&expr.Verdict{Kind: expr.VerdictAccept},
-				}
+			// The rule matches no UID and no CT state. The kernel
+			// sends its neighbor discovery and MLD messages without
+			// a socket owner, and conntrack does not track them.
+			want := []expr.Any{
+				// meta nfproto ipv6
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
+				// meta l4proto icmpv6
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
+				// jump kernel_icmpv6
+				&expr.Verdict{Kind: expr.VerdictJump, Chain: "kernel_icmpv6"},
+			}
 
-				idx := slices.IndexFunc(rules, func(r *nftables.Rule) bool {
-					return assert.ObjectsAreEqual(want, r.Exprs)
-				})
-				require.NotEqual(t, -1, idx,
-					"output chain must accept ICMPv6 type %d for every sender", icmpType)
-				assert.Less(t, idx, terminal,
-					"ACCEPT for ICMPv6 type %d must come before the rule that ends the chain", icmpType)
+			idx := slices.IndexFunc(rules, func(r *nftables.Rule) bool {
+				return assert.ObjectsAreEqual(want, r.Exprs)
+			})
+			require.NotEqual(t, -1, idx, "output chain must send ICMPv6 through kernel_icmpv6")
+			assert.Less(t, idx, terminal,
+				"jump to kernel_icmpv6 must come before the rule that ends the chain")
+
+			// Only the kernel_icmpv6 chain accepts these types, so
+			// that the output chain accepts none of them from a
+			// process with a raw socket.
+			for _, icmpType := range kernelICMPv6Types {
+				for i, r := range rules[:terminal] {
+					assert.False(t, ruleMatchesICMPType(r, icmpType),
+						"output rule %d must not match ICMPv6 type %d", i, icmpType)
+				}
 			}
 		})
 	}
 }
 
-func TestApplyRules_MulticastListenerDiscovery(t *testing.T) {
+func TestApplyRules_KernelICMPv6Chain(t *testing.T) {
 	t.Parallel()
+
+	// nfproto returns "meta nfproto ipv6".
+	nfproto := func() []expr.Any {
+		return []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
+		}
+	}
+
+	// hopLimit returns "ip6 hoplimit <limit>".
+	hopLimit := func(limit byte) []expr.Any {
+		return []expr.Any{
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       7,
+				Len:          1,
+			},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{limit}},
+		}
+	}
+
+	// acceptType returns the match of the ICMPv6 protocol and of the
+	// given ICMPv6 type, and the accept verdict.
+	acceptType := func(icmpType byte) []expr.Any {
+		return []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseTransportHeader,
+				Offset:       0,
+				Len:          1,
+			},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{icmpType}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		}
+	}
+
+	// multicast returns "ip6 daddr ff00::/8" without its nfproto
+	// match.
+	multicast := func() []expr.Any {
+		return []expr.Any{
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       24,
+				Len:          16,
+			},
+			&expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            16,
+				Mask:           append([]byte{0xff}, make([]byte, 15)...),
+				Xor:            make([]byte, 16),
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     append([]byte{0xff}, make([]byte, 15)...),
+			},
+		}
+	}
+
+	want := [][]expr.Any{
+		// A packet with a socket owner comes from a process. The
+		// chain returns it first, so that no accept rule sees it.
+		// The load of meta skuid ends the rule for a packet without
+		// a socket owner, such as a packet that the kernel sends.
+		{
+			&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+			&expr.Verdict{Kind: expr.VerdictReturn},
+		},
+	}
+
+	// Router solicitation, neighbor solicitation, and neighbor
+	// advertisement, with the hop limit of neighbor discovery.
+	for _, icmpType := range []byte{133, 135, 136} {
+		want = append(want, slices.Concat(nfproto(), hopLimit(255), acceptType(icmpType)))
+	}
+
+	// MLDv1 listener report, MLDv1 listener done, and MLDv2 listener
+	// report to a multicast destination, with the hop limit of MLD.
+	for _, icmpType := range []byte{131, 132, 143} {
+		want = append(want, slices.Concat(nfproto(), multicast(), hopLimit(1), acceptType(icmpType)))
+	}
 
 	for name, tc := range policyModeCases() {
 		t.Run(name, func(t *testing.T) {
@@ -2435,66 +2548,13 @@ func TestApplyRules_MulticastListenerDiscovery(t *testing.T) {
 			err := firewall.ApplyRules(t.Context(), rec, tc.cfg, tc.uids)
 			require.NoError(t, err)
 
-			rules := rec.rulesForChain("output")
+			var got [][]expr.Any
 
-			// The first rule without a match is the terminal verdict
-			// of the chain, or the jump that sends every packet into
-			// policy evaluation. No later rule sees a packet.
-			terminal := slices.IndexFunc(rules, ruleIsBareVerdict)
-			require.NotEqual(t, -1, terminal, "output chain must end in a rule without a match")
-
-			// MLDv1 listener report, MLDv1 listener done, and MLDv2
-			// listener report.
-			for _, icmpType := range []byte{131, 132, 143} {
-				// The rule matches no UID and no CT state. The kernel
-				// sends these messages without a socket owner, and
-				// conntrack does not track them.
-				want := []expr.Any{
-					// meta nfproto ipv6
-					&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV6}},
-					// ip6 daddr ff00::/8
-					&expr.Payload{
-						DestRegister: 1,
-						Base:         expr.PayloadBaseNetworkHeader,
-						Offset:       24,
-						Len:          16,
-					},
-					&expr.Bitwise{
-						SourceRegister: 1,
-						DestRegister:   1,
-						Len:            16,
-						Mask:           append([]byte{0xff}, make([]byte, 15)...),
-						Xor:            make([]byte, 16),
-					},
-					&expr.Cmp{
-						Op:       expr.CmpOpEq,
-						Register: 1,
-						Data:     append([]byte{0xff}, make([]byte, 15)...),
-					},
-					// meta l4proto icmpv6
-					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
-					// icmpv6 type
-					&expr.Payload{
-						DestRegister: 1,
-						Base:         expr.PayloadBaseTransportHeader,
-						Offset:       0,
-						Len:          1,
-					},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{icmpType}},
-					// accept
-					&expr.Verdict{Kind: expr.VerdictAccept},
-				}
-
-				idx := slices.IndexFunc(rules, func(r *nftables.Rule) bool {
-					return assert.ObjectsAreEqual(want, r.Exprs)
-				})
-				require.NotEqual(t, -1, idx,
-					"output chain must accept ICMPv6 type %d to multicast for every sender", icmpType)
-				assert.Less(t, idx, terminal,
-					"ACCEPT for ICMPv6 type %d must come before the rule that ends the chain", icmpType)
+			for _, r := range rec.rulesForChain("kernel_icmpv6") {
+				got = append(got, r.Exprs)
 			}
+
+			assert.Equal(t, want, got)
 		})
 	}
 }
