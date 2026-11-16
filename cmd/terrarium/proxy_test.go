@@ -709,6 +709,34 @@ func TestGenerateProxyReusesCA(t *testing.T) {
 	assert.True(t, bytes.HasSuffix(bundle, first), "bundle must end with the MITM CA")
 }
 
+// TestGenerateProxyWarnsICMPFamilyMismatch replaces the default
+// logger, which is incompatible with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestGenerateProxyWarnsICMPFamilyMismatch(t *testing.T) {
+	logs := captureLogs(t)
+
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(icmpFamilyMismatchPolicy), 0o600))
+
+	usr := &config.User{
+		ConfigPath:      policyPath,
+		CADir:           filepath.Join(dir, "ca"),
+		CertsDir:        filepath.Join(dir, "certs"),
+		EnvoyConfigPath: filepath.Join(dir, "envoy.yaml"),
+	}
+	opts := proxyOptions{bindAddress: "127.0.0.1", httpPort: 8080}
+
+	_, _, err := GenerateProxy(t.Context(), usr, opts, "")
+	require.NoError(t, err)
+
+	out := logs.String()
+	assert.Contains(t, out, "level=WARN")
+	assert.Contains(t, out, icmpFamilyMismatchWarning)
+	assert.Contains(t, out, "list=egress rule_index=0 icmp_family=IPv6 cidr_family=IPv4")
+}
+
 // envoyCommand is the Envoy override of the tests that run the envoy on
 // PATH. That envoy is the stub of [stubEnvoy] or, in the end-to-end
 // tests, the Envoy of the host.

@@ -364,6 +364,37 @@ concept not visible at the nftables stage; serverNames on deny rules would be
 silently ignored. Cilium's EgressDenyRule does not structurally have
 serverNames, so the scenario does not arise there.
 
+### ICMP address families
+
+Terrarium logs a warning for a rule whose ICMP fields all have an address
+family that none of the rule's CIDRs has. Cilium accepts the same rule without
+a message.
+
+A rule with `icmps` and CIDRs applies each ICMP field only to the CIDRs of the
+field's address family. The CIDRs come from `toCIDR`, `toCIDRSet`, or
+`toEntities`. Fields without `family` are IPv4 fields. When no CIDR of the
+rule has the address family of any field, the rule matches no traffic. An
+`egress` rule then allows nothing, and an `egressDeny` rule then denies
+nothing.
+
+This rule allows nothing, because its only ICMP field is an IPv6 field and its
+only CIDR is an IPv4 CIDR:
+
+```yaml
+egress:
+  - toCIDR:
+      - "10.0.0.0/8"
+    icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv6
+```
+
+Validation accepts the policy, as Cilium does. Terrarium logs the warning each
+time that it loads the policy. The warning holds the list of the rule (`egress`
+or `egressDeny`), the index of the rule in that list, and the two address
+families.
+
 ### SCTP not supported
 
 Cilium's ANY protocol expands to TCP, UDP, and SCTP. Terrarium only supports

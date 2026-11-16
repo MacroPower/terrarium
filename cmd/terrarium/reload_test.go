@@ -73,6 +73,35 @@ func TestDaemonReloadInvalidConfig(t *testing.T) {
 	assert.ErrorContains(t, err, "parsing config")
 }
 
+// TestDaemonReloadWarnsICMPFamilyMismatch replaces the default logger,
+// which is incompatible with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestDaemonReloadWarnsICMPFamilyMismatch(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("test requires root")
+	}
+
+	logs := captureLogs(t)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(icmpFamilyMismatchPolicy), 0o644))
+
+	usr := config.NewUser()
+	usr.ConfigPath = configPath
+
+	// The reload stops at the missing PID file, after it parsed the
+	// config.
+	err := DaemonReload(t.Context(), usr, filepath.Join(dir, "nonexistent.pid"))
+	require.ErrorContains(t, err, "reading PID file")
+
+	out := logs.String()
+	assert.Contains(t, out, "level=WARN")
+	assert.Contains(t, out, icmpFamilyMismatchWarning)
+	assert.Contains(t, out, "list=egress rule_index=0 icmp_family=IPv6 cidr_family=IPv4")
+}
+
 func TestDaemonReloadMissingPIDFile(t *testing.T) {
 	t.Parallel()
 

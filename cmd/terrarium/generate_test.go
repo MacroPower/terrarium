@@ -97,6 +97,166 @@ func TestGenerate(t *testing.T) {
 	}
 }
 
+// icmpFamilyMismatchPolicy is a policy whose only egress rule has an
+// IPv6 ICMP field and an IPv4 CIDR, so the rule allows nothing.
+const icmpFamilyMismatchPolicy = "egress:\n" +
+	"  - toCIDR:\n" +
+	"      - 10.0.0.0/8\n" +
+	"    icmps:\n" +
+	"      - fields:\n" +
+	"          - type: 128\n" +
+	"            family: IPv6\n"
+
+// icmpFamilyMismatchWarning is the text that every warning about a
+// rule of [icmpFamilyMismatchPolicy] holds.
+const icmpFamilyMismatchWarning = "policy: every icmps field of the rule has another address family " +
+	"than the destinations of the rule, so the rule allows nothing"
+
+// TestParseConfigICMPFamilyMismatch replaces the default logger, which
+// is incompatible with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestParseConfigICMPFamilyMismatch(t *testing.T) {
+	const msg = "policy: every icmps field of the rule has another address family"
+
+	tests := map[string]struct {
+		yaml string
+		// want lists the parts of each warning in the log, in order.
+		// Without entries, the test expects no warning.
+		want [][]string
+	}{
+		"egress rule": {
+			yaml: icmpFamilyMismatchPolicy,
+			want: [][]string{{
+				icmpFamilyMismatchWarning,
+				"list=egress", "rule_index=0", "icmp_family=IPv6", "cidr_family=IPv4",
+			}},
+		},
+		"egressDeny rule": {
+			yaml: "egress:\n" +
+				"  - toCIDR:\n" +
+				"      - 10.0.0.0/8\n" +
+				"egressDeny:\n" +
+				"  - toCIDR:\n" +
+				"      - 10.1.0.0/16\n" +
+				"  - toEntities:\n" +
+				"      - world-ipv6\n" +
+				"    icmps:\n" +
+				"      - fields:\n" +
+				"          - type: EchoRequest\n",
+			want: [][]string{{
+				"so the rule denies nothing",
+				"list=egressDeny", "rule_index=1", "icmp_family=IPv4", "cidr_family=IPv6",
+			}},
+		},
+		"one warning for each rule": {
+			yaml: icmpFamilyMismatchPolicy +
+				"  - toCIDR:\n" +
+				"      - 2001:db8::/32\n" +
+				"    icmps:\n" +
+				"      - fields:\n" +
+				"          - type: EchoRequest\n" +
+				"            family: IPv4\n",
+			want: [][]string{
+				{"list=egress", "rule_index=0", "icmp_family=IPv6", "cidr_family=IPv4"},
+				{"list=egress", "rule_index=1", "icmp_family=IPv4", "cidr_family=IPv6"},
+			},
+		},
+		"one field has the family of a CIDR": {
+			yaml: "egress:\n" +
+				"  - toCIDR:\n" +
+				"      - 10.0.0.0/8\n" +
+				"    icmps:\n" +
+				"      - fields:\n" +
+				"          - type: EchoRequest\n" +
+				"            family: IPv4\n" +
+				"          - type: EchoRequest\n" +
+				"            family: IPv6\n",
+		},
+		"rule without CIDRs": {
+			yaml: "egress:\n" +
+				"  - icmps:\n" +
+				"      - fields:\n" +
+				"          - type: EchoRequest\n" +
+				"            family: IPv6\n",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			logs := captureLogs(t)
+
+			cfg, err := parseConfig(t.Context(), []byte(tt.yaml))
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			var warnings []string
+
+			for line := range strings.Lines(logs.String()) {
+				if strings.Contains(line, msg) {
+					warnings = append(warnings, line)
+				}
+			}
+
+			require.Len(t, warnings, len(tt.want))
+
+			for i, parts := range tt.want {
+				assert.Contains(t, warnings[i], "level=WARN")
+
+				for _, part := range parts {
+					assert.Contains(t, warnings[i], part)
+				}
+			}
+		})
+	}
+}
+
+// TestParseConfigInvalid replaces the default logger, which is
+// incompatible with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestParseConfigInvalid(t *testing.T) {
+	logs := captureLogs(t)
+
+	// The icmps of the rule have another family than its CIDR, and
+	// validation rejects the rule for its toPorts.
+	cfg, err := parseConfig(t.Context(), []byte(icmpFamilyMismatchPolicy+
+		"    toPorts:\n"+
+		"      - ports:\n"+
+		"          - port: \"443\"\n"))
+	require.ErrorIs(t, err, config.ErrICMPWithToPorts)
+	assert.Nil(t, cfg)
+	assert.NotContains(t, logs.String(), "policy: every icmps field")
+}
+
+// TestGenerateWarnsICMPFamilyMismatch replaces the default logger,
+// which is incompatible with t.Parallel().
+//
+//nolint:paralleltest // see comment above.
+func TestGenerateWarnsICMPFamilyMismatch(t *testing.T) {
+	logs := captureLogs(t)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(icmpFamilyMismatchPolicy), 0o644))
+
+	usr := &config.User{
+		ConfigPath:      path,
+		CertsDir:        filepath.Join(dir, "certs"),
+		CADir:           filepath.Join(dir, "ca"),
+		EnvoyConfigPath: filepath.Join(dir, "envoy.yaml"),
+	}
+
+	cfg, err := Generate(t.Context(), usr, false)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.ResolveICMPRules(), "the rule must allow nothing")
+
+	out := logs.String()
+	assert.Contains(t, out, "level=WARN")
+	assert.Contains(t, out, icmpFamilyMismatchWarning)
+	assert.Contains(t, out, "list=egress rule_index=0 icmp_family=IPv6 cidr_family=IPv4")
+}
+
 func TestGenerateDeterministicOutput(t *testing.T) {
 	t.Parallel()
 

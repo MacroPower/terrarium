@@ -181,7 +181,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 			return nil, fmt.Errorf("reading terrarium config: %w", err)
 		}
 
-		cfg, err = config.ParseConfig(ctx, cfgData)
+		cfg, err = parseConfig(ctx, cfgData)
 		if err != nil {
 			return nil, fmt.Errorf("parsing terrarium config: %w", err)
 		}

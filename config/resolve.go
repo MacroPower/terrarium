@@ -1333,6 +1333,13 @@ func (c *Config) ResolveICMPRules() []ResolvedICMP {
 // L3 selectors are attached for destination scoping, and a field
 // whose address family matches none of those CIDRs produces no entry.
 func (c *Config) ResolveDenyICMPRules() []ResolvedICMP {
+	return resolveICMPs(c.denyICMPRules())
+}
+
+// denyICMPRules returns the egress deny rules as [EgressRule] values
+// that hold only the selectors that scope ICMP: toCIDR, toCIDRSet, and
+// icmps. Each rule keeps its index in the egressDeny list.
+func (c *Config) denyICMPRules() []EgressRule {
 	deny := c.EgressDenyRules()
 	rules := make([]EgressRule, len(deny))
 
@@ -1344,7 +1351,108 @@ func (c *Config) ResolveDenyICMPRules() []ResolvedICMP {
 		}
 	}
 
-	return resolveICMPs(rules)
+	return rules
+}
+
+// ICMPFamilyMismatches returns the egress and egressDeny rules whose
+// ICMP fields match no destination of their rule. Every ICMP field of
+// such a rule has one address family, and every CIDR of the rule has
+// the other address family. [Config.ResolveICMPRules] and
+// [Config.ResolveDenyICMPRules] produce no entry for the rule, so an
+// egress rule allows nothing and an egressDeny rule denies nothing.
+//
+// Validation accepts these rules, as Cilium does. Callers report each
+// returned rule to the user as a warning. The egress rules come first,
+// and each list keeps the order of its rules. Returns nil when the
+// policy has no such rule.
+func (c *Config) ICMPFamilyMismatches() []ICMPFamilyMismatch {
+	return append(
+		icmpFamilyMismatches(c.EgressRules(), false),
+		icmpFamilyMismatches(c.denyICMPRules(), true)...,
+	)
+}
+
+// icmpFamilyMismatches is the shared implementation for
+// [Config.ICMPFamilyMismatches]. It reports the rules for which
+// [resolveICMPs] skips every ICMP field. The deny argument sets Deny
+// on each returned entry.
+func icmpFamilyMismatches(rules []EgressRule, deny bool) []ICMPFamilyMismatch {
+	var result []ICMPFamilyMismatch
+
+	for ri := range rules {
+		// An FQDN set scopes the fields of a rule with toFQDNs, and a
+		// rule without CIDRs applies its fields to every destination.
+		cidrs := icmpScopeCIDRs(rules[ri])
+		if len(cidrs) == 0 || len(rules[ri].ToFQDNs) > 0 {
+			continue
+		}
+
+		var fields, matched int
+
+		family := FamilyIPv4
+
+		for _, icmp := range rules[ri].ICMPs {
+			for _, f := range icmp.Fields {
+				fields++
+
+				if len(cidrsOfICMPFamily(cidrs, f.Family)) > 0 {
+					matched++
+				}
+
+				if f.Family == FamilyIPv6 {
+					family = FamilyIPv6
+				}
+			}
+		}
+
+		if fields == 0 || matched > 0 {
+			continue
+		}
+
+		// The CIDRs have at least one address family, so fields that
+		// all miss the CIDRs all have the other family.
+		cidrFamily := FamilyIPv6
+		if family == FamilyIPv6 {
+			cidrFamily = FamilyIPv4
+		}
+
+		result = append(result, ICMPFamilyMismatch{
+			Family:     family,
+			CIDRFamily: cidrFamily,
+			RuleIndex:  ri,
+			Deny:       deny,
+		})
+	}
+
+	return result
+}
+
+// icmpScopeCIDRs returns the CIDRs of the toCIDR and toCIDRSet
+// selectors of a rule, which scope the ICMP fields of that rule.
+func icmpScopeCIDRs(rule EgressRule) []CIDRRule {
+	var cidrs []CIDRRule
+
+	for _, cidr := range rule.ToCIDR {
+		cidrs = append(cidrs, CIDRRule{CIDR: cidr})
+	}
+
+	return append(cidrs, rule.ToCIDRSet...)
+}
+
+// cidrsOfICMPFamily returns the CIDRs that have the address family of
+// an ICMP field. It returns the IPv6 CIDRs for [FamilyIPv6], and the
+// IPv4 CIDRs for every other value of family.
+func cidrsOfICMPFamily(cidrs []CIDRRule, family string) []CIDRRule {
+	var result []CIDRRule
+
+	isV6 := family == FamilyIPv6
+	for _, c := range cidrs {
+		if cidrIsIPv6(c.CIDR) == isV6 {
+			result = append(result, c)
+		}
+	}
+
+	return result
 }
 
 // resolveICMPs is the shared implementation for ResolveICMPRules.
@@ -1369,15 +1477,7 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 		hasFQDNs := len(rules[ri].ToFQDNs) > 0
 
 		// Collect CIDRs from sibling L3 selectors on this rule.
-		var allCIDRs []CIDRRule
-
-		if len(rules[ri].ToCIDR) > 0 || len(rules[ri].ToCIDRSet) > 0 {
-			for _, cidr := range rules[ri].ToCIDR {
-				allCIDRs = append(allCIDRs, CIDRRule{CIDR: cidr})
-			}
-
-			allCIDRs = append(allCIDRs, rules[ri].ToCIDRSet...)
-		}
+		allCIDRs := icmpScopeCIDRs(rules[ri])
 
 		for _, icmp := range rules[ri].ICMPs {
 			for _, f := range icmp.Fields {
@@ -1391,17 +1491,14 @@ func resolveICMPs(rules []EgressRule) []ResolvedICMP {
 				var cidrs []CIDRRule
 
 				if len(allCIDRs) > 0 {
-					isV6 := f.Family == FamilyIPv6
-					for _, c := range allCIDRs {
-						if cidrIsIPv6(c.CIDR) == isV6 {
-							cidrs = append(cidrs, c)
-						}
-					}
+					cidrs = cidrsOfICMPFamily(allCIDRs, f.Family)
 
 					// The rule's CIDRs all have the other address
 					// family, so the field matches no destination
 					// of the rule. An FQDN set still scopes the
 					// entry of a rule that also has toFQDNs.
+					// [Config.ICMPFamilyMismatches] reports a rule
+					// that loses every field here.
 					if len(cidrs) == 0 && !hasFQDNs {
 						continue
 					}

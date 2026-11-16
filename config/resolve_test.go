@@ -2539,6 +2539,191 @@ func TestResolveDenyICMPRules(t *testing.T) {
 	}
 }
 
+func TestICMPFamilyMismatches(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		yaml string
+		want []config.ICMPFamilyMismatch
+	}{
+		"IPv6 field with an IPv4 CIDR": {
+			yaml: `
+egress:
+  - toCIDR: ["10.0.0.0/8"]
+    icmps:
+      - fields:
+          - type: 128
+            family: IPv6
+`,
+			want: []config.ICMPFamilyMismatch{
+				{Family: "IPv6", CIDRFamily: "IPv4", RuleIndex: 0},
+			},
+		},
+		"field without a family with an IPv6 CIDR set": {
+			yaml: `
+egress:
+  - toCIDRSet:
+      - cidr: "2001:db8::/32"
+    icmps:
+      - fields:
+          - type: EchoRequest
+`,
+			want: []config.ICMPFamilyMismatch{
+				{Family: "IPv4", CIDRFamily: "IPv6", RuleIndex: 0},
+			},
+		},
+		"every field of several icmps entries": {
+			yaml: `
+egress:
+  - toCIDR: ["10.0.0.0/8", "192.168.0.0/16"]
+    icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv6
+      - fields:
+          - type: EchoReply
+            family: IPv6
+`,
+			want: []config.ICMPFamilyMismatch{
+				{Family: "IPv6", CIDRFamily: "IPv4", RuleIndex: 0},
+			},
+		},
+		"entity of one family": {
+			yaml: `
+egress:
+  - toEntities: [world-ipv4]
+    icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv6
+`,
+			want: []config.ICMPFamilyMismatch{
+				{Family: "IPv6", CIDRFamily: "IPv4", RuleIndex: 0},
+			},
+		},
+		"deny rule": {
+			yaml: `
+egress:
+  - toCIDR: ["10.0.0.0/8"]
+egressDeny:
+  - toCIDR: ["10.1.0.0/16"]
+  - toCIDR: ["2001:db8::/32"]
+    icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv4
+`,
+			want: []config.ICMPFamilyMismatch{
+				{Family: "IPv4", CIDRFamily: "IPv6", RuleIndex: 1, Deny: true},
+			},
+		},
+		"egress rules come before deny rules": {
+			yaml: `
+egress:
+  - toCIDR: ["10.0.0.0/8"]
+  - toCIDR: ["10.0.0.0/8"]
+    icmps:
+      - fields:
+          - type: 128
+            family: IPv6
+egressDeny:
+  - toCIDR: ["2001:db8::/32"]
+    icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv4
+`,
+			want: []config.ICMPFamilyMismatch{
+				{Family: "IPv6", CIDRFamily: "IPv4", RuleIndex: 1},
+				{Family: "IPv4", CIDRFamily: "IPv6", RuleIndex: 0, Deny: true},
+			},
+		},
+		"one field has the family of a CIDR": {
+			yaml: `
+egress:
+  - toCIDR: ["10.0.0.0/8"]
+    icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv4
+          - type: EchoRequest
+            family: IPv6
+`,
+		},
+		"CIDRs of both families": {
+			yaml: `
+egress:
+  - toCIDR: ["10.0.0.0/8", "2001:db8::/32"]
+    icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv6
+`,
+		},
+		"rule without CIDRs": {
+			yaml: `
+egress:
+  - icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv6
+`,
+		},
+		"rule scoped to FQDNs": {
+			yaml: `
+egress:
+  - toFQDNs:
+      - matchName: example.com
+    icmps:
+      - fields:
+          - type: EchoRequest
+            family: IPv6
+`,
+		},
+		"icmps without fields": {
+			yaml: `
+egress:
+  - toCIDR: ["10.0.0.0/8"]
+    icmps:
+      - {}
+`,
+		},
+		"rule without icmps": {
+			yaml: `
+egress:
+  - toCIDR: ["10.0.0.0/8"]
+`,
+		},
+		"no rules": {
+			yaml: `{}`,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := config.ParseConfig(t.Context(), []byte(tt.yaml))
+			require.NoError(t, err)
+
+			got := cfg.ICMPFamilyMismatches()
+			assert.Equal(t, tt.want, got)
+
+			// A reported rule resolves to no firewall entry.
+			for _, m := range got {
+				resolved := cfg.ResolveICMPRules()
+				if m.Deny {
+					resolved = cfg.ResolveDenyICMPRules()
+				}
+
+				for _, r := range resolved {
+					assert.NotEqual(t, m.RuleIndex, r.RuleIndex)
+				}
+			}
+		})
+	}
+}
+
 func TestResolveCatchAllFQDNRules(t *testing.T) {
 	t.Parallel()
 

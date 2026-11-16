@@ -114,7 +114,7 @@ func DaemonReload(ctx context.Context, usr *config.User, pidFile string) error {
 		return fmt.Errorf("reading config: %w", err)
 	}
 
-	_, err = config.ParseConfig(ctx, data)
+	_, err = parseConfig(ctx, data)
 	if err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}

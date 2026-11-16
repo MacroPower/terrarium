@@ -365,6 +365,24 @@ type ResolvedICMP struct {
 	UseFQDNSet bool
 }
 
+// ICMPFamilyMismatch identifies an egress or egressDeny rule whose
+// ICMP fields all have an address family that none of the CIDRs of the
+// rule has. The fields match no destination of the rule, so the rule
+// has no effect. See [Config.ICMPFamilyMismatches].
+type ICMPFamilyMismatch struct {
+	// Family is the address family of every ICMP field of the rule,
+	// [FamilyIPv4] or [FamilyIPv6].
+	Family string
+	// CIDRFamily is the address family of every CIDR of the rule.
+	// It differs from Family.
+	CIDRFamily string
+	// RuleIndex is the index of the rule in the egress list, or in
+	// the egressDeny list when Deny is true.
+	RuleIndex int
+	// Deny reports whether the rule is an egressDeny rule.
+	Deny bool
+}
+
 // CIDRRule specifies an IP range to allow, with optional exceptions.
 type CIDRRule struct {
 	// CIDRGroupSelector is a Cilium field for label-based CIDR group

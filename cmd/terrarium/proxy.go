@@ -336,7 +336,7 @@ func GenerateProxy(
 		return nil, "", fmt.Errorf("reading config: %w", err)
 	}
 
-	cfg, err := config.ParseConfig(ctx, data)
+	cfg, err := parseConfig(ctx, data)
 	if err != nil {
 		return nil, "", fmt.Errorf("parsing config: %w", err)
 	}

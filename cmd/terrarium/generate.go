@@ -16,6 +16,53 @@ import (
 	"go.jacobcolvin.com/terrarium/envoy"
 )
 
+// parseConfig parses and validates a YAML terrarium config with
+// [config.ParseConfig]. It then logs a warning for each rule that
+// validation accepts but that has no effect. See
+// [warnICMPFamilyMismatches].
+func parseConfig(ctx context.Context, data []byte) (*config.Config, error) {
+	cfg, err := config.ParseConfig(ctx, data)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // callers add the context.
+	}
+
+	warnICMPFamilyMismatches(ctx, cfg)
+
+	return cfg, nil
+}
+
+// icmpFamilyMismatchMsg is the start of each warning of
+// [warnICMPFamilyMismatches].
+const icmpFamilyMismatchMsg = "policy: every icmps field of the rule has another address family " +
+	"than the destinations of the rule, "
+
+// warnICMPFamilyMismatches logs a warning for each rule that
+// [config.Config.ICMPFamilyMismatches] returns. Every ICMP field of
+// such a rule has an address family that no CIDR of the rule has, so
+// the firewall creates no rule for it. Cilium accepts the same policy
+// and matches nothing with the rule, so terrarium warns about the rule
+// and does not reject the policy.
+func warnICMPFamilyMismatches(ctx context.Context, cfg *config.Config) {
+	for _, m := range cfg.ICMPFamilyMismatches() {
+		attrs := []slog.Attr{
+			slog.String("list", "egress"),
+			slog.Int("rule_index", m.RuleIndex),
+			slog.String("icmp_family", m.Family),
+			slog.String("cidr_family", m.CIDRFamily),
+		}
+
+		if m.Deny {
+			attrs[0] = slog.String("list", "egressDeny")
+
+			slog.LogAttrs(ctx, slog.LevelWarn, icmpFamilyMismatchMsg+"so the rule denies nothing", attrs...)
+
+			continue
+		}
+
+		slog.LogAttrs(ctx, slog.LevelWarn, icmpFamilyMismatchMsg+"so the rule allows nothing", attrs...)
+	}
+}
+
 // Generate reads terrarium YAML config from usr.ConfigPath, resolves
 // domains and ports, generates MITM certs for path-restricted rules,
 // and writes the Envoy config file to usr.EnvoyConfigPath. Firewall
@@ -28,7 +75,7 @@ func Generate(ctx context.Context, usr *config.User, vmMode bool) (*config.Confi
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 
-	cfg, err := config.ParseConfig(ctx, data)
+	cfg, err := parseConfig(ctx, data)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
