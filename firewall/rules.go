@@ -266,7 +266,8 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 		addForwardChainUnrestricted(conn, table)
 	}
 
-	// Mangle chains for UDP TPROXY (forwarded TCP uses DNAT in NAT PREROUTING).
+	// Mangle chains for TPROXY of UDP and of forwarded IPv6 TCP DNS.
+	// Forwarded IPv4 TCP to the ports of Envoy uses DNAT in NAT PREROUTING.
 	addMangleOutputChain(conn, table, uids)
 	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort),
 		nil, nil, uids)
@@ -577,7 +578,8 @@ func addFilterRules(
 		addInputChain(conn, table, terrariumChain)
 	}
 
-	// Mangle chains for UDP TPROXY (forwarded TCP uses DNAT in NAT PREROUTING).
+	// Mangle chains for TPROXY of UDP and of forwarded IPv6 TCP DNS.
+	// Forwarded IPv4 TCP to the ports of Envoy uses DNAT in NAT PREROUTING.
 	addMangleOutputChain(conn, table, uids)
 	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort),
 		deny4, deny6, uids)

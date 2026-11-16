@@ -302,7 +302,7 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		disableIPv6(ctx, sys)
 	}
 
-	// Set up policy routing for UDP TPROXY when Envoy is needed.
+	// Set up policy routing for TPROXY when Envoy is needed.
 	if needsEnvoy {
 		err := firewall.SetupPolicyRouting(ctx, sys)
 		if err != nil {

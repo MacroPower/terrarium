@@ -1074,10 +1074,19 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 // addManglePreRoutingChain creates a filter-type prerouting chain at
 // mangle priority that applies TPROXY to marked UDP packets. Per-AF
 // rules are used (IPv4 and IPv6 separately) matching the codebase's
-// convention in matchDstCIDR. In VM mode, forwarded UDP is marked for
-// TPROXY interception; forwarded TCP uses DNAT in NAT PREROUTING
-// ([addNATPreRouting]) because br_netfilter's br_nf_pre_routing_finish
-// only re-routes packets locally when DNAT changes the destination.
+// convention in matchDstCIDR. In VM mode, the chain marks forwarded
+// UDP for TPROXY interception. Forwarded IPv4 TCP to the ports of
+// Envoy uses DNAT in NAT PREROUTING ([addNATPreRouting]) because
+// br_netfilter's br_nf_pre_routing_finish only re-routes packets
+// locally when DNAT changes the destination. The FORWARD chain
+// evaluates other forwarded TCP.
+//
+// Forwarded IPv6 TCP to port 53 is the exception. In VM mode the
+// chain marks it and sends it to the DNS proxy with TPROXY, as it
+// does with forwarded IPv6 UDP to port 53. Policy routing delivers
+// the marked packet locally, and the DNS proxy listens on port 53 of
+// every IPv6 address. So the kernel finds the listener of the DNS
+// proxy with the destination that the sender chose.
 //
 // Policy routing delivers the marked forwarded UDP to a local socket,
 // so that UDP passes the INPUT hook and not the FORWARD hook. The
@@ -1116,6 +1125,16 @@ func addManglePreRoutingChain(
 		// this, established packets arrive with fwmark=0, route
 		// via the main table, and are forwarded instead of
 		// delivered to the transparent socket.
+		//
+		// The socket lookup of this rule also finds a transparent
+		// listener on the destination port of a packet. The IPv6
+		// listeners of the DNS proxy are transparent and listen on
+		// port 53 of every address. So this rule also marks the
+		// first packet of forwarded IPv6 DNS when the DNS proxy
+		// listens, before the rules for port 53 further down the
+		// chain see it. The transparent listeners of Envoy listen
+		// on their ports of every address, so this rule also marks
+		// forwarded TCP to one of those ports.
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
@@ -1171,29 +1190,57 @@ func addManglePreRoutingChain(
 			),
 		})
 
-		// Forwarded TCP uses DNAT in NAT PREROUTING (addNATPreRouting)
-		// instead of TPROXY. The kernel's br_nf_pre_routing_finish
-		// only re-routes packets locally when DNAT changes the
-		// destination address;
-		// TPROXY does not modify the IP header, so bridge-forwarded
-		// packets would be L2-forwarded to the original destination.
-		// IPv4 DNS (UDP + TCP) also uses DNAT. IPv6 UDP DNS uses
-		// TPROXY here because IPv6 has no route_localnet. Forwarded
-		// IPv6 TCP DNS carries no mark, so the kernel forwards it
-		// and the FORWARD chain evaluates it.
-
-		// IPv6 UDP DNS TPROXY to the DNS proxy. This rule must
-		// appear before the generic UDP TPROXY rules.
+		// IPv6 forwarded TCP DNS: mark for TPROXY. The socket
+		// transparent rule at the top of the chain marks this TCP
+		// only when the DNS proxy listens. This rule marks it in
+		// every case, so policy routing delivers it locally and no
+		// resolver receives it when the DNS proxy does not listen.
+		// Without the mark, the kernel forwards that TCP to the
+		// resolver that the sender chose.
 		conn.AddRule(&nftables.Rule{
 			Table: table, Chain: chain,
 			Exprs: flatExprs(
-				matchMark(tproxyMark),
+				notMatchMark(guardMark),
 				matchNFProto(unix.NFPROTO_IPV6),
-				matchL4Proto(unix.IPPROTO_UDP),
+				matchNotIIFName("lo"),
+				matchNotLocalDst(),
+				matchL4Proto(unix.IPPROTO_TCP),
 				matchDstPort(53),
-				tproxyToPort(unix.NFPROTO_IPV6, 53),
+				markPacket(tproxyMark),
 			),
 		})
+
+		// Forwarded IPv4 TCP to the ports of Envoy uses DNAT in NAT
+		// PREROUTING (addNATPreRouting) instead of TPROXY.
+		// The kernel's br_nf_pre_routing_finish only re-routes
+		// packets locally when DNAT changes the destination
+		// address. TPROXY does not modify the IP header, so
+		// bridge-forwarded packets would be L2-forwarded to the
+		// original destination. IPv4 DNS (UDP + TCP) also uses DNAT.
+		//
+		// IPv6 DNS (UDP + TCP) uses TPROXY here because IPv6 has no
+		// route_localnet. A bridge-attached container sends DNS for
+		// an address outside its bridge to the bridge itself as the
+		// L2 destination. The mark then routes the packet to a
+		// local socket. The kernel looks that socket up with the
+		// port that the sender chose, and the DNS proxy listens on
+		// that port.
+
+		// IPv6 DNS TPROXY (UDP + TCP port 53) to the DNS proxy.
+		// These rules must appear before the generic UDP TPROXY
+		// rules.
+		for _, proto := range []byte{unix.IPPROTO_UDP, unix.IPPROTO_TCP} {
+			conn.AddRule(&nftables.Rule{
+				Table: table, Chain: chain,
+				Exprs: flatExprs(
+					matchMark(tproxyMark),
+					matchNFProto(unix.NFPROTO_IPV6),
+					matchL4Proto(proto),
+					matchDstPort(53),
+					tproxyToPort(unix.NFPROTO_IPV6, 53),
+				),
+			})
+		}
 
 		// Deny CIDR: ACCEPT to skip TPROXY. The packet keeps its
 		// mark, so it reaches the INPUT chain, and the deny rules
@@ -1898,7 +1945,7 @@ func addForwardChain(conn Conn, table *nftables.Table, terrariumChain *nftables.
 // destination of a packet unchanged, so the policy rules match the
 // address and the port that the sender chose.
 //
-// The jump skips three kinds of packets, and the ACCEPT policy of the
+// The jump skips these kinds of packets, and the ACCEPT policy of the
 // chain accepts them:
 //
 //   - Packets from the loopback interface. They are local UDP, which
@@ -1906,6 +1953,10 @@ func addForwardChain(conn Conn, table *nftables.Table, terrariumChain *nftables.
 //     loopback.
 //   - UDP to port 53. The mangle PREROUTING chain sends marked IPv6
 //     DNS to the DNS proxy, not to Envoy.
+//   - TCP. The mangle PREROUTING chain marks forwarded IPv6 TCP to
+//     port 53 for the DNS proxy. Its socket transparent rule also
+//     marks forwarded TCP to the port of a transparent listener of
+//     Envoy or of the DNS proxy.
 //   - Packets without [tproxyMark]. They are inbound traffic for the
 //     VM, which the host firewall filters.
 func addInputChain(conn Conn, table *nftables.Table, terrariumChain *nftables.Chain) {

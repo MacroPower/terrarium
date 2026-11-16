@@ -3409,10 +3409,11 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 		}
 	}
 
-	// Should have 3 marking rules: socket transparent + IPv4 UDP + IPv6 UDP.
-	// Forwarded TCP uses DNAT in NAT PREROUTING, not TPROXY marking.
-	require.Len(t, markRules, 3,
-		"VM mode should have 3 marking rules (socket transparent, IPv4 UDP, IPv6 UDP)")
+	// Should have 4 marking rules: socket transparent, IPv4 UDP, IPv6
+	// UDP, and IPv6 TCP DNS. Forwarded IPv4 TCP to the ports of Envoy
+	// uses DNAT in NAT PREROUTING, not TPROXY marking.
+	require.Len(t, markRules, 4,
+		"VM mode should have 4 marking rules (socket transparent, IPv4 UDP, IPv6 UDP, IPv6 TCP DNS)")
 
 	// First marking rule: socket transparent re-mark.
 	assert.True(t, ruleHasSocketTransparent(markRules[0]),
@@ -3430,6 +3431,14 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 	assert.True(t, ruleMatchesL4Proto(markRules[2], 17),
 		"third mark rule should be UDP")
 
+	// Fourth marking rule: IPv6 forwarded TCP DNS.
+	assert.True(t, ruleMatchesNFProto(markRules[3], 10),
+		"fourth mark rule should be IPv6")
+	assert.True(t, ruleMatchesL4Proto(markRules[3], 6),
+		"fourth mark rule should be TCP")
+	assert.True(t, ruleHasDstPort(markRules[3], 53),
+		"fourth mark rule should match port 53")
+
 	// Should have IPv6 TPROXY dispatch rules.
 	var ipv6TProxyCount int
 
@@ -3439,9 +3448,10 @@ func TestApplyRules_VMMode_IPv6TPROXY(t *testing.T) {
 		}
 	}
 
-	// The UDP DNS TPROXY plus the generic IPv6 UDP TPROXY.
-	assert.Equal(t, 2, ipv6TProxyCount,
-		"should have IPv6 TPROXY dispatch rules for UDP DNS and UDP catch-all")
+	// The UDP DNS TPROXY, the TCP DNS TPROXY, and the generic IPv6
+	// UDP TPROXY.
+	assert.Equal(t, 3, ipv6TProxyCount,
+		"should have IPv6 TPROXY dispatch rules for UDP DNS, TCP DNS, and UDP catch-all")
 }
 
 func TestApplyRules_VMMode_IPv6TPROXY_NotInContainerMode(t *testing.T) {
@@ -3637,8 +3647,14 @@ func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
 	for _, r := range rules {
 		isMark := ruleHasMark(r) && !ruleHasTProxy(r)
 		isIPv6 := ruleMatchesNFProto(r, 10) // NFPROTO_IPV6
+		isTCP := ruleMatchesL4Proto(r, 6)
 
-		if isMark && isIPv6 && ruleMatchesL4Proto(r, 6) {
+		if isTCP {
+			assert.True(t, ruleHasDstPort(r, 53),
+				"the chain should match forwarded TCP only on port 53")
+		}
+
+		if isMark && isIPv6 && isTCP {
 			ipv6TCPMarkCount++
 		}
 
@@ -3646,7 +3662,7 @@ func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
 			ipv6UDPMarkCount++
 		}
 
-		if ruleHasTProxy(r) && isIPv6 && ruleMatchesL4Proto(r, 6) {
+		if ruleHasTProxy(r) && isIPv6 && isTCP {
 			ipv6TCPTProxy++
 		}
 
@@ -3655,14 +3671,200 @@ func TestApplyRules_VMMode_Unrestricted_IPv6TPROXY(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 0, ipv6TCPMarkCount,
-		"unrestricted VM mode should not mark forwarded TCP (uses DNAT)")
+	assert.Equal(t, 1, ipv6TCPMarkCount,
+		"unrestricted VM mode should mark IPv6 forwarded TCP DNS")
 	assert.Equal(t, 1, ipv6UDPMarkCount,
 		"unrestricted VM mode should mark IPv6 forwarded UDP")
-	assert.Equal(t, 0, ipv6TCPTProxy,
-		"forwarded TCP carries no mark, so it should have no TPROXY rule")
-	assert.GreaterOrEqual(t, ipv6DNSTProxy, 1,
-		"unrestricted VM mode should have IPv6 DNS TPROXY dispatch")
+	assert.Equal(t, 1, ipv6TCPTProxy,
+		"unrestricted VM mode should have one IPv6 TCP DNS TPROXY rule")
+	assert.Equal(t, 2, ipv6DNSTProxy,
+		"unrestricted VM mode should have IPv6 DNS TPROXY dispatch for UDP and TCP")
+}
+
+func TestApplyRules_VMMode_IPv6TCPDNS(t *testing.T) {
+	t.Parallel()
+
+	filtered := &config.Config{
+		Egress: egressRules(
+			config.EgressRule{
+				ToCIDR:  []string{"2001:db8::/32"},
+				ToPorts: []config.PortRule{{Ports: []config.Port{{Port: "53", Protocol: "TCP"}}}},
+			},
+		),
+	}
+
+	tests := map[string]struct {
+		cfg  *config.Config
+		uids firewall.UIDs
+		want bool
+	}{
+		"vm unrestricted": {
+			cfg:  &config.Config{},
+			uids: testVMUIDs,
+			want: true,
+		},
+		// The DNS proxy receives the TCP even when an allow rule
+		// names port 53 of the destination.
+		"vm filtered": {
+			cfg:  filtered,
+			uids: testVMUIDs,
+			want: true,
+		},
+		"container unrestricted": {
+			cfg:  &config.Config{},
+			uids: testUIDs,
+		},
+		"container filtered": {
+			cfg:  filtered,
+			uids: testUIDs,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &ruleRecorder{}
+
+			err := firewall.ApplyRules(t.Context(), rec, tc.cfg, tc.uids)
+			require.NoError(t, err)
+
+			rules := rec.rulesForChain("mangle_prerouting")
+			require.NotEmpty(t, rules)
+
+			// Indexes of the rules for IPv6 TCP to port 53, and of
+			// the first TPROXY rule for another destination.
+			markIdx, tproxyIdx, otherTProxyIdx := -1, -1, -1
+
+			for i, r := range rules {
+				isDNS := ruleMatchesNFProto(r, unix.NFPROTO_IPV6) &&
+					ruleMatchesL4Proto(r, unix.IPPROTO_TCP) && ruleHasDstPort(r, 53)
+
+				switch {
+				case isDNS && ruleHasTProxy(r):
+					require.Equal(t, -1, tproxyIdx, "should have one IPv6 TCP DNS TPROXY rule")
+
+					tproxyIdx = i
+
+				case isDNS && ruleWritesMark(r):
+					require.Equal(t, -1, markIdx, "should have one IPv6 TCP DNS mark rule")
+
+					markIdx = i
+
+				case ruleHasTProxy(r) && !ruleHasDstPort(r, 53) && otherTProxyIdx == -1:
+					otherTProxyIdx = i
+				}
+			}
+
+			if !tc.want {
+				assert.Equal(t, -1, markIdx, "container mode should not mark TCP DNS")
+				assert.Equal(t, -1, tproxyIdx, "container mode should not TPROXY TCP DNS")
+
+				return
+			}
+
+			require.NotEqual(t, -1, markIdx, "should mark forwarded IPv6 TCP DNS")
+			require.NotEqual(t, -1, tproxyIdx, "should TPROXY forwarded IPv6 TCP DNS")
+			require.NotEqual(t, -1, otherTProxyIdx, "should have a generic TPROXY rule")
+
+			// The mark rule matches only forwarded packets, and it
+			// matches them whether or not a socket listens.
+			mark := rules[markIdx]
+			assert.True(t, ruleMatchesNotLocalDst(mark),
+				"mark rule should match only a destination that the host does not own")
+			assert.True(t, ruleExcludesIIFName(mark, "lo"),
+				"mark rule should exclude the loopback interface")
+			assert.True(t, ruleExcludesMark(mark, 0x2),
+				"mark rule should skip locally generated packets")
+			assert.False(t, ruleHasSocketTransparent(mark),
+				"mark rule should not depend on a transparent socket")
+
+			// The TPROXY rule sends the TCP to port 53, which is the
+			// port of the DNS proxy and the port that the sender
+			// chose.
+			assert.Equal(t, uint16(53), ruleTProxyPort(t, rules[tproxyIdx]),
+				"TPROXY rule should send TCP DNS to port 53")
+
+			assert.Less(t, markIdx, tproxyIdx,
+				"mark rule should come before the TPROXY rule")
+			assert.Less(t, tproxyIdx, otherTProxyIdx,
+				"DNS TPROXY rule should come before the generic TPROXY rules")
+		})
+	}
+}
+
+// ruleExcludesIIFName reports whether a rule skips packets from the
+// named input interface: a Meta load of IIFNAME followed by a Cmp Neq
+// against the name padded to IFNAMSIZ.
+func ruleExcludesIIFName(r *nftables.Rule, name string) bool {
+	want := make([]byte, 16)
+	copy(want, name)
+
+	for i := 0; i+1 < len(r.Exprs); i++ {
+		m, ok := r.Exprs[i].(*expr.Meta)
+		if !ok || m.Key != expr.MetaKeyIIFNAME || m.SourceRegister {
+			continue
+		}
+
+		c, ok := r.Exprs[i+1].(*expr.Cmp)
+		if ok && c.Op == expr.CmpOpNeq && c.Register == m.Register && bytes.Equal(c.Data, want) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleExcludesMark reports whether a rule skips packets that carry the
+// given fwmark bits: a Meta load of MARK, a Bitwise with the bits as
+// its mask, and a Cmp Eq against 0.
+func ruleExcludesMark(r *nftables.Rule, bits uint32) bool {
+	mask := binaryutil.NativeEndian.PutUint32(bits)
+	zero := binaryutil.NativeEndian.PutUint32(0)
+
+	for i := 0; i+2 < len(r.Exprs); i++ {
+		m, ok := r.Exprs[i].(*expr.Meta)
+		if !ok || m.Key != expr.MetaKeyMARK || m.SourceRegister {
+			continue
+		}
+
+		b, ok := r.Exprs[i+1].(*expr.Bitwise)
+		if !ok || b.SourceRegister != m.Register || !bytes.Equal(b.Mask, mask) {
+			continue
+		}
+
+		c, ok := r.Exprs[i+2].(*expr.Cmp)
+		if ok && c.Op == expr.CmpOpEq && c.Register == b.DestRegister && bytes.Equal(c.Data, zero) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ruleTProxyPort returns the port that the TPROXY expression of a rule
+// sends packets to. The port is the value that the rule loads into the
+// port register of the expression.
+func ruleTProxyPort(t *testing.T, r *nftables.Rule) uint16 {
+	t.Helper()
+
+	for i, e := range r.Exprs {
+		tp, ok := e.(*expr.TProxy)
+		if !ok {
+			continue
+		}
+
+		for _, prev := range r.Exprs[:i] {
+			imm, ok := prev.(*expr.Immediate)
+			if ok && imm.Register == tp.RegPort {
+				return binaryutil.BigEndian.Uint16(imm.Data)
+			}
+		}
+	}
+
+	require.Fail(t, "rule has no TPROXY port")
+
+	return 0
 }
 
 // ruleWritesMark reports whether a rule contains a Meta expression that

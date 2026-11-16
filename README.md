@@ -1059,14 +1059,16 @@ locally-originated traffic:
 | Chain               | Hook        | Priority | Purpose                                                           |
 | ------------------- | ----------- | -------- | ----------------------------------------------------------------- |
 | `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 DNS + per-port TCP to Envoy on `127.0.0.1`    |
-| `mangle_prerouting` | PREROUTING  | -150     | Mark forwarded UDP for TPROXY; dispatch to Envoy/DNS proxy        |
+| `mangle_prerouting` | PREROUTING  | -150     | Send forwarded UDP and IPv6 TCP DNS to Envoy or the DNS proxy     |
 | `forward`           | FORWARD     | 0        | Policy-evaluate forwarded traffic not intercepted by DNAT (ICMP)  |
 | `input`             | INPUT       | 0        | Policy-evaluate forwarded UDP before Envoy receives it            |
 | `postrouting_guard` | POSTROUTING | 0        | Catch locally-originated leaks (forwarded traffic passes through) |
 
-All forwarded TCP uses DNAT in NAT PREROUTING. When `br_netfilter` is loaded
-(required for bridge-networked containers), bridged frames traverse netfilter
-inet hooks so terrarium's nftables rules see the traffic. DNAT is required
+Forwarded IPv4 TCP to the ports that Envoy proxies uses DNAT in NAT PREROUTING.
+The `forward` chain evaluates other forwarded TCP, except IPv6 TCP to port 53,
+which goes to the DNS proxy. When `br_netfilter` is loaded (required for
+bridge-networked containers), bridged frames traverse netfilter inet hooks so
+terrarium's nftables rules see the traffic. DNAT is required
 because `br_nf_pre_routing_finish` (the br_netfilter continuation after inet
 PREROUTING hooks) only re-routes packets locally when DNAT has changed the
 destination address. Without DNAT, the packet receives a fake bridge rtable
@@ -1089,12 +1091,26 @@ The non-loopback interface check prevents the DNAT rules from matching
 locally-generated TPROXY traffic re-entering PREROUTING on loopback. Per-port
 matching avoids intercepting SSH (port 22).
 
-DNS (UDP and TCP port 53) also uses DNAT in NAT PREROUTING. The DNS DNAT
+IPv4 DNS (UDP and TCP port 53) also uses DNAT in NAT PREROUTING. The DNS DNAT
 rules intentionally omit the non-local destination check so queries to
 bridge-local resolvers (e.g., BuildKit's embedded DNS on the CNI gateway) are
 also intercepted. DNS UDP DNAT requires
 `net.ipv4.conf.default.route_localnet=1` so dynamically-created bridge
 interfaces allow routing to 127.0.0.0/8.
+
+IPv6 DNS (UDP and TCP port 53) uses TPROXY, because IPv6 has no
+`route_localnet` and a DNAT to `::1` fails. The `mangle_prerouting` chain marks
+forwarded IPv6 packets to port 53, and policy routing delivers the marked
+packets to a local socket. In daemon mode, the DNS proxy listens on port 53 of
+every IPv6 address, so the kernel finds its listener with the destination that
+the container chose. The IPv6 rules match only a destination address that the
+VM does not own.
+
+When the DNS proxy does not run, the VM refuses IPv6 TCP DNS. IPv6 UDP DNS
+falls through to the catch-all UDP TPROXY rule. When Envoy runs, such as during
+a reload, Envoy forwards that UDP to the resolver that the container chose. The
+`input` chain accepts UDP to port 53 without a policy check, so no egress rule
+applies to that query.
 
 Forwarded UDP to every port except IPv4 port 53 uses TPROXY. The
 `mangle_prerouting` chain marks that UDP, and policy routing delivers the
@@ -1109,6 +1125,9 @@ The `input` chain exists only in filtered mode. It accepts these packets
 without a policy check:
 
 - Marked UDP to port 53, which is the IPv6 DNS that the DNS proxy receives.
+- Marked TCP. It includes the IPv6 TCP to port 53 that the DNS proxy receives.
+  It also includes the forwarded TCP to the port of a transparent listener of
+  Envoy or of the DNS proxy, such as port 15443 of any address.
 - Packets from the loopback interface, which are the local UDP that the
   `output` chain evaluated.
 - Packets without the mark, such as inbound traffic for the VM.
@@ -1205,7 +1224,7 @@ The NixOS nftables rpfilter chain (`fib saddr . mark check exists`) also
 needs an exception for TPROXY-marked packets. With fwmark 0x1, the FIB lookup
 uses policy routing table 100 (`local default dev lo`), which changes the
 reverse path result. Without the exception, the rpfilter chain drops
-TPROXY-marked forwarded UDP packets:
+TPROXY-marked forwarded packets:
 
 ```
 # NixOS: networking.firewall.checkReversePath = "loose";
@@ -1223,13 +1242,13 @@ container runtime's bridge and port-mapping rules.
 
 The host firewall must accept traffic patterns created by terrarium's NAT and
 TPROXY interception. Without these rules, DNATted bridge-container traffic
-(DNS and TCP redirected to `127.0.0.1`) and TPROXY-marked forwarded UDP
-packets would be dropped:
+(DNS and TCP redirected to `127.0.0.1`) and TPROXY-marked forwarded packets
+(UDP and IPv6 TCP to port 53) would be dropped:
 
 ```nft
 # Accept DNATted bridge-container traffic (DNS + TCP).
 ct status dnat accept
-# Accept TPROXY-marked forwarded UDP packets.
+# Accept TPROXY-marked forwarded packets (UDP and IPv6 TCP to port 53).
 meta mark & 0x1 == 0x1 accept
 ```
 
@@ -1265,10 +1284,13 @@ terrarium's FORWARD chain.
 
 #### Container DNS
 
-Terrarium intercepts all forwarded DNS (UDP and TCP port 53) in NAT PREROUTING,
-including queries to bridge-local addresses like a CNI gateway or BuildKit's
-embedded resolver. This ensures container DNS works regardless of what
-resolv.conf the container runtime injects.
+Terrarium sends forwarded DNS (UDP and TCP port 53) to its DNS proxy, so
+container DNS works regardless of what resolv.conf the container runtime
+injects. For IPv4, the interception includes queries to bridge-local addresses
+like a CNI gateway or BuildKit's embedded resolver. For IPv6, the interception
+covers queries that leave the container's bridge for an address that the VM
+does not own. The bridge forwards a query to another container on the same
+bridge at L2, so the `forward` chain evaluates it like other forwarded traffic.
 
 #### Container CA trust
 
@@ -1382,7 +1404,7 @@ explicitly turned off via sysctl on all interfaces as defense-in-depth. The
 2. Generate configs (firewall, Envoy, certs) if not pre-baked
 3. Install CA certificates (if L7 rules need MITM)
 4. Apply nftables rules atomically via netlink
-5. Set up policy routing for UDP TPROXY (if egress is not blocked)
+5. Set up policy routing for TPROXY (if egress is not blocked)
 6. Start DNS proxy (nftables NAT OUTPUT redirects port 53 to loopback)
 7. Start Envoy (if egress is not blocked), wait until that Envoy accepts connections
 8. Create ready-file if configured (signals all infrastructure is up)
