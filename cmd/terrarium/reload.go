@@ -499,7 +499,7 @@ func replaceInfrastructure(
 	needsEnvoy := !cfg.IsEgressBlocked()
 	envoySettings := cfg.EnvoyDefaults()
 
-	// ApplyRules deletes the terrarium table before it applies the new
+	// ApplyRules deletes the terrarium tables before it applies the new
 	// rules atomically, so the previous rules are gone when it returns
 	// an error.
 	err = firewall.ApplyRules(ctx, in.conn, cfg, uids)
@@ -517,8 +517,10 @@ func replaceInfrastructure(
 		}
 	}
 
-	// Forward routing is always needed in VM mode (idempotent sysctl write).
-	err = firewall.SetupForwardRouting(sys)
+	// Forward routing is always needed in VM mode (idempotent sysctl
+	// writes). This call must follow SetupPolicyRouting, because both
+	// write net.ipv4.conf.all.rp_filter.
+	err = firewall.SetupForwardRouting(ctx, sys)
 	if err != nil {
 		return fmt.Errorf("setting up forward routing: %w", err)
 	}

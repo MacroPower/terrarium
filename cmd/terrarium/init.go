@@ -310,10 +310,11 @@ func setupInfrastructure(ctx context.Context, usr *config.User, uids firewall.UI
 		}
 	}
 
-	// VM mode: enable route_localnet for DNAT to 127.0.0.1 on
-	// non-loopback interfaces (forwarded container traffic).
+	// VM mode: set the sysctl parameters that forwarded container
+	// traffic needs. This call must follow SetupPolicyRouting, because
+	// both write net.ipv4.conf.all.rp_filter.
 	if uids.VMMode {
-		err := firewall.SetupForwardRouting(sys)
+		err := firewall.SetupForwardRouting(ctx, sys)
 		if err != nil {
 			return nil, fmt.Errorf("setting up forward routing: %w", err)
 		}

@@ -70,6 +70,16 @@ in
     # (cni0, veth*) inherit the setting. Required for DNAT to 127.0.0.1
     # on bridge interfaces.
     "net.ipv4.conf.default.route_localnet" = 1;
+    # The reverse path filter of the kernel must be off for the bridge
+    # ports of containers (veth*). Terrarium takes the forwarded UDP of
+    # a container away from the bridge, so the packet arrives on the
+    # bridge port. The port has no IPv4 address, and the kernel then
+    # drops the packet in strict mode and in loose mode. New interfaces
+    # inherit the "default" value. The glob replaces the
+    # "net.ipv4.conf.*.rp_filter = 2" line of systemd's 50-default.conf,
+    # which udev applies to each interface that appears.
+    "net.ipv4.conf.default.rp_filter" = 0;
+    "net.ipv4.conf.*.rp_filter" = 0;
     # Pinned for jail confinement assertions. Without these, a future
     # kernel default change (e.g., ptrace_scope=0) could mask a silent
     # regression where a positive cap test passes without the cap
@@ -287,7 +297,7 @@ in
   };
 
   # Guard table: a separate nftables table the terrarium daemon never
-  # touches (it only manages the "terrarium" table via netlink). This
+  # touches. The daemon manages only the tables named "terrarium". This
   # provides deny-all egress when the daemon's table is absent --
   # during the brief startup window when the daemon deletes the
   # boot-time table before applying its own, or if someone manually

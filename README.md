@@ -734,8 +734,13 @@ Port 53 is excluded from TPROXY marking so DNS queries reach the DNS proxy
 directly on loopback. Loose reverse-path filtering (rp_filter=2) is required on
 loopback because TPROXY'd packets arrive with non-local source addresses. The
 `firewall` package sets `net.ipv4.conf.lo.rp_filter` and
-`net.ipv4.conf.all.rp_filter` to 2 during policy routing setup, since the
-effective value is `max(conf.all, conf.<iface>)` and both must be loose.
+`net.ipv4.conf.all.rp_filter` to 2 during policy routing setup, because the
+effective value of an interface is `max(conf.all, conf.<iface>)`.
+
+In daemon mode, the daemon then sets `net.ipv4.conf.all.rp_filter` to 0. The
+loopback interface keeps loose mode through its own value. The value of every
+other interface then decides its mode, and the bridge ports of containers need
+the value 0. The [host requirements](#host-requirements) give the reason.
 
 ### Stats event store
 
@@ -1091,6 +1096,7 @@ locally-originated traffic:
 | Chain               | Hook        | Priority | Purpose                                                           |
 | ------------------- | ----------- | -------- | ----------------------------------------------------------------- |
 | `nat_prerouting`    | PREROUTING  | -100     | DNAT forwarded IPv4 DNS + per-port TCP to Envoy on `127.0.0.1`    |
+| `bridge_prerouting` | PREROUTING  | -300     | Take forwarded UDP away from the Linux bridge of the container    |
 | `mangle_prerouting` | PREROUTING  | -150     | Send forwarded UDP and IPv6 TCP DNS to Envoy or the DNS proxy     |
 | `forward`           | FORWARD     | 0        | Policy-evaluate forwarded traffic not intercepted by DNAT (ICMP)  |
 | `input`             | INPUT       | 0        | Policy-evaluate forwarded UDP before Envoy receives it            |
@@ -1164,10 +1170,53 @@ without a policy check:
   `output` chain evaluated.
 - Packets without the mark, such as inbound traffic for the VM.
 
+#### Bridge table
+
+The `bridge_prerouting` chain makes TPROXY work for a container on a Linux
+bridge. With `br_netfilter`, the `mangle_prerouting` chain sees the packets of
+such a container inside the bridge. TPROXY assigns the socket of Envoy to a
+packet there, but the packet loses that socket when the bridge passes it to the
+network layer. The datagram then never reaches Envoy.
+
+The `bridge_prerouting` chain is the only chain of a second `terrarium` table,
+in the `bridge` family, and it runs before `br_netfilter`. It sets the broute
+flag (`meta broute set 1`) on each UDP frame that a container sends to the MAC
+address of the bridge. It matches only frames that arrive on a `veth` port of
+the bridge, which is the device that container runtimes use to attach a
+container. The kernel then handles the frame as a packet that the bridge port
+of the container received. The bridge and `br_netfilter` never
+handle it, so the `mangle_prerouting` chain sees it one time, outside the
+bridge.
+
+A policy that blocks all egress has no TPROXY rules, so the daemon does not add
+the bridge table for it.
+
+The `bridge_prerouting` chain leaves these frames with the bridge:
+
+- UDP to port 53. IPv4 DNS uses DNAT, and the DNS proxy receives IPv6 DNS on
+  the port that the container chose.
+- IPv6 UDP to a link-local address.
+- Frames for another container on the same bridge.
+- Frames from a bridge port that is not a `veth` device, such as a physical
+  network interface or the TAP device of a virtual machine. Those frames hold
+  the UDP that the VM receives, such as the replies of upstream DNS servers and
+  of DHCP servers.
+- Every protocol except UDP.
+
+The DNS proxy does not receive a fragmented UDP datagram to port 53. The first
+fragment stays with the bridge, and the chain takes the later fragments, which
+have no UDP header. DNS queries fit in one packet.
+
+The chain also takes the UDP that a container sends to an address of the VM,
+on every port except 53. The input interface of that UDP at the INPUT hook is
+the bridge port, such as `veth0`, and not the bridge. The
+[host requirements](#host-requirements) list what the chain needs from the
+host.
+
 #### Guard table
 
-Terrarium manages a single `terrarium` table via netlink, deleting and recreating
-it on every config reload. During the brief window between delete and apply (or if
+Terrarium manages the `terrarium` table of the `inet` family via netlink,
+deleting and recreating it on every config reload. During the brief window between delete and apply (or if
 the daemon crashes), there are no egress rules at all. A separate `terrarium-guard`
 table at priority 10 closes this gap.
 
@@ -1239,6 +1288,42 @@ sysctl net.ipv4.ip_forward=1
 # Allow DNAT to 127.0.0.1 on bridge interfaces (for DNS UDP).
 # Setting "default" ensures dynamically-created interfaces inherit it.
 sysctl net.ipv4.conf.default.route_localnet=1
+
+# Turn off the reverse path filter of the kernel for new interfaces,
+# so that the bridge ports of containers (veth*) inherit the value 0.
+sysctl net.ipv4.conf.default.rp_filter=0
+```
+
+The kernel must be version 6.4 or later, with support for nftables tables of
+the `bridge` family. The [bridge table](#bridge-table) uses `meta broute`,
+which earlier kernels do not have. On an earlier kernel, the daemon cannot
+apply its rules and exits at startup.
+
+The reverse path filter of the kernel (`rp_filter`) must be off for each
+bridge port of a container. The bridge table passes the UDP of a container to
+the network layer as a packet that the bridge port received. Bridge ports have
+no IPv4 address, so the kernel drops such packets in strict mode and in loose
+mode. The daemon sets `net.ipv4.conf.all.rp_filter` to 0, and the host must
+give each bridge port the value 0. When `net.ipv4.conf.default.rp_filter` is
+not 0, the daemon logs a warning at startup and at each reload.
+
+On a host that runs systemd-udevd, the `default` value is not enough. systemd
+ships the line `net.ipv4.conf.*.rp_filter = 2` in its `50-default.conf` file,
+and udev applies that line to each interface that appears. Override the line
+with the same key in a file that sorts after `50-default.conf`:
+
+```
+# /etc/sysctl.d/60-terrarium.conf
+net.ipv4.conf.*.rp_filter = 0
+```
+
+On NixOS, set both values in `boot.kernel.sysctl`:
+
+```nix
+boot.kernel.sysctl = {
+  "net.ipv4.conf.default.rp_filter" = 0;
+  "net.ipv4.conf.*.rp_filter" = 0;
+};
 ```
 
 Container runtimes that manage their own NAT rules (CNI bridge `ipMasq`,
@@ -1246,9 +1331,9 @@ Docker's `--iptables`) can conflict with terrarium's nftables table. Disable
 source NAT in the CNI bridge plugin (`"ipMasq": false`) or Docker
 (`--iptables=false`) and let terrarium handle traffic interception exclusively.
 
-If the host runs a strict reverse-path filter (the NixOS default), it must be
-relaxed to "loose" mode. With `br_netfilter`, bridged packets enter L3 hooks
-with the bridge port (veth) as iif, but routes point to the bridge master
+If the host firewall runs a strict reverse-path filter (the NixOS default), it
+must be relaxed to "loose" mode. With `br_netfilter`, bridged packets enter L3
+hooks with the bridge port (veth) as iif, but routes point to the bridge master
 (cni0). Strict rpfilter fails because `fib saddr . iif` has no matching route;
 loose mode drops the iif constraint.
 
@@ -1260,7 +1345,6 @@ TPROXY-marked forwarded packets:
 
 ```
 # NixOS: networking.firewall.checkReversePath = "loose";
-# Or: sysctl net.ipv4.conf.all.rp_filter=2
 ```
 
 #### Host firewall
@@ -1309,6 +1393,11 @@ The fwmark (`meta mark`) is a kernel-internal field on the socket buffer -- it
 never appears on the wire and arrives as 0 on all inbound packets. Only local
 nftables rules, TPROXY, or processes with `CAP_NET_ADMIN` can set it, so
 external traffic cannot spoof the mark to bypass the firewall.
+
+Do not match the UDP of a container by the name of its bridge, such as
+`iifname "cni0"`. The [bridge table](#bridge-table) takes that UDP from the
+bridge, so its input interface is the bridge port of the container. Match it by
+its source address. UDP to port 53 keeps the bridge as its input interface.
 
 The NixOS firewall does not create a FORWARD chain by default
 (`networking.firewall.filterForward` is false), so there is no conflict with
@@ -1407,7 +1496,8 @@ does not reload it.
 ### IPv6
 
 The entire stack is dual-stack. nftables uses a single inet-family table that
-covers both IPv4 and IPv6 (replacing four legacy iptables tables). FQDN IP sets
+covers both IPv4 and IPv6 (replacing four legacy iptables tables). In daemon
+mode, the [bridge table](#bridge-table) holds one more chain. FQDN IP sets
 are created in pairs: one `TypeIPAddr` set for A records and one `TypeIP6Addr`
 set for AAAA records, both with per-element TTLs. The mangle prerouting chain
 has per-AF UDP TPROXY rules for `NFPROTO_IPV4` and `NFPROTO_IPV6`. Policy

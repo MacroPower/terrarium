@@ -487,6 +487,95 @@ func matchNotIIFName(name string) []expr.Any {
 	}
 }
 
+// metaKeyBridgeBroute is the NFT_META_BRI_BROUTE key of the kernel,
+// which sets the broute flag of a frame. The key exists in kernels
+// 6.4 and later. Neither the nftables library nor
+// golang.org/x/sys/unix defines it.
+const metaKeyBridgeBroute expr.MetaKey = 35
+
+// matchPktTypeHost matches frames whose packet type is "host". In the
+// prerouting hook of the bridge family, they are the frames whose
+// destination MAC address is the address of the bridge device. A
+// frame that arrives on any port of the bridge and holds a packet
+// that the host routes or receives matches. A frame for another port
+// of the bridge has the packet type "other host" and does not match.
+func matchPktTypeHost() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyPKTTYPE, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.PACKET_HOST}},
+	}
+}
+
+// metaKeyIIFKind is the NFT_META_IIFKIND key of the kernel, which
+// loads the link kind of the input interface. Neither the nftables
+// library nor golang.org/x/sys/unix defines it.
+const metaKeyIIFKind expr.MetaKey = 26
+
+// matchIIFKind matches packets whose input interface has the given
+// link kind, as "meta iifkind" does. The link kind of a veth device
+// is "veth" and the link kind of a TAP device is "tun". A physical
+// network interface has no link kind and never matches.
+func matchIIFKind(kind string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: metaKeyIIFKind, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(kind)},
+	}
+}
+
+// matchEtherType matches frames with the given EtherType, such as
+// [unix.ETH_P_IP]. Bridge-family rules use it where inet-family rules
+// use [matchNFProto], because the netfilter protocol of every frame
+// in the bridge family is NFPROTO_BRIDGE.
+func matchEtherType(etherType uint16) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseLLHeader,
+			Offset:       12, // EtherType
+			Len:          2,
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(etherType)},
+	}
+}
+
+// notMatchDstIPv6LinkLocal matches IPv6 packets whose destination
+// address is outside fe80::/10. The caller must match the IPv6
+// EtherType or protocol first.
+func notMatchDstIPv6LinkLocal() []expr.Any {
+	return []expr.Any{
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseNetworkHeader,
+			Offset:       24, // destination address
+			Len:          2,
+		},
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            2,
+			Mask:           []byte{0xff, 0xc0},
+			Xor:            []byte{0x00, 0x00},
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0xfe, 0x80}},
+	}
+}
+
+// setBroute sets the broute flag of a frame, as "meta broute set 1"
+// does. The bridge then does not handle the frame. The kernel passes
+// it to the network layer as a packet that the bridge port received,
+// and br_netfilter never sees it. Only the prerouting hook of the
+// bridge family accepts this expression.
+func setBroute() []expr.Any {
+	return []expr.Any{
+		&expr.Immediate{Register: 1, Data: []byte{1}},
+		&expr.Meta{
+			Key:            metaKeyBridgeBroute,
+			SourceRegister: true,
+			Register:       1,
+		},
+	}
+}
+
 // protoNum converts a protocol string to its IP protocol number.
 func protoNum(proto string) byte {
 	switch proto {

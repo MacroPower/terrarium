@@ -4,9 +4,11 @@ package firewall
 
 import "github.com/google/nftables"
 
-// TableName is the nftables table that holds terrarium's policy
-// rules. The table is replaced atomically on each
-// [ApplyRules] invocation.
+// TableName is the name of the nftables tables that hold terrarium's
+// policy rules. An inet-family table holds the policy chains. In VM
+// mode, a bridge-family table of the same name can hold the chain
+// that takes forwarded UDP away from Linux bridges. [ApplyRules]
+// replaces the tables on each invocation.
 const TableName = "terrarium"
 
 // GuardTableName is the separate nftables table that provides

@@ -17,10 +17,11 @@ import (
 
 // nftables chain names shared across the rule and chain builders.
 const (
-	chainOutput    = "output"
-	chainForward   = "forward"
-	chainInput     = "input"
-	chainNATOutput = "nat_output"
+	chainOutput           = "output"
+	chainForward          = "forward"
+	chainInput            = "input"
+	chainNATOutput        = "nat_output"
+	chainBridgePreRouting = "bridge_prerouting"
 
 	chainDenyPortNAT = "deny_port_nat"
 )
@@ -1096,6 +1097,15 @@ func addMangleOutputChain(conn Conn, table *nftables.Table, uids UIDs) {
 // Forwarded UDP to the CIDR of an allow rule also goes to Envoy. The
 // policy rules of the INPUT chain match it against the CIDR and the
 // ports of that rule.
+//
+// The bridge prerouting chain ([addBridgePreRoutingChain]) takes the
+// UDP of a bridge-attached container away from the bridge. That UDP
+// reaches this chain as a packet that the bridge port received.
+// Under br_netfilter, a packet that this chain sees inside the bridge
+// loses the socket that TPROXY assigns to it. UDP to port 53 stays
+// with the bridge. TPROXY sends forwarded IPv6 DNS to the port that
+// the sender chose, so the kernel finds the DNS proxy without the
+// assigned socket.
 func addManglePreRoutingChain(
 	conn Conn, table *nftables.Table,
 	udpPort uint16,
@@ -1268,6 +1278,113 @@ func addManglePreRoutingChain(
 			matchL4Proto(unix.IPPROTO_UDP),
 			matchNFProto(unix.NFPROTO_IPV6),
 			tproxyToPort(unix.NFPROTO_IPV6, udpPort),
+		),
+	})
+}
+
+// bridgeBroutePriority is the priority of the bridge prerouting chain.
+// The chain must run before br_netfilter, whose prerouting hook has
+// priority 0 (NF_BR_PRI_BRNF). The value is the "dstnat" priority of
+// the bridge family.
+const bridgeBroutePriority = -300
+
+// addBridgePreRoutingChain adds a bridge-family table with a
+// prerouting chain that takes the forwarded UDP of bridge-attached
+// containers away from the bridge. Only VM mode uses the chain.
+//
+// With br_netfilter, the mangle PREROUTING chain
+// ([addManglePreRoutingChain]) sees a frame of a bridge port inside
+// the bridge. TPROXY assigns the socket of Envoy to the packet there.
+// But the kernel drops that assignment when the bridge passes the
+// packet to the network layer, and it does not run PREROUTING a
+// second time. The kernel then looks for a socket on the port that
+// the sender chose, finds none, and discards the datagram.
+//
+// The chain sets the broute flag on those frames before br_netfilter
+// sees them. The kernel then passes each frame to the network layer
+// as a packet that the bridge port received. So PREROUTING runs one
+// time, outside the bridge, and the socket assignment of TPROXY lasts
+// until the UDP layer delivers the datagram. The input interface of
+// the packet is the bridge port and not the bridge.
+//
+// The chain matches UDP in frames that arrive on a veth port of the
+// bridge and whose destination MAC address is the address of the
+// bridge device. Container runtimes attach each container to the
+// bridge with a veth device. Those frames hold the packets that the
+// VM routes or receives for the container. A frame for another
+// container of the same bridge stays with the bridge.
+//
+// Frames from a bridge port of another link kind also stay with the
+// bridge. Such a port can be a physical network interface or the TAP
+// device of a virtual machine. Its frames hold UDP that the VM itself
+// receives, such as the replies of upstream DNS servers and of DHCP
+// servers. A socket that is bound to the bridge receives such a
+// datagram only when its input interface is the bridge.
+//
+// These packets of a container stay with the bridge as well:
+//
+//   - UDP to port 53. Forwarded IPv4 DNS uses DNAT, and the DNS proxy
+//     receives forwarded IPv6 DNS on the port that the sender chose.
+//   - IPv6 UDP to a link-local address. The kernel accepts a packet
+//     for a link-local address of the bridge only from the bridge
+//     device.
+//
+// A later fragment of a datagram has no UDP header, so the rule for
+// port 53 does not match it. The chain takes it from the bridge, as
+// it takes the first fragment of a datagram to another port. But the
+// first fragment of a datagram to port 53 stays with the bridge. So
+// the kernel never reassembles a fragmented datagram to port 53, and
+// the DNS proxy does not receive it. DNS queries fit in one packet.
+//
+// The bridge port has no IPv4 address, so the kernel accepts the IPv4
+// packets only when reverse path filtering is off for the port. See
+// [SetupForwardRouting].
+func addBridgePreRoutingChain(conn Conn) {
+	table := conn.AddTable(&nftables.Table{
+		Name:   TableName,
+		Family: nftables.TableFamilyBridge,
+	})
+
+	chain := conn.AddChain(&nftables.Chain{
+		Name:     chainBridgePreRouting,
+		Table:    table,
+		Type:     nftables.ChainTypeFilter,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: nftables.ChainPriorityRef(bridgeBroutePriority),
+	})
+
+	// DNS stays with the bridge.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchL4Proto(unix.IPPROTO_UDP),
+			matchDstPort(53),
+			verdictExprs(expr.VerdictAccept),
+		),
+	})
+
+	// IPv4 UDP of a container that the VM routes or receives.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchPktTypeHost(),
+			matchIIFKind("veth"),
+			matchEtherType(unix.ETH_P_IP),
+			matchL4Proto(unix.IPPROTO_UDP),
+			setBroute(),
+		),
+	})
+
+	// IPv6 UDP of a container that the VM routes or receives.
+	conn.AddRule(&nftables.Rule{
+		Table: table, Chain: chain,
+		Exprs: flatExprs(
+			matchPktTypeHost(),
+			matchIIFKind("veth"),
+			matchEtherType(unix.ETH_P_IPV6),
+			notMatchDstIPv6LinkLocal(),
+			matchL4Proto(unix.IPPROTO_UDP),
+			setBroute(),
 		),
 	})
 }

@@ -16,11 +16,12 @@ import (
 )
 
 // SetupPolicyRouting configures policy routing and reverse path
-// filtering for TPROXY. Marked packets are routed through loopback
-// so they arrive at the PREROUTING chain where TPROXY fires. The
-// rp_filter sysctl is set to loose mode (2) on both lo and all
-// interfaces because TPROXY re-routes packets through lo with their
-// original (non-local) source IP; strict mode would drop them.
+// filtering for TPROXY. The kernel routes marked packets through
+// loopback, so they arrive at the PREROUTING chain where TPROXY
+// fires. Those packets keep their original, non-local source address,
+// and strict reverse path filtering drops them. So the function sets
+// rp_filter to loose mode (2) on lo and for all interfaces. In VM
+// mode, [SetupForwardRouting] replaces the value for all interfaces.
 func SetupPolicyRouting(ctx context.Context, sys *sysctl.Sysctl) error {
 	lo, err := netlink.LinkByName("lo")
 	if err != nil {
@@ -57,9 +58,8 @@ func SetupPolicyRouting(ctx context.Context, sys *sysctl.Sysctl) error {
 		}
 	}
 
-	// Set rp_filter to loose mode (2) on lo and all.
-	// The effective rp_filter value is max(conf.all, conf.<iface>),
-	// so both must be set.
+	// Set rp_filter to loose mode (2) on lo and all. The effective
+	// rp_filter value of an interface is max(conf.all, conf.<iface>).
 	err = sys.Write("2", "net", "ipv4", "conf", "lo", "rp_filter")
 	if err != nil {
 		return fmt.Errorf("setting lo rp_filter: %w", err)
@@ -73,16 +73,52 @@ func SetupPolicyRouting(ctx context.Context, sys *sysctl.Sysctl) error {
 	return nil
 }
 
-// SetupForwardRouting enables route_localnet so that DNAT to 127.0.0.1
-// works on non-loopback interfaces. This is required for NAT
-// PREROUTING to redirect forwarded container traffic to Envoy/DNS
-// proxy on loopback. The security implications are minimal in a VM
-// isolation context where the VM itself is the security boundary.
-// Only called when VMMode is true.
-func SetupForwardRouting(sys *sysctl.Sysctl) error {
+// SetupForwardRouting sets the sysctl parameters that forwarded
+// container traffic needs. Only VM mode calls it.
+//
+// It enables route_localnet for all interfaces, so that DNAT to
+// 127.0.0.1 works on non-loopback interfaces. NAT PREROUTING needs
+// that to redirect forwarded container traffic to Envoy and to the
+// DNS proxy on loopback. The security implications are minimal in a
+// VM isolation context where the VM itself is the security boundary.
+//
+// It also sets net.ipv4.conf.all.rp_filter to 0. The bridge
+// prerouting chain of [ApplyRules] passes the forwarded UDP of a
+// bridge-attached container to the network layer as a packet that
+// the bridge port received. The bridge port has no IPv4 address, so
+// the kernel drops such a packet unless the effective rp_filter
+// value of the port is 0. That value is the larger of
+// net.ipv4.conf.all.rp_filter and the value of the port.
+// [SetupPolicyRouting] sets net.ipv4.conf.all.rp_filter to 2, so call
+// SetupForwardRouting after it.
+//
+// The host sets the rp_filter value of each bridge port. A new
+// interface takes the value of net.ipv4.conf.default.rp_filter, so
+// SetupForwardRouting logs a warning when that value is not 0. On a
+// host that runs systemd-udevd, the sysctl.d configuration can also
+// set the value of each new interface.
+func SetupForwardRouting(ctx context.Context, sys *sysctl.Sysctl) error {
 	err := sys.Enable("net", "ipv4", "conf", "all", "route_localnet")
 	if err != nil {
 		return fmt.Errorf("setting route_localnet: %w", err)
+	}
+
+	err = sys.Write("0", "net", "ipv4", "conf", "all", "rp_filter")
+	if err != nil {
+		return fmt.Errorf("setting all rp_filter: %w", err)
+	}
+
+	rpFilter, err := sys.ReadInt("net", "ipv4", "conf", "default", "rp_filter")
+	if err != nil {
+		return fmt.Errorf("reading default rp_filter: %w", err)
+	}
+
+	if rpFilter != 0 {
+		slog.WarnContext(ctx,
+			"net.ipv4.conf.default.rp_filter is not 0, "+
+				"so the kernel might drop forwarded IPv4 UDP of bridge-attached containers",
+			slog.Int64("rp_filter", rpFilter),
+		)
 	}
 
 	return nil

@@ -130,21 +130,15 @@ func CheckBootTables(ctx context.Context, conn *nftables.Conn) {
 	}
 }
 
-// ApplyRules deletes any existing terrarium table, builds the full
-// nftables ruleset (table, chains, sets, rules), and applies
+// ApplyRules deletes the existing terrarium tables, builds the full
+// nftables ruleset (tables, chains, sets, rules), and applies it
 // atomically via Flush. A single inet-family table replaces all four
-// iptables tables (nat/filter x IPv4/IPv6).
+// iptables tables (nat/filter x IPv4/IPv6). In VM mode, when the
+// policy does not block all egress, a bridge-family table of the same
+// name holds the chain that takes forwarded UDP away from Linux
+// bridges. That chain needs a kernel of version 6.4 or later.
 func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) error {
-	conn.DelTable(&nftables.Table{
-		Name:   TableName,
-		Family: nftables.TableFamilyINet,
-	})
-
-	// Best-effort: table may not exist yet on first run.
-	err := conn.Flush()
-	if err != nil {
-		slog.DebugContext(ctx, "flushing stale table (may not exist)", slog.Any("err", err))
-	}
+	deleteTables(ctx, conn)
 
 	table := conn.AddTable(&nftables.Table{
 		Name:   TableName,
@@ -169,7 +163,7 @@ func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) e
 		}
 	}
 
-	err = conn.Flush()
+	err := conn.Flush()
 	if err != nil {
 		return fmt.Errorf("applying nftables rules: %w", err)
 	}
@@ -177,20 +171,36 @@ func ApplyRules(ctx context.Context, conn Conn, cfg *config.Config, uids UIDs) e
 	return nil
 }
 
-// Cleanup removes the terrarium table and all its chains,
-// rules, and sets.
+// Cleanup removes the terrarium tables of the inet family and of the
+// bridge family, with all their chains, rules, and sets.
 func Cleanup(ctx context.Context, conn Conn) error {
-	conn.DelTable(&nftables.Table{
-		Name:   TableName,
-		Family: nftables.TableFamilyINet,
-	})
-
-	err := conn.Flush()
-	if err != nil {
-		slog.DebugContext(ctx, "cleaning up nftables", slog.Any("err", err))
-	}
+	deleteTables(ctx, conn)
 
 	return nil
+}
+
+// deleteTables deletes the terrarium table of each family. A table
+// that does not exist is not an error. Each table has its own batch,
+// because the kernel rejects a whole batch when one table of the
+// batch does not exist.
+func deleteTables(ctx context.Context, conn Conn) {
+	for _, family := range []nftables.TableFamily{
+		nftables.TableFamilyINet,
+		nftables.TableFamilyBridge,
+	} {
+		conn.DelTable(&nftables.Table{
+			Name:   TableName,
+			Family: family,
+		})
+
+		err := conn.Flush()
+		if err != nil {
+			slog.DebugContext(ctx, "deleting terrarium table (may not exist)",
+				slog.Any("family", family),
+				slog.Any("err", err),
+			)
+		}
+	}
 }
 
 // UpdateFQDNSet adds IP addresses to an nftables set with per-element
@@ -271,6 +281,12 @@ func addUnrestrictedRules(conn Conn, table *nftables.Table, cfg *config.Config, 
 	addMangleOutputChain(conn, table, uids)
 	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort),
 		nil, nil, uids)
+
+	// VM mode: take forwarded UDP away from Linux bridges, so that
+	// the TPROXY rules of the mangle PREROUTING chain deliver it.
+	if uids.VMMode {
+		addBridgePreRoutingChain(conn)
+	}
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
@@ -583,6 +599,12 @@ func addFilterRules(
 	addMangleOutputChain(conn, table, uids)
 	addManglePreRoutingChain(conn, table, port16(config.CatchAllUDPProxyPort),
 		deny4, deny6, uids)
+
+	// VM mode: take forwarded UDP away from Linux bridges, so that
+	// the TPROXY rules of the mangle PREROUTING chain deliver it.
+	if uids.VMMode {
+		addBridgePreRoutingChain(conn)
+	}
 
 	// Belt-and-suspenders: drop terrarium traffic that escapes
 	// NAT REDIRECT / TPROXY and leaves on non-loopback interfaces.
