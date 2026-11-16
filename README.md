@@ -608,6 +608,14 @@ Without capabilities, the user process cannot:
 - Send signals to Envoy (UID 1001) or init/DNS proxy (UID 0) (`CAP_KILL`).
 - Change its own UID/GID or manipulate process credentials (`CAP_SETUID`,
   `CAP_SETGID`).
+- Open a packet socket, an XDP socket, or an LLC socket (`CAP_NET_RAW`). The
+  kernel does not pass the frames of those sockets through the inet hooks of
+  the `terrarium` table, so no policy evaluates them.
+
+Clearing the capabilities does not close every link-layer path. PPPoE sockets
+do not need a capability, so the user process can open one and send PPPoE
+session frames on the interface of the container. No policy evaluates those
+frames. See [link-layer sockets](#link-layer-sockets).
 
 #### no-new-privs
 
@@ -639,9 +647,12 @@ root (UID 0); the proxy forwards upstream queries as root.
 
 No single mechanism is load-bearing. Capability clearing prevents privilege
 escalation, no-new-privs blocks setuid exploitation, UID-based nftables rules
-enforce network policy regardless of process behavior, and file permissions
-prevent configuration tampering. Bypassing the security model requires
-compromising multiple independent kernel subsystems simultaneously.
+enforce network policy on IP traffic regardless of process behavior, and file
+permissions prevent configuration tampering. Bypassing the policy for IP
+traffic requires compromising multiple independent kernel subsystems
+simultaneously. Link-layer frames are the exception. The nftables rules do not
+see the frames of [link-layer sockets](#link-layer-sockets), so the user
+process can send PPPoE session frames past the policy.
 
 ### Security modes
 
@@ -1564,6 +1575,10 @@ profiling keep working; cross-profile ptrace and writes to the sysctls
 that widen ptrace/dmesg/perf access for unconfined neighbors remain
 denied. See `lima/terrarium-workload.profile` for the authoritative list.
 
+The profile also denies the `packet`, `xdp`, `llc`, and `pppox` socket
+families, because no policy evaluates the frames of
+[link-layer sockets](#link-layer-sockets).
+
 The boundary is the profile transition at exec, not the subcommand name.
 Admin paths outside `terrarium jail` (e.g., `nixos-rebuild switch` from the
 host) stay unconfined and keep working. `terrarium jail` must be called
@@ -1588,6 +1603,54 @@ An example profile ships at `lima/terrarium-workload.profile`. Because
 `lockdown=integrity` is a boot parameter, activating it requires a fresh
 boot with the new kernel command line -- `nixos-rebuild switch` alone
 does not reload it.
+
+#### Link-layer sockets
+
+No policy evaluates the frames that a process sends through a link-layer
+socket. The kernel transmits those frames on the interface without passing
+them through the inet hooks, so the `terrarium` table and the
+[guard table](#guard-table) never see them. The following table lists the
+socket families that send such frames on an Ethernet interface.
+
+| Family      | Socket        | Frames                                  | Capability to open |
+| ----------- | ------------- | --------------------------------------- | ------------------ |
+| `AF_PACKET` | Packet socket | Any frame                               | `CAP_NET_RAW`      |
+| `AF_XDP`    | XDP socket    | Any frame                               | `CAP_NET_RAW`      |
+| `AF_LLC`    | LLC socket    | IEEE 802.2 frames to any MAC address    | `CAP_NET_RAW`      |
+| `AF_PPPOX`  | PPPoE socket  | PPPoE session frames to any MAC address | None               |
+
+The `terrarium.workload` profile grants `CAP_NET_RAW` and denies each of these
+socket families, so a workload under `terrarium jail` cannot open those
+sockets. Tools that need a packet socket, such as `tcpdump` or a DHCP client,
+do not work under the profile.
+
+Processes that hold `CAP_NET_RAW` in the network namespace of the VM and run
+outside the profile can send any frame past every policy. The root processes of
+the VM are such processes. So are the containers that share the network
+namespace of the VM (`--network host`), because containerd and Docker give
+`CAP_NET_RAW` to each container by default. To keep an untrusted workload from
+sending those frames, run it under `terrarium jail`, or run it without
+`CAP_NET_RAW`, for example with the `--cap-drop NET_RAW` flag of the container
+runtime.
+
+Every process outside the profile can send PPPoE session frames, because PPPoE
+sockets do not need a capability. The capability-less user process of
+container mode can send them as well, on the interface of the container.
+
+Containers on a bridge network send their frames in their own network
+namespaces. Those frames enter the VM on the bridge port of the container. The
+`terrarium` table evaluates the IP packets in them like every other forwarded
+packet. By default, `br_netfilter` passes an IP packet to the inet hooks only
+when the frame carries no VLAN tag and no PPPoE header. The bridge forwards
+every other frame at layer 2, so no policy evaluates it.
+
+A bridge with an [uplink](#bridge-table), such as a physical interface, a bond,
+or a VLAN device, forwards those frames out of the VM. On such a bridge, a
+container that holds `CAP_NET_RAW` can send any non-IP frame, or any frame with
+a VLAN tag, out the uplink past every policy. Every process of a container on that bridge can send PPPoE session
+frames out the uplink, whatever its capabilities. To keep an untrusted
+container from sending frames other than PPPoE out the uplink, run it with
+`--cap-drop NET_RAW`.
 
 ### IPv6
 

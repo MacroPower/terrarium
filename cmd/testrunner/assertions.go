@@ -130,6 +130,8 @@ func runAssertion(ctx context.Context, a assertion) result {
 		return assertJailExecDenied(ctx, a)
 	case "jail_exec_allowed":
 		return assertJailExecAllowed(ctx, a)
+	case "jail_socket_denied":
+		return assertJailSocketDenied(ctx, a)
 	case "jail_self_proc_read_allowed":
 		return assertJailSelfProcReadAllowed(ctx, a)
 	case "jail_refuses_nesting":

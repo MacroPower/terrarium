@@ -204,6 +204,30 @@ func assertJailExecAllowed(ctx context.Context, a assertion) result {
 	}
 }
 
+// assertJailSocketDenied runs `terrarium jail -- timeout 5 socat -u
+// /dev/null <Addr>` and passes when socat reports that the socket call
+// in [assertion.Expected] failed with a permission error. A nonzero
+// exit alone does not pass, because socat also exits nonzero after it
+// opens the socket, for example when `timeout` stops it.
+func assertJailSocketDenied(ctx context.Context, a assertion) result {
+	code, out, err := runJailed(ctx, "timeout", "5", "socat", "-u", "/dev/null", a.Addr)
+	if err != nil {
+		return result{Status: statusFail, Desc: a.Desc, Detail: fmt.Sprintf("running jail: %v", err)}
+	}
+
+	want := fmt.Sprintf("E %s: Permission denied", a.Expected)
+	if code != 0 && strings.Contains(out, want) {
+		return result{Status: statusPass, Desc: a.Desc, Detail: want}
+	}
+
+	maybeDebugDump(ctx)
+
+	return result{
+		Status: statusFail, Desc: a.Desc,
+		Detail: fmt.Sprintf("expected nonzero exit and %q, got exit %d: %s", want, code, strings.TrimSpace(out)),
+	}
+}
+
 // assertJailSelfProcReadAllowed runs `readlink /proc/self/fd/0` under
 // the jail and requires exit 0. Guards against a future
 // `deny /proc/[0-9]*/fd/** r` edit silently blocking self-introspection.

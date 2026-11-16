@@ -132,6 +132,18 @@ func jailExecAllowed(cmd, desc string) assertion {
 	return assertion{Type: "jail_exec_allowed", Cmd: cmd, Desc: desc}
 }
 
+// jailSocketDenied asserts that a jailed process cannot open a raw
+// socket of the address family with the given number. The socat address
+// names the family, the socket type SOCK_RAW (3), and the protocol 0.
+func jailSocketDenied(family int, desc string) assertion {
+	return assertion{
+		Type:     "jail_socket_denied",
+		Addr:     fmt.Sprintf("SOCKET-SENDTO:%d:3:0:x0000", family),
+		Expected: fmt.Sprintf("socket(%d, 3, 0)", family),
+		Desc:     desc,
+	}
+}
+
 func jailSelfProcReadAllowed(desc string) assertion {
 	return assertion{Type: "jail_self_proc_read_allowed", Desc: desc}
 }
@@ -1763,6 +1775,19 @@ egressDeny:
 				"jail-confinement: nft list tables denied"),
 			jailNftDenied([]string{"flush", "table", "inet", "terrarium"},
 				"jail-confinement: nft flush terrarium denied"),
+			// Link-layer sockets: packet (AF_PACKET, family 17), XDP
+			// (AF_XDP, family 44), LLC (AF_LLC, family 26), and PPPoE
+			// (AF_PPPOX, family 24). No chain of the terrarium table
+			// sees the frames that they send, so the profile denies
+			// each family.
+			jailSocketDenied(17,
+				"jail-confinement: packet socket denied"),
+			jailSocketDenied(44,
+				"jail-confinement: XDP socket denied"),
+			jailSocketDenied(26,
+				"jail-confinement: LLC socket denied"),
+			jailSocketDenied(24,
+				"jail-confinement: PPPoE socket denied"),
 			// Rebuild / kernel / systemd escape hatches.
 			jailExecDenied("nixos-rebuild switch",
 				"jail-confinement: nixos-rebuild denied"),

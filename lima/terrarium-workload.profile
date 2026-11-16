@@ -15,6 +15,13 @@ profile terrarium.workload flags=(attach_disconnected,mediate_deleted) {
   # stricter in-profile rule so the workload cannot escalate beyond its
   # peer set:
   #
+  #   net_raw: lets the workload open raw sockets, packet sockets, XDP
+  #   sockets, and LLC sockets. The terrarium nftables table evaluates
+  #   the packets of raw sockets. The kernel transmits the frames of
+  #   packet, XDP, and LLC sockets on the device without passing them
+  #   through the inet hooks of that table, so the link-layer socket
+  #   rules below deny those families.
+  #
   #   sys_ptrace: cross-profile attach is blocked at the AppArmor layer
   #   by `ptrace peer=terrarium.workload` (see below), and
   #   `deny /proc/[0-9]*/mem rw` blocks the path-based route to other
@@ -153,6 +160,20 @@ profile terrarium.workload flags=(attach_disconnected,mediate_deleted) {
   deny /dev/kvm rw,
   deny /dev/uio* rw,
   deny /dev/vfio/** rw,
+
+  # --- Link-layer sockets. Each of these families sends frames on an
+  # Ethernet device without passing them through the inet hooks of the
+  # terrarium table, so no egress policy evaluates those frames. Packet
+  # sockets and XDP sockets send any frame, LLC sockets send 802.2
+  # frames, and PPPoE sockets (pppox) send PPPoE session frames, each to
+  # any MAC address. CAP_NET_RAW lets a process open the first three,
+  # and PPPoE sockets do not need a capability. A deny rule wins over
+  # every allow rule, so these families stay closed whichever network
+  # families the profile allows.
+  deny network packet,
+  deny network xdp,
+  deny network llc,
+  deny network pppox,
 
   # --- nftables / netfilter. Ruleset mutation and enumeration require
   # CAP_NET_ADMIN (omitted from the allow-list above), so netlink
