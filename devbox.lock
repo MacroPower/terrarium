@@ -222,51 +222,41 @@
         }
       }
     },
-    "lefthook@2.1.5": {
-      "last_modified": "2026-05-21T08:15:18Z",
-      "resolved": "github:NixOS/nixpkgs/4a29d733e8a7d5b824c3d8c958a946a9867b3eb2#lefthook",
+    "lefthook@2.2.2": {
+      "last_modified": "2026-11-16T14:48:49Z",
+      "resolved": "github:NixOS/nixpkgs/e21fec321d73511849707a7585e4ea155ee4bf40#lefthook",
       "source": "devbox-search",
-      "version": "2.1.5",
+      "version": "2.2.2",
       "systems": {
         "aarch64-darwin": {
           "outputs": [
             {
               "name": "out",
-              "path": "/nix/store/j5j34q2kqyz09kf0wwlgnnsgn3h881cp-lefthook-2.1.5",
+              "path": "/nix/store/x5532rkla0w6mkg25whapxcx6258rh27-lefthook-2.2.2",
               "default": true
             }
           ],
-          "store_path": "/nix/store/j5j34q2kqyz09kf0wwlgnnsgn3h881cp-lefthook-2.1.5"
+          "store_path": "/nix/store/x5532rkla0w6mkg25whapxcx6258rh27-lefthook-2.2.2"
         },
         "aarch64-linux": {
           "outputs": [
             {
               "name": "out",
-              "path": "/nix/store/cr3rfs80hfyc7ciq875k9h1ajrf0ydy5-lefthook-2.1.5",
+              "path": "/nix/store/plkhszn8c80ncqw3xs3vshc18wnlwfzc-lefthook-2.2.2",
               "default": true
             }
           ],
-          "store_path": "/nix/store/cr3rfs80hfyc7ciq875k9h1ajrf0ydy5-lefthook-2.1.5"
-        },
-        "x86_64-darwin": {
-          "outputs": [
-            {
-              "name": "out",
-              "path": "/nix/store/0s5jzsamiwrl8lgzacf7i5msyajcl44k-lefthook-2.1.5",
-              "default": true
-            }
-          ],
-          "store_path": "/nix/store/0s5jzsamiwrl8lgzacf7i5msyajcl44k-lefthook-2.1.5"
+          "store_path": "/nix/store/plkhszn8c80ncqw3xs3vshc18wnlwfzc-lefthook-2.2.2"
         },
         "x86_64-linux": {
           "outputs": [
             {
               "name": "out",
-              "path": "/nix/store/nyg44d492znkg1bqa1i3dvxy2dw29xcy-lefthook-2.1.5",
+              "path": "/nix/store/8x9qlh22szfpr32vjx2lgrgs5178axa1-lefthook-2.2.2",
               "default": true
             }
           ],
-          "store_path": "/nix/store/nyg44d492znkg1bqa1i3dvxy2dw29xcy-lefthook-2.1.5"
+          "store_path": "/nix/store/8x9qlh22szfpr32vjx2lgrgs5178axa1-lefthook-2.2.2"
         }
       }
     },
